@@ -1,0 +1,1212 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:50:32.624Z",
+  "input": {
+    "arg": "7402",
+    "cf": {
+      "id": 7402,
+      "url": "https://commitfest.postgresql.org/patch/7402/",
+      "title": "Reduce SyncRepLock contention on the commit path",
+      "status": "Needs review",
+      "authors": "Yura Sokolov (funny_falcon), Vadim Ponomarev (vbp1)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CANeUpr_dfdQQK6joN8STmpXy4N8cK2H_mK5cM6grwT%2BM28wzXA%40mail.gmail.com",
+    "subject": "Reduce SyncRepLock contention on the commit path",
+    "thread_start": "2026-08-17T08:29:56Z",
+    "messages_read": 7,
+    "messages_total": 7,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v6-0001-Wake-the-released-sync-rep-waiters-after-the-queu.patch",
+      "v6-0002-Compute-the-synced-positions-before-taking-the-sy.patch",
+      "v6-0003-Release-the-sync-rep-waiters-once-per-drained-bat.patch",
+      "v6-0004-Let-a-committer-whose-acknowledgement-already-arr.patch",
+      "v6-0005-Add-stream-regress-test-for-synchronous-replicati.patch",
+      "v1-0001-Wake-the-released-sync-rep-waiters-after-the-queu.patch",
+      "v1-0002-Compute-the-synced-positions-before-taking-the-sy.patch",
+      "v1-0003-Release-the-sync-rep-waiters-once-per-drained-bat.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection questions the goal, and two setups measured gains of about 9% and 4.6%. The remaining concerns are fixable design points. In 0003, a FATAL or proc_exit may drop a pending release (replication-ondisk-1), and five separate exit sites must each remember it (maintenance-fit-1). In 0004, a measured saving of about 2% pays for a new atomic (maintenance-fit-2), which the author already offered to drop. Signing off on the 0003 exit paths needs a committer who knows walsender shutdown.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Reduce SyncRepLock contention on the synchronous replication commit path",
+    "problem": "On a primary with synchronous replication, every commit that wrote WAL takes SyncRepLock exclusively in SyncRepWaitForLSN(), and every standby reply takes it in SyncRepReleaseWaiters(). Much of the work done under the lock does not need it, so committers queue on it at high commit rates.",
+    "proposed_design": "Four independent patches move work out of the lock: wake released waiters after dropping it, compute synced positions before taking it, release waiters once per drained batch of standby replies, and let a committer skip the lock when an atomic lsn[] already covers its LSN. A fifth patch adds an opt-in stream regress test with two synchronous standbys.",
+    "user_visible_surface": [
+      "New PG_TEST_EXTRA keyword regress_sync_rep, which runs 027_stream_regress_sync.pl and is documented in regress.sgml.",
+      "WalSndCtlData lsn[] becomes a 64-bit atomic, read and written through new SyncRepGetLSN() and SyncRepSetLSN() accessors.",
+      "0003 changes when waiters are released: once per drained batch of replies, not once per reply."
+    ],
+    "author_claims": [
+      "Two-host pgbench with 750 clients gained about 9% tps and lost about 9% mean latency with all four patches.",
+      "LWLock/SyncRep wait samples fell by 43%; commits that blocked on the lock fell from about 10% to about 0.25% in an LWLOCK_STATS run.",
+      "0003 gives most of the gain; 0004 saves only 1.6-2.3% of backend lock acquisitions.",
+      "Single-client latency did not change measurably, so deferring the release adds no delay.",
+      "The co-author measured 67.3k to 70.4k tps on two 56-vcore virtual machines."
+    ],
+    "thread_state": "Only the two authors have posted: Yura Sokolov reviewed, rebased and extended the series, and Vadim Ponomarev answered each round up to v6. No committer or third reviewer has replied, and both questions from the first message (missed exit paths in 0003, worth of 0004) have no outside answer.",
+    "unclear": [
+      "The material does not show whether every exit from the reply drain runs the pending release; the author asks this himself.",
+      "0004 was untested on platforms where 64-bit atomics are emulated or where a read is a compare-and-exchange.",
+      "The patches have no per-patch throughput numbers on the two-host setup, only LWLOCK_STATS counts on a small host.",
+      "The commit messages do not say why 0005 touches stats.sql and stats.out.",
+      "No results are given for quorum (ANY) configurations or for synchronous_commit levels other than on."
+    ],
+    "search_queries": [
+      "SyncRepLock contention",
+      "synchronous replication commit performance",
+      "SyncRepWakeQueue SetLatch outside lock",
+      "SetLatches latches vs lwlock contention",
+      "SyncRepReleaseWaiters walsender reply batching",
+      "sync rep lock-free LSN check",
+      "walsender standby reply processing",
+      "reduce lwlock contention commit path"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Deferred release in 0003 may be lost on FATAL or proc_exit paths",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A walsender stores the standby's flush position from a drained reply and marks a release as pending. The process then leaves through a FATAL or a proc_exit, for example pg_terminate_backend or postmaster death, before the drain ends. With one synchronous standby, committers whose WAL that standby already flushed keep waiting until a walsender sends a later reply.",
+      "argument": "The 0003 commit message covers four explicit returns, plus ERROR through WalSndErrorCleanup(). FATAL and proc_exit do not go through WalSndErrorCleanup(), and WalSndKill() clears the slot positions, so the acknowledgement is gone once the walsender exits. In message #1 the author asks whether an exit path was missed, and no outside reviewer has answered (messages #2 to #7). Today the release runs per reply, so this window does not exist.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        7
+      ],
+      "author_must_show": "Does every way a walsender can leave the reply drain, including FATAL, proc_exit and postmaster death, either run the pending release or provably drop nothing a committer waits for?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Vadim Ponomarev",
+          "date": "2026-08-17T08:29:56Z",
+          "url": "https://www.postgresql.org/message-id/CANeUpr_dfdQQK6joN8STmpXy4N8cK2H_mK5cM6grwT%2BM28wzXA%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "Yura Sokolov",
+          "date": "2026-09-17T18:37:12Z",
+          "url": "https://www.postgresql.org/message-id/3024af42-d264-4bb8-aa58-377b286bd4b3%40postgrespro.ru"
+        },
+        {
+          "index": 7,
+          "from": "Vadim Ponomarev",
+          "date": "2026-10-10T10:02:29Z",
+          "url": "https://www.postgresql.org/message-id/CANeUpr-5B7B%2BLnVeWeB2uJ%3DW4%3DfHKL_UahZFcakveMRrdOYhnQ%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "FATAL goes straight to proc_exit without passing through WalSndErrorCleanup(), and the 0003 commit message lists no exit callback that runs the pending release. The wait ends when the standby reconnects and replies, so the cost is a delay, and fixable is the right severity.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "0003 adds an exit-path invariant that later walsender changes can break silently",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds a message type or an early return to the reply drain in walsender.c without running the pending release. The acknowledged committers stay asleep until another reply happens to arrive. If the standby has disconnected, they hang, and the bug shows up as a rare field report of stuck commits.",
+      "argument": "Message #1 asks whether any exit path was missed, and no third reviewer has answered. The commit message lists goodbye, EOF, invalid type, unexpected type and WalSndErrorCleanup() as separate places that each must remember the release. The tests in 007_sync_rep.pl cover only today's paths and skip on Windows (message #7). So the rule depends on future authors knowing about it, and nothing fails loudly when one does not.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        6,
+        7
+      ],
+      "author_must_show": "Can the pending release run from one place that every exit from the drain passes through, so that a new exit path cannot skip it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Vadim Ponomarev",
+          "date": "2026-08-17T08:29:56Z",
+          "url": "https://www.postgresql.org/message-id/CANeUpr_dfdQQK6joN8STmpXy4N8cK2H_mK5cM6grwT%2BM28wzXA%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Vadim Ponomarev",
+          "date": "2026-10-06T15:13:35Z",
+          "url": "https://www.postgresql.org/message-id/CANeUpr_1LF1rEjPq3fEfRUSCdFkeivQv%2BGhcXSLnze4Ktq4BDA%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Vadim Ponomarev",
+          "date": "2026-10-10T10:02:29Z",
+          "url": "https://www.postgresql.org/message-id/CANeUpr-5B7B%2BLnVeWeB2uJ%3DW4%3DfHKL_UahZFcakveMRrdOYhnQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The 0003 commit message names five separate places that must each run the pending release, and the tests cover only today's exits. The proposal shows no assertion or single exit point that would catch a new early return.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "0004 adds lock-free shared state for a gain of about 2%",
+      "level": "1b",
+      "rubric_item": 5,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "On a platform with emulated 64-bit atomics, each synchronous commit reads lsn[] through a spinlock before it takes SyncRepLock, and the fast path almost never hits. Later changes to syncrep.c must keep the lock-free ordering argument correct for every lsn[] access.",
+      "argument": "Message #1 measured the fast path saving 1.6-2.3% of backend acquisitions, and the author planned to drop 0004. Message #2 kept it on the grounds that it \"doesn't cost anything\", but no measurement supports that. The commit message says that cost on platforms without native 64-bit atomics is untested. Ten such patches would leave many lock-free reads whose correctness each depends on a monotonicity argument, for little measured gain.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        3
+      ],
+      "author_must_show": "Which workload makes the 0004 fast path hit often enough to justify a permanent atomic in WalSndCtlData, and what does it cost with emulated atomics?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Vadim Ponomarev",
+          "date": "2026-08-17T08:29:56Z",
+          "url": "https://www.postgresql.org/message-id/CANeUpr_dfdQQK6joN8STmpXy4N8cK2H_mK5cM6grwT%2BM28wzXA%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "Yura Sokolov",
+          "date": "2026-09-17T18:37:12Z",
+          "url": "https://www.postgresql.org/message-id/3024af42-d264-4bb8-aa58-377b286bd4b3%40postgrespro.ru"
+        },
+        {
+          "index": 3,
+          "from": "Vadim Ponomarev",
+          "date": "2026-09-22T20:36:59Z",
+          "url": "https://www.postgresql.org/message-id/CANeUpr9_gec4Vmck3zY%2Baw8g%3Dbfs1KvbbH_gOrisjGM1UeyA_g%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The author measured a 1.6-2.3% saving and planned to drop 0004, and the commit message says the cost with emulated atomics is untested. The lock-free read in 2e57790836c weakens the correctness worry, but no workload shows a larger gain.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "0004 adds shared atomic state for a fast path rarely taken",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "desirability",
+      "touch_points": [
+        "maintenance_burden",
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Every commit under synchronous replication now does an atomic read of lsn[] before taking SyncRepLock, and the read hits about 2% of the time. Where 64-bit atomics are emulated, that read is a spinlock on every commit. Later changes to lsn[] must use the new accessors, or the lock-free check can read a torn or stale value.",
+      "argument": "In message #1 the author measured a 1.6-2.3% reduction in backend lock acquisitions and planned to drop 0004 unless a workload showed more benefit. Message #2 kept it on the claim that it \"doesn't cost anything\", and no measurement backs that claim. The v6 commit message says the cost on platforms with emulated atomics is untested. No workload where the fast path matters has been shown, and 0001-0003 give the measured gain without it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "Which workload or synchronous_commit setting takes the 0004 fast path often enough to pay for a new atomic and accessor rule in WalSndCtlData?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Vadim Ponomarev",
+          "date": "2026-08-17T08:29:56Z",
+          "url": "https://www.postgresql.org/message-id/CANeUpr_dfdQQK6joN8STmpXy4N8cK2H_mK5cM6grwT%2BM28wzXA%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "Yura Sokolov",
+          "date": "2026-09-17T18:37:12Z",
+          "url": "https://www.postgresql.org/message-id/3024af42-d264-4bb8-aa58-377b286bd4b3%40postgrespro.ru"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-2. Its added claim of a torn read is weak, because lsn[] becomes an atomic type that code can only reach through the atomics API.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "0001-0004 change when and how synchronous replication waiters are released in syncrep.c and walsender.c."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "0004 changes WalSndCtlData lsn[] to a 64-bit atomic in walsender_private.h, a private header."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "0003 adds a rule that every exit from the reply drain runs the pending release; 0004 adds lock-free shared state."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "SyncRepWaitForLSN() runs on every commit that wrote WAL; 0004 adds an atomic read there before the lock."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Does a walsender that exits through FATAL, proc_exit or postmaster death during the reply drain run the pending release, or provably drop nothing a committer waits for?",
+    "Can the pending release run from one place that every exit from the reply drain passes through, so that a new early return cannot skip it?",
+    "Which workload or synchronous_commit level makes the 0004 fast path hit often enough to justify the atomic lsn[] in WalSndCtlData?",
+    "What does the 0004 read cost per commit on a platform where 64-bit atomics are emulated with a spinlock?",
+    "Why does 0005 change stats.sql and stats.out, which run in every regression run?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "It needs a committer who knows the walsender exit paths and the synchronous replication wait queue. Only the two authors have posted in the visible thread.",
+    "liability": "The owner signs for no committer staying asleep after its standby acknowledged, on every walsender exit path, now and after later changes to the reply drain. With 0004, the owner also signs for the lock-free lsn[] read.",
+    "author_follow_up": "Good sign: the author answered each review round up to v6, and the co-author rebased and extended the series."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "proceed",
+    "reason": "Users of synchronous replication at high commit rates gain about 5 to 9% throughput, and others pay nothing. The patches are small but change concurrency in syncrep.c and walsender.c, and 0003 adds an exit-path rule. 0004 can be dropped or split off without loss to 0001-0003."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read, so the 0003 exit paths, the lock-free argument in 0002 and 0004, and the stats.sql change in 0005 are unchecked. Only 3 of 7 messages were shown.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:3665",
+      "kind": "cf",
+      "title": "An attempt to avoid locally-committed-but-not-replicated-to-standby-transactions in synchronous replication",
+      "status": "Returned with feedback",
+      "date": "2023-08-02",
+      "first_date": "2022-04-25",
+      "url": "https://commitfest.postgresql.org/patch/3665/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACUrOB59QaE6=jF2cFAyv1MR7fzD8tr4YM5+OwEYG1SNzA@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "Daniel Gustafsson, Laurenz Albe",
+      "summary": "The patch adds a GUC, synchronous_replication_naptime_before_cancel, that makes a backend keep waiting for the sync standby ack for a set time before it handles a query cancel or proc die. A second part, not yet coded, would make the primary wait for sync standbys to catch up after a crash restart before it serves the locally committed transactions.",
+      "objection": "The entry was returned with feedback because the patch received no update for six months and no longer applied. The design was still open at the last author message. The author could not reliably detect, at restart, that a backend died while waiting for the sync replication ack, and the alternative of always waiting could keep the primary down. Earlier, Laurenz Albe objected that the approach still left some cases of transactions committed locally but not on the standby.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "synchronous replication commit performance",
+        "sync rep lock-free LSN check",
+        "walsender standby reply processing"
+      ],
+      "from_hint": false,
+      "score": 0.367,
+      "enriched": true,
+      "key_quote": "Since there hasn't been any updates for the past six months, and the patch\nhasn't applied for a few months, I am marking this returned with feedback for\nnow.",
+      "quote_message_url": "https://www.postgresql.org/message-id/D52A9851-E4C5-40CD-98E5-F6BC0417ED0F%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:4085",
+      "kind": "cf",
+      "title": "Exit walsender before confirming remote flush in logical replication",
+      "status": "Returned with feedback",
+      "date": "2023-03-17",
+      "first_date": "2022-12-22",
+      "url": "https://commitfest.postgresql.org/patch/4085/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/TYAPR01MB586668E50FC2447AD7F92491F5E89@TYAPR01MB5866.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "Hayato Kuroda (ha-kun)",
+      "objectors": "",
+      "summary": "The patch lets a logical replication walsender exit at shutdown without waiting for the subscriber to confirm flush of all sent WAL, so that a publisher with a large time-delayed apply can still stop. Later versions add an optional SHUTDOWN_MODE clause ('wait_flush' or 'immediate') to START_REPLICATION for logical replication.",
+      "objection": "The visible messages do not show why. The last shown messages, about a month before the decision, still discuss whether the option should be a boolean or a mode with an explicit default, and they contain minor review comments on v7-0002.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "SyncRepReleaseWaiters walsender reply batching",
+        "walsender standby reply processing"
+      ],
+      "from_hint": false,
+      "score": 0.277,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:2676",
+      "kind": "cf",
+      "title": "Start WAL streaming as early as possible, without waiting for startup process to finish replaying existing WAL. This helps synchronous replication to resume quickly when significant replay lag has been built up.",
+      "status": "Returned with feedback",
+      "date": "2020-12-01",
+      "first_date": "2020-01-17",
+      "url": "https://commitfest.postgresql.org/patch/2676/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANXE4Tc3FNvZ_xAimempJWv_RH9pCvsZH7Yq93o1VuNLjUT-mQ@mail.gmail.com"
+      ],
+      "authors": "Asim Rama Praveen (apraveen), Hao Wu (hwu)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch starts the WAL receiver on a standby before the startup process finishes replaying WAL already in pg_wal, so synchronous commits on the primary are not held up by replay lag. A GUC, wal_receiver_start_condition, picks when the receiver starts, and the start LSN is the beginning of the most recently flushed segment, found by reading the first page of each segment in pg_wal.",
+      "objection": "Michael Paquier objected that the start LSN is roughly the consistency point, so streaming begins too early when many local segments, often copied by hand, are still left to replay. He also rejected the WAL page checks as hard to maintain, noted that the patch requests streaming when PrimaryConnInfo is not set, and suggested a WAL reader scan from the redo point to find the real end of local WAL. The entry stayed \"Waiting on Author\" after this review and was returned with feedback.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "synchronous replication commit performance",
+        "sync rep lock-free LSN check",
+        "walsender standby reply processing"
+      ],
+      "from_hint": false,
+      "score": 0.271,
+      "enriched": true,
+      "key_quote": "Your patch would cause streaming to begin too early, and a manual copy of segments is not a rare thing as in some environments a bulk copy of segments can make the catchup of a standby faster than streaming.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20201120082106.GG8506%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:5095",
+      "kind": "cf",
+      "title": "Improving the latch handling between logical replication launcher and worker processes.",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2024-04-25",
+      "url": "https://commitfest.postgresql.org/patch/5095/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALDaNm01_KEgHM1tKtgXkCGLJ5209SMSmGw3UmhZbOz365_=eA@mail.gmail.com"
+      ],
+      "authors": "vigneshwaran C (vignesh.postgres)",
+      "objectors": "Kyotaro Horiguchi",
+      "summary": "The patch fixes a lost wakeup in the logical replication launcher, which uses one latch for worker attach, worker exit and subscription creation, so a new subscription's apply worker can wait up to 180 seconds to start. The author listed three options and posted v2 using a separate latch for worker attach and exit, protected by a lock and owned only around each wait.",
+      "objection": "The visible messages do not state a closing reason. Kyotaro Horiguchi objected to v2 because it calls OwnLatch and DisownLatch often and nests latch waits across concurrent wakeup sources, and he proposed a flag in shared memory that ApplyLauncherMain checks before WaitLatch. The author agreed and posted a new patch for that approach, and Heikki Linnakangas noted that his proposed interrupts patches would make the fix simple. The thread ends there without a review of the new patch.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "SetLatches latches vs lwlock contention",
+        "walsender standby reply processing"
+      ],
+      "from_hint": false,
+      "score": 0.234,
+      "enriched": true,
+      "key_quote": "Additionally, handling multiple concurrently operating trigger sources with nested latch waits seems bug-prone, which I’d prefer to avoid from both a readability and safety perspective.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20240904.120214.2117610340510711755.horikyota.ntt%40gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:2927",
+      "kind": "cf",
+      "title": "Report tranche ID and LWLock pointer in LWLock static tracepoints",
+      "status": "Returned with feedback",
+      "date": "2021-04-07",
+      "first_date": "2020-12-19",
+      "url": "https://commitfest.postgresql.org/patch/2927/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGRY4nxJo+-HCC2i5H93ttSZ4gZO-FSddCwvkb-qAfQ1zdXd1w@mail.gmail.com"
+      ],
+      "authors": "Craig Ringer (ringerc)",
+      "objectors": "Peter Eisentraut",
+      "summary": "The patch set adds the LWLock pointer and the numeric tranche ID to each LWLock static tracepoint, so traces can tell individual locks apart and compare them across processes. It also fixes misplaced tracepoints, adds a single tracepoint for all acquires and releases plus start markers for timing, and adds comments on LWLock tranches.",
+      "objection": "Two parts were committed by Peter Eisentraut: the removal of the wrong lwlock__acquire tracepoint in LWLockWaitForVar, and the move of TRACE_POSTGRESQL_LWLOCK_RELEASE. In his last review he reported that patch 0002 did not build on macOS because uint64 was used in the probe definitions, and that the probe changes had no documentation. He also asked for a different argument order and whether both tranche name and tranche ID are needed. The visible messages show no new version after that review.",
+      "touch_points": [],
+      "matched_queries": [
+        "SetLatches latches vs lwlock contention",
+        "reduce lwlock contention commit path"
+      ],
+      "from_hint": false,
+      "score": 0.222,
+      "enriched": true,
+      "key_quote": "First, a problem:  0002 doesn't build on macOS, because uint64 has been\nused in the probe definitions.",
+      "quote_message_url": "https://www.postgresql.org/message-id/558b02ca-2795-3b6d-6ce6-c1e13da2f5b5%40enterprisedb.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:1455",
+      "kind": "cf",
+      "title": "Changing WAL Header to reduce contention during ReserveXLogInsertLocation()",
+      "status": "Returned with feedback",
+      "date": "2018-07-09",
+      "first_date": "2017-12-30",
+      "url": "https://commitfest.postgresql.org/patch/1455/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANP8+jKZidkCLHg_6nUi4tLQTN=d6w+qd7H5DYqzYa3eU-6Hzw@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon), Pavan Deolasee (pavan)",
+      "objectors": "Tom Lane, Robert Haas, Heikki Linnakangas",
+      "summary": "Replace the 8-byte xl_prev field in the WAL record header with a smaller field (first a 2-byte xl_walid from the segment number, later an xl_curr pointer), so ReserveXLogInsertLocation() no longer tracks PrevBytePos. The insertpos_lck spinlock could then become a 64-bit atomic, which cuts contention and shrinks WAL by a few percent.",
+      "objection": "Tom Lane and others objected that dropping xl_prev removes the check that WAL records form an unbroken chain, which matters for XLOG_SWITCH, timeline switches and the new forward search for checkpoints in pg_rewind. Robert Haas asked to defer the question to the next cycle, and Simon Riggs accepted that on the basis of risk. Heikki Linnakangas then returned it with feedback and asked first to test a 128-bit compare-and-swap (CMPXCHG16B) that keeps the WAL format unchanged.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "SyncRepLock contention",
+        "reduce lwlock contention commit path"
+      ],
+      "from_hint": false,
+      "score": 0.218,
+      "enriched": true,
+      "key_quote": "The way\nforward is to test if we can get the same performance benefit from\nswitching to CMPXCHG16B, and keep the WAL format unchanged.",
+      "quote_message_url": "https://www.postgresql.org/message-id/0697c84b-48df-29aa-d701-1e35da2e100f%40iki.fi",
+      "relevant": true
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:3393",
+      "kind": "cf",
+      "title": "Synchronize logical replication slots from primary to standby",
+      "status": "Returned with feedback",
+      "date": "2022-02-18",
+      "first_date": "2021-10-31",
+      "url": "https://commitfest.postgresql.org/patch/3393/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/514f6f2f-6833-4539-39f1-96cd1e011f23@enterprisedb.com"
+      ],
+      "authors": "Peter Eisentraut (petere)",
+      "objectors": "Andres Freund, James Coleman",
+      "summary": "A background worker on a physical standby periodically fetches logical replication slot information from the primary, so that after failover a logical subscriber finds up-to-date slots on the new primary. Later versions added synchronize_slot_names on the standby to pick which slots to sync, and standby_slot_names on the primary to hold logical replication back until the listed physical standbys catch up.",
+      "objection": "Andres Freund found that the patch breaks the catalog_xmin guarantee: row versions still needed for logical decoding on the standby can be removed. He said it needs a mechanism such as the \"Minimal logical decoding on standbys\" patch, which the author said was not near ready. Reviewers also objected to the blocking wait and the per-commit work added to reorderbuffer.c, and to the worker-per-database design tied to the logical replication launcher. The author listed these and an open configuration design as significant jobs still to do.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "synchronous replication commit performance",
+        "walsender standby reply processing"
+      ],
+      "from_hint": false,
+      "score": 0.216,
+      "enriched": true,
+      "key_quote": "The patch as-is just breaks one of the fundamental guarantees necessary for logical decoding, that no rows versions can be removed that are still required for logical decoding (signalled via catalog_xmin).",
+      "quote_message_url": "https://www.postgresql.org/message-id/20220218222319.yozkbhren7vkjbi5%40alap3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:2402",
+      "kind": "cf",
+      "title": "GUC to disable cancellation of awaiting for synchronous replication",
+      "status": "Returned with feedback",
+      "date": "2021-10-06",
+      "first_date": "2019-12-20",
+      "url": "https://commitfest.postgresql.org/patch/2402/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/C1F7905E-5DB2-497D-ABCC-E14D4DEE506C@yandex-team.ru"
+      ],
+      "authors": "Andrey Borodin (x4m)",
+      "objectors": "Michael Paquier, Fujii Masao",
+      "summary": "The patch adds a GUC that stops a query cancel from ending the wait for synchronous replication, so a locally committed transaction keeps its locks and stays invisible until a standby confirms it. The goal is to stop clients, including drivers that send a cancel on a query timeout, from seeing data that a failover can lose.",
+      "objection": "Reviewers said that blocking cancel does not close the hole, because a server restart or a backend crash also exposes locally committed data that no standby has received. Fujii Masao suggested making new snapshots wait for replication instead, and Andrey Borodin rejected that because of its latency cost. Aleksander Alekseev called the patch a workaround and asked for a community decision, and the visible messages show no agreement before the entry was returned.",
+      "touch_points": [
+        "new GUC",
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "synchronous replication commit performance",
+        "sync rep lock-free LSN check"
+      ],
+      "from_hint": false,
+      "score": 0.195,
+      "enriched": true,
+      "key_quote": "I don't think that preventing a backend from being canceled during waiting for sync rep actually addresses your issue.",
+      "quote_message_url": "https://www.postgresql.org/message-id/4f8d54c9-6f18-23d5-c4de-9d6656d3a408%40oss.nttdata.com",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:2576",
+      "kind": "cf",
+      "title": "Add LWLock blocker(s) information",
+      "status": "Returned with feedback",
+      "date": "2020-11-18",
+      "first_date": "2020-06-02",
+      "url": "https://commitfest.postgresql.org/patch/2576/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/71779d05-3a9b-b897-f54d-16ffedcc896b@amazon.com"
+      ],
+      "authors": "Bertrand Drouvot (bdrouvot)",
+      "objectors": "",
+      "summary": "Add LWLock blocker(s) information\nThreads: Add LWLock blocker(s) information",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "SetLatches latches vs lwlock contention",
+        "reduce lwlock contention commit path"
+      ],
+      "from_hint": false,
+      "score": 0.194,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:696",
+      "kind": "cf",
+      "title": "Quorum commit for multiple synchronous replication",
+      "status": "Returned with feedback",
+      "date": "2016-10-02",
+      "first_date": "2016-08-03",
+      "url": "https://commitfest.postgresql.org/patch/696/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAD21AoAACi9NeC_ecm+Vahm+MMA6nYh=Kqs3KB3np+MBOS_gZg@mail.gmail.com"
+      ],
+      "authors": "Masahiko Sawada (masahikosawada)",
+      "objectors": "",
+      "summary": "Quorum commit for multiple synchronous replication\nThreads: Quorum commit for multiple synchronous replication.",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "synchronous replication commit performance",
+        "sync rep lock-free LSN check"
+      ],
+      "from_hint": false,
+      "score": 0.185,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:373",
+      "kind": "cf",
+      "title": "Additional LWLOCK_STATS statistics",
+      "status": "Rejected",
+      "date": "2015-12-22",
+      "first_date": "2015-09-15",
+      "url": "https://commitfest.postgresql.org/patch/373/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/55F82AE1.3010407@redhat.com"
+      ],
+      "authors": "Jesper Pedersen (jpedersen)",
+      "objectors": "",
+      "summary": "Additional LWLOCK_STATS statistics\nThreads: Additional LWLOCK_STATS statistics",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "SetLatches latches vs lwlock contention",
+        "reduce lwlock contention commit path"
+      ],
+      "from_hint": false,
+      "score": 0.158,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:984",
+      "kind": "cf",
+      "title": "LWLock optimization for Power processors",
+      "status": "Returned with feedback",
+      "date": "2017-08-30",
+      "first_date": "2017-02-03",
+      "url": "https://commitfest.postgresql.org/patch/984/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAPpHfdsKrh7c7P8-5eG-qW3VQobybbwqH=gL5Ck+dOES-gBbFg@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov (smagen)",
+      "objectors": "",
+      "summary": "LWLock optimization for Power processors\nThreads: LWLock optimization for multicore Power machines",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "SetLatches latches vs lwlock contention",
+        "reduce lwlock contention commit path"
+      ],
+      "from_hint": false,
+      "score": 0.155,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:1166",
+      "kind": "cf",
+      "title": "Fix LWLock degradation on NUMA",
+      "status": "Returned with feedback",
+      "date": "2018-11-30",
+      "first_date": "2017-06-05",
+      "url": "https://commitfest.postgresql.org/patch/1166/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2968c0be065baab8865c4c95de3f435c@postgrespro.ru"
+      ],
+      "authors": "Yura Sokolov (funny_falcon)",
+      "objectors": "",
+      "summary": "Fix LWLock degradation on NUMA\nThreads: Fix performance degradation of contended LWLock on NUMA",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "SetLatches latches vs lwlock contention",
+        "reduce lwlock contention commit path"
+      ],
+      "from_hint": false,
+      "score": 0.151,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:772",
+      "kind": "cf",
+      "title": "Make async slave to wait for lsn to be replayed",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2020-03-05",
+      "url": "https://commitfest.postgresql.org/patch/772/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/80f267591b373db5588d580fdfb432f0@postgrespro.ru",
+        "https://www.postgresql.org/message-id/flat/195e2d07ead315b1620f1a053313f490@postgrespro.ru"
+      ],
+      "authors": "Ivan Kartyshov (fenimorkin)",
+      "objectors": "",
+      "summary": "Make async slave to wait for lsn to be replayed\nThreads: Re: [HACKERS] make async slave to wait for lsn to be replayed; Re: [HACKERS] make async slave to wait for lsn to be replayed",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "sync rep lock-free LSN check"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "revert:5721e5453ebc59360b6756fe72d7499c4a02177c",
+      "kind": "revert",
+      "title": "Revert \"Add redo LSN to pgstats files\"",
+      "status": "Reverted",
+      "date": "2025-03-16",
+      "first_date": "2024-08-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=5721e5453ebc59360b6756fe72d7499c4a02177c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2563883.1741826489@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/Zp8o6_cl0KSgsnvS@paquier.xyz"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Add redo LSN to pgstats files\"\nReverted commit(s): Add redo LSN to pgstats files",
+      "objection": "This reverts commit b860848232aa, that was added as a prerequisite for\nthe support of pgstats data flush across checkpoints, linking a pgstats\nfile to a specific checkpoint redo LSN.\n\nAs reported, this is proving to be currently problematic when going\nthrough a pg_upgrade, that does direct manipulations of the control file\nin the new cluster.  The LSN stored in the pgstats file is not able to\ncope with any changes done in the control file by pg_upgrade yet,\ncausing the pgstats file to be discarded when starting the new cluster\nafter overriding its redo LSN (one is a `pg_resetwal -l` where the new\ncluster's start LSN is bumped by a hardcoded value of 8 segments, see\ncopy_xact_xlog_xid).\n\nThe least painful path going forward is likely going to be a refactor of\nthe pgstats code so as it is possible to read and write some of its data\nwith some routines in src/common/, so as pg_upgrade or pg_resetwal are\nable to update its data.  The main point is that we are going to need a\nLSN in the stats file should we make it written at checkpoint time and\nnot only as part of a shutdown sequence.  It is too late to dive into\nthese details for v18, so let's revert the change, and let's try to\nfigure out all the details in the next release cycle.  The pgstats file\nis currently only written as part of a shutdown sequence, and its\ncontents are still lost on crash, same as older releases.\n\nBump PGSTAT_FILE_FORMAT_ID.",
+      "touch_points": [
+        "on-disk format / pg_upgrade"
+      ],
+      "matched_queries": [
+        "sync rep lock-free LSN check"
+      ],
+      "from_hint": false,
+      "score": 0.132,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:5055",
+      "kind": "cf",
+      "title": "walsender.c fileheader comment",
+      "status": "Withdrawn",
+      "date": "2024-07-19",
+      "first_date": "2024-06-11",
+      "url": "https://commitfest.postgresql.org/patch/5055/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHut+PusveZf5pfKTYzjioZ=Lx4TJFKRXs0KhTQjNueKQwkABg@mail.gmail.com"
+      ],
+      "authors": "Peter Smith (smithpb2250)",
+      "objectors": "",
+      "summary": "walsender.c fileheader comment\nThreads: walsender.c fileheader comment",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "SyncRepReleaseWaiters walsender reply batching"
+      ],
+      "from_hint": false,
+      "score": 0.13,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "wiki:Standby_server_mode:2",
+      "kind": "do_not_want",
+      "title": "Change walsender so that it applies per-role settings",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Standby_server_mode",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Change walsender so that it applies per-role settings\nSection: Administration / Standby server mode",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "SyncRepReleaseWaiters walsender reply batching",
+        "walsender standby reply processing"
+      ],
+      "from_hint": false,
+      "score": 0.129,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:2716",
+      "kind": "cf",
+      "title": "fix spinlock contention in LogwrtResult",
+      "status": "Withdrawn",
+      "date": "2022-09-23",
+      "first_date": "2020-08-31",
+      "url": "https://commitfest.postgresql.org/patch/2716/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200831182156.GA3983@alvherre.pgsql"
+      ],
+      "authors": "Álvaro Herrera (alvherre)",
+      "objectors": "",
+      "summary": "fix spinlock contention in LogwrtResult\nThreads: LogwrtResult contended spinlock",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "SyncRepLock contention"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:6740",
+      "kind": "cf",
+      "title": "Adjust pg_stat_get_lock() prorows to match lock types",
+      "status": "Withdrawn",
+      "date": "2026-06-08",
+      "first_date": "2026-05-04",
+      "url": "https://commitfest.postgresql.org/patch/6740/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/75836FCA-2A8A-4DED-A13F-888595460A2D@gmail.com"
+      ],
+      "authors": "Chao Li (chaol)",
+      "objectors": "",
+      "summary": "Adjust pg_stat_get_lock() prorows to match lock types\nThreads: Adjust pg_stat_get_lock() prorows to match lock types",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "SyncRepWakeQueue SetLatch outside lock"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:1133",
+      "kind": "cf",
+      "title": "Moving relation extension locks out of heavyweight lock manager",
+      "status": "Returned with feedback",
+      "date": "2018-03-30",
+      "first_date": "2017-05-11",
+      "url": "https://commitfest.postgresql.org/patch/1133/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAD21AoCmT3cFQUN4aVvzy5chw7DuzXrJCbrjTU05B+Ss=Gn1LA@mail.gmail.com"
+      ],
+      "authors": "Masahiko Sawada (masahikosawada)",
+      "objectors": "",
+      "summary": "Moving relation extension locks out of heavyweight lock manager\nThreads: Moving relation extension locks out of heavyweight lock manager",
+      "objection": "",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "SyncRepWakeQueue SetLatch outside lock"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:4393",
+      "kind": "cf",
+      "title": "Optimize walsender handling invalid messages of 'drop publication'",
+      "status": "Withdrawn",
+      "date": "2023-10-20",
+      "first_date": "2023-02-27",
+      "url": "https://commitfest.postgresql.org/patch/4393/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAM_vCudj3_HdJ2G5erwq_Jj+-bwfr67yxmS8oh=-cjPXY4pihg@mail.gmail.com"
+      ],
+      "authors": "Bowen Shi (zxwsbg)",
+      "objectors": "",
+      "summary": "Optimize walsender handling invalid messages of 'drop publication'\nThreads: Optimize walsender handling invalid messages of 'drop publication'",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "SyncRepReleaseWaiters walsender reply batching"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:442",
+      "kind": "cf",
+      "title": "Fix lock contention for HASHHDR.mutex",
+      "status": "Returned with feedback",
+      "date": "2016-02-08",
+      "first_date": "2015-12-11",
+      "url": "https://commitfest.postgresql.org/patch/442/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20151211170001.78ded9d7@fujitsu"
+      ],
+      "authors": "Aleksander Alekseev (a.alekseev)",
+      "objectors": "",
+      "summary": "Fix lock contention for HASHHDR.mutex\nThreads: Patch: fix lock contention for HASHHDR.mutex",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "SyncRepLock contention"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:3583",
+      "kind": "cf",
+      "title": "Fix checkpointer sync request queue problems",
+      "status": "Withdrawn",
+      "date": "2022-11-07",
+      "first_date": "2022-03-01",
+      "url": "https://commitfest.postgresql.org/patch/3583/",
+      "thread_urls": [],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Fix checkpointer sync request queue problems",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "sync rep lock-free LSN check"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:1666",
+      "kind": "cf",
+      "title": "Moving relation extension locks out of heavyweight lock manager",
+      "status": "Returned with feedback",
+      "date": "2018-12-01",
+      "first_date": "2017-05-11",
+      "url": "https://commitfest.postgresql.org/patch/1666/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAD21AoCmT3cFQUN4aVvzy5chw7DuzXrJCbrjTU05B+Ss=Gn1LA@mail.gmail.com"
+      ],
+      "authors": "Masahiko Sawada (masahikosawada)",
+      "objectors": "",
+      "summary": "Moving relation extension locks out of heavyweight lock manager\nThreads: Moving relation extension locks out of heavyweight lock manager",
+      "objection": "",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "SyncRepWakeQueue SetLatch outside lock"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 8,
+    "new_calls": 0,
+    "failed": 0,
+    "quotes_verified": 0,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 2
+  },
+  "precedent_cutoff": "2026-08-17",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found: [P18] records no reason and [P6] died over a WAL format change this series does not make. Message #1 says 0001 first appeared in the \"Latches vs lwlock contention\" thread, where the sync-rep part was not committed and, per the author, never got a separate review, so it records no rejection reason that could apply here."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 0,
+      "note": "The series adds no SQL syntax, keyword, GUC, catalog entry, psql behaviour or dumped object, so there is nothing to round-trip or to clash with the standard. The PG_TEST_EXTRA keyword copies the existing regress_dump_restore pattern, and the lsn[] type change sits in the private walsender_private.h header. The 0003 timing change is internal. Not checked without the code: why 0005 edits stats.sql and stats.out, which run in every regression run."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "The series does not change on-disk format, WAL records, the wire protocol or catalogs. The lsn[] change in walsender_private.h is in shared memory only and lands in a major release, so it needs no pg_upgrade work and raises no backpatch question."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The series has no privilege or exposure aspect. It adds no SQL surface, GUC, role, view or log output. It changes only lock handling inside syncrep.c and walsender.c, which run for replication connections that already need the REPLICATION attribute. The durability risk in 0003 and 0004, where a lost release could leave committers waiting, belongs to the correctness angle."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "0001 and 0002 copy an existing practice (ProcArrayGroupClearXid) and keep their changes inside syncrep.c, so this angle finds no objection to them. No committer has engaged yet, but that is a committability concern, not a flaw in the design."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing feature, setting, contrib module or extension does this job: SyncRepLock is taken inside core code paths that an extension cannot reach. The local wake list in 0001 follows ProcArrayGroupClearXid(), and the general SetLatches() facility named in message #1 is not in core, so the series adds no second mechanism alongside an existing one."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "Demand for the series as a whole is shown. SyncRepLock contention is a general cost of synchronous replication at high commit rates, two independent setups measured gains of about 9% and 4.6%, and the cost falls only on configurations that use synchronous replication."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 4,
+      "new_survived": 3,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "attachment limit (8) reached; v1-0004-Let-a-committer-whose-acknowledgement-already-arr.patch not read",
+    "synthesis said NEEDS-COMMITTER-EYES but listed a level 1b objection (maintenance-fit-2); changed to NEEDS-DESIGN-DISCUSSION"
+  ],
+  "tone_lint": {
+    "fields_checked": 66,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 12,
+    "wall_ms": 155086,
+    "cost_usd": 1.8070322,
+    "dry_run": false
+  }
+}

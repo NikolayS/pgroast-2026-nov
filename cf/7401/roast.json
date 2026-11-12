@@ -1,0 +1,1261 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:50:19.139Z",
+  "input": {
+    "arg": "7401",
+    "cf": {
+      "id": 7401,
+      "url": "https://commitfest.postgresql.org/patch/7401/",
+      "title": "gist_trgm_ops '=' operator: planner picks it over btree, ~300x slower",
+      "status": "Needs review",
+      "authors": "Vaibhav Dalvi (vaibhavdalvi)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CA%2BvB%3DAHon6EB%3D90pbPDik_u8%2B%2B%2BTy8TA6Z4-RXo_X5QCr71kcQ%40mail.gmail.com",
+    "subject": "gist_trgm_ops '=' operator: planner picks it over btree, ~300x slower",
+    "thread_start": "2026-09-02T11:11:31Z",
+    "messages_read": 10,
+    "messages_total": 10,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v2-Add-gist_trgm_ops_noeq.patch",
+      "v1-0001-Add-gist_trgm_ops_noeq.patch",
+      "v1-0001-Drop-equality-operator-from-gist_trgm_ops.patch",
+      "v1-0001-gist-trgm-real-signature-stats.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The problem is real and reproducible, and the patch costs non-users nothing. The thread has not settled whether a second opclass is the right fix. maintenance-fit-1 shows that Korotkov's point about the generic GiST estimator (message #4) is unanswered. standards-compat-1 shows that the opclass cannot be removed once indexes and dumps name it. Confidence is medium because only 3 of 10 messages were visible.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Add gist_trgm_ops_noeq opclass to pg_trgm, without the = operator",
+    "problem": "When a text column has both a btree index and a gist_trgm_ops index, the planner can pick the GiST index for a plain = query. The two plans have almost equal estimated cost, but the GiST plan ran about 355 times slower in the author's test. Users who keep the trigram index only for LIKE or similarity searches are hit.",
+    "proposed_design": "pg_trgm 1.7 adds a second opclass, gist_trgm_ops_noeq, identical to gist_trgm_ops except that it does not register operator 11 (=). Users create new indexes with it or rebuild existing ones onto it, so the planner can never use that index for =. The patch is pure SQL in the extension upgrade script, with no core, C or planner changes.",
+    "user_visible_surface": [
+      "New GiST operator class gist_trgm_ops_noeq in pg_trgm.",
+      "pg_trgm extension version bump to 1.7, with upgrade script pg_trgm--1.6--1.7.sql.",
+      "New paragraph in the pg_trgm docs describing the new opclass."
+    ],
+    "author_claims": [
+      "The GiST plan for = can be hundreds of times slower than btree; the test case shows 15.2 ms against 0.043 ms.",
+      "Existing gist_trgm_ops indexes and behavior do not change.",
+      "Correctness can be checked by reading the catalog entries alone.",
+      "Tests show = cannot use the new opclass under any planner settings, and other operators still return correct results.",
+      "David Rowley reported the same problem in 2024 and got no replies."
+    ],
+    "thread_state": "Korotkov prefers fixing the cost estimate (option 2, or opclass statistics) and argues GiST cost for = should already be higher than btree. Dunstan calls an ANALYZE-time AM hook the real fix but a large project, and suggested a CF entry for patch 3; v2 fixes the Meson build and has no other review.",
+    "unclear": [
+      "The proposal does not say why users cannot fix this by choosing GIN or dropping the btree index, or how many users are affected.",
+      "The thread does not answer Korotkov's point that the generic GiST cost estimator itself could charge more for =, which would fix all opclasses.",
+      "The proposal does not say whether the opclass stays if a later cost-model fix makes it unneeded, or how it would be retired.",
+      "The proposal does not say whether pg_dump, pg_upgrade or ALTER EXTENSION UPDATE need any care for indexes using the new opclass.",
+      "Nobody in the thread comments on the patchset Nestorov linked."
+    ],
+    "search_queries": [
+      "gist_trgm_ops equality operator",
+      "pg_trgm gist cost estimate",
+      "gistcostestimate improve",
+      "GiST index chosen over btree",
+      "pg_trgm new operator class",
+      "opclass custom statistics ANALYZE",
+      "trigram index equality slow",
+      "GiST opclass cost estimation support function"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Opclass twin works around a generic GiST costing gap",
+      "level": "2",
+      "rubric_item": 5,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user with btree_gist, or another opclass whose = or other operators are costed like btree, hits the same plan flip. Once gist_trgm_ops_noeq exists, the next fix proposed for that opclass is another \"_noeq\" twin. Each one adds names that users must know about, while gistcostestimate stays unchanged.",
+      "argument": "In message #4 Korotkov says GiST cost for = should already be above btree under the generic estimator, because GiST calls the consistent function for every item on a page. That points to a gistcostestimate change that would help every opclass. The thread never answers this point, and message #6 compares patch 3 only with the ANALYZE hook. A committer would likely ask whether ten such per-opclass twins per release would be acceptable.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4,
+        6
+      ],
+      "author_must_show": "Why does a per-item consistent-call charge in gistcostestimate not fix this case, and which other opclasses would then not need a similar twin?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "Alexander Korotkov",
+          "date": "2026-09-03T06:26:42Z",
+          "url": "https://www.postgresql.org/message-id/CAPpHfdtGzomdU%2B0wiwrZS52NRQYwMrzDraE0eCfwAM2RvQAcag%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Vaibhav Dalvi",
+          "date": "2026-09-18T06:37:26Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BvB%3DAG1P9FMm30ov_w4%2B%2ByNZ9Cdy40hYdC0tLxxPT2GEQaQxQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "No message answers Korotkov's point in message #4 that the generic GiST estimator should charge more for =. The btree_gist scenario has no support in the material, so only the unanswered gistcostestimate question should be used.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Workaround opclass name becomes a permanent part of every dump",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "pg_dump_round_trip",
+      "touch_points": [
+        "pg_dump_round_trip",
+        "sql_standard_syntax",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user builds indexes with gist_trgm_ops_noeq in Postgres 20. A later release fixes GiST cost estimation for =, and pg_trgm wants to drop the extra opclass. Every dump and pg_upgrade from older clusters names it in CREATE INDEX, so removing it breaks restores, and the opclass stays for good.",
+      "argument": "Message #3 calls an ANALYZE-time hook the real fix, and message #4 argues that even the generic GiST estimator should charge more for =. Either fix would make this opclass redundant. The opclass name encodes a planner workaround in user DDL, and pg_dump writes it out for every index that uses it. The proposal gives no deprecation or retirement plan and does not say what happens to it once the cost model is fixed.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        4,
+        6
+      ],
+      "author_must_show": "If GiST cost estimation for = is fixed later, how would gist_trgm_ops_noeq be retired without breaking dumps and pg_upgrade of existing indexes?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Andrew Dunstan",
+          "date": "2026-09-02T13:29:59Z",
+          "url": "https://www.postgresql.org/message-id/69c88bb3-d9a8-4054-9024-1f324d31e5aa%40dunslane.net"
+        },
+        {
+          "index": 4,
+          "from": "Alexander Korotkov",
+          "date": "2026-09-03T06:26:42Z",
+          "url": "https://www.postgresql.org/message-id/CAPpHfdtGzomdU%2B0wiwrZS52NRQYwMrzDraE0eCfwAM2RvQAcag%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Vaibhav Dalvi",
+          "date": "2026-09-18T06:37:26Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BvB%3DAG1P9FMm30ov_w4%2B%2ByNZ9Cdy40hYdC0tLxxPT2GEQaQxQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Index definitions name the opclass, so pg_trgm cannot drop it once users build on it. Message #7 says it costs almost nothing, but no message says what happens to it after a cost-model fix.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Users can already define this opclass themselves with plain SQL",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "does_not_fit",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user hit by the slow = plan can run `create operator class` today, reuse pg_trgm's support functions, leave out operator 11, and reindex. If pg_trgm ships gist_trgm_ops_noeq instead, the project keeps a second opclass in every later pg_trgm version, even after a cost-model fix makes it unneeded.",
+      "argument": "Message #3 says users can create the opfamily and opclass for themselves, as in patch 3, and rebuild their indexes. So shipping the opclass adds convenience and a documented name, not something that is impossible today. Message #6 argues that users should not have to hand-roll it, but neither message gives field reports or a count of affected users beyond the 2024 report that drew no replies. Users who need only LIKE or regex matching, and not the <-> ordering, can also use gin_trgm_ops, whose cost estimate message #1 says is already fixed.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3,
+        4,
+        6,
+        7
+      ],
+      "author_must_show": "How many users hit this and cannot use GIN, and why is a documented user-defined opclass recipe not enough for them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Vaibhav Dalvi",
+          "date": "2026-09-02T11:11:31Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BvB%3DAHon6EB%3D90pbPDik_u8%2B%2B%2BTy8TA6Z4-RXo_X5QCr71kcQ%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Andrew Dunstan",
+          "date": "2026-09-02T13:29:59Z",
+          "url": "https://www.postgresql.org/message-id/69c88bb3-d9a8-4054-9024-1f324d31e5aa%40dunslane.net"
+        },
+        {
+          "index": 4,
+          "from": "Alexander Korotkov",
+          "date": "2026-09-03T06:26:42Z",
+          "url": "https://www.postgresql.org/message-id/CAPpHfdtGzomdU%2B0wiwrZS52NRQYwMrzDraE0eCfwAM2RvQAcag%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Vaibhav Dalvi",
+          "date": "2026-09-18T06:37:26Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BvB%3DAG1P9FMm30ov_w4%2B%2ByNZ9Cdy40hYdC0tLxxPT2GEQaQxQ%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Andrew Dunstan",
+          "date": "2026-10-03T14:07:45Z",
+          "url": "https://www.postgresql.org/message-id/ab8db543-bf0c-4a80-8d04-fe6eac817f3c%40dunslane.net"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #3 confirms users can build the same opclass today, and the thread shows only two reports. One limit applies: `create operator class` needs superuser, so the recipe does not reach users without that privilege.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "New opclass is permanent with no retirement path",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "pg_dump_round_trip",
+        "catalog"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Users rebuild indexes onto gist_trgm_ops_noeq. A later release fixes GiST costing, and the opclass is no longer needed. pg_dump output and existing indexes still name it, so pg_trgm must ship it from then on, and the docs must explain two nearly identical opclasses.",
+      "argument": "Message #6 calls it an \"immediate, permanent fix\" and keeps the ANALYZE-hook work separate, so the proposal expects a better fix later but does not say what happens to the opclass then. Index definitions refer to an opclass by name, and pg_trgm cannot drop it without breaking restores. Message #3 says users can create the same opclass themselves today, which costs the project nothing if the workaround later becomes obsolete.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        6
+      ],
+      "author_must_show": "If GiST costing is fixed later, what happens to gist_trgm_ops_noeq and to the indexes and dumps that refer to it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Andrew Dunstan",
+          "date": "2026-09-02T13:29:59Z",
+          "url": "https://www.postgresql.org/message-id/69c88bb3-d9a8-4054-9024-1f324d31e5aa%40dunslane.net"
+        },
+        {
+          "index": 6,
+          "from": "Vaibhav Dalvi",
+          "date": "2026-09-18T06:37:26Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BvB%3DAG1P9FMm30ov_w4%2B%2ByNZ9Cdy40hYdC0tLxxPT2GEQaQxQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1, which states the same retirement problem with a more concrete dump and pg_upgrade scenario.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Built-in opclass only helps users who already diagnosed the problem",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user whose `=` lookups slowed down after adding a gist_trgm_ops index sees no change after upgrading to pg_trgm 1.7. Their existing index keeps `=`, and nothing points them to the new opclass. Only a user who has found the cause and rebuilds the index benefits, and that user can already create the same opclass with plain SQL.",
+      "argument": "The material shows two reports: David Rowley's 2024 post, which got no replies, and the author's own case, a synthetic md5 table queried with a short constant. In message #3 Dunstan says users can create the opfamily and opclass themselves as in patch 3, so the patch saves users one DDL script. It does not reach anyone who has not diagnosed the bad plan. The opclass then stays in pg_trgm even if the cost fix that message #2 and message #4 call the right direction lands later.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        3,
+        4,
+        7
+      ],
+      "author_must_show": "Which production users hit this, how many cannot use the hand-made opclass from message #3, GIN, or dropping the btree index, and why do they need it shipped?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Vaibhav Dalvi",
+          "date": "2026-09-02T11:11:31Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BvB%3DAHon6EB%3D90pbPDik_u8%2B%2B%2BTy8TA6Z4-RXo_X5QCr71kcQ%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "Alexander Korotkov",
+          "date": "2026-09-02T13:00:01Z",
+          "url": "https://www.postgresql.org/message-id/CAPpHfdsByoKi0-PnH6GO7g3OJmQwpZSeLaov%3DhCS-jC5oFxVRw%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Andrew Dunstan",
+          "date": "2026-09-02T13:29:59Z",
+          "url": "https://www.postgresql.org/message-id/69c88bb3-d9a8-4054-9024-1f324d31e5aa%40dunslane.net"
+        },
+        {
+          "index": 4,
+          "from": "Alexander Korotkov",
+          "date": "2026-09-03T06:26:42Z",
+          "url": "https://www.postgresql.org/message-id/CAPpHfdtGzomdU%2B0wiwrZS52NRQYwMrzDraE0eCfwAM2RvQAcag%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Andrew Dunstan",
+          "date": "2026-10-03T14:07:45Z",
+          "url": "https://www.postgresql.org/message-id/ab8db543-bf0c-4a80-8d04-fe6eac817f3c%40dunslane.net"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of already-exists-1, which makes the same demand and self-made opclass argument. The added point, that only users who diagnosed the plan benefit, holds for any opt-in opclass.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "pg_trgm--1.6--1.7.sql adds opclass and operator entries for gist_trgm_ops_noeq."
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": true,
+      "reason": "see objection standards-compat-1: Workaround opclass name becomes a permanent part of every dump"
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": true,
+      "reason": "The planner can no longer consider an index built with the new opclass for = conditions."
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": true,
+      "reason": "pg_dump writes gist_trgm_ops_noeq into CREATE INDEX, so restores need pg_trgm 1.7 or later."
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The fix is an extension version bump to 1.7, so released branches with the same plan problem do not get it."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "pg_trgm must ship and document two nearly identical GiST opclasses in every later version."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "Message #3 says users can create the same opclass themselves with plain SQL today."
+    }
+  ],
+  "questions": [
+    "Why does charging for a consistent call per index item in gistcostestimate, as message #4 suggests, not make btree win for = in the test case?",
+    "If GiST cost estimation for = is fixed later, how would gist_trgm_ops_noeq be retired without breaking dumps and pg_upgrade of existing indexes?",
+    "Which users hit this plan and cannot use gin_trgm_ops or a self-made opclass, for example because they need <-> ordering or lack superuser?",
+    "Why is a documented recipe for a user-defined opclass in the pg_trgm docs not enough?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Andrew Dunstan reviewed the patch and supports patch 3 as a stopgap in message #3; Alexander Korotkov, who takes part in the thread, prefers a fix to the cost estimate.",
+    "liability": "The owner signs for a second pg_trgm GiST opclass that stays for as long as any index or dump names it, including after a later cost-model fix.",
+    "author_follow_up": "The author posted v2 with a Meson build fix and opened the CommitFest entry, which suggests continued work."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "low",
+    "review_cost": "low",
+    "recommended_action": "needs design rethink",
+    "reason": "The patch is about 9 KiB of SQL, docs and tests in contrib/pg_trgm, and it affects only users with both a btree and a gist_trgm_ops index on one column. The thread must first choose between this opclass and a fix to the GiST cost estimate."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code I cannot confirm that gist_trgm_ops_noeq has its own opfamily, which keeping = away from the planner requires. Messages #4 to #10 were not visible, so the claims about them rest on the objections and the brief.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "revert:d92b1cdbab408d8f1299257125c9ae375f3ca644",
+      "kind": "revert",
+      "title": "Revert \"Add sortsupport for gist_btree opclasses, for faster index builds.\"",
+      "status": "Reverted",
+      "date": "2021-04-07",
+      "first_date": "2021-04-07",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=d92b1cdbab408d8f1299257125c9ae375f3ca644",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2F3F7265-0D22-44DB-AD71-8554C743D943@yandex-team.ru"
+      ],
+      "authors": "Heikki Linnakangas",
+      "objectors": "",
+      "summary": "Revert \"Add sortsupport for gist_btree opclasses, for faster index builds.\"\nReverted commit(s): Add sortsupport for gist_btree opclasses, for faster index builds.",
+      "objection": "This reverts commit 9f984ba6d23dc6eecebf479ab1d3f2e550a4e9be.\n\nIt was making the buildfarm unhappy, apparently setting client_min_messages\nin a regression test produces different output if log_statement='all'.\nAnother issue is that I now suspect the bit sortsupport function was in\nfact not correct to call byteacmp(). Revert to investigate both of those\nissues.",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "gist_trgm_ops equality operator",
+        "GiST index chosen over btree",
+        "opclass custom statistics ANALYZE",
+        "GiST opclass cost estimation support function"
+      ],
+      "from_hint": false,
+      "score": 0.478,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:2824",
+      "kind": "cf",
+      "title": "Functions for sorting GiST build of gist_btree types",
+      "status": "Returned with feedback",
+      "date": "2022-04-08",
+      "first_date": "2020-11-05",
+      "url": "https://commitfest.postgresql.org/patch/2824/",
+      "thread_urls": [],
+      "authors": "Andrey Borodin (x4m)",
+      "objectors": "",
+      "summary": "Functions for sorting GiST build of gist_btree types",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_trgm gist cost estimate",
+        "GiST index chosen over btree",
+        "GiST opclass cost estimation support function"
+      ],
+      "from_hint": false,
+      "score": 0.3,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:2582",
+      "kind": "cf",
+      "title": "Improve planner cost estimations for alternative subplans",
+      "status": "Withdrawn",
+      "date": "2020-11-13",
+      "first_date": "2020-06-05",
+      "url": "https://commitfest.postgresql.org/patch/2582/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/07b3fa88-aa4e-2e13-423d-8389eb1712cf@imap.cc"
+      ],
+      "authors": "Alexey Bashtanov (bashtanov)",
+      "objectors": "Melanie Plageman, Tomas Vondra, Tom Lane",
+      "summary": "The patch changes how the planner costs an AlternativeSubPlan (hashed or per-row lookup) for the rest of the query. It replaces the use of the per-row estimate with a heuristic blend of the two alternatives' costs.",
+      "objection": "Reviewers said that averaging the costs of two alternatives is wrong in principle, because at run time the executor uses one of them. Tomas Vondra expected regressions where the first plan is used, and the author then found queries that ran slower with the patch. The author suggested moving to Tom Lane's approach of passing a number-of-evaluations estimate to cost_qual_eval, or to Andy Fan's proof of concept that picks the SubPlan during planning, and the entry was withdrawn.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "pg_trgm gist cost estimate",
+        "GiST opclass cost estimation support function"
+      ],
+      "from_hint": false,
+      "score": 0.238,
+      "enriched": true,
+      "key_quote": "I agree that averaging together the costs of the alternatives seems\nwrong in principle.  It's going to be one or the other, not some\nquantum-mechanical superposition.",
+      "quote_message_url": "https://www.postgresql.org/message-id/1853336.1592702279%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:4018",
+      "kind": "cf",
+      "title": "Operation log for major operations",
+      "status": "Withdrawn",
+      "date": "2023-03-02",
+      "first_date": "2022-11-21",
+      "url": "https://commitfest.postgresql.org/patch/4018/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/02fe0063-bf77-90d0-3cf5-e9fe7c2a487b@postgrespro.ru"
+      ],
+      "authors": "Dmitry Koval (d.koval)",
+      "objectors": "Justin Pryzby, Tom Lane",
+      "summary": "The patch adds an operation log that records system events such as startup, pg_upgrade, pg_resetwal, pg_rewind and promotion in a 4 kB ring buffer with a CRC, readable through the SQL function pg_operation_log(). The log first lived in global/pg_control after position 4097, then moved to a separate file global/pg_control_log after review.",
+      "objection": "The author withdrew the patch because it had drawn little interest and served mainly vendor technical support. After the withdrawal, Justin Pryzby said only limited information fits in pg_control, not a log that may grow. Tom Lane objected to writing anything more to the control file, because every write risks the whole database. The author answered that this history matters for vendor forks but is not needed for vanilla Postgres.",
+      "touch_points": [],
+      "matched_queries": [
+        "gist_trgm_ops equality operator",
+        "pg_trgm new operator class"
+      ],
+      "from_hint": false,
+      "score": 0.231,
+      "enriched": true,
+      "key_quote": "Every time we write to that, we risk the entire database on completing\nthe write successfully.  I don't want to do that more often than once\nper checkpoint.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2130093.1677785803%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:1296",
+      "kind": "cf",
+      "title": "Better estimate for filter cost",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2017-09-11",
+      "url": "https://commitfest.postgresql.org/patch/1296/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANE+7D8G=1dAbhqy4HJrEtutNpxRfn8-6-uhEXq-=705kaWVvA@mail.gmail.com"
+      ],
+      "authors": "Yuto Hayamizu (hayamiz), Ryoji Kawamichi (kawamichi)",
+      "objectors": "Ashutosh Bapat",
+      "summary": "The patch changes the per-tuple filter cost of a base relation scan from the sum of all clause costs to a weighted sum. Each clause's cost is weighted by the selectivity of the clauses ordered before it, so expensive clauses such as subplans are costed only for the rows that reach them.",
+      "objection": "Michael Paquier returned the patch for lack of activity after the July 2018 review, and the author did not respond to it. In that review Ashutosh Bapat doubted the patch helps, because the estimate changes equally for every path of the relation and he could not find a query that would get a better plan. He also asked for an O(n) method in place of repeated clauselist_selectivity() calls, and for the costing to cover joins as well as scans.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "pg_trgm gist cost estimate",
+        "GiST opclass cost estimation support function"
+      ],
+      "from_hint": false,
+      "score": 0.227,
+      "enriched": true,
+      "key_quote": "So the accurate estimate doesn't help us to choose one method of scanning the relation over the other method.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAFjFpRdb6CAUOWQVMEPbF8YeDFPcG0VNVj2GevyQ_d%3DtQNfBTA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:4236",
+      "kind": "cf",
+      "title": "Add estimated hit ratio to Memoize in EXPLAIN to explain cost adjustment",
+      "status": "Returned with feedback",
+      "date": "2023-09-01",
+      "first_date": "2023-03-05",
+      "url": "https://commitfest.postgresql.org/patch/4236/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAP53Pky29GWAVVk3oBgKBDqhND0BRBN6yTPeguV_qSivFL5N_g@mail.gmail.com"
+      ],
+      "authors": "Lukas Fittl (lfittl)",
+      "objectors": "David Rowley",
+      "summary": "Show the planner's estimated cache hit ratio on Memoize nodes in EXPLAIN, so users can see why a Nested Loop with Memoize costs much less than its inner rescans suggest. The author also offered to show the ndistinct estimate from cost_memoize_rescan instead or as well.",
+      "objection": "David Rowley asked for the ndistinct estimate and est_entries instead of the hit ratio alone, because the ratio by itself does not show how it was computed. Daniel Gustafsson asked in July for an updated patch, and the author said he had a draft. No updated patch appears in the visible messages before the entry was returned with feedback.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "pg_trgm gist cost estimate",
+        "GiST opclass cost estimation support function"
+      ],
+      "from_hint": false,
+      "score": 0.224,
+      "enriched": true,
+      "key_quote": "I think showing just the hit ratio number might often just\nraise too many questions about how that's calculated.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAApHDvrBctjUFjY77BFd_MqPD%2Byf4nOZSKzbdzP70XntkknY8A%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:4123",
+      "kind": "cf",
+      "title": "Named Operators",
+      "status": "Returned with feedback",
+      "date": "2023-07-04",
+      "first_date": "2023-01-12",
+      "url": "https://commitfest.postgresql.org/patch/4123/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABwTF4VVuacLV+coERacdDxUXg5tDMHZxvgH5+ek0UZvoq386g@mail.gmail.com"
+      ],
+      "authors": "Gurjeet Singh (gurjeet)",
+      "objectors": "Matthias van de Meent, Tom Lane",
+      "summary": "The patch lets users name operators as identifiers between colons, such as :distance: or :contains_all:, and use them infix in queries in place of symbol operators like <#>. The scanner keeps the colons in the stored operator name, and the grammar does not change.",
+      "objection": "Matthias van de Meent objected that :name: shadows common variable substitution patterns, including those of psql, and that users could call the underlying function directly. Tom Lane judged that no concise syntax would be safe from future SQL spec extensions, and that \"a {foo} b\" offers nothing over \"foo(a,b)\". He proposed teaching the planner to optimize function calls like their operators instead. No updated patch followed, so Daniel Gustafsson returned it with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "gist_trgm_ops equality operator",
+        "pg_trgm new operator class"
+      ],
+      "from_hint": false,
+      "score": 0.207,
+      "enriched": true,
+      "key_quote": "There seems very little chance that we can invent a syntax that\nis concise, non-ugly, and not likely to get blindsided by future\nSQL spec extensions.",
+      "quote_message_url": "https://www.postgresql.org/message-id/3491355.1675871877%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:3758",
+      "kind": "cf",
+      "title": "Add OR REPLACE option for CREATE OPERATOR",
+      "status": "Rejected",
+      "date": "2023-03-22",
+      "first_date": "2022-07-05",
+      "url": "https://commitfest.postgresql.org/patch/3758/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1657010423.184452823@f275.i.mail.ru"
+      ],
+      "authors": "Svetlana Derevyanko (getsusun)",
+      "objectors": "Tom Lane",
+      "summary": "The patch adds an optional OR REPLACE clause to CREATE OPERATOR, like CREATE FUNCTION, so extension update scripts can re-create an operator without errors. For an existing operator, only the RESTRICT and JOIN options could change, as with ALTER OPERATOR, because cached query plans depend on the rest.",
+      "objection": "CREATE OR REPLACE must leave the object in the same final state whichever branch runs, but the patch cannot change the underlying function of an existing operator. Changing it would need new infrastructure to update views and rules that use the operator, with deadlock risks. The commitfest manager marked the patch Rejected and left an IF NOT EXISTS variant for a later design discussion.",
+      "touch_points": [],
+      "matched_queries": [
+        "gist_trgm_ops equality operator",
+        "pg_trgm new operator class"
+      ],
+      "from_hint": false,
+      "score": 0.193,
+      "enriched": true,
+      "key_quote": "CREATE OR REPLACE should always produce\nexactly the same final state of the object, but in this case we cannot\nchange the underlying function if the operator already exists.",
+      "quote_message_url": "https://www.postgresql.org/message-id/1917173.1657034968%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:596",
+      "kind": "cf",
+      "title": "pgbench - more operators and functions",
+      "status": "Returned with feedback",
+      "date": "2017-01-25",
+      "first_date": "2016-04-03",
+      "url": "https://commitfest.postgresql.org/patch/596/",
+      "thread_urls": [],
+      "authors": "Fabien Coelho (calvin)",
+      "objectors": "",
+      "summary": "pgbench - more operators and functions",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "gist_trgm_ops equality operator",
+        "pg_trgm new operator class"
+      ],
+      "from_hint": false,
+      "score": 0.163,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:1624",
+      "kind": "cf",
+      "title": "Range phrase operator in tsquery",
+      "status": "Returned with feedback",
+      "date": "2018-11-30",
+      "first_date": "2018-04-27",
+      "url": "https://commitfest.postgresql.org/patch/1624/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20180427140307.038769f4@asp437-24-g082ur"
+      ],
+      "authors": "Aleksandr Parfenov (a.parfenov)",
+      "objectors": "Dmitry Dolgov",
+      "summary": "The patch extends the tsquery phrase operator from an exact distance to a distance range such as <4,10>, <,10> or <4,>. Negative distances mean reverse word order, so an AROUND(N) operator for websearch_to_tsquery can map to <-N,N>.",
+      "objection": "The author stopped responding. Dmitry Dolgov asked why an open lower bound defaults to 0 for positive ranges instead of MINENTRYPOS, and why LIMITPOS was not changed after MINENTRYPOS was added. No reply came, so he returned the patch with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "gist_trgm_ops equality operator",
+        "pg_trgm new operator class"
+      ],
+      "from_hint": false,
+      "score": 0.16,
+      "enriched": true,
+      "key_quote": "Due to lack of response I'm marking this as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2Bq6zcX2oiF5tGHAvbpn0_PcOC1d3iyb3MpveNqj3QqoBPYJ6A%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:6422",
+      "kind": "cf",
+      "title": "ANALYZE: hash-accelerate MCV tracking for equality-only types",
+      "status": "Withdrawn",
+      "date": "2026-05-03",
+      "first_date": "2026-01-21",
+      "url": "https://commitfest.postgresql.org/patch/6422/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/C71ABD3E-93C7-41A5-99AC-77279557D36A@Outlook.com"
+      ],
+      "authors": "Chengpeng Yan (chengpeng.yan)",
+      "objectors": "",
+      "summary": "The patch speeds up compute_distinct_stats(), the ANALYZE path for types with equality but no ordering, by adding a simplehash table from tracked values to track[] slots when attstattarget >= 100. It also replaces the shift-based eviction of count=1 entries with a cursor that keeps the same FIFO order.",
+      "objection": "The visible messages do not show why. Ilia Evdokimov asked how often this narrow path runs, since most types use compute_scalar_stats(), and John Naylor questioned the threshold of 100. Both points were still open when the entry was withdrawn, on the day Ilia posted a cleanup review of v5 with no objection.",
+      "touch_points": [],
+      "matched_queries": [
+        "trigram index equality slow"
+      ],
+      "from_hint": false,
+      "score": 0.149,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:1485",
+      "kind": "cf",
+      "title": "Applying PMDK to WAL operations for persistent memory",
+      "status": "Returned with feedback",
+      "date": "2019-01-23",
+      "first_date": "2018-01-16",
+      "url": "https://commitfest.postgresql.org/patch/1485/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/C20D38E97BCB33DAD59E3A1@lab.ntt.co.jp",
+        "https://www.postgresql.org/message-id/flat/000001d4b863$4c9e8fc0$e5dbaf40$@lab.ntt.co.jp"
+      ],
+      "authors": "yoshimi ichiyanagi (yoshimiyana)",
+      "objectors": "",
+      "summary": "Applying PMDK to WAL operations for persistent memory\nThreads: [HACKERS][PATCH] Applying PMDK to WAL operations for persistent memory; RE: [HACKERS][PATCH] Applying PMDK to WAL operations for persistent memory",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "gist_trgm_ops equality operator",
+        "pg_trgm new operator class"
+      ],
+      "from_hint": false,
+      "score": 0.147,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:5113",
+      "kind": "cf",
+      "title": "Add GiST support for mixed-width integer operators",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2024-07-05",
+      "url": "https://commitfest.postgresql.org/patch/5113/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/b05c739d-e2d4-4919-9691-69b2709d3546@illuminatedcomputing.com"
+      ],
+      "authors": "Paul Jungwirth (pjungwir)",
+      "objectors": "",
+      "summary": "Add GiST support for mixed-width integer operators\nThreads: Add GiST support for mixed-width integer operators",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "gist_trgm_ops equality operator"
+      ],
+      "from_hint": false,
+      "score": 0.144,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:4524",
+      "kind": "cf",
+      "title": "Improving the heapgetpage function improves performance in common scenarios",
+      "status": "Withdrawn",
+      "date": "2023-09-06",
+      "first_date": "2023-08-24",
+      "url": "https://commitfest.postgresql.org/patch/4524/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/a9f40066-3d25-a240-4229-ec2fbe94e7a5@yeah.net"
+      ],
+      "authors": "Zongliang Quan (quanzl)",
+      "objectors": "",
+      "summary": "Improving the heapgetpage function improves performance in common scenarios\nThreads: Improving the heapgetpage function improves performance in common\nscenarios",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "gistcostestimate improve"
+      ],
+      "from_hint": false,
+      "score": 0.14,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:3524",
+      "kind": "cf",
+      "title": "[PATCH] Equivalence Class Filters",
+      "status": "Returned with feedback",
+      "date": "2022-12-17",
+      "first_date": "2015-12-05",
+      "url": "https://commitfest.postgresql.org/patch/3524/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKJS1f9FK_X_5HKcPcSeimy16Owe3EmPmmGsGWLcKkj_rW9s6A@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAFQUnFhqkWuPCwQ1NmHYrisHJhYx4DoJak-dV+FcjyY6scooYA@mail.gmail.com"
+      ],
+      "authors": "David Rowley (davidrowley), Andy Fan (andyf)",
+      "objectors": "",
+      "summary": "[PATCH] Equivalence Class Filters\nThreads: [PATCH] Equivalence Class Filters; Condition pushdown: why (=) is pushed down into join, but BETWEEN or\n>= is not?",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "pg_trgm new operator class"
+      ],
+      "from_hint": false,
+      "score": 0.138,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:3952",
+      "kind": "cf",
+      "title": "Allow index AMs to calculate custom statistics / BRIN",
+      "status": "Returned with feedback",
+      "date": "2022-12-17",
+      "first_date": "2022-10-18",
+      "url": "https://commitfest.postgresql.org/patch/3952/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/7cfb21ed-ddd3-821b-a852-75fe42c64d49@enterprisedb.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "Allow index AMs to calculate custom statistics / BRIN\nThreads: PATCH: AM-specific statistics, with an example implementation for\nBRIN (WIP)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "opclass custom statistics ANALYZE"
+      ],
+      "from_hint": false,
+      "score": 0.138,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:2642",
+      "kind": "cf",
+      "title": "Improvements in Copy From",
+      "status": "Withdrawn",
+      "date": "2020-09-27",
+      "first_date": "2020-07-01",
+      "url": "https://commitfest.postgresql.org/patch/2642/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALDaNm0H2Nrc04utvJjMF_T73pbRAVUE3FPcqLeC=_kp8kmGtw@mail.gmail.com"
+      ],
+      "authors": "vigneshwaran C (vignesh.postgres)",
+      "objectors": "",
+      "summary": "Improvements in Copy From\nThreads: Improvements in Copy From",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "gistcostestimate improve"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:2731",
+      "kind": "cf",
+      "title": "_bt_binsrch* improvements - equal-prefix-skip binary search",
+      "status": "Withdrawn",
+      "date": "2020-09-15",
+      "first_date": "2020-09-11",
+      "url": "https://commitfest.postgresql.org/patch/2731/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2WjnrkzT9tfqFhSCPeH6LV-UUj5_oO5vX038dvfK7fDuyQ@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "_bt_binsrch* improvements - equal-prefix-skip binary search\nThreads: [patch] _bt_binsrch* improvements - equal-prefix-skip binary search",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "trigram index equality slow"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:3281",
+      "kind": "cf",
+      "title": "use regular expressions to simplify less_greater and not_equals",
+      "status": "Rejected",
+      "date": "2021-09-05",
+      "first_date": "2021-08-11",
+      "url": "https://commitfest.postgresql.org/patch/3281/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/03572d05-697c-4dd5-95e3-bbc3fd8b05c1.sunshihao.ssh@alibaba-inc.com"
+      ],
+      "authors": "Fan Xiaojian (funnyxj.qq.com), Shihao Sun (sunshihao.ssh.alibaba-inc.com)",
+      "objectors": "",
+      "summary": "use regular expressions to simplify less_greater and not_equals\nThreads: use-regular-expressions-to-simplify-less_greater-and-not_equals.patch",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "trigram index equality slow"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:1559",
+      "kind": "cf",
+      "title": "Opclass parameters",
+      "status": "Returned with feedback",
+      "date": "2018-03-01",
+      "first_date": "2018-02-27",
+      "url": "https://commitfest.postgresql.org/patch/1559/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/d22c3a18-31c7-1879-fc11-4c1ce2f5e5af@postgrespro.ru"
+      ],
+      "authors": "Nikita Glukhov (n.glukhov)",
+      "objectors": "",
+      "summary": "Opclass parameters\nThreads: [PATCH] Opclass parameters",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "opclass custom statistics ANALYZE"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:3686",
+      "kind": "cf",
+      "title": "Add sortsupport for range types and btree_gist",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2022-06-15",
+      "url": "https://commitfest.postgresql.org/patch/3686/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/437ccbcf-8f80-2919-411d-a3af88becf6c@cybertec.at"
+      ],
+      "authors": "Christoph Heiss (christoph.heiss)",
+      "objectors": "",
+      "summary": "Add sortsupport for range types and btree_gist\nThreads: [PATCH] Add sortsupport for range types and btree_gist",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "GiST index chosen over btree"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:4103",
+      "kind": "cf",
+      "title": "RADIUS tests and improvements",
+      "status": "Returned with feedback",
+      "date": "2023-09-01",
+      "first_date": "2023-01-03",
+      "url": "https://commitfest.postgresql.org/patch/4103/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGKxNoVjkMCksnj6z3BwiS3y2v6LN6z7_CisLK+rv+0V4g@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "RADIUS tests and improvements\nThreads: RADIUS tests and improvements",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "gistcostestimate improve"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:784",
+      "kind": "cf",
+      "title": "enum support in btree_gin and btree_gist",
+      "status": "Returned with feedback",
+      "date": "2016-12-02",
+      "first_date": "2016-03-17",
+      "url": "https://commitfest.postgresql.org/patch/784/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/56EA8A71.8060107@dunslane.net"
+      ],
+      "authors": "Andrew Dunstan (adunstan)",
+      "objectors": "",
+      "summary": "enum support in btree_gin and btree_gist\nThreads: btree_gin and btree_gist for enums",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "GiST index chosen over btree"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:2183",
+      "kind": "cf",
+      "title": "Opclass parameters",
+      "status": "Returned with feedback",
+      "date": "2019-12-01",
+      "first_date": "2018-02-27",
+      "url": "https://commitfest.postgresql.org/patch/2183/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/d22c3a18-31c7-1879-fc11-4c1ce2f5e5af@postgrespro.ru"
+      ],
+      "authors": "Nikita Glukhov (n.glukhov)",
+      "objectors": "",
+      "summary": "Opclass parameters\nThreads: [PATCH] Opclass parameters",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "opclass custom statistics ANALYZE"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 4,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2026-09-02",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No listed precedent proposes a second trigram opclass without = or rejects that idea. [P16] (AM-specific statistics, returned with feedback) is closer to Dunstan's ANALYZE-hook idea in message #3, and it records no reason. The thread cites an unanswered 2024 report of the same problem (message #1) and an uncommented patchset (message #5), but neither gives a rejection reason."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 1,
+      "note": "Existing gist_trgm_ops behaviour is unchanged, and the change adds no grammar, keywords or GUCs. A dump that uses the new opclass fails on a pg_trgm 1.6 server, but that holds for any new extension object."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The patch adds catalog rows (opclass and operator entries) through an ordinary pg_trgm upgrade script; the index pages, WAL records, core catalogs and wire protocol do not change. pg_upgrade and pg_dump treat the new opclass like any other extension member, and a standby receives the rows through normal WAL replay. Without the code I cannot confirm that the opclass has its own opfamily, which keeping = out of the planner requires."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The patch only adds an operator class that reuses existing pg_trgm operators and support functions, with no new C code. I see no new privilege, data exposure, escalation path or DoS surface; the upgrade script's handling of a trusted extension's search_path needs the code to check."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "No hot-path cost: the patch is SQL only, and only users who choose the new opclass are affected. Dunstan, a committer, supports adding it as a stopgap (messages #3 and #7), which lowers confidence in both objections."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "One objection only. The GIN alternative does not cover users of GiST <-> ordering, so it supports the objection but does not stand alone."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "Demand is thin but real, and the cost to non-users is small, so this is a not-now, show-demand point. Dunstan, a committer, supports the patch in message #7 as cheap."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 5,
+      "new_survived": 3,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 70,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 15,
+    "wall_ms": 149832,
+    "cost_usd": 1.8137584,
+    "dry_run": false
+  }
+}

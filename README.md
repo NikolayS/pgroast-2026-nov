@@ -6,10 +6,10 @@ Each entry was read from its mailing-list thread and the prose of its latest pat
 
 Made with [pgroast](https://github.com/NikolayS/pgroast). In each folder: `roast.md` (short report), `roast-full.md` (everything, with the models used), `roast.json`, `roast-summary.txt`.
 
-Entries done: 327.
+Entries done: 334.
 
-- NEEDS-DESIGN-DISCUSSION: 156
-- NEEDS-COMMITTER-EYES: 114
+- NEEDS-DESIGN-DISCUSSION: 161
+- NEEDS-COMMITTER-EYES: 116
 - NO-FUNDAMENTAL-OBJECTION: 55
 - LIKELY-REJECT: 2
 
@@ -301,9 +301,16 @@ Entries done: 327.
 | [7379](cf/7379/roast.md) | CREATE TABLE .. LIKE copies comments to an unrelated table | NO-FUNDAMENTAL-OBJECTION | 0 |  | 0 | 10 | 2026-11-12 |
 | [7380](cf/7380/roast.md) | Fall back to serial vacuum when out of DSM segments | NEEDS-DESIGN-DISCUSSION | 1 | No field report of DSM exhaustion breaking parallel vacuum | 0 | 7 | 2026-11-12 |
 | [7382](cf/7382/roast.md) | pg_trgm: don't lose rows in index scans with a zero similarity threshold | NEEDS-COMMITTER-EYES | 1 | Patch fixes indexes to >= while pgtrgm.sgml still documents "greater than" | 0 | 6 | 2026-11-12 |
+| [7383](cf/7383/roast.md) | Throwing away unnecessary spin-locks | NEEDS-DESIGN-DISCUSSION | 1 | No measured contention or user problem justifies lock-free conversion | 2 | 13 | 2026-11-12 |
 | [7386](cf/7386/roast.md) | standby PANIC on restart after VM truncation | NO-FUNDAMENTAL-OBJECTION | 0 |  | 0 | 11 | 2026-11-12 |
+| [7387](cf/7387/roast.md) | Refactor pgbench - pure mechanical modularization into 10 module pairs (stats, variable, poller, random, expr, script, commands, init, engine, report) | NEEDS-DESIGN-DISCUSSION | 2 | No concrete feature or user shown to need this module layout | 2 | 14 | 2026-11-12 |
 | [7388](cf/7388/roast.md) | Add ASCII fast path to Unicode normalization functions | NO-FUNDAMENTAL-OBJECTION | 0 |  | 0 | 16 | 2026-11-12 |
 | [7390](cf/7390/roast.md) | Enlarge the syslogger pipe on Linux (F_SETPIPE_SZ) | NO-FUNDAMENTAL-OBJECTION | 0 |  | 0 | 1 | 2026-11-12 |
+| [7394](cf/7394/roast.md) | pg_resetwal: add --cluster-state option | NEEDS-DESIGN-DISCUSSION | 2 | Existing idioms already reset unlogged tables after pg_resetwal | 1 | 5 | 2026-11-12 |
+| [7401](cf/7401/roast.md) | gist_trgm_ops '=' operator: planner picks it over btree, ~300x slower | NEEDS-DESIGN-DISCUSSION | 3 | Opclass twin works around a generic GiST costing gap | 0 | 10 | 2026-11-12 |
+| [7402](cf/7402/roast.md) | Reduce SyncRepLock contention on the commit path | NEEDS-DESIGN-DISCUSSION | 3 | Deferred release in 0003 may be lost on FATAL or proc_exit paths | 0 | 7 | 2026-11-12 |
+| [7403](cf/7403/roast.md) | RLS bypass: ON CONFLICT DO UPDATE/SELECT evaluates WHERE before RLS check | NEEDS-COMMITTER-EYES | 1 | Backpatch turns silent no-op upserts into RLS errors in minor releases | 0 | 1 | 2026-11-12 |
+| [7408](cf/7408/roast.md) | Fix PGTYPESdate_fmt_asc overflow when a year does not fit "yyyy" | NEEDS-COMMITTER-EYES | 1 | Back-branch change to the PGTYPESdate_fmt_asc() failure contract is not defined | 0 | 7 | 2026-11-12 |
 | [7573](cf/7573/roast.md) | Fix pg_combinebackup with truncated intermediate incremental backups | NO-FUNDAMENTAL-OBJECTION | 0 |  | 0 | 5 | 2026-11-12 |
 | [7574](cf/7574/roast.md) | psql: Don't offer USING INDEX after REPACK (CONCURRENTLY) or (ANALYZE) | NEEDS-COMMITTER-EYES | 1 | Tab completion copies a server-side semantic rule that can drift | 0 | 1 | 2026-11-12 |
 | [7575](cf/7575/roast.md) | contrib/fuzzystrmatch: improve test coverage | NO-FUNDAMENTAL-OBJECTION | 0 |  | 6 | 1 | 2026-11-12 |

@@ -6,10 +6,10 @@ Each entry was read from its mailing-list thread and the prose of its latest pat
 
 Made with [pgroast](https://github.com/NikolayS/pgroast). In each folder: `roast.md` (short report), `roast-full.md` (everything, with the models used), `roast.json`, `roast-summary.txt`.
 
-Entries done: 423.
+Entries done: 425.
 
-- NEEDS-DESIGN-DISCUSSION: 192
-- NEEDS-COMMITTER-EYES: 150
+- NEEDS-DESIGN-DISCUSSION: 193
+- NEEDS-COMMITTER-EYES: 151
 - NO-FUNDAMENTAL-OBJECTION: 79
 - LIKELY-REJECT: 2
 
@@ -396,9 +396,11 @@ Entries done: 423.
 | [7561](cf/7561/roast.md) | Call CalculateShmemSize() only once | NEEDS-COMMITTER-EYES | 1 | Backpatching to PG 19 changes exported API and startup behaviour in a stable branch | 0 | 7 | 2026-11-12 |
 | [7563](cf/7563/roast.md) | Faulty pg_get_shmem_pagesize() on Windows | NEEDS-COMMITTER-EYES | 1 | Recorded page size has no check when an allocation path skips it | 0 | 1 | 2026-11-12 |
 | [7565](cf/7565/roast.md) | Quickselect instead of a heap for ORDER BY ... LIMIT N large bounded sorts | NEEDS-COMMITTER-EYES | 3 | Regression on ORDER BY ... DESC LIMIT 1 over append-ordered tables | 0 | 5 | 2026-11-12 |
+| [7566](cf/7566/roast.md) | Add an ETW backend for the static probes on Windows | NEEDS-DESIGN-DISCUSSION | 5 | Default-on ETW exposes all sessions' query text to Performance Log Users | 0 | 1 | 2026-11-12 |
 | [7568](cf/7568/roast.md) | pg_upgrade doesn't copy ICU rules on template0 | NEEDS-COMMITTER-EYES | 1 | Back-branch fix bundles unrelated pg_upgrade refactoring | 0 | 7 | 2026-11-12 |
 | [7569](cf/7569/roast.md) | Fix trigger memory leak | NO-FUNDAMENTAL-OBJECTION | 0 |  | 0 | 5 | 2026-11-12 |
 | [7570](cf/7570/roast.md) | Reject wholerow references where ColumnRef is forbidden | NO-FUNDAMENTAL-OBJECTION | 0 |  | 0 | 3 | 2026-11-12 |
+| [7571](cf/7571/roast.md) | UPDATE/DELETE FOR PORTION OF | NEEDS-COMMITTER-EYES | 3 | PERIOD DDL adds hidden columns with no dump, psql or catalog story | 1 | 68 | 2026-11-12 |
 | [7572](cf/7572/roast.md) | Standby stuck after walreceiver restart just before a WAL segment boundary | NO-FUNDAMENTAL-OBJECTION | 0 |  | 0 | 5 | 2026-11-12 |
 | [7573](cf/7573/roast.md) | Fix pg_combinebackup with truncated intermediate incremental backups | NO-FUNDAMENTAL-OBJECTION | 0 |  | 0 | 5 | 2026-11-12 |
 | [7574](cf/7574/roast.md) | psql: Don't offer USING INDEX after REPACK (CONCURRENTLY) or (ANALYZE) | NEEDS-COMMITTER-EYES | 1 | Tab completion copies a server-side semantic rule that can drift | 0 | 1 | 2026-11-12 |

@@ -1,0 +1,1366 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T00:59:11.727Z",
+  "input": {
+    "arg": "6440",
+    "cf": {
+      "id": 6440,
+      "url": "https://commitfest.postgresql.org/patch/6440/",
+      "title": "tablecmds: fix bug where index rebuild loses replica identity on partitions",
+      "status": "Needs review",
+      "authors": "Chao Li (chaol)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/DB533C25-C6BA-4C0F-8046-96168E9CDD72%40gmail.com",
+    "subject": "tablecmds: fix bug where index rebuild loses replica identity on partitions",
+    "thread_start": "2026-01-27T05:13:32Z",
+    "messages_read": 45,
+    "messages_total": 45,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v17-0001-Preserve-index-per-column-statistics-targets-acr.patch",
+      "v17-0002-Preserve-descendant-partition-index-properties-a.patch",
+      "v1-0001-tablecmds-fix-bug-where-index-rebuild-loses-repli.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "No objection survived against the goal: the loss of replica identity and other partition index properties is real and reproducible. Three design points are open at level 2. The series does not say which cases still need save-and-restore if the rebuild-avoidance patch from message #45 lands (maintenance-fit-2). It names no target branches (replication-ondisk-1). It does not state which properties the rebuild keeps (standards-compat-2, maintenance-fit-1).",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Preserve partition index properties when alter column type rebuilds indexes",
+    "problem": "When `alter table ... alter column type` or `set expression` rebuilds a partitioned index, Postgres drops the descendant partition indexes and recreates them from the parent definition. Replica identity, cluster-on markings, custom names, comments, statistics targets, reloptions, tablespaces and extension dependencies on those indexes are silently lost. Users of logical replication and anyone who customized partition indexes are affected.",
+    "proposed_design": "Before the old index hierarchy is dropped, the patch saves the properties of each descendant index, carries them in the IndexStmt through DefineIndex() recursion, and restores them on the replacement index and constraint by direct catalog updates with post-alter hooks. The latest series (v19) has three patches: keep `depends on extension` links, keep per-column statistics targets for all indexes, and keep descendant partition index properties, with a reserved-name list to avoid name clashes.",
+    "user_visible_surface": [
+      "`alter table ... alter column type` and `set expression` now keep custom names of descendant partition indexes.",
+      "Replica identity and cluster-on (`repack ... using index`) markings on partition indexes survive the rebuild.",
+      "Index comments, constraint comments, reloptions and per-index tablespaces of partition indexes survive the rebuild.",
+      "Per-column statistics targets on any index (`alter index ... alter column n set statistics`) survive the rebuild.",
+      "`alter index ... depends on extension` links survive the rebuild."
+    ],
+    "author_claims": [
+      "The loss of replica identity on partitions leaves logical replication misconfigured.",
+      "The bug is easy to reproduce and old, so the author first saw it as a back-patch candidate.",
+      "Restructuring the alter table drop and rebuild order, as Alberto Piai suggested, needs refactoring beyond a bug fix.",
+      "check-world passes with v15."
+    ],
+    "thread_state": "Sami Imseih now co-develops the series and posted v19 after Zsolt Parragi found a name collision. Melanie Plageman doubts a back-patch and asks whether the intended semantics are defined, and Álvaro Rodríguez proposes merging with his patch that avoids rebuilding leaf indexes.",
+    "unclear": [
+      "The series does not say which branches it targets, and the CommitFest entry says stable while Melanie argues against back-patching.",
+      "No one confirms that v19 covers every index property that the rebuild drops, and reviewers found new ones in each round.",
+      "The relation to Álvaro Rodríguez's rebuild-avoidance patch, which may overlap with 0003, is not settled.",
+      "Users who already re-apply these properties in scripts after `alter column type` may see different results, and nobody assesses that.",
+      "No documentation change is shown that states which properties `alter column type` keeps."
+    ],
+    "search_queries": [
+      "alter column type index rebuild properties",
+      "replica identity lost partition index",
+      "partition index name preserved rebuild",
+      "index statistics target lost alter type",
+      "indisclustered lost alter column type",
+      "partitioned index rebuild comments lost",
+      "alter table recurse partitions semantics",
+      "RememberIndexForRebuilding partitioned index"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Two competing mechanisms for the same rebuild path",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "0003 is committed, and later the rebuild-avoidance patch from message #45 is committed as well. Leaf indexes are then no longer dropped in most cases, but the save-and-restore code stays and runs only in rare paths. Later changes to tablecmds.c must keep both mechanisms correct, and the rare path gets little testing.",
+      "argument": "Message #45 reports that a patch which reorders processing and avoids rebuilding leaf indexes covers a subset of what 0003 does, and that 0003's tests pass with it. Message #15 and message #18 traced the loss to the parent drop cascading to the partition indexes before they are remembered. The author's answer in message #19 is that fixing that order needs refactoring beyond a bug fix. That answer carries less weight now that the series is no longer a narrow bug fix and another patch does that reordering.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        15,
+        18,
+        19,
+        25,
+        45
+      ],
+      "author_must_show": "If the rebuild-avoidance patch lands, which cases still need 0003's save-and-restore code, and should that code be designed only for those cases?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 15,
+          "from": "\"Alberto Piai\"",
+          "date": "2026-07-22T23:06:56Z",
+          "url": "https://www.postgresql.org/message-id/DK5H6VM4U4J4.C8APP2ZH2CAT%40gmail.com"
+        },
+        {
+          "index": 18,
+          "from": "\"Alberto Piai\"",
+          "date": "2026-07-28T06:50:55Z",
+          "url": "https://www.postgresql.org/message-id/DKA06URPT1BS.VMPKMBIU9JQQ%40gmail.com"
+        },
+        {
+          "index": 19,
+          "from": "Chao Li",
+          "date": "2026-07-28T08:46:50Z",
+          "url": "https://www.postgresql.org/message-id/EFBAC69A-E37C-4A89-AE6F-28F2A1C5F46F%40gmail.com"
+        },
+        {
+          "index": 25,
+          "from": "\"Alberto Piai\"",
+          "date": "2026-07-31T11:21:32Z",
+          "url": "https://www.postgresql.org/message-id/DKCPTOUWSN8G.ZOEE18C6M6QE%40gmail.com"
+        },
+        {
+          "index": 45,
+          "from": "Álvaro Rodríguez",
+          "date": "2026-10-06T11:37:09Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BC_kKWVb5PrrGJM5Bd4rPsf-V%3Dh20xoeCHMtPy3WCYy4%3DYwUQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #25 accepted save-and-restore only because reordering looked too large, and message #45 now reports a patch that does the reordering and passes 0003's tests. The thread has no answer on which cases would still need 0003.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Back-patching changes index names and the IndexStmt struct in minor releases",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "abi_extension_api",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user's upgrade script runs `alter column type` and then `alter table child replica identity using index child_id_val_idx`, the name that rebuild generates today. After a minor update, the custom index name survives, so the script fails. A publisher and a subscriber on different minor releases end the same DDL with different index names and replica identity markings.",
+      "argument": "The CommitFest entry targets stable, and message #22 still treats the fix as a back-patch candidate. Message #28 argues against back-patching because users likely re-apply these properties in scripts. v17 and v19 add fields to IndexStmt in parsenodes.h, a node that extensions read through ProcessUtility hooks. Today the series also preserves names, comments, tablespaces and extension dependencies, which goes well beyond the replica identity bug that justified a back-patch in message #1.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        7,
+        22,
+        28
+      ],
+      "author_must_show": "Will the series target master only, and if any part is back-patched, which part avoids both the IndexStmt change and the change of index names?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Chao Li",
+          "date": "2026-01-27T05:13:32Z",
+          "url": "https://www.postgresql.org/message-id/DB533C25-C6BA-4C0F-8046-96168E9CDD72%40gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Chao Li",
+          "date": "2026-03-19T05:06:24Z",
+          "url": "https://www.postgresql.org/message-id/260E4616-43B7-4C24-BF53-352DC8DEB7AA%40gmail.com"
+        },
+        {
+          "index": 22,
+          "from": "Chao Li",
+          "date": "2026-07-29T03:28:10Z",
+          "url": "https://www.postgresql.org/message-id/3A41A063-A024-4DC4-816B-9BD516079B4B%40gmail.com"
+        },
+        {
+          "index": 28,
+          "from": "Melanie Plageman",
+          "date": "2026-08-24T22:28:41Z",
+          "url": "https://www.postgresql.org/message-id/CAAKRu_ajK0QhmOA3N2-QynT7hXx-VVV99RTXrae3sc51we2TSA%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The CommitFest entry still says stable, and no message after #28 names the target branches. Kept custom names and new IndexStmt fields are both visible changes in a minor release; the publisher and subscriber sentence adds little, because users run DDL on each side themselves.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "The contract for which properties survive the rebuild is not written down",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "sql_standard_syntax",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A developer adds a new per-index property in a later release, and nothing in the docs says alter column type must keep it. The new property is lost on partition rebuilds, and a user only notices it after replication or a planner choice changes.",
+      "argument": "Reviewers found a new lost property in almost every round: name, cluster-on, comments, stats targets, reloptions, tablespace, constraint comments, extension dependencies (messages #16, #17, #28, #34, #40). Message #28 asks whether the intended semantics are defined at all, and message #31 defers that question. The patch prose shows no documentation hunk for `alter table` that states which properties are kept. The catalog-diff test from message #28 helps, but it does not tell users what to expect.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        16,
+        17,
+        28,
+        31,
+        34,
+        40
+      ],
+      "author_must_show": "Can the series add `alter table` documentation that lists which index properties alter column type keeps, and say how a new property gets added to that list?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 16,
+          "from": "Sami Imseih",
+          "date": "2026-07-27T22:10:29Z",
+          "url": "https://www.postgresql.org/message-id/CAA5RZ0s6P1q38rLdBbKCB6X4vXs-2uuUZOARkc03b-K1-uHQag%40mail.gmail.com"
+        },
+        {
+          "index": 17,
+          "from": "Sami Imseih",
+          "date": "2026-07-27T23:11:23Z",
+          "url": "https://www.postgresql.org/message-id/CAA5RZ0tq2Oj6Vkjt06phsDWpywsS%3DVkBSV7n6LC%2B%2BpR5LLNU-A%40mail.gmail.com"
+        },
+        {
+          "index": 28,
+          "from": "Melanie Plageman",
+          "date": "2026-08-24T22:28:41Z",
+          "url": "https://www.postgresql.org/message-id/CAAKRu_ajK0QhmOA3N2-QynT7hXx-VVV99RTXrae3sc51we2TSA%40mail.gmail.com"
+        },
+        {
+          "index": 31,
+          "from": "Chao Li",
+          "date": "2026-08-26T05:30:07Z",
+          "url": "https://www.postgresql.org/message-id/D088FD51-422F-436E-8650-85916A7D122D%40gmail.com"
+        },
+        {
+          "index": 34,
+          "from": "Zsolt Parragi",
+          "date": "2026-08-26T23:21:34Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFNQHDgaUkQgtNrxUz96-RqcvhwxUNEAeSV7TAckG5TEng%40mail.gmail.com"
+        },
+        {
+          "index": 40,
+          "from": "Sami Imseih",
+          "date": "2026-08-27T17:03:14Z",
+          "url": "https://www.postgresql.org/message-id/CAN12%2BYKriFqdTU3uhKnRMaKkWmm4ZNfzm0d6eT9PFFGFvxojMw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #28 asks whether the intended semantics are defined, and message #31 defers that question. No later message states which properties `alter column type` keeps, so users with follow-up scripts cannot know what to expect.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Hand-kept property list fails silently for future index properties",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "catalog"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later release adds a new per-index property, stored in pg_class, pg_index, pg_description or pg_depend. Its author does not know about the save-and-restore list in DefineIndex(). After the next alter column type on a partitioned table, that property disappears from every descendant index, and users notice only when replication or maintenance behaves differently.",
+      "argument": "The design restores a fixed set of properties, and each review round found more that were missing: comments, statistics targets and reloptions (message #28), tablespace (message #31), intermediate indexes and constraint comments (message #34), and extension dependencies (message #40). Message #28 proposed a catalog-diff test that forces new properties to be listed, but the material does not show that v19 still has it. Such a test would not see properties stored in pg_description or pg_depend.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        28,
+        31,
+        34,
+        40
+      ],
+      "author_must_show": "Which test in v19 fails when someone adds a new index property, in any catalog, that the rebuild does not carry over?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 28,
+          "from": "Melanie Plageman",
+          "date": "2026-08-24T22:28:41Z",
+          "url": "https://www.postgresql.org/message-id/CAAKRu_ajK0QhmOA3N2-QynT7hXx-VVV99RTXrae3sc51we2TSA%40mail.gmail.com"
+        },
+        {
+          "index": 31,
+          "from": "Chao Li",
+          "date": "2026-08-26T05:30:07Z",
+          "url": "https://www.postgresql.org/message-id/D088FD51-422F-436E-8650-85916A7D122D%40gmail.com"
+        },
+        {
+          "index": 34,
+          "from": "Zsolt Parragi",
+          "date": "2026-08-26T23:21:34Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFNQHDgaUkQgtNrxUz96-RqcvhwxUNEAeSV7TAckG5TEng%40mail.gmail.com"
+        },
+        {
+          "index": 40,
+          "from": "Sami Imseih",
+          "date": "2026-08-27T17:03:14Z",
+          "url": "https://www.postgresql.org/message-id/CAN12%2BYKriFqdTU3uhKnRMaKkWmm4ZNfzm0d6eT9PFFGFvxojMw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #28 cites index_concurrently_swap() as existing practice for hand-kept transfers, which lowers the weight. But reviewers found missing properties in messages #31, #34 and #40, and nothing shows the catalog-diff test is in v19 or covers pg_description and pg_depend.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Back-patching changes alter column type results for existing scripts",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "sql_standard_syntax"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA's migration script runs `alter table parent alter column val type bigint` and then `alter table child replica identity using index child_id_val_idx`, the name the rebuild used to generate. After a minor upgrade that includes 0003, the custom leaf index name is kept, so the script stops with \"index does not exist\". The DBA finds out mid-migration.",
+      "argument": "The CommitFest entry targets stable, and message #21 calls the patch \"a candidate for back-patching\". Message #28 argues that the docs never promised these properties survive, so users likely re-apply them in scripts. Index names, the tablespace choice and the names picked through the reserved-name list in v19 all change what a script observes after the rebuild. A committer would likely accept this in a major release with a release note, but not in a minor release.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        21,
+        28,
+        44
+      ],
+      "author_must_show": "Will the series target master only, and if not, which scripts that depend on regenerated names or lost properties stay safe in a minor release?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 21,
+          "from": "Sami Imseih",
+          "date": "2026-07-28T20:05:03Z",
+          "url": "https://www.postgresql.org/message-id/CAA5RZ0v_gGMdRtGMdCjLwnPqMxS_Qr%3D2PXe43Up_GPo8tj9EWw%40mail.gmail.com"
+        },
+        {
+          "index": 28,
+          "from": "Melanie Plageman",
+          "date": "2026-08-24T22:28:41Z",
+          "url": "https://www.postgresql.org/message-id/CAAKRu_ajK0QhmOA3N2-QynT7hXx-VVV99RTXrae3sc51we2TSA%40mail.gmail.com"
+        },
+        {
+          "index": 44,
+          "from": "Sami Imseih",
+          "date": "2026-09-05T16:44:17Z",
+          "url": "https://www.postgresql.org/message-id/CAN12%2BYJbTMimpF3y3duLcb9_gqrTkXd_Q81KmQPL4Ep3ptCb5g%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1, which makes the same script-breakage point and adds the IndexStmt layout change. The back-patch remark it cites is in message #22, not message #21.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Stable-branch target conflicts with new IndexStmt fields and open semantics",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The series is back-patched as the CommitFest target suggests. Extensions compiled against a minor release that build or copy IndexStmt nodes then see a different struct layout. Users whose scripts already re-apply properties after alter column type, which message #28 calls likely, see changed behavior in a minor release.",
+      "argument": "The CommitFest entry targets stable. The patches add fields to IndexStmt in parsenodes.h, and the main patch is about 37 KiB of new restore logic. Message #28 doubts a back-patch, notes the docs never promised these properties survive, and asks whether the intended semantics are even defined. No committer in the visible thread has said they will own the result.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        28,
+        31
+      ],
+      "author_must_show": "Is the series meant for master only, and if not, how do back branches avoid changing the IndexStmt layout?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 28,
+          "from": "Melanie Plageman",
+          "date": "2026-08-24T22:28:41Z",
+          "url": "https://www.postgresql.org/message-id/CAAKRu_ajK0QhmOA3N2-QynT7hXx-VVV99RTXrae3sc51we2TSA%40mail.gmail.com"
+        },
+        {
+          "index": 31,
+          "from": "Chao Li",
+          "date": "2026-08-26T05:30:07Z",
+          "url": "https://www.postgresql.org/message-id/D088FD51-422F-436E-8650-85916A7D122D%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1. Its added claim that no committer is engaged conflicts with message #28, where Melanie Plageman posts patches and writes about committing the series.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "The series restores replica identity markings on partition indexes, which logical replication depends on."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "The patch restores properties by direct catalog updates on the rebuilt indexes and constraints; it adds no new catalog."
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The patches add fields to IndexStmt in parsenodes.h, a node that extensions read through ProcessUtility hooks."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": true,
+      "reason": "see objection standards-compat-2: The contract for which properties survive the rebuild is not written down"
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "The patch restores per-index tablespaces and calls post-alter hooks; the tablespace privilege check on restore is unverified without the code."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The CommitFest entry targets stable, while message #28 argues against a back-patch."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "A hand-kept list of index properties in tablecmds.c and DefineIndex() must grow with every new index property."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "If the rebuild-avoidance patch from message #45 lands, which cases still need 0003's save-and-restore code?",
+    "Does the series target master only, and if not, which part can be back-patched without changing IndexStmt or the resulting index names?",
+    "Which index properties does `alter column type` keep after this series, and where will the `alter table` documentation say so?",
+    "Which test in v19 fails when a new index property, stored in any catalog, is not carried over by the rebuild?",
+    "How should scripts that re-apply these properties after `alter column type`, using the regenerated index names, behave after this change?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "The owner must know the `alter table` rebuild path in tablecmds.c and the DefineIndex() recursion over partitions. Melanie Plageman posts patches and discusses committing in message #28.",
+    "liability": "The owner signs for the list of preserved properties in every later release, including each new index property. If back-patched, the owner also signs for changed index names and the IndexStmt layout in minor releases.",
+    "author_follow_up": "The author kept the entry alive through five CommitFests and many versions, and Sami Imseih now co-develops the series and posted v19."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "fix design first",
+    "reason": "Users of partitioned tables with logical replication or customized partition indexes lose settings silently, so the goal is worth reviewer time. The main patch is about 37 KiB in tablecmds.c and indexcmds.c, and its scope depends on the unsettled overlap with the rebuild-avoidance patch and on the target branches."
+  },
+  "self_advice": [],
+  "provisional_note": "Only 3 of 45 messages and no code were read, and the v19 prose was not shown. This review could not check whether v19 covers every lost property, whether the reserved-name list avoids all name clashes, or whether restored tablespaces pass the usual privilege check.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:2805",
+      "kind": "cf",
+      "title": "DROP INDEX CONCURRENTLY on partitioned index",
+      "status": "Withdrawn",
+      "date": "2021-07-24",
+      "first_date": "2020-10-28",
+      "url": "https://commitfest.postgresql.org/patch/2805/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20201028004432.GA17079@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch adds DROP INDEX CONCURRENTLY support for partitioned indexes. It changes index_drop() to expand a partitioned index into the list of its partition indexes and run the concurrent drop steps on all of them in two transactions.",
+      "objection": "Michael Paquier disliked the new code path for deleting dependent objects in the partition tree and said the problem needed more design work first. The patch then stopped applying to HEAD, and the author withdrew it until the related patch for CREATE INDEX CONCURRENTLY on partitioned tables makes progress.",
+      "touch_points": [],
+      "matched_queries": [
+        "replica identity lost partition index",
+        "partition index name preserved rebuild",
+        "partitioned index rebuild comments lost",
+        "RememberIndexForRebuilding partitioned index"
+      ],
+      "from_hint": false,
+      "score": 0.517,
+      "enriched": true,
+      "key_quote": "Looking\nquicky at the patch, I am not much a fan of the new code path\nintroduced for the deletion of dependent objects in the partition\ntree, so my gut is telling me that we need to think harder about the\nproblem at hand first.",
+      "quote_message_url": "https://www.postgresql.org/message-id/YELeTx8xHfTRLXec%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:5004",
+      "kind": "cf",
+      "title": "CREATE INDEX CONCURRENTLY for partitioned tables",
+      "status": "Withdrawn",
+      "date": "2025-04-08",
+      "first_date": "2020-10-31",
+      "url": "https://commitfest.postgresql.org/patch/5004/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20201031063117.GF3080@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby), Ilya Gladyshev (qoops)",
+      "objectors": "",
+      "summary": "The patch adds CREATE INDEX CONCURRENTLY for partitioned tables. It first creates catalog entries for all partition indexes as invalid, then builds and validates them the way REINDEX CONCURRENTLY does, so an interrupted run leaves INVALID indexes that DROP or REINDEX can clean up.",
+      "objection": "The visible messages do not show why. The last messages are reviews and fixes from mid-2024 with no stated objection, and in October 2024 a user asked why progress had stalled; the entry was withdrawn in April 2025 with no visible closing message.",
+      "touch_points": [],
+      "matched_queries": [
+        "replica identity lost partition index",
+        "partition index name preserved rebuild",
+        "partitioned index rebuild comments lost",
+        "RememberIndexForRebuilding partitioned index"
+      ],
+      "from_hint": false,
+      "score": 0.507,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:2815",
+      "kind": "cf",
+      "title": "CREATE INDEX CONCURRENTLY on partitioned table",
+      "status": "Withdrawn",
+      "date": "2023-09-18",
+      "first_date": "2020-10-31",
+      "url": "https://commitfest.postgresql.org/patch/2815/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20201031063117.GF3080@telsasoft.com",
+        "https://www.postgresql.org/message-id/flat/e47898da6a354262ec332ca073847c0a@postgrespro.ru"
+      ],
+      "authors": "Justin Pryzby (justinpryzby), Alexander Pyhalov (a.pyhalov)",
+      "objectors": "",
+      "summary": "The patch lets create index concurrently work on partitioned tables by first creating catalog entries for all partition indexes with indisvalid=false, then building each one concurrently. An interrupted run leaves invalid indexes that the user can clean up with DROP or REINDEX, as with CIC on a plain table.",
+      "objection": "The visible messages do not show why. The last shown message, from Alexander Pyhalov in July 2023, asks whether releasing the session lock on the parent table between child index builds is safe, and no reply is shown. No committer review appears in the thread.",
+      "touch_points": [],
+      "matched_queries": [
+        "replica identity lost partition index",
+        "partition index name preserved rebuild",
+        "partitioned index rebuild comments lost",
+        "RememberIndexForRebuilding partitioned index"
+      ],
+      "from_hint": false,
+      "score": 0.45,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:2644",
+      "kind": "cf",
+      "title": "avoid bitmapOR-ing indexes for scan conditions implied by partition constraint",
+      "status": "Returned with feedback",
+      "date": "2021-02-01",
+      "first_date": "2020-07-04",
+      "url": "https://commitfest.postgresql.org/patch/2644/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200704004503.GA23805@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby), Soumyadeep Chakraborty (soumyadeep2007), Soumyadeep Chakraborty (soumyadeepc)",
+      "objectors": "Tom Lane",
+      "summary": "The patch makes the planner skip bitmap index scans for arms of an OR clause that the partition constraint refutes, so each partition scans only the useful arms. The change lives in generate_bitmap_or_paths() in indxpath.c and targets queries with long OR lists over many partitions.",
+      "objection": "Tom Lane objected to fixing this in indxpath.c. The fix helps only bitmap scans, may repeat the same proof, cannot be turned off, leaves row estimates unchanged, and may break the loop that requires each OR arm to match an index. He proposed removing proven quals from baserestrictinfo instead, but measured about 2.5% slowdown on pgbench -S and left the direction open. The entry then sat in Waiting on Author for weeks, and Masahiko Sawada returned it with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "replica identity lost partition index",
+        "partition index name preserved rebuild",
+        "partitioned index rebuild comments lost",
+        "RememberIndexForRebuilding partitioned index"
+      ],
+      "from_hint": false,
+      "score": 0.391,
+      "enriched": true,
+      "key_quote": "I really quite dislike solving\nthis via a kluge in indxpath.c.",
+      "quote_message_url": "https://www.postgresql.org/message-id/228337.1605212074%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:212fab9926b2f0f04b0187568e7124b70e8deee5",
+      "kind": "revert",
+      "title": "Relax transactional restrictions on ALTER TYPE ... ADD VALUE (redux).",
+      "status": "Partially reverted",
+      "date": "2018-10-08",
+      "first_date": "2017-09-27",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=212fab9926b2f0f04b0187568e7124b70e8deee5",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEepm=0Ei7g6PaNTbcmAh9tCRahQrk=r5ZWLD-jr7hXweYX3yg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/4075.1459088427@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20170922185904.1448.16585@wrigleys.postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Relax transactional restrictions on ALTER TYPE ... ADD VALUE (redux).\nReverted commit(s): Revert to 9.6 treatment of ALTER TYPE enumtype ADD VALUE.",
+      "objection": "Originally committed as 15bc038f (plus some follow-ups), this was\nreverted in 28e07270 due to a problem discovered in parallel\nworkers.  This new version corrects that problem by sending the\nlist of uncommitted enum values to parallel workers.\n\nHere follows the original commit message describing the change:\n\nTo prevent possibly breaking indexes on enum columns, we must keep\nuncommitted enum values from getting stored in tables, unless we\ncan be sure that any such column is new in the current transaction.\n\nFormerly, we enforced this by disallowing ALTER TYPE ... ADD VALUE\nfrom being executed at all in a transaction block, unless the target\nenum type had been created in the current transaction.  This patch\nremoves that restriction, and instead insists that an uncommitted enum\nvalue can't be referenced unless it belongs to an enum type created\nin the same transaction as the value.  Per discussion, this should be\na bit less onerous.  It does require each function that could possibly\nreturn a new enum value to SQL operations to check this restriction,\nbut there aren't so many of those that this seems unmaintainable.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "alter column type index rebuild properties",
+        "index statistics target lost alter type",
+        "indisclustered lost alter column type"
+      ],
+      "from_hint": false,
+      "score": 0.366,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:377",
+      "kind": "cf",
+      "title": "Tab completion for ALTER COLUMN SET STATISTICS",
+      "status": "Rejected",
+      "date": "2015-12-21",
+      "first_date": "2015-09-25",
+      "url": "https://commitfest.postgresql.org/patch/377/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMkU=1xXN236aOR7FhqC9VTQ_a6=B7mz9ix_NpBApSicGMsqCA@mail.gmail.com"
+      ],
+      "authors": "Jeff Janes (jjanes)",
+      "objectors": "",
+      "summary": "The patch stops psql tab completion from adding \"TO\" after \"ALTER TABLE ... ALTER COLUMN ... SET STATISTICS\", where TO is not legal syntax. The patch completes nothing in that position.",
+      "objection": "The author withdrew the patch and marked it rejected after the tab-complete.c refactoring was committed, because that refactoring made the fix unnecessary. Earlier, Robert Haas suggested narrowing the generic rule that adds TO after any SET <word>, and the author did not want to rework that code while the refactoring was pending.",
+      "touch_points": [],
+      "matched_queries": [
+        "alter column type index rebuild properties",
+        "index statistics target lost alter type",
+        "indisclustered lost alter column type"
+      ],
+      "from_hint": false,
+      "score": 0.268,
+      "enriched": true,
+      "key_quote": "The now-committed tab-complete.c refactoring renders this unnecessary,\nso I've marked this patch as rejected.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAMkU%3D1zpKavpr1WbE0u4-6dM8664hweRBUYJ%3Dvk7Uw-qjhj2AA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:3382",
+      "kind": "cf",
+      "title": "Add support for ALTER INDEX .. ALTER [COLUMN] col_num {SET,RESET}",
+      "status": "Withdrawn",
+      "date": "2021-11-01",
+      "first_date": "2021-10-29",
+      "url": "https://commitfest.postgresql.org/patch/3382/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/YXuCDicA8rq4iryZ@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Alexander Korotkov",
+      "summary": "Add `alter index ... alter [column] col_num set/reset (...)` so opclass parameters on an index column can be changed after `create index`, using a column number as `set statistics` does. The patch stores the new values in pg_attribute attoptions, checks them with index_opclass_options(), and does not rebuild the index.",
+      "objection": "Changing an opclass parameter such as siglen without a rebuild leaves the index inconsistent with its options. Nathan Bossart reproduced test failures in hstore after `alter index hidx alter column 1 set (siglen=100)`, which went away after a REINDEX. Alexander Korotkov said the known uses for opclass options all need a rebuild and suggested keeping the options immutable until real cases for mutable ones appear. The author agreed the patch was not enough, and the entry was withdrawn.",
+      "touch_points": [],
+      "matched_queries": [
+        "alter column type index rebuild properties",
+        "indisclustered lost alter column type"
+      ],
+      "from_hint": false,
+      "score": 0.259,
+      "enriched": true,
+      "key_quote": "All these cases require index rebuild to change the opclass option.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAPpHfdtwR9P1EXJPJoNx4jxOeooo%3DYToBHOTsUFsGkgOnmqr-w%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:5184",
+      "kind": "cf",
+      "title": "[PROPOSAL] : Disallow use of empty column name in (column_name '') in ALTER or CREATE of foreign table.",
+      "status": "Rejected",
+      "date": "2025-03-26",
+      "first_date": "2024-08-16",
+      "url": "https://commitfest.postgresql.org/patch/5184/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CADrsxdYj2SMquRgf=DS9d_qLMW_gnF7PxzRp0VKTM7OfBsPpVg@mail.gmail.com"
+      ],
+      "authors": "Nishant Sharma (nishant-at-edb)",
+      "objectors": "Tom Lane",
+      "summary": "The patch makes postgres_fdw's validator reject empty values for the column_name, schema_name and table_name options in create or alter foreign table. Today an empty column_name is accepted, and the remote query then fails with a zero-length identifier error.",
+      "objection": "Tom Lane judged that the check did not add enough ease-of-use to justify the extra code, and he compared an empty name to a misspelled remote name, which cannot be checked either. Robert Haas pointed out that existing foreign tables with empty values would then fail pg_dump or pg_upgrade. Nobody argued for the patch after Tom voted against it, so Robert marked it Rejected.",
+      "touch_points": [],
+      "matched_queries": [
+        "alter column type index rebuild properties",
+        "indisclustered lost alter column type"
+      ],
+      "from_hint": false,
+      "score": 0.245,
+      "enriched": true,
+      "key_quote": "I was down on it to start with, on the grounds that it wasn't adding enough ease-of-use to justify even a relatively small amount of added code.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2618781.1740690492%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:2635",
+      "kind": "cf",
+      "title": "Change a constraint's index - ALTER TABLE ... ALTER CONSTRAINT ... USING INDEX ...",
+      "status": "Returned with feedback",
+      "date": "2020-09-30",
+      "first_date": "2020-07-05",
+      "url": "https://commitfest.postgresql.org/patch/2635/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/e759fb7631645fe75b5ad6c3e8e690e4@postgrespro.ru"
+      ],
+      "authors": "Marina Polyakova (whipping.top1991), Anna Akenteva (a.akenteva)",
+      "objectors": "Tom Lane, Alvaro Herrera, Laurenz Albe",
+      "summary": "The patch adds ALTER TABLE ... ALTER CONSTRAINT ... USING INDEX to replace the index behind an EXCLUDE, UNIQUE, PRIMARY KEY or FOREIGN KEY constraint with a similar index. The main use case is swapping a primary key index for one with INCLUDE columns, or back.",
+      "objection": "Tom Lane wanted the feature rejected because a primary key with a swapped index is no longer an accurate primary key, and information_schema cannot describe it. Alvaro Herrera and Laurenz Albe agreed that primary keys with INCLUDE columns would first need PRIMARY KEY syntax, so that pg_dump works. That leaves this command a narrow use case. The author did not answer the review, and Michael Paquier marked the entry returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "alter column type index rebuild properties",
+        "index statistics target lost alter type",
+        "alter table recurse partitions semantics"
+      ],
+      "from_hint": false,
+      "score": 0.243,
+      "enriched": true,
+      "key_quote": "TBH I think if we really wanted the feature of primary keys with\nincluded columns, we'd have to add it to the PRIMARY KEY syntax rather\nthan having an ad-hoc ALTER TABLE ALTER CONSTRAINT USING INDEX command\nto replace the index underneath.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20200907144229.GA29048%40alvherre.pgsql",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "revert:3890d90c1508125729ed20038d90513694fc3a7b",
+      "kind": "revert",
+      "title": "Revert support for ALTER TABLE ... MERGE/SPLIT PARTITION(S) commands",
+      "status": "Reverted",
+      "date": "2024-08-24",
+      "first_date": "2024-04-06",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=3890d90c1508125729ed20038d90513694fc3a7b",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20240808171351.a9.nmisch@google.com",
+        "https://www.postgresql.org/message-id/flat/c73a1746-0cd0-6bdd-6b23-3ae0b7c0c582@postgrespro.ru",
+        "https://www.postgresql.org/message-id/flat/CAHewXNkGMPU50QG7V6Q60JGFORfo8LfYO1_GCkCa0VWbmB-fEw@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/cd842601-cf1a-9806-f7b7-d2509b93ba61@gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAMbWs49DDsknxyoycBqiE72VxzL_sYHF6zqL8dSeNehKPJhkKg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/86bfd241-a58c-479a-9a72-2c67a02becf8@postgrespro.ru"
+      ],
+      "authors": "Alexander Korotkov",
+      "objectors": "",
+      "summary": "Revert support for ALTER TABLE ... MERGE/SPLIT PARTITION(S) commands\nReverted commit(s): Implement ALTER TABLE ... MERGE PARTITIONS ... command; Implement ALTER TABLE ... SPLIT PARTITION ... command; Fix some grammer errors from error messages and codes comments; Checks for ALTER TABLE ... SPLIT/MERGE PARTITIONS ... commands; Grammar fixes for split/merge partitions code",
+      "objection": "This commit reverts 1adf16b8fb, 87c21bb941, and subsequent fixes and\nimprovements including df64c81ca9, c99ef1811a, 9dfcac8e15, 885742b9f8,\n842c9b2705, fcf80c5d5f, 96c7381c4c, f4fc7cb54b, 60ae37a8bc, 259c96fa8f,\n449cdcd486, 3ca43dbbb6, 2a679ae94e, 3a82c689fd, fbd4321fd5, d53a4286d7,\nc086896625, 4e5d6c4091, 04158e7fa3.\n\nThe reason for reverting is security issues related to repeatable name lookups\n(CVE-2014-0062).  Even though 04158e7fa3 solved part of the problem, there\nare still remaining issues, which aren't feasible to even carefully analyze\nbefore the RC deadline.",
+      "touch_points": [
+        "security / privileges",
+        "SQL syntax / standard"
+      ],
+      "matched_queries": [
+        "partitioned index rebuild comments lost",
+        "alter table recurse partitions semantics"
+      ],
+      "from_hint": false,
+      "score": 0.218,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:1621",
+      "kind": "cf",
+      "title": "ALTER TABLE - check for column existence before starting operations",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2018-03-02",
+      "url": "https://commitfest.postgresql.org/patch/1621/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1897070.0DItnajBuJ@pierred-pdoc"
+      ],
+      "authors": "Pierre Ducroquet (pinaraf)",
+      "objectors": "",
+      "summary": "ALTER TABLE - check for column existence before starting operations\nThreads: ALTER TABLE does not check for column existence before starting operations",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "alter column type index rebuild properties",
+        "indisclustered lost alter column type"
+      ],
+      "from_hint": false,
+      "score": 0.179,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:5274",
+      "kind": "cf",
+      "title": "Introduce the ability to enable/disable indexes using ALTER INDEX",
+      "status": "Withdrawn",
+      "date": "2025-09-08",
+      "first_date": "2024-09-09",
+      "url": "https://commitfest.postgresql.org/patch/5274/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANqtF-oXKe0M=0QOih6H+sZRjE2BWAbkW_1+9nMEAMLxUJg5jA@mail.gmail.com"
+      ],
+      "authors": "Shayon Mukherjee (shayonj)",
+      "objectors": "",
+      "summary": "Introduce the ability to enable/disable indexes using ALTER INDEX\nThreads: Proposal to Enable/Disable Index using ALTER INDEX",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "alter column type index rebuild properties",
+        "index statistics target lost alter type"
+      ],
+      "from_hint": false,
+      "score": 0.175,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:1264",
+      "kind": "cf",
+      "title": "Exclude partition constaint checking in query execution plan for partitioned table queries",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2017-08-14",
+      "url": "https://commitfest.postgresql.org/patch/1264/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/27516421-5afa-203c-e22a-8407e9187327@postgrespro.ru"
+      ],
+      "authors": "Konstantin Knizhnik (knizhnik)",
+      "objectors": "",
+      "summary": "Exclude partition constaint checking in query execution plan for partitioned table queries\nThreads: Secondary index access optimizations",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "partitioned index rebuild comments lost",
+        "RememberIndexForRebuilding partitioned index"
+      ],
+      "from_hint": false,
+      "score": 0.168,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:646",
+      "kind": "cf",
+      "title": "Prevent ALTER TABLE DROP NOT NULL on child tables if parent column has it",
+      "status": "Rejected",
+      "date": "2016-06-16",
+      "first_date": "2016-06-15",
+      "url": "https://commitfest.postgresql.org/patch/646/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB7nPqTPXgX9HiyhhtAgpW7jbA1iskMCSoqXPEEB_KYXYy1E1Q@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Prevent ALTER TABLE DROP NOT NULL on child tables if parent column has it\nThreads: Prevent ALTER TABLE DROP NOT NULL on child tables if parent column\nhas it",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "alter column type index rebuild properties",
+        "indisclustered lost alter column type"
+      ],
+      "from_hint": false,
+      "score": 0.157,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:6424",
+      "kind": "cf",
+      "title": "ALTER TABLE: emit NOTICE when ONLY is omitted but no partition recursion occurs",
+      "status": "Withdrawn",
+      "date": "2026-01-22",
+      "first_date": "2026-01-12",
+      "url": "https://commitfest.postgresql.org/patch/6424/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEoWx2=SLga-xH09Cq_PAvsHhQHrBK+V0vF821JKgzS=Bm0haA@mail.gmail.com"
+      ],
+      "authors": "Chao Li (chaol)",
+      "objectors": "",
+      "summary": "ALTER TABLE: emit NOTICE when ONLY is omitted but no partition recursion occurs\nThreads: ALTER TABLE: warn when actions do not recurse to partitions",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "alter table recurse partitions semantics"
+      ],
+      "from_hint": false,
+      "score": 0.15,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:2044",
+      "kind": "cf",
+      "title": "propagating replica identity to partitions",
+      "status": "Returned with feedback",
+      "date": "2019-09-11",
+      "first_date": "2019-02-04",
+      "url": "https://commitfest.postgresql.org/patch/2044/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/201902041630.gpadougzab7v@alvherre.pgsql"
+      ],
+      "authors": "Álvaro Herrera (alvherre)",
+      "objectors": "",
+      "summary": "propagating replica identity to partitions\nThreads: propagating replica identity to partitions",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "replica identity lost partition index"
+      ],
+      "from_hint": false,
+      "score": 0.129,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:3984",
+      "kind": "cf",
+      "title": "Split index and table statistics into different types of stats",
+      "status": "Returned with feedback",
+      "date": "2023-07-10",
+      "first_date": "2022-10-31",
+      "url": "https://commitfest.postgresql.org/patch/3984/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/f572abe7-a1bb-e13b-48c7-2ca150546822@gmail.com"
+      ],
+      "authors": "Bertrand Drouvot (bertranddrouvot.pg)",
+      "objectors": "",
+      "summary": "Split index and table statistics into different types of stats\nThreads: Split index and table statistics into different types of stats",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "index statistics target lost alter type"
+      ],
+      "from_hint": false,
+      "score": 0.129,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:3926",
+      "kind": "cf",
+      "title": "Use indexes on the subscriber when REPLICA IDENTITY is full on the publisher",
+      "status": "Returned with feedback",
+      "date": "2022-10-20",
+      "first_date": "2022-10-03",
+      "url": "https://commitfest.postgresql.org/patch/3926/",
+      "thread_urls": [],
+      "authors": "Onder Kalaci (onderkalaci)",
+      "objectors": "",
+      "summary": "Use indexes on the subscriber when REPLICA IDENTITY is full on the publisher",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "replica identity lost partition index"
+      ],
+      "from_hint": false,
+      "score": 0.126,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:2857",
+      "kind": "cf",
+      "title": "ALTER TABLE SET LOGGED/UNLOGGED on a partitioned table does nothing silently",
+      "status": "Withdrawn",
+      "date": "2021-04-07",
+      "first_date": "2020-12-02",
+      "url": "https://commitfest.postgresql.org/patch/2857/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/TYAPR01MB299022B3CFFE7B838AC62E40FEF30@TYAPR01MB2990.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "Takayuki Tsunakawa (maumau)",
+      "objectors": "",
+      "summary": "ALTER TABLE SET LOGGED/UNLOGGED on a partitioned table does nothing silently\nThreads: [bug fix] ALTER TABLE SET LOGGED/UNLOGGED on a partitioned table does\nnothing silently",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "alter table recurse partitions semantics"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:4792",
+      "kind": "cf",
+      "title": "Split index and table statistics into different types of stats",
+      "status": "Returned with feedback",
+      "date": "2024-10-02",
+      "first_date": "2022-10-31",
+      "url": "https://commitfest.postgresql.org/patch/4792/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/f572abe7-a1bb-e13b-48c7-2ca150546822@gmail.com"
+      ],
+      "authors": "Bertrand Drouvot (bertranddrouvot.pg)",
+      "objectors": "",
+      "summary": "Split index and table statistics into different types of stats\nThreads: Split index and table statistics into different types of stats",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "index statistics target lost alter type"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:3020",
+      "kind": "cf",
+      "title": "alter table set TABLE ACCESS METHOD",
+      "status": "Withdrawn",
+      "date": "2021-06-08",
+      "first_date": "2021-02-28",
+      "url": "https://commitfest.postgresql.org/patch/3020/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210228222530.GD20769@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "",
+      "summary": "alter table set TABLE ACCESS METHOD\nThreads: alter table set TABLE ACCESS METHOD",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "alter table recurse partitions semantics"
+      ],
+      "from_hint": false,
+      "score": 0.103,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:4114",
+      "kind": "cf",
+      "title": "Implement type input functions for extended statistics types",
+      "status": "Withdrawn",
+      "date": "2023-03-01",
+      "first_date": "2023-01-05",
+      "url": "https://commitfest.postgresql.org/patch/4114/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/MN2PR05MB68795FCDB5B560D350084753B6FA9@MN2PR05MB6879.namprd05.prod.outlook.com"
+      ],
+      "authors": "David Kimura (dgkimura)",
+      "objectors": "",
+      "summary": "Implement type input functions for extended statistics types\nThreads: Support for dumping extended statistics",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "index statistics target lost alter type"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "revert:e3fcca0d0d2414f3a50d6fd40eddf48b7df81475",
+      "kind": "revert",
+      "title": "Revert changes in HOT handling of BRIN indexes",
+      "status": "Reverted",
+      "date": "2022-06-16",
+      "first_date": "2021-11-30",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e3fcca0d0d2414f3a50d6fd40eddf48b7df81475",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/05ebcb44-f383-86e3-4f31-0a97a55634cf@enterprisedb.com",
+        "https://www.postgresql.org/message-id/flat/CAFp7QwpMRGcDAQumN7onN9HjrJ3u4X3ZRXdGFT0K5G2JWvnbWg@mail.gmail.com"
+      ],
+      "authors": "Tomas Vondra",
+      "objectors": "",
+      "summary": "Revert changes in HOT handling of BRIN indexes\nReverted commit(s): Ignore BRIN indexes when checking for HOT udpates; Move test for BRIN HOT behavior to stats.sql",
+      "objection": "This reverts commits 5753d4ee32 and fe60b67250 that modified HOT to\nignore BRIN indexes. The commit message for 5753d4ee32 claims that:\n\n    When determining whether an index update may be skipped by using\n    HOT, we can ignore attributes indexed only by BRIN indexes. There\n    are no index pointers to individual tuples in BRIN, and the page\n    range summary will be updated anyway as it relies on visibility\n    info.\n\nThis is partially incorrect - it's true BRIN indexes don't point to\nindividual tuples, so HOT chains are not an issue, but the visibitlity\ninfo is not sufficient to keep the index up to date. This can easily\nresult in corrupted indexes, as demonstrated in the hackers thread.\n\nThis does not mean relaxing the HOT restrictions for BRIN is a lost\ncause, but it needs to handle the two aspects (allowing HOT chains and\nupdating the page range summaries) as separate. But that requires a\nmajor changes, and it's too late for that in the current dev cycle.",
+      "touch_points": [],
+      "matched_queries": [
+        "partitioned index rebuild comments lost"
+      ],
+      "from_hint": false,
+      "score": 0.099,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "revert:6f8127b7390119c21479f5ce495b7d2168930e82",
+      "kind": "revert",
+      "title": "Revert analyze support for partitioned tables",
+      "status": "Reverted",
+      "date": "2021-08-16",
+      "first_date": "2021-04-08",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6f8127b7390119c21479f5ce495b7d2168930e82",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210722205458.f2bug3z6qzxzpx2s@alap3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/20210423180152.GA17270@telsasoft.com",
+        "https://www.postgresql.org/message-id/flat/1823909.1617862590@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20210408213051.GL6592@telsasoft.com",
+        "https://www.postgresql.org/message-id/flat/CAKkQ508_PwVgwJyBY=0Lmkz90j8CmWNPUxgHvCUwGhMrouz6UA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CALNJ-vS1R3Qoe5t4tbzxrkpBtzRbPq1dDcW4RmA_a+oqweF30w@mail.gmail.com"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert analyze support for partitioned tables\nReverted commit(s): Describe (auto-)analyze behavior for partitioned tables; Set pg_class.reltuples for partitioned tables; Document ANALYZE storage parameters for partitioned tables; autovacuum: handle analyze for partitioned tables; Don't reset relhasindex for partitioned tables on ANALYZE",
+      "objection": "This reverts the following commits:\n1b5617eb844cd2470a334c1d2eec66cf9b39c41a Describe (auto-)analyze behavior for partitioned tables\n0e69f705cc1a3df273b38c9883fb5765991e04fe Set pg_class.reltuples for partitioned tables\n41badeaba8beee7648ebe7923a41c04f1f3cb302 Document ANALYZE storage parameters for partitioned tables\n0827e8af70f4653ba17ed773f123a60eadd9f9c9 autovacuum: handle analyze for partitioned tables\n\nThere are efficiency issues in this code when handling databases with\nlarge numbers of partitions, and it doesn't look like there isn't any\ntrivial way to handle those.  There are some other issues as well.  It's\nnow too late in the cycle for nontrivial fixes, so we'll have to let\nPostgres 14 users continue to manually deal with ANALYZE their\npartitioned tables, and hopefully we can fix the issues for Postgres 15.\n\nI kept [most of] be280cdad298 (\"Don't reset relhasindex for partitioned\ntables on ANALYZE\") because while we added it due to 0827e8af70f4, it is\na good bugfix in its own right, since it affects manual analyze as well\nas autovacuum-induced analyze, and there's no reason to revert it.\n\nI retained the addition of relkind 'p' to tables included by\npg_stat_user_tables, because reverting that would require a catversion\nbump.\nAlso, in pg14 only, I keep a struct member that was added to\nPgStat_TabStatEntry to avoid breaking compatibility with existing stat\nfiles.\n\nBackpatch to 14.",
+      "touch_points": [
+        "catalog changes"
+      ],
+      "matched_queries": [
+        "alter table recurse partitions semantics"
+      ],
+      "from_hint": false,
+      "score": 0.09,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 0,
+    "new_calls": 8,
+    "failed": 0,
+    "quotes_verified": 6,
+    "quotes_dropped": 0,
+    "objectors_dropped": 1,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2026-01-27",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found. [P16] makes replica identity recurse to partitions, a different idea, and no reason is recorded for it. Messages #28 and #45 point to related open work (Zsolt's statistics-target patch, a semantics thread, Álvaro's rebuild-avoidance patch), but the thread reports none of it as rejected."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "No new syntax, GUC or catalog object is added, so pg_dump round-trip and psql conventions are not affected."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "From this angle, the series changes no on-disk format, WAL record or wire protocol. The catalog writes set properties the catalog already stores. The objection above only applies if the series is back-patched."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The series has no privilege or exposure aspect. Only the table owner can run `alter column type`, and it restores properties that an owner of the same objects set before, so no role gains an ability it lacked. Without the code, two points stay open: whether restored descendant tablespaces still pass the usual CREATE privilege check on the tablespace, and whether the post-alter hooks added in message #36 fire for every restored property."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "The direct catalog updates that skipped post-alter hooks were raised in message #29 and message #35 and addressed in message #36, so they are not raised here. Hot-path cost does not apply, because the code runs only during DDL."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "Postgres has no existing feature that keeps these properties through the rebuild. The only workaround is to re-apply each one by hand afterwards, with REPLICA IDENTITY USING INDEX, COMMENT ON, ALTER INDEX RENAME, SET STATISTICS, SET (...), SET TABLESPACE and DEPENDS ON EXTENSION. That works only if the user already knows the loss happens, and the root index keeps its properties while descendants lose them. Saving and restoring the properties follows index_concurrently_swap() (message #28). Rebuilding per partition instead was weighed and dropped by the reviewer who proposed it (message #25). The overlap with the leaf rebuild-avoidance patch (message #45) is with another pending patch, not with an existing feature, so this angle does not cover it."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "The material shows a real, reproducible silent loss of replica identity and other index settings, which affects logical replication users. Several independent developers reproduced it and found more cases, and the cost is limited to the alter column type rebuild path, so a demand objection would not hold."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 6,
+      "new_survived": 4,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 77,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 19,
+    "wall_ms": 153933,
+    "cost_usd": 3.8561616,
+    "dry_run": false
+  }
+}

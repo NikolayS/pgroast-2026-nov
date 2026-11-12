@@ -1,0 +1,1160 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T01:01:39.574Z",
+  "input": {
+    "arg": "7578",
+    "cf": {
+      "id": 7578,
+      "url": "https://commitfest.postgresql.org/patch/7578/",
+      "title": "Periodically refresh database frozen IDs during autovacuum",
+      "status": "Needs review",
+      "authors": "Jingtang Zhang (mrdrivingduck)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAPsk3_AMqBgVx4d1rAJJ%2Bi-U7TaQUqTkeAkN4P%2BhCfbRGCeCtA%40mail.gmail.com",
+    "subject": "[PATCH] Periodically refresh database frozen IDs during autovacuum",
+    "thread_start": "2026-11-02T16:40:15Z",
+    "messages_read": 8,
+    "messages_total": 8,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v2-0001-Periodically-refresh-database-frozen-IDs-during-VACUUM.patch",
+      "v1-0001-Periodically-refresh-database-frozen-IDs-during-a.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection questions the goal or the core design. Message #1 reports a production database with over 600,000 tables, and a reviewer who knows the area called the current behavior problematic in message #4. Two fixable level 2 points remain: standards-compat-1 (vacuumdb gets no periodic refresh) and maintenance-fit-2 (the locking change is not a separate patch). The interval and its cost are still unmeasured.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Refresh datfrozenxid periodically during vacuum of many tables",
+    "problem": "Vacuum and autovacuum update a database's datfrozenxid only after finishing the whole table list. In a database with over 600,000 tables, the database horizon can stay old long after the oldest tables are frozen. The XID stop limit uses the oldest datfrozenxid, so the instance can keep refusing new XIDs.",
+    "proposed_design": "v2 counts relfrozenxid and relminmxid advances in shared per-database statistics and calls vac_update_datfrozenxid() between tables, in the common vacuum() path for autovacuum and manual multi-table VACUUM. A periodic refresh needs pending progress, ForceTransactionIdLimitUpdate() true and a fixed ten-minute interval elapsed. It takes the database frozen-ID lock conditionally and skips if busy; the existing final refreshes stay.",
+    "user_visible_surface": [
+      "Shared database statistics gain a per-database counter of table freezing progress; the material does not say whether any view shows it.",
+      "datfrozenxid in pg_database can advance during a long VACUUM or autovacuum run, before it finishes.",
+      "The refresh interval is fixed at ten minutes; the author has not decided on a GUC."
+    ],
+    "author_claims": [
+      "With 1,000 tables, three workers and a ten-second interval, database age fell with table age, updating about every ten seconds; without the patch it stayed flat until about 150 seconds.",
+      "Manual multi-table VACUUM, tables ordered oldest first, showed the same behavior.",
+      "The interval batches progress and cuts repeated pg_class scans in databases with many tables.",
+      "Moving the fallback refresh to DROP TABLE or DROP DATABASE would add DDL latency and need care around rollback."
+    ],
+    "thread_state": "Andres Freund asked for coverage of manual vacuum, conditional calls and non-blocking locking; v2 answers these, and Nathan Bossart's scoring question was a misunderstanding. Open are the interval and its cost, Andres's suggestion to split the locking change into a separate patch, and shihao zhong's question about vacuumdb.",
+    "unclear": [
+      "No measurement of the cost of extra pg_class scans in the 600,000-table case or at the ten-minute interval.",
+      "The proposal does not say why ten minutes is the right default, or whether a GUC will follow.",
+      "The proposal does not say how vacuumdb, which issues separate VACUUM commands, gets periodic refreshes.",
+      "v2 does not say whether the conditional locking was split into a separate patch as Andres suggested.",
+      "The proposal does not say what happens to the shared progress counter after a crash or a statistics reset beyond skipping acknowledgment."
+    ],
+    "search_queries": [
+      "update datfrozenxid more often",
+      "vac_update_datfrozenxid autovacuum",
+      "datfrozenxid stale many tables",
+      "wraparound autovacuum database horizon",
+      "advance datfrozenxid during vacuum",
+      "LockDatabaseFrozenIds conditional lock",
+      "transaction ID stop limit vacuum",
+      "autovacuum table prioritization freezing"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "vacuumdb runs with SKIP_DATABASE_STATS and gets no periodic refresh",
+      "level": "2",
+      "rubric_item": 13,
+      "category": "design",
+      "touch_points": [
+        "psql_ux",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA near the XID stop limit runs `vacuumdb --jobs` over a database with 600,000 tables. Each per-table VACUUM skips database statistics, and the patch honors that skip, so datfrozenxid stays old until the final ONLY_DATABASE_STATS pass. The DBA finds this out when new XIDs are still refused hours after the oldest tables are frozen.",
+      "argument": "The commit message says the patch will \"honor the option to skip database statistics updates\". vacuumdb uses that option, so the periodic refresh covers manual multi-table VACUUM and autovacuum but not vacuumdb. vacuumdb is a common tool for manual wraparound recovery, and message #8 shows the gap in testing. v2 does not say whether vacuumdb will get its own refresh path or will keep its current behavior.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        7,
+        8
+      ],
+      "author_must_show": "How does a vacuumdb run that uses SKIP_DATABASE_STATS get datfrozenxid advanced before its final pass, and does the patch change that option's documented meaning?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "Jingtang Zhang",
+          "date": "2026-11-08T11:41:34Z",
+          "url": "https://www.postgresql.org/message-id/CAPsk3_ChAcWjuAVWVKuOCBdRKr8_m7FBeqPVKupcK_HYxqvmfg%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "shihao zhong",
+          "date": "2026-11-10T03:34:36Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQ9Umd0qxg63%2Bxxcj2zuQvF2Rpm%3Dj-FPvdsHHndhka0vQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "vacuumdb sends per-table VACUUM with SKIP_DATABASE_STATS on Postgres 16 and later, and the v2 commit message says the patch honors that option. Message #8 raises the gap and the thread has no answer yet.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Independent locking change still bundled with the refresh logic",
+      "level": "2",
+      "rubric_item": null,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer pushes v2 as one commit, and a later report shows datfrozenxid lagging or a VACUUM stalling on the database frozen-ID lock. Nobody can revert or bisect the conditional LockDatabaseFrozenIds change separately from the new periodic-refresh path, because both sit in one commit across vacuum.c, lmgr.c and varsup.c.",
+      "argument": "In message #4, Andres says non-blocking locking is independent of refreshing more often and 'probably should be a separate patch'. Message #7 adopts conditional locking but posts a single v2-0001, and the patch grew from 11.1 KB to 17.7 KB. The locking change also benefits the existing final refreshes, so it could be reviewed and committed first on its own.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4,
+        7
+      ],
+      "author_must_show": "Can the conditional-locking change go in as a separate first patch, with the periodic refresh rebased on top of it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "Andres Freund",
+          "date": "2026-11-02T17:39:36Z",
+          "url": "https://www.postgresql.org/message-id/qxuq4rzul7sm3wuzsuo6i3ageo36twraucenusrfdiwzjboxne%40igohofmvqlfn"
+        },
+        {
+          "index": 7,
+          "from": "Jingtang Zhang",
+          "date": "2026-11-08T11:41:34Z",
+          "url": "https://www.postgresql.org/message-id/CAPsk3_ChAcWjuAVWVKuOCBdRKr8_m7FBeqPVKupcK_HYxqvmfg%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "In message #4 a reviewer who knows the area asked for the locking change as a separate patch, and message #7 posts one patch without answering. The \"benefits the existing final refreshes\" point is weak, because v2 keeps those refreshes blocking.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Wraparound refresh gating stored in lossy cumulative statistics",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After a crash, or after pg_stat_reset(), the per-database progress counter is gone while relfrozenxid advances are already on disk. Workers in a 600,000-table database near the stop limit then see no pending progress and skip every periodic refresh until the final one, which is today's behaviour. The operator sees no sign that the feature is inactive.",
+      "argument": "v2 keeps the 'pending progress' counter in shared database statistics, according to the commit message and pgstat_database.c in the touched files. Cumulative statistics are allowed to be lost or reset, so wraparound-relevant control state now depends on a subsystem whose semantics may change for unrelated reasons. The commit message deals with resets only by not acknowledging progress across them. It does not explain why autovacuum or varsup shared state, which already hold XID-limit data, would be the wrong home.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4,
+        7
+      ],
+      "author_must_show": "Why does the progress counter belong in pgstat rather than in shared memory owned by vacuum or varsup, and what happens to periodic refreshes after a crash or reset?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "Andres Freund",
+          "date": "2026-11-02T17:39:36Z",
+          "url": "https://www.postgresql.org/message-id/qxuq4rzul7sm3wuzsuo6i3ageo36twraucenusrfdiwzjboxne%40igohofmvqlfn"
+        },
+        {
+          "index": 7,
+          "from": "Jingtang Zhang",
+          "date": "2026-11-08T11:41:34Z",
+          "url": "https://www.postgresql.org/message-id/CAPsk3_ChAcWjuAVWVKuOCBdRKr8_m7FBeqPVKupcK_HYxqvmfg%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "After a crash or reset, the next relfrozenxid advance adds to the counter again, so periodic refreshes resume while vacuum continues. The worst case is one delayed refresh, with the final refresh kept as today's fallback.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Periodic VACUUM (ONLY_DATABASE_STATS) already refreshes datfrozenxid on demand",
+      "level": "1b",
+      "rubric_item": 12,
+      "category": "desirability",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer adds a shared per-database counter, a fixed ten-minute timer and a conditional lock path in vacuum(). Operators with 600,000 tables could get the same horizon advance by running `vacuum (only_database_stats)` every few minutes while autovacuum works. Core then owns two ways to do this job, and the new one has a timer that cannot be tuned.",
+      "argument": "Since Postgres 16, `VACUUM (ONLY_DATABASE_STATS)` runs only vac_update_datfrozenxid(), which recomputes datfrozenxid from pg_class whoever advanced relfrozenxid. vacuumdb already pairs SKIP_DATABASE_STATS per table with one ONLY_DATABASE_STATS at the end, and v2 honors that skip option, so the question in message #8 has an existing answer outside the server. Messages #1 and #7 do not compare against a scheduled ONLY_DATABASE_STATS. The strongest case for the patch is that autovacuum should not depend on an outside scheduler near the stop limit, but the proposal does not make that case.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        7,
+        8
+      ],
+      "author_must_show": "Why is a scheduled `vacuum (only_database_stats)`, or vacuumdb issuing it between tables, not enough for the 600,000-table database?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Jingtang Zhang",
+          "date": "2026-11-02T16:40:15Z",
+          "url": "https://www.postgresql.org/message-id/CAPsk3_AMqBgVx4d1rAJJ%2Bi-U7TaQUqTkeAkN4P%2BhCfbRGCeCtA%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Jingtang Zhang",
+          "date": "2026-11-08T11:41:34Z",
+          "url": "https://www.postgresql.org/message-id/CAPsk3_ChAcWjuAVWVKuOCBdRKr8_m7FBeqPVKupcK_HYxqvmfg%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "shihao zhong",
+          "date": "2026-11-10T03:34:36Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQ9Umd0qxg63%2Bxxcj2zuQvF2Rpm%3Dj-FPvdsHHndhka0vQ%40mail.gmail.com"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "In message #4 Andres Freund calls refreshing datfrozenxid only at the end \"problematic\" for autovacuum and multi-relation vacuum in general. A scheduled `vacuum (only_database_stats)` needs an outside scheduler for each database, while autovacuum is the built-in wraparound protection.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "datfrozenxid updates and the clog truncation that follows now run during a vacuum run, and both are WAL-logged."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "pg_database.datfrozenxid and datminmxid get updated more often; the patch adds no catalog column."
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The patch changes pgstat.h, vacuum.h and lmgr.h, including the shared per-database statistics entry."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": true,
+      "reason": "The ten-minute interval is fixed in v2, and message #1 leaves a GUC for it undecided."
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": true,
+      "reason": "vacuumdb uses SKIP_DATABASE_STATS, which v2 honors, so vacuumdb runs get no periodic refresh."
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The shared statistics entry change needs a stats file format bump; the CommitFest entry targets version 20."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "New refresh gating in vacuum(), a conditional database frozen-ID lock and a varsup.c change sit on the wraparound protection path."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Each periodic refresh scans pg_class, which is large in a database with 600,000 tables; no cost measurement is shown."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "How does a vacuumdb run that uses SKIP_DATABASE_STATS get datfrozenxid advanced before its final ONLY_DATABASE_STATS pass?",
+    "Can the conditional-locking change be posted as a separate first patch, with the periodic refresh rebased on top of it?",
+    "What does one vac_update_datfrozenxid() call cost in the 600,000-table database, and how does that compare with the ten-minute interval?",
+    "Why is ten minutes the right default interval, and will a GUC follow?",
+    "Does any view, such as pg_stat_database, show the new per-database freezing progress counter?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Andres Freund and Nathan Bossart take part in the thread; the owner needs to know vacuum, autovacuum and the XID limit code in varsup.c.",
+    "liability": "The owner signs for the timing of datfrozenxid updates and clog truncation during vacuum runs, the conditional database frozen-ID lock, and the fixed interval. All of it sits on the wraparound protection path, so the liability is long-lived.",
+    "author_follow_up": "The author posted v2 in message #7, which answers the requests from message #4 for manual VACUUM coverage, conditional calls and non-blocking locking."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "proceed",
+    "reason": "Installations with very many tables near the XID stop limit benefit, and message #1 reports one. The 17.7 KB patch touches vacuum, autovacuum, lmgr, varsup and pgstat, and reviewers who know the area are already engaged."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, the review could not check how often the progress counter is flushed or whether the varsup.c change keeps the existing lock order around the XID limit update. The pg_class scan cost at 600,000 tables is unmeasured.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:1519",
+      "kind": "cf",
+      "title": "autovacuum: add possibility to change priority of vacuumed tables",
+      "status": "Returned with feedback",
+      "date": "2018-03-02",
+      "first_date": "2018-02-08",
+      "url": "https://commitfest.postgresql.org/patch/1519/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20180208170107.365496e3@wp.localdomain"
+      ],
+      "authors": "Ildus Kurbangaliev (ildus)",
+      "objectors": "Masahiko Sawada, Tomas Vondra, Andres Freund",
+      "summary": "The patch adds a table-level autovacuum setting, autovacuum_table_priority, that each autovacuum worker uses to sort its list of tables before vacuuming. The aim is to let users choose which tables autovacuum processes first.",
+      "objection": "Each worker sorts its own table list once at start, so a high-priority table still waits behind the rest of that list and gets no timely cleanup, and users would find the setting hard to understand. Tomas Vondra added that refreshing the list more often could starve low-priority tables, and that lowering vacuum_scale_factor or adding worker capacity addresses the real problem. Andres Freund judged the entry still in its design phase, and the author agreed it needs more thinking.",
+      "touch_points": [],
+      "matched_queries": [
+        "vac_update_datfrozenxid autovacuum",
+        "autovacuum table prioritization freezing"
+      ],
+      "from_hint": false,
+      "score": 0.231,
+      "enriched": true,
+      "key_quote": "This proposed patch does not really improve that, as the tables are\nsorted by priority only once at the beginning (in each worker). As\nexplained by Masahiko-san in one of the previous e-mails, it means the\npatch does not guarantee timely cleanup of the high-priority tables.",
+      "quote_message_url": "https://www.postgresql.org/message-id/a1346eec-2d82-0152-8490-322e93e0f801%402ndquadrant.com",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:4702",
+      "kind": "cf",
+      "title": "autovacuum may skip tables when session_authorization/role is set on database",
+      "status": "Returned with feedback",
+      "date": "2024-01-11",
+      "first_date": "2023-12-13",
+      "url": "https://commitfest.postgresql.org/patch/4702/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/4814073F-6387-4873-8B8E-4D6A7390DEC7@amazon.com"
+      ],
+      "authors": "Sami Imseih (simseih)",
+      "objectors": "Tom Lane",
+      "summary": "Autovacuum workers skip tables when `alter database ... set session_authorization` names a non-superuser who does not own the tables. The patch sets the session user of each autovacuum worker to the bootstrap superuser when the worker starts.",
+      "objection": "Tom Lane questioned whether this setting has any real use case. He said many other settings can break autovacuum, and that a fix should also cover other background processes. The author gave no use case. The commitfest manager returned the patch for lack of interest and asked for a stronger use case.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "wraparound autovacuum database horizon",
+        "autovacuum table prioritization freezing"
+      ],
+      "from_hint": false,
+      "score": 0.222,
+      "enriched": true,
+      "key_quote": "I'm rather unimpressed by this proposal, first because there are\nprobably ten other ways to break autovac with ill-considered settings,\nand second because if we do want to consider this a supported case,\nwhat about other background processes?",
+      "quote_message_url": "https://www.postgresql.org/message-id/2660032.1702502302%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "revert:dd9ac7d5d80608a640bb82cffb6a805ce84cf112",
+      "kind": "revert",
+      "title": "Revert \"Skip redundant anti-wraparound vacuums\"",
+      "status": "Reverted",
+      "date": "2020-03-30",
+      "first_date": "2019-03-31",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=dd9ac7d5d80608a640bb82cffb6a805ce84cf112",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAE39h22zPLrkH17GrkDgAYL3kbjvySYD1io+rtnAUFnaJJVS4g@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20180914153554.562muwr3uwujno75@alvherre.pgsql"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Skip redundant anti-wraparound vacuums\"\nReverted commit(s): Skip redundant anti-wraparound vacuums",
+      "objection": "This reverts commit 2aa6e33, that added a fast path to skip\nanti-wraparound and non-aggressive autovacuum jobs (these have no sense\nas anti-wraparound implies aggressive).  With a cluster using a high\namount of relations with a portion of them being heavily updated, this\ncould cause autovacuum to lock down, with autovacuum workers attempting\nrepeatedly those jobs on the same relations for the same database, that\njust kept being skipped.  This lock down can be solved with a manual\nVACUUM FREEZE.\n\nJustin King has reported one environment where the issue happened, and\nJulien Rouhaud and I have been able to reproduce it in a second\nenvironment.  With a very aggressive autovacuum_freeze_max_age,\ntriggering those jobs with pgbench is a matter of minutes, and hitting\nthe lock down is a lot harder (my local tests failed to do that).\n\nNote that anti-wraparound and non-aggressive jobs can only be triggered\non a subset of shared catalogs:\n- pg_auth_members\n- pg_authid\n- pg_database\n- pg_replication_origin\n- pg_shseclabel\n- pg_subscription\n- pg_tablespace\nWhile the lock down was possible down to v12, the root cause of those\njobs is a much older issue, which needs more analysis.\n\nBonus thanks to Andres Freund for the discussion.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "vac_update_datfrozenxid autovacuum",
+        "wraparound autovacuum database horizon"
+      ],
+      "from_hint": false,
+      "score": 0.213,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:3963",
+      "kind": "cf",
+      "title": "Improve doc for autovacuum on partitioned tables",
+      "status": "Returned with feedback",
+      "date": "2023-08-01",
+      "first_date": "2022-10-25",
+      "url": "https://commitfest.postgresql.org/patch/3963/",
+      "thread_urls": [],
+      "authors": "Laurenz Albe (laurenz)",
+      "objectors": "",
+      "summary": "Improve doc for autovacuum on partitioned tables",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "wraparound autovacuum database horizon",
+        "autovacuum table prioritization freezing"
+      ],
+      "from_hint": false,
+      "score": 0.206,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:3188",
+      "kind": "cf",
+      "title": "Autovacuum (analyze) on partitioned tables for ATTACH/DETACH/DROP commands",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-06-21",
+      "url": "https://commitfest.postgresql.org/patch/3188/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKkQ50_H0k_Y9WjU2n=n11YtSfnLJAHMXef2uorQBFTcCJif_A@mail.gmail.com"
+      ],
+      "authors": "Yuzuko Hosoya (yuzu)",
+      "objectors": "",
+      "summary": "The patch proposed counting the live tuples of a partition toward its partitioned ancestors' changes_since_analyze when the partition is attached, detached or dropped, so that autovacuum would trigger an analyze on the partitioned table after these DDL operations. It added three configuration parameters (autovacuum_analyze_attach_partition, autovacuum_analyze_detach_partition, autovacuum_analyze_drop_partition) to enable or disable the behavior, with reporting done via pgstat_report_anl_ancestors().",
+      "objection": "No design objections appear in the visible messages. The patch stopped applying to HEAD, a rebase was requested, and the author did not respond for four weeks, so the entry was marked Returned with Feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "wraparound autovacuum database horizon",
+        "autovacuum table prioritization freezing"
+      ],
+      "from_hint": false,
+      "score": 0.2,
+      "enriched": true,
+      "key_quote": "Four weeks later, nothing has happened.  So I have marked the patch as\nRwF.",
+      "quote_message_url": "https://www.postgresql.org/message-id/YVavss7svu9UT4vE%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:4027",
+      "kind": "cf",
+      "title": "Teach autovacuum.c to launch workers to advance table age without attendant antiwraparound cancellation behavior",
+      "status": "Withdrawn",
+      "date": "2023-01-26",
+      "first_date": "2022-10-19",
+      "url": "https://commitfest.postgresql.org/patch/4027/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAH2-Wz=S-R_2rO49Hm94Nuvhu9_twRGbTm6uwDRmRu-Sqn_t3w@mail.gmail.com"
+      ],
+      "authors": "Peter Geoghegan (pgeoghegan)",
+      "objectors": "Robert Haas",
+      "summary": "The patch separates the rule that an antiwraparound autovacuum cannot be auto-cancelled from the XID age that launches it, so table-age autovacuums stay cancellable until a later age. In v5 a new setting, autovacuum_no_auto_cancel_age, sets that later age (default 1.8x the launch threshold), and a first patch adds instrumentation for what triggered each autovacuum.",
+      "objection": "Peter Geoghegan withdrew the entry, saying he could not do more work on it. He did not give a reason beyond that. Before that, Robert Haas objected that keeping these autovacuums cancellable could make things worse for users whose autovacuums are already cancelled repeatedly. He found the evidence too speculative to justify the change, and the thread did not resolve this. Andres Freund was still asking for changes to the structure and naming of the instrumentation patch (0001).",
+      "touch_points": [],
+      "matched_queries": [
+        "advance datfrozenxid during vacuum",
+        "autovacuum table prioritization freezing"
+      ],
+      "from_hint": false,
+      "score": 0.187,
+      "enriched": true,
+      "key_quote": "In my opinion, this is too speculative to justify making changes to the behavior.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoZ84CNpWojX%3DJYedkaHCfjz-tRuYr0XcXLbkMPd4f0NSw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:2364",
+      "kind": "cf",
+      "title": "Autovacuum: vacuum tables in descending order of xid_age",
+      "status": "Returned with feedback",
+      "date": "2020-08-03",
+      "first_date": "2019-11-29",
+      "url": "https://commitfest.postgresql.org/patch/2364/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20191129180138.GD8731@fetter.org"
+      ],
+      "authors": "David Fetter (dfetter)",
+      "objectors": "Robert Haas, Mark Dilger, Michael Paquier",
+      "summary": "The patch makes autovacuum sort the tables of a database by descending xid age (relfrozenxid age) and vacuum the oldest first, instead of the current pg_class order. The author proposed this single change first, with other scheduling factors left to later patches.",
+      "objection": "Reviewers judged sorting by xid age alone too simple, so it could regress as many cases as it improved. Robert Haas showed that a table that takes longer to vacuum can need to start first even though it is younger, and asked for a formula that also weighs table size, index size and bloat. Mark Dilger and Michael Paquier worried about regressions from changing default autovacuum behavior. The thread then stalled without consensus.",
+      "touch_points": [],
+      "matched_queries": [
+        "vac_update_datfrozenxid autovacuum",
+        "autovacuum table prioritization freezing"
+      ],
+      "from_hint": false,
+      "score": 0.185,
+      "enriched": true,
+      "key_quote": "A lot of previous efforts to improve autovacuum scheduling have fallen down precisely because they did something that was so simple that it was doomed to regress as many cases as it improved, so I wouldn't be too quick to dismiss Mark's suggestion.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoZPsiERnWf2eFSk7F2AkmOymhQKGyVFsB5t4BPim7p5Og%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:4099",
+      "kind": "cf",
+      "title": "Lock updated tuples in tuple_update() and tuple_delete()",
+      "status": "Returned with feedback",
+      "date": "2024-10-08",
+      "first_date": "2022-07-01",
+      "url": "https://commitfest.postgresql.org/patch/4099/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAPpHfdua-YFw3XTprfutzGp28xXLigFtzNbuFY8yPhqeq6X5kg@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov (smagen)",
+      "objectors": "Andres Freund",
+      "summary": "When tuple_update() or tuple_delete() finds a concurrently updated tuple in read committed mode, the table AM locks the updated version itself instead of returning TM_Updated for a separate tuple_lock() call. Later versions also had update and delete return the old tuple through a slot passed by the executor, which avoids refetching it and helps table AMs with costly TID lookups.",
+      "objection": "Version 15 was committed in March 2023, then reverted after Andres Freund's post-commit review. He showed that RETURNING could use the wrong tuple, with an isolation test that fails. He also criticised the new API: the ignored wait parameter, tmfd turned into an input, and the LazyTupleTableSlot code. The redesigned old-tuple API came days before the version 16 feature freeze, and he said it was not ready for 16. In March 2024 the author planned to push a revised version, and the visible messages do not show why the entry was finally returned with feedback in October 2024.",
+      "touch_points": [],
+      "matched_queries": [
+        "update datfrozenxid more often"
+      ],
+      "from_hint": false,
+      "score": 0.143,
+      "enriched": true,
+      "key_quote": "I guess this really is part of my issue with this change - it optimizes the rare case, while not addressing the same inefficiency in the common case.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20230323003003.plgaxjqahjgkuxrk%40awork3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:7242",
+      "kind": "cf",
+      "title": "Fix autovacuum freeze bug where weight can lower a table's freeze score",
+      "status": "Withdrawn",
+      "date": "2026-09-03",
+      "first_date": "2026-09-01",
+      "url": "https://commitfest.postgresql.org/patch/7242/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGRkXqSJ5j24kLQ83gVtYXE5-Oa4jxxAYKFJU5=EfG2yGAXKqA@mail.gmail.com"
+      ],
+      "authors": "shihao zhong (zhong950419)",
+      "objectors": "",
+      "summary": "The patch changes the autovacuum freeze score from d7965d65fc5 so that the score is raised to a power only when that makes it larger. Without this, a larger freeze weight can lower the score of a table near wraparound and move it down the autovacuum list.",
+      "objection": "The same bug was already under discussion in another thread with a patch from Nathan. The author rebased his patch on Nathan's patch and continued in that thread, and withdrew this entry.",
+      "touch_points": [],
+      "matched_queries": [
+        "autovacuum table prioritization freezing"
+      ],
+      "from_hint": false,
+      "score": 0.136,
+      "enriched": true,
+      "key_quote": "This is already being discussed here:\nhttps://www.postgresql.org/message-id/apWcbq91BAfhmsKU%40nathan.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALj2ACVt5e8kJAxqzWRO%2Bt%2B%3DxRk6tpRd3yDPFRr7VKE_GCSabw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "revert:e28bb885196916b0a3d898ae4f2be0e38108d81b",
+      "kind": "revert",
+      "title": "Revert changes to CONCURRENTLY that \"sped up\" Xmin advance",
+      "status": "Reverted",
+      "date": "2022-05-31",
+      "first_date": "2021-02-23",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e28bb885196916b0a3d898ae4f2be0e38108d81b",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/17485-396609c6925b982d@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/20210115133858.GA18931@alvherre.pgsql"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert changes to CONCURRENTLY that \"sped up\" Xmin advance\nReverted commit(s): VACUUM: ignore indexing operations with CONCURRENTLY",
+      "objection": "This reverts commit d9d076222f5b \"VACUUM: ignore indexing operations\nwith CONCURRENTLY\".\n\nThese changes caused indexes created with the CONCURRENTLY option to\nmiss heap tuples that were HOT-updated and HOT-pruned during the index\ncreation.  Before these changes, HOT pruning would have been prevented\nby the Xmin of the transaction creating the index, but because this\nchange was precisely to allow the Xmin to move forward ignoring that\nbackend, now other backends scanning the table can prune them.  This is\nnot a problem for VACUUM (which requires a lock that conflicts with a\nCREATE INDEX CONCURRENTLY operation), but HOT-prune can definitely\noccur.  In other words, Xmin advancement was sped up, but at the cost of\ncorrupting the resulting index.\n\nRegrettably, this means that the new feature in PG14 that RIC/CIC on\nvery large tables no longer force VACUUM to retain very old tuples goes\naway.  We might try to implement it again in a later release, but for\nnow the risk of indexes missing tuples is too high and there's no easy\nfix.\n\nBackpatch to 14, where this change appeared.\n\nDiagnosys-by: Andrey Borodin <x4mmm@yandex-team.ru>\nDiagnosys-by: Michael Paquier <michael@paquier.xyz>\nDiagnosys-by: Andres Freund <andres@anarazel.de>",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "advance datfrozenxid during vacuum"
+      ],
+      "from_hint": false,
+      "score": 0.135,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:2302",
+      "kind": "cf",
+      "title": "Remove size limitations of vacuums dead_tuples array",
+      "status": "Returned with feedback",
+      "date": "2019-11-30",
+      "first_date": "2019-10-09",
+      "url": "https://commitfest.postgresql.org/patch/2302/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANwKhkO7+FzZsS_cbDFRKb-M3vVhWksfEcZamnjDqxDF6XgCUg@mail.gmail.com"
+      ],
+      "authors": "Ants Aasma (ants)",
+      "objectors": "Tomas Vondra",
+      "summary": "The patch lets vacuum's dead_tuples array grow past 1 GiB of maintenance_work_mem (about 179M tuples) by using MemoryContextAllocHuge. It also changes array indexing to size_t to remove a second limit at 12 GiB.",
+      "objection": "Tomas Vondra pointed to an earlier, unfinished thread on the same goal that discussed replacing the simple array with another data structure. The author said he would continue that earlier work, and Michael Paquier then marked this entry returned with feedback. No technical objection to the patch itself appears in the visible messages.",
+      "touch_points": [],
+      "matched_queries": [
+        "transaction ID stop limit vacuum"
+      ],
+      "from_hint": false,
+      "score": 0.127,
+      "enriched": true,
+      "key_quote": "There was a fairly long discussion about how to best do that (using other data structure, not just a simple array).",
+      "quote_message_url": "https://www.postgresql.org/message-id/20191010140508.zb22rihya6nmchwd%40development",
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:3843",
+      "kind": "cf",
+      "title": "New strategies for freezing, advancing relfrozenxid early",
+      "status": "Withdrawn",
+      "date": "2023-01-26",
+      "first_date": "2022-08-25",
+      "url": "https://commitfest.postgresql.org/patch/3843/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAH2-WzkFok_6EAHuK39GaW4FjEFQsY=3J0AAd6FXk93u-Xq3Fg@mail.gmail.com"
+      ],
+      "authors": "Peter Geoghegan (pgeoghegan)",
+      "objectors": "",
+      "summary": "New strategies for freezing, advancing relfrozenxid early\nThreads: New strategies for freezing, advancing relfrozenxid early",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "advance datfrozenxid during vacuum"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:5736",
+      "kind": "cf",
+      "title": "Fix a race condition in ConditionVariableTimedSleep()",
+      "status": "Returned with feedback",
+      "date": "2026-10-02",
+      "first_date": "2025-05-05",
+      "url": "https://commitfest.postgresql.org/patch/5736/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/aBhuTqNhMN3prcqe@ip-10-97-1-34.eu-west-3.compute.internal"
+      ],
+      "authors": "Bertrand Drouvot (bertranddrouvot.pg)",
+      "objectors": "",
+      "summary": "Fix a race condition in ConditionVariableTimedSleep()\nThreads: Fix a race condition in ConditionVariableTimedSleep()",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "LockDatabaseFrozenIds conditional lock"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3752",
+      "kind": "cf",
+      "title": "POC: Lock updated tuples in tuple_update() and tuple_delete()",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-07-01",
+      "url": "https://commitfest.postgresql.org/patch/3752/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAPpHfdua-YFw3XTprfutzGp28xXLigFtzNbuFY8yPhqeq6X5kg@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov (smagen)",
+      "objectors": "",
+      "summary": "POC: Lock updated tuples in tuple_update() and tuple_delete()\nThreads: POC: Lock updated tuples in tuple_update() and tuple_delete()",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "update datfrozenxid more often"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:1658",
+      "kind": "cf",
+      "title": "Improve recovery performance of dropping database having many tablespaces",
+      "status": "Returned with feedback",
+      "date": "2018-09-30",
+      "first_date": "2018-06-04",
+      "url": "https://commitfest.postgresql.org/patch/1658/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHGQGwF8YwNH0ZaL+2wjZPkj+ji9UhC+Z4ScnG97WKtVY5L9iw@mail.gmail.com"
+      ],
+      "authors": "Fujii Masao (masaofujii)",
+      "objectors": "",
+      "summary": "Improve recovery performance of dropping database having many tablespaces\nThreads: Recovery performance of DROP DATABASE with many tablespaces",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "datfrozenxid stale many tables"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "revert:193e6d18e553a104d315ff81892d509d89a30fd8",
+      "kind": "revert",
+      "title": "Revert: Allow locking updated tuples in tuple_update() and tuple_delete()",
+      "status": "Reverted",
+      "date": "2024-04-11",
+      "first_date": "2024-03-25",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=193e6d18e553a104d315ff81892d509d89a30fd8",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20240410165236.rwyrny7ihi4ddxw4@awork3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/CAPpHfdua-YFw3XTprfutzGp28xXLigFtzNbuFY8yPhqeq6X5kg@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov",
+      "objectors": "",
+      "summary": "Revert: Allow locking updated tuples in tuple_update() and tuple_delete()\nReverted commit(s): Allow locking updated tuples in tuple_update() and tuple_delete(); Fix some typos and grammar issues from commit 87985cc92522",
+      "objection": "This commit reverts 87985cc925 and 818861eb57 per review by Andres Freund.",
+      "touch_points": [
+        "SQL syntax / standard"
+      ],
+      "matched_queries": [
+        "update datfrozenxid more often"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:1007",
+      "kind": "cf",
+      "title": "log_autovacuum_min_duration doesn't log VACUUMs",
+      "status": "Returned with feedback",
+      "date": "2017-03-07",
+      "first_date": "2017-02-10",
+      "url": "https://commitfest.postgresql.org/patch/1007/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANP8+jJVPemfsHSgZUBfCAcdfO6-jdSpWf08tgkm=jSknohGVg@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon)",
+      "objectors": "",
+      "summary": "log_autovacuum_min_duration doesn't log VACUUMs\nThreads: log_autovacuum_min_duration doesn't log VACUUMs",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "vac_update_datfrozenxid autovacuum"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:6830",
+      "kind": "cf",
+      "title": "Add autovacuum_warning to surface concurrent vacuum collisions",
+      "status": "Withdrawn",
+      "date": "2026-08-22",
+      "first_date": "2026-06-01",
+      "url": "https://commitfest.postgresql.org/patch/6830/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOzEurSChaPD2tMaEQ7k+=7cbgTL0D9j29o0J5-Se0SMDNWZGg@mail.gmail.com"
+      ],
+      "authors": "Shinya Kato (shinyakato)",
+      "objectors": "",
+      "summary": "Add autovacuum_warning to surface concurrent vacuum collisions\nThreads: Add autovacuum_warning to surface concurrent vacuum collisions",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "vac_update_datfrozenxid autovacuum"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:5732",
+      "kind": "cf",
+      "title": "Introduce some randomness to autovacuum",
+      "status": "Rejected",
+      "date": "2026-06-07",
+      "first_date": "2025-04-25",
+      "url": "https://commitfest.postgresql.org/patch/5732/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEG8a3+3fwQbgzak+h3Q7Bp=vK_aWhw1X7w7g5RCgEW9ufdvtA@mail.gmail.com"
+      ],
+      "authors": "Zhao Junwang (zhjwpku)",
+      "objectors": "",
+      "summary": "Introduce some randomness to autovacuum\nThreads: Introduce some randomness to autovacuum",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "wraparound autovacuum database horizon"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "revert:52985e4fea75f1ec742742f27e246a8775c99e08",
+      "kind": "revert",
+      "title": "Revert \"Increase the default vacuum_cost_limit from 200 to 2000\"",
+      "status": "Reverted",
+      "date": "2019-03-10",
+      "first_date": "2019-03-06",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=52985e4fea75f1ec742742f27e246a8775c99e08",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/28720.1552101086@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CAKJS1f_YbXC2qTMPyCbmsPiKvZYwpuQNQMohiRXLj1r=8_rYvw@mail.gmail.com"
+      ],
+      "authors": "Andrew Dunstan",
+      "objectors": "",
+      "summary": "Revert \"Increase the default vacuum_cost_limit from 200 to 2000\"\nReverted commit(s): Increase the default vacuum_cost_limit from 200 to 2000",
+      "objection": "This reverts commit bd09503e633b8077822bb4daf91625b71ac16253.\n\nPer discussion, it seems like what we should do instead is to\nreduce the default value of autovacuum_vacuum_cost_delay by the\nsame factor.  That's functionally equivalent as long as the\nplatform can accurately service the smaller delay request, which\nshould be true on anything released in the last 10 years or more.\nAnd smaller, more-closely-spaced delays are better in terms of\nproviding a steady I/O load.",
+      "touch_points": [],
+      "matched_queries": [
+        "transaction ID stop limit vacuum"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:4606",
+      "kind": "cf",
+      "title": "Fix log_line_prefix to display the transaction id (%x) for statements not in a transaction block",
+      "status": "Withdrawn",
+      "date": "2024-05-18",
+      "first_date": "2023-10-08",
+      "url": "https://commitfest.postgresql.org/patch/4606/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/12fa0c9a-2189-ed7a-016a-3f1b99bd756c@yeah.net"
+      ],
+      "authors": "Zongliang Quan (quanzl)",
+      "objectors": "",
+      "summary": "Fix log_line_prefix to display the transaction id (%x) for statements not in a transaction block\nThreads: Fix log_line_prefix to display the transaction id (%x) for statements\nnot in a transaction block",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "transaction ID stop limit vacuum"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:4410",
+      "kind": "cf",
+      "title": "Meson build updates",
+      "status": "Withdrawn",
+      "date": "2023-09-01",
+      "first_date": "2023-05-18",
+      "url": "https://commitfest.postgresql.org/patch/4410/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CSPIJVUDZFKX.3KHMOAVGF94RV@c3po"
+      ],
+      "authors": "Tristan Partin (tristan957)",
+      "objectors": "",
+      "summary": "Meson build updates\nThreads: Meson build updates",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "update datfrozenxid more often"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:2211",
+      "kind": "cf",
+      "title": "Resume vacuum and autovacuum from interruption and cancellation",
+      "status": "Returned with feedback",
+      "date": "2020-04-08",
+      "first_date": "2019-07-16",
+      "url": "https://commitfest.postgresql.org/patch/2211/",
+      "thread_urls": [],
+      "authors": "Masahiko Sawada (masahikosawada)",
+      "objectors": "",
+      "summary": "Resume vacuum and autovacuum from interruption and cancellation",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "vac_update_datfrozenxid autovacuum"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:1589",
+      "kind": "cf",
+      "title": "Synchronous replay mode for avoiding stale reads on hot standbys",
+      "status": "Withdrawn",
+      "date": "2019-07-01",
+      "first_date": "2018-03-01",
+      "url": "https://commitfest.postgresql.org/patch/1589/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEepm=0Q6kCKMYFBN+Vv2frPc=3cS3T1MPOxnZ9do8+NHzoJTA@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Synchronous replay mode for avoiding stale reads on hot standbys\nThreads: Synchronous replay take III",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "datfrozenxid stale many tables"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 2,
+    "new_calls": 6,
+    "failed": 0,
+    "quotes_verified": 6,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 2
+  },
+  "precedent_cutoff": "2026-11-02",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found. [P7] sorted autovacuum tables by xid age and was returned over scheduling regressions; this proposal changes no table order, and Andres confirmed in message #5 that it adds no rescoring. [P12] concerns freezing strategy and records no reason. Message #1 builds on a committed prioritization change, not a rejected one."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 1,
+      "note": "There is no other contract objection. Advancing datfrozenxid earlier is a benign behavior change, and the fixed interval adds no GUC. The proposal does not yet say whether the new per-database counter shows up in pg_stat_database."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "No objection from this angle. The persistent effect is the existing in-place update of pg_database.datfrozenxid and the clog truncation that follows, now run every ten minutes. Both are WAL-logged and replay on a standby as they do today. The new counter is shared statistics: it is not on disk across a crash, not replicated and not in the catalog. If the counter is lost or reset, the periodic refresh does not run and the final refresh still does, so behaviour falls back to today's. The PgStat_StatDBEntry change needs a stats file format bump, which only blocks backpatching, and the CommitFest entry targets version 20 anyway. Without the code I could not check how often the counter is flushed, or whether the varsup.c change keeps the existing locking order around the XID limit update."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "No security or privilege objection. Any user who may run a multi-table VACUUM already triggers vac_update_datfrozenxid() at the end of the command, so the patch only changes when that refresh runs. The conditional lock and the ten-minute gate do not add new ways to block others or use resources. The patch does not say whether a view exposes the new per-database statistics counter, so that exposure could not be checked."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "From this angle the hot-path cost is small, since there is one counter update per vacuumed table and refreshes are gated by ForceTransactionIdLimitUpdate(), and the idea fits core. Committers who know vacuum are engaged in the thread."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "One objection only; no extension or external tool beyond the built-in ONLY_DATABASE_STATS option covers this."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "The material shows real demand: a production database with over 600,000 tables where datfrozenxid stayed stale after the oldest tables were frozen (message #1). In message #4, Andres Freund called the update-only-at-end behavior problematic because it makes anti-wraparound measures more likely, and asked for the same logic in manual multi-relation VACUUM. Wraparound protection matters to every large installation, and the extra work in v2 runs only inside vacuum and only when progress is pending, so the users who gain also pay. The open points are the interval, its cost and vacuumdb coverage, which other angles cover."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 4,
+      "new_survived": 2,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 65,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 17,
+    "wall_ms": 146101,
+    "cost_usd": 1.4689899999999998,
+    "dry_run": false
+  }
+}

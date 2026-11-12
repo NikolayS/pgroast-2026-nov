@@ -1,0 +1,1678 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T00:54:21.743Z",
+  "input": {
+    "arg": "4460",
+    "cf": {
+      "id": 4460,
+      "url": "https://commitfest.postgresql.org/patch/4460/",
+      "title": "Implement row pattern recognition feature",
+      "status": "Needs review",
+      "authors": "Tatsuo Ishii (ishii), Jian He (stayreal), Henson Choi (assam258.gmail.com)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/20230625.210509.1276733411677577841.t-ishii%40sranhm.sra.co.jp",
+    "subject": "Row pattern recognition",
+    "thread_start": "2023-06-25T12:05:09Z",
+    "messages_read": 549,
+    "messages_total": 549,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v20-0001-Row-pattern-recognition-patch-for-raw-parser.patch",
+      "v20-0002-Row-pattern-recognition-patch-parse-analysis.patch",
+      "v20-0003-Row-pattern-recognition-patch-rewriter.patch",
+      "v20-0004-Row-pattern-recognition-patch-planner.patch",
+      "v20-0005-Row-pattern-recognition-patch-executor.patch",
+      "v20-0006-Row-pattern-recognition-patch-docs.patch",
+      "v20-0007-Row-pattern-recognition-patch-tests.patch",
+      "v20-0008-Allow-to-print-raw-parse-tree.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-fable-5-2",
+    "synth": "claude-fable-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection is fatal, and none fails level 1a or 1b: the problem is stated and demand is shown. The surviving level 2 objections are fixable design points: the open frame redesign (maintenance-fit-3), no stated NFA memory bound (security-1), DEFINE deparse round-trip (replication-ondisk-1) and the planner burden of defineClause (maintenance-fit-1). They need a committer who knows the planner, ruleutils.c and nodeWindowAgg.c to judge them.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Row pattern recognition (SQL R020) in the window clause",
+    "problem": "Searching an ordered series of rows for a regular-expression-like shape, such as a V-shaped price curve, is complex and slow to write in Postgres today. The author targets analytic users and cites Oracle, Snowflake, Trino and others that offer row pattern recognition.",
+    "proposed_design": "The patch adds the SQL:2016 R020 row pattern syntax to a window definition: PATTERN, DEFINE, INITIAL and AFTER MATCH SKIP. The pattern match narrows each row's full window frame to a reduced frame, so existing window functions and aggregates read only matched rows. An NFA in the executor does the matching, DEFINE is planned like havingQual, and navigation functions read other rows.",
+    "user_visible_surface": [
+      "Window clause syntax: AFTER MATCH SKIP PAST LAST ROW | TO NEXT ROW, INITIAL, PATTERN (...), DEFINE var AS expr",
+      "PATTERN operators: +, *, ?, |, grouping, {n}, {n,}, {n,m}, {,m}, reluctant quantifiers",
+      "Row pattern navigation functions PREV, NEXT, FIRST, LAST, with offsets and compound forms, allowed only in DEFINE",
+      "New EXPLAIN output for RPR windows: Pattern line with absorption markers (~, #), NFA counters under ANALYZE",
+      "pg_get_viewdef() output changes, including some queries without RPR (TABLEFUNC alias lists, column name reservation)"
+    ],
+    "author_claims": [
+      "The design is a subset of R020 that can grow later without changing behaviour, and the default skip mode now follows the standard.",
+      "Patch 0003 makes match results agree with the standard and Perl, and was cross-checked against Oracle 23ai and Trino 471.",
+      "The DEFINE memory leak fix cuts memory from 94MB to 18MB on 300k rows.",
+      "Tests find no remaining wrong answers apart from listed known issues; run condition pushdown and frame replacement are disabled for RPR windows.",
+      "The large test suite is needed as black-box coverage, and its query count is in line with existing features."
+    ],
+    "thread_state": "Tatsuo Ishii posted v54 on 2026-10-20, built from Henson Choi's ten patches; Henson Choi and jian he keep exchanging refactorings. Open items include a proposed redesign that makes the reduced frame the frame itself, the EXPLAIN marker format, test suite size, and whether R020 should be marked YES in sql_features.txt.",
+    "unclear": [
+      "The material does not say whether a committer outside the author group has reviewed the planner and ruleutils.c changes.",
+      "The proposal does not give run time or memory numbers for state explosion on bad patterns, or what limits protect the server.",
+      "The thread does not settle whether the frame redesign proposed on 2026-11-04 must land before commit.",
+      "The material does not say how MEASURES, SUBSET and qualified pattern variables would be added later without breaking the syntax shipped now.",
+      "The material does not say when the generic ruleutils.c fixes will be split into their own thread and CF entry."
+    ],
+    "search_queries": [
+      "row pattern recognition",
+      "MATCH_RECOGNIZE",
+      "window PATTERN DEFINE clause",
+      "PREV NEXT navigation function",
+      "reduced window frame",
+      "regular expression over rows",
+      "SQL 2016 window clause extension",
+      "NFA pattern matching executor"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Reduced-frame design is still open and would change the window API",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden",
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The current overlay design ships, and extension window functions start using it. The proposed redesign in message #547 then changes what frameheadpos and frametailpos mean, including that T may decrease and H may move backward. Those extensions, and the core readers that work out the end from frameOptions, need changes in a later release.",
+      "argument": "Message #543 and message #547 say the current reduced frame cannot express SEEK. They also say it restarts aggregates on every row, which is quadratic, and that it spools the partition for last_value(). Message #547 lists six frame contracts (C1-C6) that the readers rely on, and it notes that one change touches the contract of transition functions. A committer would likely ask that this contract be settled before WinGetFuncArgInFrame() and related code take on RPR-specific behaviour.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        542,
+        543,
+        547
+      ],
+      "author_must_show": "Will the frame contract change of message #547 land before commit, and if not, which window-function and transition-function behaviour would change later?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 542,
+          "from": "jian he",
+          "date": "2026-10-21T13:33:12Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxFEwTRc4JEbRoYVWPYE-KM6B%3D7qWYtg6SpsZHfA2U3fWw%40mail.gmail.com"
+        },
+        {
+          "index": 543,
+          "from": "Henson Choi",
+          "date": "2026-10-22T00:08:57Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zCqiC5iqoYq5uaTWUCpsUsv-7pOjScwfm66wu28OYWOZA%40mail.gmail.com"
+        },
+        {
+          "index": 547,
+          "from": "Henson Choi",
+          "date": "2026-11-04T03:10:35Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zDM87k_d_UnkYVeG-XP%2Bz_aBHWQFoe8osTN7DYcb_32cA%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "An author proposes in #543 and #547 to rethink the frame representation, and the thread does not say whether that lands before commit. The extension scenario is not supported: #547 says results are right today and readers keep reading the frame positions as before.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No stated bound on NFA state memory for patterns any user can write",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user who can only run SELECT writes a nested, nullable, alternating pattern over a large partition. The matcher keeps growing its NFA state set in backend memory until the host runs out of memory, and the OOM killer or a crash restart hits every session.",
+      "argument": "RPR adds a new regex-like engine that runs on input any user controls, but the material gives no state cap, no work_mem accounting and no error for an oversized match. Message #540 lists state explosion as still open, with fixes not yet ready. The interrupt checks added in messages #291 and #502 let statement_timeout cancel a runaway query, but they do not limit how much memory it takes before the timeout fires. The existing regex code in Postgres stops with an error when a regex grows too large, so a committer would likely ask for the same kind of limit here.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        291,
+        502,
+        514,
+        539,
+        540
+      ],
+      "author_must_show": "What limit stops one unprivileged query from growing NFA state without bound, and what error or memory figures show for a worst-case pattern?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 291,
+          "from": "Henson Choi",
+          "date": "2026-03-29T12:13:47Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBCF3dwSjStmG0kJqw_y1z8QD73Rf1G58QTKEvd9tScwA%40mail.gmail.com"
+        },
+        {
+          "index": 502,
+          "from": "Henson Choi",
+          "date": "2026-09-09T05:33:28Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zCuex4qU44vxA5gmGTieh9GQn2xZxT2o4-bfeOWaBLV%3Dw%40mail.gmail.com"
+        },
+        {
+          "index": 514,
+          "from": "Henson Choi",
+          "date": "2026-09-19T12:28:04Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zCN0iy1-keB5mxqA2LKU2omAdFcpi8rap5zGjUjJh9PcA%40mail.gmail.com"
+        },
+        {
+          "index": 539,
+          "from": "Tatsuo Ishii",
+          "date": "2026-10-19T00:52:59Z",
+          "url": "https://www.postgresql.org/message-id/20261019.095259.1988929700676866808.ishii%40postgresql.org"
+        },
+        {
+          "index": 540,
+          "from": "Henson Choi",
+          "date": "2026-10-19T13:27:25Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zCb9847vcoaH72wvk61O-xOH_OSzYHt40TH37xjz%3DKmKg%40mail.gmail.com"
+        }
+      ],
+      "id": "security-1",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #540 confirms state explosion is open, and the material shows no cap or memory figures. A SELECT-only user can already exhaust memory in other ways, so this is a robustness question more than a new privilege problem.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "View deparse of DEFINE keeps failing round-trip, which breaks pg_upgrade",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "pg_dump_round_trip",
+      "touch_points": [
+        "pg_dump_round_trip",
+        "on_disk_pg_upgrade",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user creates a view or a SQL function with BEGIN ATOMIC whose DEFINE reads a bare column, then later adds or renames a column in a joined table. At the next major upgrade, pg_upgrade's schema dump emits text that does not re-parse. The upgrade stops at restore time, long after the view was created.",
+      "argument": "DEFINE prints columns without a qualifier, because the qualifier slot belongs to the pattern variable. So every bare name must resolve the same way when the text is read back. The thread found this failing for ADD COLUMN, RENAME COLUMN, USING merges and FULL JOIN COALESCE (message #530), and for function parameters printed as f.threshold (message #532). Message #527 still lists a window-name deparse case as a known issue. The fix reserves names case by case in ruleutils.c, so nothing fails loudly when a later ruleutils change or a new feature such as qualified pattern variables does not know about DEFINE.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        527,
+        530,
+        532,
+        537
+      ],
+      "author_must_show": "What test checks that every RPR view and function body in the regression suite survives pg_dump and restore under pg_upgrade, and what remains open in the window-name case?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 527,
+          "from": "Henson Choi",
+          "date": "2026-10-08T01:14:00Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zDsYugq506ou49PU%2BOk%2B4Umn5n59Qs5wYofvKyfEpvZJQ%40mail.gmail.com"
+        },
+        {
+          "index": 530,
+          "from": "Henson Choi",
+          "date": "2026-10-09T01:35:34Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBSWRe2uxFVs5bwx%2BkutCqXYv801S3Vg%2B9wP_cWjJcnvQ%40mail.gmail.com"
+        },
+        {
+          "index": 532,
+          "from": "Henson Choi",
+          "date": "2026-10-09T01:36:26Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBno3aWzkJ6iu-Qsj-wniF%2Bj%2Bi3crZRs9DX9UCZZjG_Xg%40mail.gmail.com"
+        },
+        {
+          "index": 537,
+          "from": "Tatsuo Ishii",
+          "date": "2026-10-14T01:50:43Z",
+          "url": "https://www.postgresql.org/message-id/20261014.105043.724886930578991800.ishii%40postgresql.org"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #253 keeps RPR test objects for the pg_upgrade and pg_dump tests, which answers part of the question. But message #532 reports a function body that still does not restore, and message #527 lists an open window-name deparse case.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "DEFINE adds an expression site every planner rewrite must remember",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds or changes a planner pass that rewrites expressions, such as pull-up, grouping or alias expansion, and does not handle WindowClause.defineClause. RPR queries then fail with \"variable not found in subplan target list\" or crash the backend. Users find out in a minor release, since nothing in the build or the core tests fails.",
+      "argument": "Message #529 says every planner step that rewrites expressions \"has to treat DEFINE the same way, or its copy drifts out of step\". The thread shows the cost of missing one: grouping (#529), subquery pull-up (#511), a setrefs crash (#513), a volatility check bypassed through GROUP BY (#513), and a defect found after the fix was cut (#532). Each defect was found by RPR-specific black-box tests, not by a check that fails when a pass forgets the clause.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        511,
+        513,
+        529,
+        532
+      ],
+      "author_must_show": "What mechanism makes a new planner expression pass fail loudly if it does not visit defineClause, beyond the RPR regression files?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 511,
+          "from": "Henson Choi",
+          "date": "2026-09-18T03:21:10Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBufaHrGyJK4zzQ-U9YZLVmhpBOjBuLugzqdtwE_qf7Nw%40mail.gmail.com"
+        },
+        {
+          "index": 513,
+          "from": "Henson Choi",
+          "date": "2026-09-18T05:53:09Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zDwXWsb_ATce%3D1yBgioFDTaTBDOGUvEy0NaDXcfN3ZTEw%40mail.gmail.com"
+        },
+        {
+          "index": 529,
+          "from": "Henson Choi",
+          "date": "2026-10-09T01:35:02Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBr-wZyE%2BDU3uK8OATdMJsSLE2nHEeHcyQA0FD3KpJJaw%40mail.gmail.com"
+        },
+        {
+          "index": 532,
+          "from": "Henson Choi",
+          "date": "2026-10-09T01:36:26Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBno3aWzkJ6iu-Qsj-wniF%2Bj%2Bi3crZRs9DX9UCZZjG_Xg%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "havingQual and frame offsets carry the same burden, and the tree walkers now visit defineClause (#259, #335), which lowers the risk. The rule that a navigation argument must not be folded is new, and the thread shows five defects of this kind.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Catalog names prev, next, first, last may capture existing user functions",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "sql_standard_syntax",
+      "touch_points": [
+        "sql_standard_syntax",
+        "catalog",
+        "pg_dump_round_trip"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site has its own aggregate public.last(anyelement) or uses an extension that defines first() and last(). After upgrade, a query calls last(x) outside a window. If it resolves to the new pg_catalog entry, the query fails because navigation is allowed only in DEFINE, and the user finds out in production.",
+      "argument": "The patch adds navigation entries to pg_proc.dat (v20-0005, message #312), and message #222 restricts PREV and NEXT to DEFINE. pg_catalog is searched first, so a built-in with the same name and signature can shadow a user function. First and last aggregates are a common user and extension pattern. The proposal does not say how these names resolve outside DEFINE, or inside DEFINE when the user has an object with the same name.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        222,
+        312,
+        405
+      ],
+      "author_must_show": "With a user-defined public.first(anyelement) or public.last(anyelement) aggregate installed, do existing queries outside DEFINE behave the same after upgrade, and what does DEFINE resolve to?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 222,
+          "from": "Tatsuo Ishii",
+          "date": "2026-02-19T04:47:51Z",
+          "url": "https://www.postgresql.org/message-id/20260219.134751.1095180149902968829.ishii%40postgresql.org"
+        },
+        {
+          "index": 312,
+          "from": "Henson Choi",
+          "date": "2026-05-01T17:11:00Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBdwAUDNs_WFdLkFF%3DewhkDkv-AqizVEVzhsfremGFb4w%40mail.gmail.com"
+        },
+        {
+          "index": 405,
+          "from": "Henson Choi",
+          "date": "2026-06-21T06:39:11Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zCsaf%3DWedELLjqLe3BV_8dWiO1DPDGA9sXj4qhe%2B%3D-XXw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The series adds navigation entries to pg_proc.dat, and pg_catalog is searched before user schemas, so a same-signature user first() or last() can be shadowed. The thread does not say how these names resolve outside DEFINE.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "DEFINE uses the general expression grammar, which may block RUNNING and MEASURES later",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "sql_standard_syntax",
+      "touch_points": [
+        "sql_standard_syntax",
+        "pg_dump_round_trip"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Release N ships DEFINE on a_expr, and a view reads a column named running or final. Release N+1 adds RUNNING with a DEFINE-only grammar where RUNNING is reserved, as message #519 proposes. pg_dump from N prints the column unquoted, and the restore into N+1 fails.",
+      "argument": "Message #519 says RUNNING cannot go into a_expr without breaking queries such as \"SELECT running first FROM t\". It names a separate DEFINE grammar with its own keyword categories as the likely future, and that grammar changes quoting in deparse. Message #2 asked not to paint the project into a corner. The brief notes that the proposal does not say how MEASURES, SUBSET, aggregates in DEFINE and qualified variables fit the shipped syntax.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        519,
+        520
+      ],
+      "author_must_show": "Which grammar will RUNNING, MEASURES and A.price use, and can a DEFINE clause dumped from this release be restored unchanged into that future grammar?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Vik Fearing",
+          "date": "2023-06-25T21:08:35Z",
+          "url": "https://www.postgresql.org/message-id/fdf57a8d-65d5-e8a5-361f-3095d6899099%40postgresfriends.org"
+        },
+        {
+          "index": 519,
+          "from": "Henson Choi",
+          "date": "2026-09-26T22:31:45Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBtYoqDtbb1Zb0eCQ_C3WExbcaXCTdjOP%3D5huhXZNoyzQ%40mail.gmail.com"
+        },
+        {
+          "index": 520,
+          "from": "Tatsuo Ishii",
+          "date": "2026-09-28T00:53:42Z",
+          "url": "https://www.postgresql.org/message-id/20260928.095342.1845449523386884387.ishii%40postgresql.org"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #519 defers the DEFINE grammar decision and says it needs broad agreement, so the question is open. The exposure is narrow: qualified names are already rejected in DEFINE, and pg_upgrade dumps with all identifiers quoted, so only columns named running or final are at risk.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "Shared planner and ruleutils changes lack an engaged owner",
+      "level": "2",
+      "rubric_item": 16,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "planner_behaviour",
+        "pg_dump_round_trip"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After commit, someone reports a wrong varnullingrels error or a view that does not restore after ALTER TABLE. The bug sits in build_base_rel_tlists(), make_window_input_target(), setrefs.c or ruleutils.c. The author group lacks planner experience, and no planner committer has reviewed these changes.",
+      "argument": "Henson Choi writes that his planner experience is thin and that he relies on tests to find his way (#524). The committer in the author group writes that he still needs to learn more about the planner (#539). Messages #529 and #530 were sent as explanations for planner and deparser experts. The visible thread does not show any of those experts replying. The 0005 deparse changes also alter pg_get_viewdef() output for queries without RPR (#530).",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        524,
+        529,
+        530,
+        539
+      ],
+      "author_must_show": "Which committer familiar with the planner and ruleutils.c has reviewed 0001, 0004 and 0005 and agreed to own their follow-up fixes?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 524,
+          "from": "Henson Choi",
+          "date": "2026-09-30T23:56:32Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zDu4ibLjMKGb3Z1159YW-edsyD9R9NfBqJFLJiMEB9LMQ%40mail.gmail.com"
+        },
+        {
+          "index": 529,
+          "from": "Henson Choi",
+          "date": "2026-10-09T01:35:02Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBr-wZyE%2BDU3uK8OATdMJsSLE2nHEeHcyQA0FD3KpJJaw%40mail.gmail.com"
+        },
+        {
+          "index": 530,
+          "from": "Henson Choi",
+          "date": "2026-10-09T01:35:34Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBSWRe2uxFVs5bwx%2BkutCqXYv801S3Vg%2B9wP_cWjJcnvQ%40mail.gmail.com"
+        },
+        {
+          "index": 539,
+          "from": "Tatsuo Ishii",
+          "date": "2026-10-19T00:52:59Z",
+          "url": "https://www.postgresql.org/message-id/20261019.095259.1988929700676866808.ishii%40postgresql.org"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The quoted statements in #524 and #539 are accurate, and the visible thread shows no planner or ruleutils.c reviewer replying to #529 or #530. A committer is an author, so this belongs under committability and must not be used to raise the verdict.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Deparse changes for views without row pattern recognition ride in the RPR series",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "pg_dump_round_trip",
+      "touch_points": [
+        "pg_dump_round_trip",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user with JSON_TABLE or XMLTABLE views and no RPR upgrades. pg_get_viewdef() now prints different text, so schema-diff tools and dumps show changes nobody asked for. The fix for released branches would also be tied to a feature that cannot be backpatched.",
+      "argument": "Message #530 says three changes in 0005 alter pg_get_viewdef() and pg_get_ruledef() output for queries without RPR, and that the TABLEFUNC alias list bug exists back to 10. Message #540 plans to split them into their own thread, but v54 still carries them (message #541). A committer would likely want the generic deparse fix reviewed, committed and judged for backpatching on its own first.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        530,
+        540,
+        541
+      ],
+      "author_must_show": "Will the generic ruleutils.c fixes be committed separately, with a backpatch decision, before the RPR series depends on them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 530,
+          "from": "Henson Choi",
+          "date": "2026-10-09T01:35:34Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBSWRe2uxFVs5bwx%2BkutCqXYv801S3Vg%2B9wP_cWjJcnvQ%40mail.gmail.com"
+        },
+        {
+          "index": 540,
+          "from": "Henson Choi",
+          "date": "2026-10-19T13:27:25Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zCb9847vcoaH72wvk61O-xOH_OSzYHt40TH37xjz%3DKmKg%40mail.gmail.com"
+        },
+        {
+          "index": 541,
+          "from": "Tatsuo Ishii",
+          "date": "2026-10-20T12:56:25Z",
+          "url": "https://www.postgresql.org/message-id/20261020.215625.378436972315669596.ishii%40postgresql.org"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "Messages #530 and #540 commit to moving the generic ruleutils.c fixes into a prerequisite patch with its own thread and CF entry. The changed output replaces view text that did not re-parse, so the scenario describes a bug fix.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Marking R020 YES overstates conformance while MEASURES and qualified variables are missing",
+      "level": "1b",
+      "rubric_item": 12,
+      "category": "sql_standard_syntax",
+      "touch_points": [
+        "sql_standard_syntax"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user checks information_schema.sql_features, sees R020 supported, and ports a standard window query with MEASURES or DOWN.price. The query fails at parse time, and the user learns of the gap only after planning the migration around it.",
+      "argument": "Message #541 lists MEASURES, pattern-variable-qualified references, SUBSET, SEEK, PERMUTE, CLASSIFIER and three AFTER MATCH targets as not implemented. Message #539 calls MEASURES and qualified variables big missing features, but message #540 leans toward YES with a note. Postgres usually records a feature with this many missing parts as NO with a comment.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        539,
+        540,
+        541
+      ],
+      "author_must_show": "Given the missing MEASURES and qualified pattern variables, why should sql_features.txt claim R020 as YES and not NO with a comment?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 539,
+          "from": "Tatsuo Ishii",
+          "date": "2026-10-19T00:52:59Z",
+          "url": "https://www.postgresql.org/message-id/20261019.095259.1988929700676866808.ishii%40postgresql.org"
+        },
+        {
+          "index": 540,
+          "from": "Henson Choi",
+          "date": "2026-10-19T13:27:25Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zCb9847vcoaH72wvk61O-xOH_OSzYHt40TH37xjz%3DKmKg%40mail.gmail.com"
+        },
+        {
+          "index": 541,
+          "from": "Tatsuo Ishii",
+          "date": "2026-10-20T12:56:25Z",
+          "url": "https://www.postgresql.org/message-id/20261020.215625.378436972315669596.ishii%40postgresql.org"
+        }
+      ],
+      "id": "standards-compat-4",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The thread proposes YES with a note, and sql_features shows that note in the same row, so the user in the scenario sees the gap. The entry is a one-line choice the authors list as open, and it does not affect the design.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Navigation functions in pg_proc can shadow extension functions named first or last",
+      "level": "2",
+      "rubric_item": 13,
+      "category": "catalog",
+      "touch_points": [
+        "catalog",
+        "abi_extension_api",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A cluster uses an extension or user aggregate first(anyelement) or last(anyelement), which is a common pattern. After pg_upgrade, the pg_catalog entries are found first in search_path. Existing queries then either resolve to the navigation function and raise a DEFINE-only error, or behave differently, and the user finds out when their application runs.",
+      "argument": "The series adds navigation function entries to pg_proc.dat (v20 files, message #312, message #40-series wording patches), and FIRST and LAST are now navigation functions too. The material does not say whether FIRST and LAST live in pg_catalog under those names, or how a call outside DEFINE resolves when a same-signature user function exists. Short generic names in pg_catalog collide with existing user objects across an upgrade.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        312,
+        519
+      ],
+      "author_must_show": "Are PREV, NEXT, FIRST and LAST catalog functions, and what happens to an existing first(anyelement) aggregate in a user schema after pg_upgrade?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 312,
+          "from": "Henson Choi",
+          "date": "2026-05-01T17:11:00Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBdwAUDNs_WFdLkFF%3DewhkDkv-AqizVEVzhsfremGFb4w%40mail.gmail.com"
+        },
+        {
+          "index": 519,
+          "from": "Henson Choi",
+          "date": "2026-09-26T22:31:45Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBtYoqDtbb1Zb0eCQ_C3WExbcaXCTdjOP%3D5huhXZNoyzQ%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Shipped DEFINE grammar may block RUNNING, MEASURES and qualifiers",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "sql_standard_syntax",
+      "touch_points": [
+        "sql_standard_syntax",
+        "pg_dump_round_trip",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user writes DEFINE expressions, and views, that read a column named \"running\". A later release adds RUNNING or MEASURES with a separate DEFINE grammar in which RUNNING is reserved. The stored views then need context-aware quoting in deparse, or they no longer parse the same way.",
+      "argument": "Message #519 says RUNNING, MEASURES, qualified pattern variables and DEFINE aggregates belong together. It says adding them means copying a_expr or splitting keyword categories, which is \"too heavy to take on now\" and needs broad agreement. That decision is deferred while the general a_expr is shipped inside DEFINE. Vik asked in message #2 not to \"paint ourselves into a corner\"; the material does not show a path that keeps today's DEFINE text valid.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        519,
+        520
+      ],
+      "author_must_show": "How would MEASURES, RUNNING and A.price be added later without changing how DEFINE text accepted by this release parses or deparses?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Vik Fearing",
+          "date": "2023-06-25T21:08:35Z",
+          "url": "https://www.postgresql.org/message-id/fdf57a8d-65d5-e8a5-361f-3095d6899099%40postgresfriends.org"
+        },
+        {
+          "index": 519,
+          "from": "Henson Choi",
+          "date": "2026-09-26T22:31:45Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBtYoqDtbb1Zb0eCQ_C3WExbcaXCTdjOP%3D5huhXZNoyzQ%40mail.gmail.com"
+        },
+        {
+          "index": 520,
+          "from": "Tatsuo Ishii",
+          "date": "2026-09-28T00:53:42Z",
+          "url": "https://www.postgresql.org/message-id/20260928.095342.1845449523386884387.ishii%40postgresql.org"
+        }
+      ],
+      "id": "maintenance-fit-4",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-2.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Demand cited is for MATCH_RECOGNIZE features this subset leaves out",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user ports an Oracle or Snowflake MATCH_RECOGNIZE query that reads A.price or uses MEASURES. Postgres rejects it, because R010, MEASURES and qualified pattern variables are missing. The user learns this only when the first real query fails, and the window form that remains has to be written fresh.",
+      "argument": "The demand shown is other systems having the feature (message #1) and interest from Vik Fearing and Jacob Champion (messages #2, #9). Message #1 says Oracle implements R010 and not R020. Message #519 says migrated queries mostly need MEASURES, qualifiers and aggregates in DEFINE, and that these are the features the patch lacks. So the existence of other systems is evidence that people want pattern matching. It is weaker evidence that they want this R020 subset, which still costs about 549 messages of design work.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        9,
+        519,
+        541
+      ],
+      "author_must_show": "Which real workloads or user reports can use the shipped subset (no MEASURES, no A.price, no R010) as it is, without the missing features?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Tatsuo Ishii",
+          "date": "2023-06-25T12:05:09Z",
+          "url": "https://www.postgresql.org/message-id/20230625.210509.1276733411677577841.t-ishii%40sranhm.sra.co.jp"
+        },
+        {
+          "index": 2,
+          "from": "Vik Fearing",
+          "date": "2023-06-25T21:08:35Z",
+          "url": "https://www.postgresql.org/message-id/fdf57a8d-65d5-e8a5-361f-3095d6899099%40postgresfriends.org"
+        },
+        {
+          "index": 9,
+          "from": "Jacob Champion",
+          "date": "2023-07-19T16:30:40Z",
+          "url": "https://www.postgresql.org/message-id/07214b3a-5893-f6ce-ef55-0e5d24c94925%40timescale.com"
+        },
+        {
+          "index": 519,
+          "from": "Henson Choi",
+          "date": "2026-09-26T22:31:45Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBtYoqDtbb1Zb0eCQ_C3WExbcaXCTdjOP%3D5huhXZNoyzQ%40mail.gmail.com"
+        },
+        {
+          "index": 541,
+          "from": "Tatsuo Ishii",
+          "date": "2026-10-20T12:56:25Z",
+          "url": "https://www.postgresql.org/message-id/20261020.215625.378436972315669596.ishii%40postgresql.org"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "wrong_facts",
+        "reasoning": "Message #519 speaks only of queries that use RUNNING, not of migrated queries in general. Trino has the window form, Vik Fearing and Jacob Champion asked for this feature in #2 and #9, and the subset runs the V-shape query of message #1 with existing window functions.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "Stored views and SQL function bodies with DEFINE must restore under pg_upgrade; message #532 reports one that does not."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "The series adds navigation function entries to pg_proc.dat."
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The reduced frame changes what window functions and aggregates read through the window API in nodeWindowAgg.c."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": true,
+      "reason": "The patch adds PATTERN, DEFINE, INITIAL and AFTER MATCH SKIP to the window clause as a subset of SQL R020, with new keywords."
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": true,
+      "reason": "DEFINE is planned like havingQual, and run condition pushdown and frame replacement are disabled for RPR windows."
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": true,
+      "reason": "ruleutils.c deparses DEFINE, and pg_get_viewdef() output changes for some queries without RPR."
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "Any user who can run SELECT can write a pattern that drives NFA state growth in backend memory."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The series carries a TABLEFUNC alias list deparse fix for a bug that message #530 says exists back to 10."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "A new NFA matcher in the executor, a new expression site in the planner, and name reservation in ruleutils.c need lasting care."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "The series changes nodeWindowAgg.c, which every window query runs; the review notes say the cost appears limited to RPR windows."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Will the frame contract change proposed in message #547 land before commit, and if not, which window-function and transition-function behaviour would change later?",
+    "What limit stops one query from growing NFA state without bound, and what are the memory and run time figures for a worst-case pattern?",
+    "Which test checks that every RPR view and SQL function body survives pg_dump and restore under pg_upgrade, and what remains open in the window-name case?",
+    "What makes a new planner expression pass fail loudly if it does not visit defineClause, beyond the RPR regression files?",
+    "With a user-defined public.first(anyelement) or public.last(anyelement) installed, how do calls outside DEFINE and inside DEFINE resolve after upgrade?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "It needs a committer who knows the planner (setrefs.c, subquery pull-up), ruleutils.c deparse and the nodeWindowAgg.c frame code. Tatsuo Ishii is an author, but writes in message #539 that he still needs to learn more about the planner, and no such reviewer replied to #529 or #530.",
+    "liability": "The owner signs for a new NFA matcher in the executor, a new expression site that every planner rewrite must handle, DEFINE deparse that must round-trip for ever, and standard syntax that cannot be withdrawn once released.",
+    "author_follow_up": "Strong sign that the authors stay: 17 CommitFests, v54 posted on 2026-10-20, and three authors still exchanging fixes and refactorings."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "high",
+    "review_cost": "high",
+    "recommended_action": "needs champion",
+    "reason": "Analytic users gain a SQL-standard feature that several other systems offer, and the authors are active. The series spans parser, planner, executor and ruleutils.c, and the visible thread shows no planner or deparse committer outside the author group reviewing those parts."
+  },
+  "self_advice": [],
+  "provisional_note": "Only v20 patch prose and the first three messages were read, while the current version is v54. NFA memory behaviour, the frame code and the planner handling of defineClause could not be checked without the code.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:2389",
+      "kind": "cf",
+      "title": "Recognize D part for to_date() and to_timestamp() in 'WW-D' pattern",
+      "status": "Returned with feedback",
+      "date": "2020-07-10",
+      "first_date": "2019-12-24",
+      "url": "https://commitfest.postgresql.org/patch/2389/",
+      "thread_urls": [],
+      "authors": "Mark Lorenz (s-man42)",
+      "objectors": "",
+      "summary": "Recognize D part for to_date() and to_timestamp() in 'WW-D' pattern",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "row pattern recognition",
+        "MATCH_RECOGNIZE",
+        "window PATTERN DEFINE clause",
+        "NFA pattern matching executor"
+      ],
+      "from_hint": false,
+      "score": 0.463,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:2388",
+      "kind": "cf",
+      "title": "Fix to_char() behaviour with 'WW-D' pattern",
+      "status": "Returned with feedback",
+      "date": "2020-07-10",
+      "first_date": "2019-12-24",
+      "url": "https://commitfest.postgresql.org/patch/2388/",
+      "thread_urls": [],
+      "authors": "Mark Lorenz (s-man42)",
+      "objectors": "",
+      "summary": "Fix to_char() behaviour with 'WW-D' pattern",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "row pattern recognition",
+        "window PATTERN DEFINE clause",
+        "NFA pattern matching executor"
+      ],
+      "from_hint": false,
+      "score": 0.361,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:1218",
+      "kind": "cf",
+      "title": "Pattern based listeners for asynchronous messaging (LISTEN/NOTIFY)",
+      "status": "Returned with feedback",
+      "date": "2017-11-30",
+      "first_date": "2017-07-31",
+      "url": "https://commitfest.postgresql.org/patch/1218/",
+      "thread_urls": [],
+      "authors": "Markus Sintonen (markuss)",
+      "objectors": "",
+      "summary": "Pattern based listeners for asynchronous messaging (LISTEN/NOTIFY)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "row pattern recognition",
+        "window PATTERN DEFINE clause",
+        "NFA pattern matching executor"
+      ],
+      "from_hint": false,
+      "score": 0.36,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "revert:f4593bd2ff0376fbc56dd1b384c7d51e1a7062f0",
+      "kind": "revert",
+      "title": "Revert \"Fix under-quoted filename pattern in pgbench TAP test.\"",
+      "status": "Reverted",
+      "date": "2019-01-21",
+      "first_date": "2019-01-18",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f4593bd2ff0376fbc56dd1b384c7d51e1a7062f0",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20202.1548035461@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CAM6_UM6dGdU39PKAC24T+HD9ouy0jLN9vH6163K8QEEzr__iZw@mail.gmail.com"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Fix under-quoted filename pattern in pgbench TAP test.\"\nReverted commit(s): Fix under-quoted filename pattern in pgbench TAP test.",
+      "objection": "This reverts commit 458a1244f1fcf407874482a93b7631ecf5303d6e.\nIt has portability problems on Windows, which will require\na little bit of research to fix.",
+      "touch_points": [],
+      "matched_queries": [
+        "row pattern recognition",
+        "window PATTERN DEFINE clause",
+        "NFA pattern matching executor"
+      ],
+      "from_hint": false,
+      "score": 0.336,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:3027",
+      "kind": "cf",
+      "title": "Add regexp_positions(string text, pattern text, flags text) → setof record (starts integer[], lengths integer[])",
+      "status": "Returned with feedback",
+      "date": "2021-12-03",
+      "first_date": "2021-03-01",
+      "url": "https://commitfest.postgresql.org/patch/3027/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/9b2fe34e-b666-471d-8297-f0c82b133085@www.fastmail.com"
+      ],
+      "authors": "Joel Jacobson (joeljacobson)",
+      "objectors": "Tom Lane",
+      "summary": "Add a regexp_positions() function that works like regexp_matches() but returns the positions of matches and capture groups instead of the matched substrings. An earlier int4range[] return type was dropped because empty ranges cannot represent zero-length matches, and the later version returned setof record with parallel arrays of start positions and lengths.",
+      "objection": "Tom Lane reviewed the revised patch and raised definitional questions that were still open: whether to add a search-start-position argument, the need for a regexp_match()-style single-result variant, whether separate start and length arrays are confusing, and how sub-matches should be handled. He also listed code and documentation problems. The author did not respond to this review for two months, so the entry was returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "row pattern recognition",
+        "window PATTERN DEFINE clause",
+        "NFA pattern matching executor"
+      ],
+      "from_hint": false,
+      "score": 0.311,
+      "enriched": true,
+      "key_quote": "I am on board now with the general\nidea of returning match positions, but I think there are still\ndefinitional issues to be discussed.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2038707.1632246924%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:3695",
+      "kind": "cf",
+      "title": "Make selectivity example match wording",
+      "status": "Returned with feedback",
+      "date": "2022-11-30",
+      "first_date": "2022-06-09",
+      "url": "https://commitfest.postgresql.org/patch/3695/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKFQuwbD672Sc0EXv0ifx3pzfQ5UAEpiAeaBGKz_Ox-4d2NGCA@mail.gmail.com"
+      ],
+      "authors": "David Johnston (polobo)",
+      "objectors": "",
+      "summary": "The doc patch changes the unique, non-null join selectivity example so that it divides by the maximum of the two row counts, as the prose describes, and uses num_rows in place of num_distinct. A v2 patch also rewrote the explanation of the formula in the docs and in the code comments, including the proof in the comments.",
+      "objection": "The visible messages do not show why. The reviewer called the smaller change valuable and was \"good\" apart from one wording suggestion. The thread then has no further messages before the entry was returned with feedback in November.",
+      "touch_points": [],
+      "matched_queries": [
+        "MATCH_RECOGNIZE",
+        "NFA pattern matching executor"
+      ],
+      "from_hint": false,
+      "score": 0.216,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:4111",
+      "kind": "cf",
+      "title": "basebackup: support zstd long distance matching",
+      "status": "Withdrawn",
+      "date": "2023-04-04",
+      "first_date": "2023-01-08",
+      "url": "https://commitfest.postgresql.org/patch/4111/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20230108202737.GB27637@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "",
+      "summary": "The patch adds support for zstd long distance matching (zstd --long mode) to base backup compression. The author posted a rebased version and added it to the commitfest.",
+      "objection": "The visible messages do not show why. The only message is the author's rebase notice, and the entry was later withdrawn.",
+      "touch_points": [],
+      "matched_queries": [
+        "MATCH_RECOGNIZE",
+        "NFA pattern matching executor"
+      ],
+      "from_hint": false,
+      "score": 0.203,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:2027",
+      "kind": "cf",
+      "title": "Document the limitations of row-level security",
+      "status": "Returned with feedback",
+      "date": "2019-04-04",
+      "first_date": "2019-02-19",
+      "url": "https://commitfest.postgresql.org/patch/2027/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2811772.0XtDgEdalL@peanuts2"
+      ],
+      "authors": "Pierre Ducroquet (pinaraf)",
+      "objectors": "Peter Eisentraut",
+      "summary": "Pierre Ducroquet proposed a documentation patch, placed on the CREATE POLICY reference page, that lists performance-affecting restrictions of row-level security caused by built-in operator functions not being marked leakproof. The thread began with a patch that marks functions such as enum_eq/enum_ne and textin/textout leakproof and raised wider questions about leakproofness for array operators and functional indexes.",
+      "objection": "Peter Eisentraut agreed that the leakproofness of built-in operators should be documented better, but said the CREATE POLICY reference page was the wrong place for it. He also said that such a list would be expected to be complete and maintained, while the patch covered only a few cases the author had found. He judged that the patch needed significant additional work and set it to returned with feedback.",
+      "touch_points": [
+        "security / privileges",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "row pattern recognition",
+        "regular expression over rows"
+      ],
+      "from_hint": false,
+      "score": 0.171,
+      "enriched": true,
+      "key_quote": "Also, once you start such a list, there will be an expectation that it's\ncomplete.  So that would need to be ensured.",
+      "quote_message_url": "https://www.postgresql.org/message-id/89224f4d-e94c-804e-0f04-12005fd1fdfd%402ndquadrant.com",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:4029",
+      "kind": "cf",
+      "title": "Reduce wakeup on idle for bgwriter & walwriter for >5s",
+      "status": "Withdrawn",
+      "date": "2023-03-30",
+      "first_date": "2022-02-19",
+      "url": "https://commitfest.postgresql.org/patch/4029/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANbhV-HK8yvO_g4vwbmz__vZu_VZ4_jJWsTwmaNMXieTdzQCzQ@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon), Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "Thomas Munro, Tom Lane",
+      "summary": "The thread started as a set of changes to cut wakeups on idle servers. After the startup process part was committed, this entry kept the remaining patch, which raises the bgwriter and walwriter hibernation timeout from a few seconds to 60s.",
+      "objection": "Thomas Munro asked why these processes need a timeout at all. A 60s timeout would still need proof that a missed bgwriter wakeup, from the race with StrategyGetBuffer(), is harmless, and with that proof the timeout could be dropped. Tom Lane agreed and said the real goal is explicit wakeups for every event of interest. Simon Riggs said removing the timeout was too much work for that cycle and stopped working on it. Bharath Rupireddy then posted a separate walwriter patch with no timeout, but the visible messages do not show why the entry was withdrawn.",
+      "touch_points": [],
+      "matched_queries": [
+        "reduced window frame"
+      ],
+      "from_hint": false,
+      "score": 0.149,
+      "enriched": true,
+      "key_quote": "Someone would need to think about it and construct a complete argument for why it's OK to go to sleep for 60 seconds, or infinity, with that sloppiness in place.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BhUKG%2BB3FsKRVUv2pB%2BzEbq7WH8iqBs5%3DG%2B%2BeMUYn_Pu8AfuA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:3281",
+      "kind": "cf",
+      "title": "use regular expressions to simplify less_greater and not_equals",
+      "status": "Rejected",
+      "date": "2021-09-05",
+      "first_date": "2021-08-11",
+      "url": "https://commitfest.postgresql.org/patch/3281/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/03572d05-697c-4dd5-95e3-bbc3fd8b05c1.sunshihao.ssh@alibaba-inc.com"
+      ],
+      "authors": "Fan Xiaojian (funnyxj.qq.com), Shihao Sun (sunshihao.ssh.alibaba-inc.com)",
+      "objectors": "Tom Lane, Andrew Dunstan",
+      "summary": "The patch changes the SQL lexer to match both \"<>\" and \"!=\" with one regular expression, (<>|!=), under the not_equals definition. It removes the separate less_greater definition, which the author said confuses developers.",
+      "objection": "Tom Lane found the change less clear because it moves the comment on <>-means-!= away from the code that implements it. He added that it would get in the way if <> and != ever needed different treatment. Andrew Dunstan saw no benefit and did not agree the current code confuses developers. David G. Johnston leaned toward keeping the status quo, the author gave no stronger argument, and Tom Lane marked it rejected.",
+      "touch_points": [],
+      "matched_queries": [
+        "regular expression over rows"
+      ],
+      "from_hint": false,
+      "score": 0.144,
+      "enriched": true,
+      "key_quote": "I don't understand the problem being solved here. This looks like a\nchange with no discernable benefit.",
+      "quote_message_url": "https://www.postgresql.org/message-id/dd2c10c5-8f5b-8997-aaad-0da60703e61c%40dunslane.net",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:2397",
+      "kind": "cf",
+      "title": "Recognizing superuser in pg_hba.conf",
+      "status": "Returned with feedback",
+      "date": "2020-07-03",
+      "first_date": "2019-12-28",
+      "url": "https://commitfest.postgresql.org/patch/2397/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/4ba3ad54-bb32-98c6-033a-ccca7058fc2f@2ndquadrant.com"
+      ],
+      "authors": "Vik Fearing (xocolatl)",
+      "objectors": "Tom Lane, Stephen Frost",
+      "summary": "Add pg_hba.conf keywords \"superuser\" and \"nonsuperuser\" so entries can match on superuser status, for example to reject non-superusers from a database. A later version marked keywords with a prefix sigil such as \"&\" to tell them apart from role names.",
+      "objection": "Reviewers did not agree on the syntax. Tom Lane would not add more names that act as reserved words without being reserved, because an existing role name could silently change meaning in a new release. Robert Haas preferred quoting, and Stephen Frost noted that \"&\" can appear in role names. The thread had no further progress after January, the patch failed in the cfbot, and Daniel Gustafsson returned it with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "MATCH_RECOGNIZE"
+      ],
+      "from_hint": false,
+      "score": 0.14,
+      "enriched": true,
+      "key_quote": "The principle I'm concerned about is not letting a configuration file\nthat was perfectly fine in version N silently become a security hazard\nin version N+1.",
+      "quote_message_url": "https://www.postgresql.org/message-id/10728.1578587706%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:1204",
+      "kind": "cf",
+      "title": "Implement NULL-related checks in object address functions to prevent cache lookup errors",
+      "status": "Returned with feedback",
+      "date": "2018-11-29",
+      "first_date": "2017-07-19",
+      "url": "https://commitfest.postgresql.org/patch/1204/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB7nPqSZxrSmdHK-rny7z8mi=EAFXJ5J-0RbzDw6aus=wB5azQ@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Alvaro Herrera",
+      "summary": "The patch set makes the SQL functions pg_describe_object, pg_identify_object and pg_identify_object_as_address return NULL for undefined objects instead of raising \"cache lookup failed\" errors. It adds missing_ok flags to getObjectDescription, getObjectIdentity and lower-level lookup routines such as get_attname, GetForeignServer and the publication and subscription lookups.",
+      "objection": "Several preparatory patches were committed during the thread, but the main objectaddress patch was not. In its last review, Alvaro Herrera found that pg_identify_object returned an empty type in only some cases, and that it reported a column for a relation with no such column. The author fixed the column case, but left open whether type, operator and function formatting should be reworked to return NULL for undefined objects. The visible messages show no reply after that, and no closing message.",
+      "touch_points": [],
+      "matched_queries": [
+        "PREV NEXT navigation function"
+      ],
+      "from_hint": false,
+      "score": 0.135,
+      "enriched": true,
+      "key_quote": "One thing is that I am not sure if it is worth complicating the existing interface even more just to deal with undefined objects as pure NULLs.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20180918055142.GK31460%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:1771",
+      "kind": "cf",
+      "title": "Make executor's Range Table an array instead of a List",
+      "status": "Returned with feedback",
+      "date": "2018-08-23",
+      "first_date": "2018-08-23",
+      "url": "https://commitfest.postgresql.org/patch/1771/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKJS1f9EypD_=xG6ACFdF=1cBjz+Z9hiHHSd-RqLjor+QyA-nw@mail.gmail.com"
+      ],
+      "authors": "David Rowley (davidrowley)",
+      "objectors": "",
+      "summary": "Make executor's Range Table an array instead of a List\nThreads: Make executor's Range Table an array instead of a List",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "NFA pattern matching executor"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "revert:aa5877bb26347c58a34aee4e460eb1e1123bb096",
+      "kind": "revert",
+      "title": "Revert \"MERGE SQL Command following SQL:2016\"",
+      "status": "Reverted",
+      "date": "2018-04-02",
+      "first_date": "2018-04-02",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=aa5877bb26347c58a34aee4e460eb1e1123bb096",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANP8+jKitBSrB7oTgT9CY2i1ObfOt36z0XMraQc+Xrz8QB0nXA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAH2-WzkJdBuxj9PO=2QaO9-3h3xGbQPZ34kJH=HukRekwM-GZg@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs",
+      "objectors": "",
+      "summary": "Revert \"MERGE SQL Command following SQL:2016\"\nReverted commit(s): MERGE SQL Command following SQL:2016",
+      "objection": "This reverts commit e6597dc3533946b98acba7871bd4ca1f7a3d4c1d.",
+      "touch_points": [
+        "SQL syntax / standard"
+      ],
+      "matched_queries": [
+        "SQL 2016 window clause extension"
+      ],
+      "from_hint": false,
+      "score": 0.133,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:2033",
+      "kind": "cf",
+      "title": "extension patch to add OR REPLACE clause to CREATE TRIGGER",
+      "status": "Withdrawn",
+      "date": "2019-03-01",
+      "first_date": "2016-11-15",
+      "url": "https://commitfest.postgresql.org/patch/2033/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/0B4917A40C80E34BBEC4BE1A7A9AB7E276EEDF@g01jpexmbkw05"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "extension patch to add OR REPLACE clause to CREATE TRIGGER\nThreads: Adding the optional clause 'AS' in CREATE TRIGGER",
+      "objection": "",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "SQL 2016 window clause extension"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:3577",
+      "kind": "cf",
+      "title": "Support for grabbing multiple consecutive values with nextval()",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-02-27",
+      "url": "https://commitfest.postgresql.org/patch/3577/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/66d4a4ca840b1f84cc09aaefb20af788@quis.cx"
+      ],
+      "authors": "Jille Timmermans (quis)",
+      "objectors": "",
+      "summary": "Support for grabbing multiple consecutive values with nextval()\nThreads: Support for grabbing multiple consecutive values with nextval()",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "PREV NEXT navigation function"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "revert:1460fc5942591fdb6bee0bc8342019ede31ff3b6",
+      "kind": "revert",
+      "title": "Revert \"Common SQL/JSON clauses\"",
+      "status": "Reverted",
+      "date": "2022-03-22",
+      "first_date": "2022-03-22",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1460fc5942591fdb6bee0bc8342019ede31ff3b6",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/cd0bb935-0158-78a7-08b5-904886deac4b@postgrespro.ru"
+      ],
+      "authors": "Andrew Dunstan",
+      "objectors": "",
+      "summary": "Revert \"Common SQL/JSON clauses\"\nReverted commit(s): Common SQL/JSON clauses",
+      "objection": "This reverts commit 865fe4d5df560a6f5353da652018ff876978ad2d.\n\nThis has caused issues with a significant number of buildfarm members",
+      "touch_points": [],
+      "matched_queries": [
+        "SQL 2016 window clause extension"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:775",
+      "kind": "cf",
+      "title": "Write Amplification Reduction Method (WARM)",
+      "status": "Returned with feedback",
+      "date": "2017-10-02",
+      "first_date": "2016-08-31",
+      "url": "https://commitfest.postgresql.org/patch/775/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABOikdMNy6yowA+wTGK9RVd8iw+CzqHeQSGpW7Yka_4RSZ_LOQ@mail.gmail.com"
+      ],
+      "authors": "Pavan Deolasee (pavan)",
+      "objectors": "",
+      "summary": "Write Amplification Reduction Method (WARM)\nThreads: Patch: Write Amplification Reduction Method (WARM)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "reduced window frame"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:2732",
+      "kind": "cf",
+      "title": "Reduce the time required for a database recovery from archive.",
+      "status": "Returned with feedback",
+      "date": "2020-12-01",
+      "first_date": "2020-09-08",
+      "url": "https://commitfest.postgresql.org/patch/2732/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/601EE1F5-0B78-47E1-9AAE-C15F74A1C21D@postgrespro.ru"
+      ],
+      "authors": "Anna Akenteva (a.akenteva), Dmitry Shulga (d.shulga), Ivan Taranov (i.taranov)",
+      "objectors": "",
+      "summary": "Reduce the time required for a database recovery from archive.\nThreads: Reduce the time required for a database recovery from archive.",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "reduced window frame"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:124",
+      "kind": "cf",
+      "title": "iteration over record in plpgsql",
+      "status": "Returned with feedback",
+      "date": "2015-07-07",
+      "first_date": "2015-01-16",
+      "url": "https://commitfest.postgresql.org/patch/124/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFj8pRDCUgKQ57viHtcciybjyzqJn9=oA+0-reFHYF4LJSxjJg@mail.gmail.com"
+      ],
+      "authors": "Pavel Stehule (okbobcz)",
+      "objectors": "",
+      "summary": "iteration over record in plpgsql\nThreads: proposal: row_to_array function",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "regular expression over rows"
+      ],
+      "from_hint": false,
+      "score": 0.112,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:2935",
+      "kind": "cf",
+      "title": "Reduce the time required for a database recovery from archive.",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2020-09-08",
+      "url": "https://commitfest.postgresql.org/patch/2935/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/601EE1F5-0B78-47E1-9AAE-C15F74A1C21D@postgrespro.ru"
+      ],
+      "authors": "Anna Akenteva (a.akenteva), Dmitry Shulga (d.shulga), Ivan Taranov (i.taranov)",
+      "objectors": "",
+      "summary": "Reduce the time required for a database recovery from archive.\nThreads: Reduce the time required for a database recovery from archive.",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "reduced window frame"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "revert:2cda889984a6f5ad405318f9e91202d258383b66",
+      "kind": "revert",
+      "title": "Revert \"Add libpq function PQhostaddr().\"",
+      "status": "Reverted",
+      "date": "2014-11-29",
+      "first_date": "2014-01-23",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=2cda889984a6f5ad405318f9e91202d258383b66",
+      "thread_urls": [],
+      "authors": "Fujii Masao",
+      "objectors": "",
+      "summary": "Revert \"Add libpq function PQhostaddr().\"\nReverted commit(s): Add libpq function PQhostaddr().",
+      "objection": "This reverts commit 9f80f4835a55a1cbffcda5d23a617917f3286c14.  The\nfunction returned the raw value of a connection parameter, a task served\nby PQconninfo().  The next commit will reimplement the psql \\conninfo\nchange that way.  Back-patch to 9.4, where that commit first appeared.",
+      "touch_points": [
+        "psql",
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "PREV NEXT navigation function"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:2558",
+      "kind": "cf",
+      "title": "loop over unbound cursor",
+      "status": "Withdrawn",
+      "date": "2020-08-10",
+      "first_date": "2020-05-18",
+      "url": "https://commitfest.postgresql.org/patch/2558/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFj8pRDQKG-9C4R2yCpthrgFje9aiocahASJJCu6wb-jnuEWkQ@mail.gmail.com"
+      ],
+      "authors": "Pavel Stehule (okbobcz)",
+      "objectors": "",
+      "summary": "loop over unbound cursor\nThreads: proposal - plpgsql - FOR over unbound cursor",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "regular expression over rows"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "revert:2f2b18bd3f554e96a8cc885b177211be12288e4a",
+      "kind": "revert",
+      "title": "Revert SQL/JSON features",
+      "status": "Reverted",
+      "date": "2022-09-01",
+      "first_date": "2022-03-27",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=2f2b18bd3f554e96a8cc885b177211be12288e4a",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/40d2c882-bcac-19a9-754d-4299e1d87ac7@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/cd0bb935-0158-78a7-08b5-904886deac4b@postgrespro.ru",
+        "https://www.postgresql.org/message-id/flat/3661437.1653855582@sss.pgh.pa.us"
+      ],
+      "authors": "Andrew Dunstan, Tom Lane",
+      "objectors": "",
+      "summary": "Revert SQL/JSON features\nReverted commit(s): Common SQL/JSON clauses; SQL/JSON constructors; Make STRING an unreserved_keyword.; IS JSON predicate; SQL/JSON query functions",
+      "objection": "The reverts the following and makes some associated cleanups:\n\n    commit f79b803dc: Common SQL/JSON clauses\n    commit f4fb45d15: SQL/JSON constructors\n    commit 5f0adec25: Make STRING an unreserved_keyword.\n    commit 33a377608: IS JSON predicate\n    commit 1a36bc9db: SQL/JSON query functions\n    commit 606948b05: SQL JSON functions\n    commit 49082c2cc: RETURNING clause for JSON() and JSON_SCALAR()\n    commit 4e34747c8: JSON_TABLE\n    commit fadb48b00: PLAN clauses for JSON_TABLE\n    commit 2ef6f11b0: Reduce running time of jsonb_sqljson test\n    commit 14d3f24fa: Further improve jsonb_sqljson parallel test\n    commit a6baa4bad: Documentation for SQL/JSON features\n    commit b46bcf7a4: Improve readability of SQL/JSON documentation.\n    commit 112fdb352: Fix finalization for json_objectagg and friends\n    commit fcdb35c32: Fix transformJsonBehavior\n    commit 4cd8717af: Improve a couple of sql/json error messages\n    commit f7a605f63: Small cleanups in SQL/JSON code\n    commit 9c3d25e17: Fix JSON_OBJECTAGG uniquefying bug\n    commit a79153b7a: Claim SQL standard compliance for SQL/JSON features\n    commit a1e7616d6: Rework SQL/JSON documentation\n    commit 8d9f9634e: Fix errors in copyfuncs/equalfuncs support for JSON node types.\n    commit 3c633f32b: Only allow returning string types or bytea from json_serialize\n    commit 67b26703b: expression eval: Fix EEOP_JSON_CONSTRUCTOR and EEOP_JSONEXPR size.\n\nThe release notes are also adjusted.\n\nBackpatch to release 15.",
+      "touch_points": [
+        "planner",
+        "SQL syntax / standard"
+      ],
+      "matched_queries": [
+        "SQL 2016 window clause extension"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 2,
+    "new_calls": 6,
+    "failed": 0,
+    "quotes_verified": 4,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 0
+  },
+  "precedent_cutoff": "2023-06-25",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found: the precedent list has no earlier rejected, returned or reverted proposal of row pattern recognition or a close relative. The thread does not point to an earlier attempt at this idea either. Message #1 says only Oracle and some warehouse products implement row pattern recognition, not that Postgres tried it before."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 4,
+      "note": "Objections found; see list."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 2,
+      "note": "The feature adds no WAL records, no on-disk relation format and no wire protocol change. Persistent state is limited to stored query trees and the catalog, and both are covered above."
+    },
+    {
+      "angle": "security",
+      "objections": 1,
+      "note": "RLS and security barrier quals apply below the WindowAgg, volatile DEFINE expressions are rejected, and run condition pushdown is disabled, so the material shows no way past row filtering. The only concern from this angle is resource exhaustion."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 4,
+      "note": "Objections raised; hot-path cost appears limited to RPR windows, since run-condition and frame optimizations are disabled only when defineClause is set."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "Postgres has no existing feature that does row pattern matching. lag()/lead() with recursive CTEs cannot express general quantifiers, alternation or reluctant matching at reasonable effort, and this SQL-standard window syntax needs grammar changes that an extension cannot add."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "Demand for row pattern matching in general is shown: it is a SQL standard feature, several other systems have it, and independent reviewers asked for it. Cost falls mostly on queries that use RPR. The only open point is whether this subset serves the users that this evidence describes."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 12,
+      "new_survived": 7,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "attachment limit (8) reached; v1-0001-Row-pattern-recognition-patch-for-raw-parser.patch not read",
+    "attachment limit (8) reached; v1-0002-Row-pattern-recognition-patch-parse-analysis.patch not read",
+    "attachment limit (8) reached; v1-0003-Row-pattern-recognition-patch-planner.patch not read",
+    "attachment limit (8) reached; v1-0004-Row-pattern-recognition-patch-executor.patch not read",
+    "attachment limit (8) reached; v1-0005-Row-pattern-recognition-patch-docs.patch not read",
+    "attachment limit (8) reached; v1-0006-Row-pattern-recognition-patch-tests.patch not read",
+    "498 long messages in the middle of the thread were left out of the prompts"
+  ],
+  "tone_lint": {
+    "fields_checked": 110,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 18,
+    "wall_ms": 222987,
+    "cost_usd": 11.452034999999999,
+    "dry_run": false
+  }
+}

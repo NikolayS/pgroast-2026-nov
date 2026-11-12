@@ -1,0 +1,1221 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:38:04.418Z",
+  "input": {
+    "arg": "6024",
+    "cf": {
+      "id": 6024,
+      "url": "https://commitfest.postgresql.org/patch/6024/",
+      "title": "Improve read_local_xlog_page_guts by replacing polling with latch-based waiting",
+      "status": "Needs review",
+      "authors": "Xuneng Zhou (dylanzhou)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CABPTF7UNft368x-RgOXkfj475OwEbp%2BVVO-wEXz7StgjD_%3D6sw%40mail.gmail.com",
+    "subject": "Improve read_local_xlog_page_guts by replacing polling with latch-based waiting",
+    "thread_start": "2025-08-27T15:23:34Z",
+    "messages_read": 22,
+    "messages_total": 22,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v12-0001-Replace-polling-with-LSN-waits-in-read_local_xlo.patch",
+      "v12-0002-Test-logical-decoding-LSN-waits-across-promotion.patch",
+      "v8-0001-Implement-WAIT-FOR-command.patch",
+      "v1-0001-Improve-read_local_xlog_page_guts-by-replacing-po.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "No objection survived at levels 1a or 1b: the goal is stated, a TODO in xlogutils.c asks for it, and the patch reuses the committed WaitForLSN() facility. One fixable level 2 objection survived, replication-ondisk-1: v12 waits with no timeout, so a flush path that omits the wakeup delays or stalls a reader. A committer who knows the WAL flush paths has to judge whether that dependency is acceptable as designed.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Replace 1 ms polling in read_local_xlog_page_guts() with LSN waits",
+    "problem": "read_local_xlog_page_guts() sleeps 1 ms between checks while it waits for WAL to be flushed on a primary or replayed on a standby. The author saw heavy polling in a performance run. The users are backend WAL readers: logical slot creation, SQL decoding and slot synchronization, including on cascading standbys.",
+    "proposed_design": "v12 calls the committed WaitForLSN() facility (3b4e53a, 447aae1): flush waits on a primary, replay waits on a standby. Waiters wake on WAL flush, on replay progress and on promotion, and the loop then rechecks timeline and read limit as before. A second patch adds TAP tests for local and upstream promotion during slot creation and during pg_sync_replication_slots().",
+    "user_visible_surface": [],
+    "author_claims": [
+      "In one sampled run, CPU cycles fell about 39%, instructions 14%, cache misses 28% and context switches 23%, with similar elapsed time.",
+      "An upstream timeline switch needs no separate wakeup, because replay must pass the segment before it can be read as historical WAL.",
+      "Local promotion releases the replay wait, and the next iteration uses the flush position.",
+      "The patch keeps the existing no-wait behavior and the timeline and read-limit checks.",
+      "Heikki's TODO comment in the code already suggests replacing the check/sleep/repeat loop."
+    ],
+    "thread_state": "Rui Zhao reviewed v11 favorably with minor comments, and v12 (2026-10-18) addresses them and adds tests. Michael Paquier called the reworked patch much simpler in November 2025 but posted no review after that, and consolidation with syncrep.c is left open.",
+    "unclear": [
+      "The benchmark workload and setup are in an image only, and the gain is CPU use with unchanged elapsed time.",
+      "The material does not say which wait event a waiting backend now shows in pg_stat_activity.",
+      "The material does not say what the patch changes in walsender.c.",
+      "The material does not show that every path that advances the flush LSN on a primary calls the wakeup; d61f9c90 added implicit flushes later.",
+      "The tests do not cover SQL get/peek, slot advance, two-phase state load, the repack worker or the slot sync worker."
+    ],
+    "search_queries": [
+      "read_local_xlog_page polling",
+      "replace polling latch WAL wait",
+      "condition variable WAL flush wakeup",
+      "logical decoding busy wait sleep",
+      "wait for LSN replay",
+      "pg_wal_replay_wait",
+      "walsender wakeup condition variable",
+      "LSN waiters pairing heap"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P6",
+      "source_id": "cf:4029",
+      "title": "Reduce wakeup on idle for bgwriter & walwriter for >5s",
+      "kind": "cf",
+      "status": "Withdrawn",
+      "url": "https://commitfest.postgresql.org/patch/4029/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANbhV-HK8yvO_g4vwbmz__vZu_VZ4_jJWsTwmaNMXieTdzQCzQ@mail.gmail.com"
+      ],
+      "date": "2023-03-30",
+      "first_date": "2022-02-19",
+      "who_objected": "Thomas Munro, Tom Lane",
+      "quote": "Someone would need to think about it and construct a complete argument for why it's OK to go to sleep for 60 seconds, or infinity, with that sloppiness in place.",
+      "quote_url": "https://www.postgresql.org/message-id/CA%2BhUKG%2BB3FsKRVUv2pB%2BzEbq7WH8iqBs5%3DG%2B%2BeMUYn_Pu8AfuA%40mail.gmail.com",
+      "enriched": true,
+      "reason": "Thomas Munro asked why these processes need a timeout at all. A 60s timeout would still need proof that a missed bgwriter wakeup, from the race with StrategyGetBuffer(), is harmless, and with that proof the timeout could be dropped. Tom Lane agreed and said the real goal is explicit wakeups for every event of interest. Simon Riggs said removing the timeout was too much work for that cycle and stopped working on it. Bharath Rupireddy then posted a separate walwriter patch with no timeout, but the visible messages do not show why the entry was withdrawn.",
+      "relation": "related_only",
+      "what_is_different": "P6 lengthened timed sleeps in bgwriter and walwriter and concerned a different race. This patch removes the 1 ms poll in a WAL page callback and waits with no timeout on the committed WaitForLSN() facility."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Unbounded flush wait depends on every flush path calling the wakeup",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds a WAL flush path on the primary that advances the flush LSN without calling WaitLSNWakeup(). A backend running pg_create_logical_replication_slot() waits with timeout -1 for an LSN that path flushed. It hangs until some unrelated flush happens, and on an idle primary that may never happen.",
+      "argument": "The old 1 ms poll recovered by itself from a missed wakeup. v12 calls WaitForLSN() with no timeout, so correctness now depends on a wakeup at every point that advances the flush LSN. Message #21 shows this has already moved once: d61f9c90 added implicit flushes and needed its own wakeup. Nothing in the proposal fails loudly when a future flush path omits the call, and [P6] records the same need for a complete argument before sleeping without a bound.",
+      "precedent_ids": [
+        "P6"
+      ],
+      "thread_message_refs": [
+        20,
+        21,
+        22
+      ],
+      "author_must_show": "Which code points advance the primary flush LSN today, and what would detect a new one that omits the wakeup: a bounded fallback timeout, an assertion, or a test?",
+      "precedents": [
+        {
+          "id": "P6",
+          "title": "Reduce wakeup on idle for bgwriter & walwriter for >5s",
+          "url": "https://commitfest.postgresql.org/patch/4029/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CANbhV-HK8yvO_g4vwbmz__vZu_VZ4_jJWsTwmaNMXieTdzQCzQ@mail.gmail.com"
+          ],
+          "date": "2023-03-30",
+          "status": "Withdrawn"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 20,
+          "from": "Rui Zhao",
+          "date": "2026-06-08T14:49:25Z",
+          "url": "https://www.postgresql.org/message-id/71D1DAFA-3A22-485D-9944-57BD1B91E23F%40gmail.com"
+        },
+        {
+          "index": 21,
+          "from": "Xuneng Zhou",
+          "date": "2026-10-12T08:28:35Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7WNZeKw_tTUG3LRwdcR06%3D-AMZRVW76GgTmEXEFE7XMqg%40mail.gmail.com"
+        },
+        {
+          "index": 22,
+          "from": "Xuneng Zhou",
+          "date": "2026-10-18T13:07:33Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7W0s_XHGkbsWdVaGs5sBefePXmG64i3RY0FsdU%3Db_1xwA%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #18 and #20 trace today's wakeup sites, but message #21 shows the set already grew once with d61f9c90. v12 waits with timeout -1 and names no check that catches a new flush path without the wakeup. [P6] concerns a different race, so it supports only by analogy.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Indefinite LSN wait turns any missed flush wakeup into a hang",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds a path on a primary that advances the flush LSN without calling the flush wakeup. A backend running pg_create_logical_replication_slot() or pg_logical_slot_get_changes() then waits with timeout -1 and never wakes. Today the same mistake costs at most 1 ms, so users would find it as a stuck session in production.",
+      "argument": "v12 calls WaitForLSN(..., loc, -1), so correctness now depends on every flush and replay advance calling the wakeup. Message #21 shows this list already changed once after the patch was written, when d61f9c90 added a wakeup for implicit flushes. Messages #18 and #20 trace the current wakeup sites, but nothing makes a future omission fail loudly. [P6] stopped on the same point, that sleeping without a bound needs a complete argument that no wakeup can be lost.",
+      "precedent_ids": [
+        "P6"
+      ],
+      "thread_message_refs": [
+        18,
+        20,
+        21
+      ],
+      "author_must_show": "Which mechanism, such as a bounded fallback timeout or an assertion, catches a future flush path that forgets the wakeup before a reader hangs?",
+      "precedents": [
+        {
+          "id": "P6",
+          "title": "Reduce wakeup on idle for bgwriter & walwriter for >5s",
+          "url": "https://commitfest.postgresql.org/patch/4029/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CANbhV-HK8yvO_g4vwbmz__vZu_VZ4_jJWsTwmaNMXieTdzQCzQ@mail.gmail.com"
+          ],
+          "date": "2023-03-30",
+          "status": "Withdrawn"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 18,
+          "from": "Xuneng Zhou",
+          "date": "2025-11-19T13:39:18Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7VJ7JFNkySqfYH4%2BRDxekEvcHRwx3JouFbvq_GW8VXtKw%40mail.gmail.com"
+        },
+        {
+          "index": 20,
+          "from": "Rui Zhao",
+          "date": "2026-06-08T14:49:25Z",
+          "url": "https://www.postgresql.org/message-id/71D1DAFA-3A22-485D-9944-57BD1B91E23F%40gmail.com"
+        },
+        {
+          "index": 21,
+          "from": "Xuneng Zhou",
+          "date": "2026-10-12T08:28:35Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7WNZeKw_tTUG3LRwdcR06%3D-AMZRVW76GgTmEXEFE7XMqg%40mail.gmail.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1. That one states the outcome more accurately: the waiter sleeps until a later flush that does call the wakeup, which is not the same as never waking.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Unbounded wait depends on every future flush path calling the wakeup",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds a new way to advance the flush LSN on a primary but does not call WaitLSNWakeup(). A backend creating a logical slot then sleeps with timeout -1 until some unrelated flush wakes it, or indefinitely on an idle server. The developer and reviewers see no test failure, and users find out from a stalled slot creation in production.",
+      "argument": "The old 1 ms poll stays correct whatever code advances the flush LSN. The new wait, called with timeout -1 (message #20, message #21), is correct only if every such path wakes waiters. Message #21 shows this happening already: d61f9c90 added implicit flushes and needed its own wakeup call, and nothing fails loudly if a future path omits one. [P6] faced the same question for an infinite sleep and wanted a complete argument that no wakeup can be missed.",
+      "precedent_ids": [
+        "P6"
+      ],
+      "thread_message_refs": [
+        20,
+        21
+      ],
+      "author_must_show": "Which mechanism, such as a bounded timeout fallback or an assertion, makes a missing flush wakeup fail visibly rather than leave a slot creation hanging?",
+      "precedents": [
+        {
+          "id": "P6",
+          "title": "Reduce wakeup on idle for bgwriter & walwriter for >5s",
+          "url": "https://commitfest.postgresql.org/patch/4029/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CANbhV-HK8yvO_g4vwbmz__vZu_VZ4_jJWsTwmaNMXieTdzQCzQ@mail.gmail.com"
+          ],
+          "date": "2023-03-30",
+          "status": "Withdrawn"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 20,
+          "from": "Rui Zhao",
+          "date": "2026-06-08T14:49:25Z",
+          "url": "https://www.postgresql.org/message-id/71D1DAFA-3A22-485D-9944-57BD1B91E23F%40gmail.com"
+        },
+        {
+          "index": 21,
+          "from": "Xuneng Zhou",
+          "date": "2026-10-12T08:28:35Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7WNZeKw_tTUG3LRwdcR06%3D-AMZRVW76GgTmEXEFE7XMqg%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1, which makes the same point and also asks for the list of code points that advance the flush LSN today.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "The patch changes how backend WAL readers wait for flush on a primary and replay on a standby, and touches walsender.c."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Every future path that advances the flush LSN must call the wakeup, because the reader no longer polls."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "The wait path of logical slot creation, SQL decoding and slot synchronization changes from a 1 ms sleep to WaitForLSN()."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Which code points advance the primary flush LSN today, and what detects a new one that omits the wakeup: a bounded fallback timeout, an assertion, or a test?",
+    "What does the patch change in walsender.c, and why does a change to read_local_xlog_page_guts() need it?",
+    "Which wait event does a backend waiting in read_local_xlog_page_guts() now show in pg_stat_activity, and does its description fit a decoding backend?",
+    "What workload and setup produced the CPU numbers in the commit message, and can they be posted as text?",
+    "Do the SQL get/peek functions, slot advance and the slot sync worker need tests for the new wait, or do the two promotion tests cover the same code?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "Someone who knows the WAL flush and replay paths and the xlogwait.c facility. Michael Paquier commented in November 2025 but the brief shows no review from him after that.",
+    "liability": "The owner signs for the rule that every flush and replay advance wakes LSN waiters, for as long as backend WAL readers wait without a timeout. A missed wakeup shows up as a stalled slot creation or decoding call in production.",
+    "author_follow_up": "The author posted twelve versions over 14 months, addressed the v11 review in v12 and added tests, and keeps moving the entry between CommitFests."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "low",
+    "review_cost": "low",
+    "recommended_action": "needs champion",
+    "reason": "The patch is 3.9 KB plus tests, reuses committed infrastructure and adds no user-visible surface. It has one favorable non-committer review, and the brief shows no committer review since November 2025, across five CommitFests."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, the walsender.c change, the wait event reported and the full set of flush wakeup sites could not be checked. The claim that an upstream timeline switch needs no separate wakeup rests on the commit message and the two new tests.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "revert:772faafca1b288c4dd66b7150a7831c27b768003",
+      "kind": "revert",
+      "title": "Revert: Implement pg_wal_replay_wait() stored procedure",
+      "status": "Reverted",
+      "date": "2024-04-11",
+      "first_date": "2024-04-02",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=772faafca1b288c4dd66b7150a7831c27b768003",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/b155606b-e744-4218-bda5-29379779da1a@iki.fi",
+        "https://www.postgresql.org/message-id/flat/eb12f9b03851bb2583adab5df9579b4b@postgrespro.ru",
+        "https://www.postgresql.org/message-id/flat/202404030658.hhj3vfxeyhft@alvherre.pgsql",
+        "https://www.postgresql.org/message-id/flat/CAD21AoAx7irptnPH1OkkkNh9E0M6X-phfX7sYZfwoMsc1qV1sQ@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov",
+      "objectors": "",
+      "summary": "Revert: Implement pg_wal_replay_wait() stored procedure\nReverted commit(s): Implement pg_wal_replay_wait() stored procedure; Minor improvements for waitlsn.c; Use the pairing heap instead of a flat array for LSN replay waiters; Use an LWLock instead of a spinlock in waitlsn.c; Clarify what is protected by WaitLSNLock",
+      "objection": "This commit reverts 06c418e163, e37662f221, bf1e650806, 25f42429e2,\nee79928441, and 74eaf66f98 per review by Heikki Linnakangas.",
+      "touch_points": [],
+      "matched_queries": [
+        "replace polling latch WAL wait",
+        "wait for LSN replay",
+        "pg_wal_replay_wait",
+        "LSN waiters pairing heap"
+      ],
+      "from_hint": false,
+      "score": 0.5,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "revert:3a7ae6b3d91e0d011dba1eb8a29e1836c6a33c75",
+      "kind": "revert",
+      "title": "Revert pg_wal_replay_wait() stored procedure",
+      "status": "Reverted",
+      "date": "2024-11-04",
+      "first_date": "2024-08-02",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=3a7ae6b3d91e0d011dba1eb8a29e1836c6a33c75",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/Zyhj2anOPRKtb0xW@paquier.xyz",
+        "https://www.postgresql.org/message-id/flat/eb12f9b03851bb2583adab5df9579b4b@postgrespro.ru",
+        "https://www.postgresql.org/message-id/flat/CADAecHWKpaPuPGXAMOH=wmhTpydHWGPOk9KWX97UYhp5GdqCWw@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAPpHfdu5QN+ZGACS+7foxmr8_nekgA2PA+-G3BuOUrdBLBFb6Q@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov",
+      "objectors": "",
+      "summary": "Revert pg_wal_replay_wait() stored procedure\nReverted commit(s): Implement pg_wal_replay_wait() stored procedure; pg_wal_replay_wait(): Fix typo in the doc; Adjust pg_wal_replay_wait() procedure behavior on promoted standby; Improve header comment for WaitLSNSetLatches(); Add tests for pg_wal_replay_wait() errors",
+      "objection": "This commit reverts 3c5db1d6b0, and subsequent improvements and fixes\nincluding 8036d73ae3, 867d396ccd, 3ac3ec580c, 0868d7ae70, 85b98b8d5a,\n2520226c95, 014f9f34d2, e658038772, e1555645d7, 5035172e4a, 6cfebfe88b,\n73da6b8d1b, and e546989a26.\n\nThe reason for reverting is a set of remaining issues.  Most notably, the\nstored procedure appears to need more effort than the utility statement\nto turn the backend into a \"snapshot-less\" state.  This makes an approach\nto use stored procedures questionable.\n\nCatversion is bumped.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "replace polling latch WAL wait",
+        "wait for LSN replay",
+        "pg_wal_replay_wait"
+      ],
+      "from_hint": false,
+      "score": 0.383,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:5167",
+      "kind": "cf",
+      "title": "Improvements for pg_wal_replay_wait()",
+      "status": "Returned with feedback",
+      "date": "2024-12-10",
+      "first_date": "2023-02-28",
+      "url": "https://commitfest.postgresql.org/patch/5167/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/eb12f9b03851bb2583adab5df9579b4b@postgrespro.ru"
+      ],
+      "authors": "Alexander Korotkov (smagen)",
+      "objectors": "",
+      "summary": "A follow-up patchset for the pg_wal_replay_wait() procedure, which waits on a standby until a given LSN is replayed. It rechecks the replay LSN after recovery ends, fixes comments and wording, adds tests for the error cases and stabilizes 043_wal_replay_wait.pl with wait_for_catchup() and pg_switch_wal().",
+      "objection": "The visible messages do not show why. The last shown message, from September 2024, reports that the revised test passed 100 of 100 runs, and no objection to the patchset appears in the shown messages.",
+      "touch_points": [],
+      "matched_queries": [
+        "replace polling latch WAL wait",
+        "wait for LSN replay",
+        "pg_wal_replay_wait"
+      ],
+      "from_hint": false,
+      "score": 0.374,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:772",
+      "kind": "cf",
+      "title": "Make async slave to wait for lsn to be replayed",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2020-03-05",
+      "url": "https://commitfest.postgresql.org/patch/772/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/80f267591b373db5588d580fdfb432f0@postgrespro.ru",
+        "https://www.postgresql.org/message-id/flat/195e2d07ead315b1620f1a053313f490@postgrespro.ru"
+      ],
+      "authors": "Ivan Kartyshov (fenimorkin)",
+      "objectors": "",
+      "summary": "The patch adds a way for a hot standby session to wait until a given LSN has been replayed, with an optional timeout, so that reads on an async standby can see earlier writes. The interface changed several times: a standalone WAIT FOR command, then BEGIN ... WAIT FOR LSN, then BEGIN AFTER ... WITHIN, then pg_waitlsn functions, and finally a pg_waitlsn procedure.",
+      "objection": "The visible messages do not show why. They show that the interface was not settled after a commit in April 2020: later versions moved from BEGIN syntax to functions and then to a procedure, with Kyotaro Horiguchi asking how a procedure compares with a command. In March 2021 the patch failed to compile and was set to Waiting on Author, and no closing message is shown.",
+      "touch_points": [],
+      "matched_queries": [
+        "wait for LSN replay",
+        "pg_wal_replay_wait",
+        "LSN waiters pairing heap"
+      ],
+      "from_hint": false,
+      "score": 0.326,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:2676",
+      "kind": "cf",
+      "title": "Start WAL streaming as early as possible, without waiting for startup process to finish replaying existing WAL. This helps synchronous replication to resume quickly when significant replay lag has been built up.",
+      "status": "Returned with feedback",
+      "date": "2020-12-01",
+      "first_date": "2020-01-17",
+      "url": "https://commitfest.postgresql.org/patch/2676/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANXE4Tc3FNvZ_xAimempJWv_RH9pCvsZH7Yq93o1VuNLjUT-mQ@mail.gmail.com"
+      ],
+      "authors": "Asim Rama Praveen (apraveen), Hao Wu (hwu)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch starts the WAL receiver on a standby before the startup process finishes replaying WAL already in pg_wal, so synchronous commits on the primary are not held up by replay lag. A GUC, wal_receiver_start_condition, picks when the receiver starts, and the start LSN is the beginning of the most recently flushed segment, found by reading the first page of each segment in pg_wal.",
+      "objection": "Michael Paquier objected that the start LSN is roughly the consistency point, so streaming begins too early when many local segments, often copied by hand, are still left to replay. He also rejected the WAL page checks as hard to maintain, noted that the patch requests streaming when PrimaryConnInfo is not set, and suggested a WAL reader scan from the redo point to find the real end of local WAL. The entry stayed \"Waiting on Author\" after this review and was returned with feedback.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "replace polling latch WAL wait",
+        "wait for LSN replay",
+        "pg_wal_replay_wait"
+      ],
+      "from_hint": false,
+      "score": 0.289,
+      "enriched": true,
+      "key_quote": "Your patch would cause streaming to begin too early, and a manual copy of segments is not a rare thing as in some environments a bulk copy of segments can make the catchup of a standby faster than streaming.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20201120082106.GG8506%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:4029",
+      "kind": "cf",
+      "title": "Reduce wakeup on idle for bgwriter & walwriter for >5s",
+      "status": "Withdrawn",
+      "date": "2023-03-30",
+      "first_date": "2022-02-19",
+      "url": "https://commitfest.postgresql.org/patch/4029/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANbhV-HK8yvO_g4vwbmz__vZu_VZ4_jJWsTwmaNMXieTdzQCzQ@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon), Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "Thomas Munro, Tom Lane",
+      "summary": "The thread started as a set of changes to cut wakeups on idle servers. After the startup process part was committed, this entry kept the remaining patch, which raises the bgwriter and walwriter hibernation timeout from a few seconds to 60s.",
+      "objection": "Thomas Munro asked why these processes need a timeout at all. A 60s timeout would still need proof that a missed bgwriter wakeup, from the race with StrategyGetBuffer(), is harmless, and with that proof the timeout could be dropped. Tom Lane agreed and said the real goal is explicit wakeups for every event of interest. Simon Riggs said removing the timeout was too much work for that cycle and stopped working on it. Bharath Rupireddy then posted a separate walwriter patch with no timeout, but the visible messages do not show why the entry was withdrawn.",
+      "touch_points": [],
+      "matched_queries": [
+        "condition variable WAL flush wakeup",
+        "walsender wakeup condition variable"
+      ],
+      "from_hint": false,
+      "score": 0.271,
+      "enriched": true,
+      "key_quote": "Someone would need to think about it and construct a complete argument for why it's OK to go to sleep for 60 seconds, or infinity, with that sloppiness in place.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BhUKG%2BB3FsKRVUv2pB%2BzEbq7WH8iqBs5%3DG%2B%2BeMUYn_Pu8AfuA%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:4035",
+      "kind": "cf",
+      "title": "suppressing useless wakeups in logical/worker.c",
+      "status": "Returned with feedback",
+      "date": "2023-09-01",
+      "first_date": "2022-12-02",
+      "url": "https://commitfest.postgresql.org/patch/4035/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20221202195503.GD2277157@nathanxps13"
+      ],
+      "authors": "Nathan Bossart (bossartn)",
+      "objectors": "Tom Lane, Amit Kapila",
+      "summary": "The patch removes the once-per-second wakeup of logical replication apply workers in logical/worker.c by computing the next wakeup time for each pending task, as an earlier patch did for walreceiver. A separate wakeup time, set by process_syncing_tables_for_apply(), handles starting tablesync workers after wal_retrieve_retry_interval.",
+      "objection": "Tom Lane objected to the one-second retry used when no tablesync slot is free, since it brings back periodic wakeups. He also said process_syncing_tables() is called from the wrong places. Amit Kapila noted other loops, such as wait_for_relation_state_change(), that still wake up every second. The author doubted the change was worth it and did not address the March 2023 review comments before the entry closed.",
+      "touch_points": [],
+      "matched_queries": [
+        "condition variable WAL flush wakeup",
+        "walsender wakeup condition variable"
+      ],
+      "from_hint": false,
+      "score": 0.246,
+      "enriched": true,
+      "key_quote": "At the very least, I think we should figure out something better than the process_syncing_tables() hacks before taking this patch seriously.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20230317002255.GA946711%40nathanxps13",
+      "relevant": true
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:4085",
+      "kind": "cf",
+      "title": "Exit walsender before confirming remote flush in logical replication",
+      "status": "Returned with feedback",
+      "date": "2023-03-17",
+      "first_date": "2022-12-22",
+      "url": "https://commitfest.postgresql.org/patch/4085/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/TYAPR01MB586668E50FC2447AD7F92491F5E89@TYAPR01MB5866.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "Hayato Kuroda (ha-kun)",
+      "objectors": "",
+      "summary": "The patch lets a logical replication walsender exit at shutdown without waiting for the subscriber to confirm flush of all sent WAL, so that a publisher with a large time-delayed apply can still stop. Later versions add an optional SHUTDOWN_MODE clause ('wait_flush' or 'immediate') to START_REPLICATION for logical replication.",
+      "objection": "The visible messages do not show why. The last shown messages, about a month before the decision, still discuss whether the option should be a boolean or a mode with an explicit default, and they contain minor review comments on v7-0002.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "condition variable WAL flush wakeup",
+        "walsender wakeup condition variable"
+      ],
+      "from_hint": false,
+      "score": 0.238,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:4754",
+      "kind": "cf",
+      "title": "Add LSN <-> time conversion facility",
+      "status": "Withdrawn",
+      "date": "2024-10-22",
+      "first_date": "2023-12-27",
+      "url": "https://commitfest.postgresql.org/patch/4754/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAKRu_Z7tR7D1=DR=xWQDefYk_nu_gxgW88X0HtxN6AsK-8_gA@mail.gmail.com"
+      ],
+      "authors": "Melanie Plageman (melanieplageman)",
+      "objectors": "Tomas Vondra, Robert Haas",
+      "summary": "The patch adds an LSNTimeStream, a fixed-size structure in the WAL stats that bgwriter fills with (LSN, timestamp) points and thins over time. SQL functions use it to convert between LSN and time, and it was meant as a base for an opportunistic freezing heuristic.",
+      "objection": "No message states why the entry was withdrawn, but the thread ended with the design unresolved. Tomas Vondra and Robert Haas questioned keeping the data in pgstat, because stats are lost on crash, reset or standby promotion, and no one proposed a clear alternative. They also asked for a simple, known thinning method with better accuracy for recent LSNs. The author then chose to shape the structure for the freezing patch first and moved her work there.",
+      "touch_points": [],
+      "matched_queries": [
+        "wait for LSN replay",
+        "LSN waiters pairing heap"
+      ],
+      "from_hint": false,
+      "score": 0.179,
+      "enriched": true,
+      "key_quote": "Actually, I think this is a hard problem in terms of where to actually store the data -- as Tomas said, pgstat doesn't seem quite right, and it's not clear to me what is actually right.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoaYzGq8T30nYYujpWVRCTUypMsr6TDFAxB9aNTxe0o-4g%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:2352",
+      "kind": "cf",
+      "title": "Re: MarkBufferDirtyHint() and LSN update",
+      "status": "Withdrawn",
+      "date": "2019-11-25",
+      "first_date": "2019-10-30",
+      "url": "https://commitfest.postgresql.org/patch/2352/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/28452.1572443058@antos"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Michael Paquier",
+      "summary": "Michael Paquier's patch, built on a race Antonin Houska reported, makes MarkBufferDirtyHint() set the page LSN even when BM_DIRTY is already set. The race is that FlushBuffer() has written the page but not yet cleared BM_DIRTY, so a later flush can write the hint-bit change without its WAL record having been flushed first.",
+      "objection": "Michael Paquier found that the patch lets page LSNs go backwards. He reproduced this with checksums enabled, shared_buffers at 1MB and pgbench, because a page can get a newer LSN before the LSN returned by XLogSaveBufferForHint() is set. Antonin Houska proposed an extra diff on top, but the visible messages do not show why the entry was then withdrawn.",
+      "touch_points": [],
+      "matched_queries": [
+        "wait for LSN replay",
+        "LSN waiters pairing heap"
+      ],
+      "from_hint": false,
+      "score": 0.175,
+      "enriched": true,
+      "key_quote": "I have been studying more the patch,\nand after stressing more this code path with a cluster having\nchecksums enabled and shared_buffers at 1MB, I have been able to make\na couple of page's LSNs go backwards with pgbench -s 100.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20191113121703.GY1549%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:89",
+      "kind": "cf",
+      "title": "LSN Map",
+      "status": "Returned with feedback",
+      "date": "2015-07-06",
+      "first_date": "2015-01-07",
+      "url": "https://commitfest.postgresql.org/patch/89/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/54AD016E.9020406@2ndquadrant.it"
+      ],
+      "authors": "Marco Nenciarini (mnencia)",
+      "objectors": "",
+      "summary": "LSN Map\nThreads: [RFC] LSN Map",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "wait for LSN replay",
+        "LSN waiters pairing heap"
+      ],
+      "from_hint": false,
+      "score": 0.167,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:2113",
+      "kind": "cf",
+      "title": "Remove page-read callback from XLogReaderState",
+      "status": "Returned with feedback",
+      "date": "2021-10-04",
+      "first_date": "2019-04-18",
+      "url": "https://commitfest.postgresql.org/patch/2113/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20190418.210257.43726183.horiguchi.kyotaro@lab.ntt.co.jp"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti)",
+      "objectors": "",
+      "summary": "Remove page-read callback from XLogReaderState\nThreads: Remove page-read callback from XLogReaderState.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "read_local_xlog_page polling"
+      ],
+      "from_hint": false,
+      "score": 0.137,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:00f690a239932e477f25120d19b08aacdc30deb7",
+      "kind": "revert",
+      "title": "Revert \"Get rid of the dedicated latch for signaling the startup process\".",
+      "status": "Reverted",
+      "date": "2020-12-17",
+      "first_date": "2020-11-04",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=00f690a239932e477f25120d19b08aacdc30deb7",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/d8c0c608-021b-3c73-fffd-3240829ee986@oss.nttdata.com",
+        "https://www.postgresql.org/message-id/flat/CALj2ACXPorUqePswDtOeM_s82v9RW32E1fYmOPZ5NuE+TWKj_A@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/5c1f8a85-747c-7bf9-241e-dd467d8a3586@iki.fi"
+      ],
+      "authors": "Fujii Masao",
+      "objectors": "",
+      "summary": "Revert \"Get rid of the dedicated latch for signaling the startup process\".\nReverted commit(s): Get rid of the dedicated latch for signaling the startup process.; Fix segmentation fault that commit ac22929a26 caused.",
+      "objection": "Revert ac22929a26, as well as the followup fix 113d3591b8. Because it broke\nthe assumption that the startup process waiting for the recovery conflict\non buffer pin should be waken up only by buffer unpin or the timeout enabled\nin ResolveRecoveryConflictWithBufferPin(). It caused, for example,\nSIGHUP signal handler or walreceiver process to wake that startup process\nup unnecessarily frequently.\n\nAdditionally, add the comments about why that dedicated latch that\nthe reverted patch tried to get rid of should not be removed.\n\nThanks to Kyotaro Horiguchi for the discussion.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "replace polling latch WAL wait"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:4419",
+      "kind": "cf",
+      "title": "Use ReadRecentBuffer() for btree root page",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-06-27",
+      "url": "https://commitfest.postgresql.org/patch/4419/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20230627020546.t6z4tntmj7wmjrfh@awork3.anarazel.de"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Use ReadRecentBuffer() for btree root page\nThreads: ReadRecentBuffer() doesn't scale well",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "read_local_xlog_page polling"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "revert:72a3dc321d76c93842d502793f93b9dc2d2305b2",
+      "kind": "revert",
+      "title": "Revert \"When WalSndCaughtUp, sleep only in WalSndWaitForWal().\"",
+      "status": "Reverted",
+      "date": "2020-04-25",
+      "first_date": "2020-04-11",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=72a3dc321d76c93842d502793f93b9dc2d2305b2",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200417054146.GA1061007@rfd.leadboat.com",
+        "https://www.postgresql.org/message-id/flat/20200406063649.GA3738151@rfd.leadboat.com"
+      ],
+      "authors": "Noah Misch",
+      "objectors": "",
+      "summary": "Revert \"When WalSndCaughtUp, sleep only in WalSndWaitForWal().\"\nReverted commit(s): When WalSndCaughtUp, sleep only in WalSndWaitForWal().",
+      "objection": "This reverts commit 421685812290406daea58b78dfab0346eb683bbb.  It caused\nidle physical walsenders to busy-wait, as reported by Fujii Masao.",
+      "touch_points": [],
+      "matched_queries": [
+        "logical decoding busy wait sleep"
+      ],
+      "from_hint": false,
+      "score": 0.132,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P16",
+      "source_id": "revert:810f64a01567610af7b92b0de930f16f3e20064e",
+      "kind": "revert",
+      "title": "Revert indexed and enlargable binary heap implementation.",
+      "status": "Reverted",
+      "date": "2024-04-11",
+      "first_date": "2024-04-03",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=810f64a01567610af7b92b0de930f16f3e20064e",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/12747c15811d94efcc5cda72d6b35c80d7bf3443.camel@j-davis.com",
+        "https://www.postgresql.org/message-id/flat/CAD21AoDffo37RC-eUuyHJKVEr017V2YYDLyn1xF_00ofptWbkg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAD21AoAfKTgrBrLq96GcTv9d6k97zaQcDM-rxfKEt4GSe0qnaQ@mail.gmail.com"
+      ],
+      "authors": "Masahiko Sawada",
+      "objectors": "",
+      "summary": "Revert indexed and enlargable binary heap implementation.\nReverted commit(s): Add functions to binaryheap for efficient key removal and update.; Make binaryheap enlargeable.; Improve eviction algorithm in ReorderBuffer using max-heap for many subtransactions.; Replace binaryheap + index with pairingheap in reorderbuffer.c",
+      "objection": "This reverts commit b840508644 and bcb14f4abc. These commits were made\nfor commit 5bec1d6bc5 (Improve eviction algorithm in ReorderBuffer\nusing max-heap for many subtransactions). However, per discussion,\ncommit efb8acc0d0 replaced binary heap + index with pairing heap, and\nmade these commits unnecessary.",
+      "touch_points": [],
+      "matched_queries": [
+        "LSN waiters pairing heap"
+      ],
+      "from_hint": false,
+      "score": 0.132,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:5055",
+      "kind": "cf",
+      "title": "walsender.c fileheader comment",
+      "status": "Withdrawn",
+      "date": "2024-07-19",
+      "first_date": "2024-06-11",
+      "url": "https://commitfest.postgresql.org/patch/5055/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHut+PusveZf5pfKTYzjioZ=Lx4TJFKRXs0KhTQjNueKQwkABg@mail.gmail.com"
+      ],
+      "authors": "Peter Smith (smithpb2250)",
+      "objectors": "",
+      "summary": "walsender.c fileheader comment\nThreads: walsender.c fileheader comment",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "walsender wakeup condition variable"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:3983",
+      "kind": "cf",
+      "title": "Lockless queue of waiters based on atomic operations for LWLock",
+      "status": "Returned with feedback",
+      "date": "2024-01-26",
+      "first_date": "2022-10-31",
+      "url": "https://commitfest.postgresql.org/patch/3983/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALT9ZEEz+=Nepc5eti6x531q64Z6+DxtP3h-h_8O5HDdtkJcPw@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov (smagen), Pavel Borisov (pborisov)",
+      "objectors": "",
+      "summary": "Lockless queue of waiters based on atomic operations for LWLock\nThreads: Lockless queue of waiters in LWLock",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "LSN waiters pairing heap"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "revert:c13070a27b63d9ce4850d88a63bf889a6fde26f0",
+      "kind": "revert",
+      "title": "Revert \"Get rid of WALBufMappingLock\"",
+      "status": "Reverted",
+      "date": "2025-08-22",
+      "first_date": "2025-04-02",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=c13070a27b63d9ce4850d88a63bf889a6fde26f0",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/B3C69B86-7F82-4111-B97F-0005497BB745@yandex-team.ru"
+      ],
+      "authors": "Alexander Korotkov",
+      "objectors": "",
+      "summary": "Revert \"Get rid of WALBufMappingLock\"\nReverted commit(s): Get rid of WALBufMappingLock",
+      "objection": "This reverts commit bc22dc0e0ddc2dcb6043a732415019cc6b6bf683.\nIt appears that conditional variables are not suitable for use inside\ncritical sections.  If WaitLatch()/WaitEventSetWaitBlock() face postmaster\ndeath, they exit, releasing all locks instead of PANIC.  In certain\nsituations, this leads to data corruption.",
+      "touch_points": [],
+      "matched_queries": [
+        "condition variable WAL flush wakeup"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:3030",
+      "kind": "cf",
+      "title": "Make relfile tombstone files conditional on WAL level",
+      "status": "Withdrawn",
+      "date": "2021-10-29",
+      "first_date": "2021-03-04",
+      "url": "https://commitfest.postgresql.org/patch/3030/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKG+fTEcYQvc18aEbrJjPri99A09JZcEXzXjT5h57S+Agkw@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Make relfile tombstone files conditional on WAL level\nThreads: Make relfile tombstone files conditional on WAL level",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "condition variable WAL flush wakeup"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:788",
+      "kind": "cf",
+      "title": "Logical decoding on standby",
+      "status": "Returned with feedback",
+      "date": "2017-11-24",
+      "first_date": "2016-09-05",
+      "url": "https://commitfest.postgresql.org/patch/788/",
+      "thread_urls": [],
+      "authors": "Craig Ringer (ringerc)",
+      "objectors": "",
+      "summary": "Logical decoding on standby",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical decoding busy wait sleep"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:977",
+      "kind": "cf",
+      "title": "Use latch instead of pg_usleep for standby recovery conflicts",
+      "status": "Returned with feedback",
+      "date": "2017-04-03",
+      "first_date": "2017-01-26",
+      "url": "https://commitfest.postgresql.org/patch/977/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANP8+j+WWawZCR+w=887FcnqQibFf=j=kag98XNN9rAOM-4HTg@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Use latch instead of pg_usleep for standby recovery conflicts\nThreads: Allow interrupts on waiting standby",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "replace polling latch WAL wait"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P23",
+      "source_id": "revert:2c7ea57e56ca5f668c32d4266e0a3e45b455bef5",
+      "kind": "revert",
+      "title": "Revert \"Logical decoding of sequences\"",
+      "status": "Reverted",
+      "date": "2022-04-07",
+      "first_date": "2022-02-10",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=2c7ea57e56ca5f668c32d4266e0a3e45b455bef5",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/95345a19-d508-63d1-860a-f5c2f41e8d40@enterprisedb.com",
+        "https://www.postgresql.org/message-id/flat/d045f3c2-6cfb-06d3-5540-e63c320df8bc@enterprisedb.com",
+        "https://www.postgresql.org/message-id/flat/1710ed7e13b.cd7177461430746.3372264562543607781@highgo.ca",
+        "https://www.postgresql.org/message-id/flat/20220212220413.b25amklo7t4xb7ni@alap3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/CAA4eK1KGn6cQqJEsubOOENwQOANsExiV2sKL52r4U10J8NJEMQ@mail.gmail.com"
+      ],
+      "authors": "Tomas Vondra",
+      "objectors": "",
+      "summary": "Revert \"Logical decoding of sequences\"\nReverted commit(s): Logical decoding of sequences; Add decoding of sequences to test_decoding; Fix skip-empty-xacts with sequences in test_decoding; Call ReorderBufferProcessXid from sequence_decode; Stabilize test_decoding touching with sequences",
+      "objection": "This reverts a sequence of commits, implementing features related to\nlogical decoding and replication of sequences:\n\n - 0da92dc530c9251735fc70b20cd004d9630a1266\n - 80901b32913ffa59bf157a4d88284b2b3a7511d9\n - b779d7d8fdae088d70da5ed9fcd8205035676df3\n - d5ed9da41d96988d905b49bebb273a9b2d6e2915\n - a180c2b34de0989269fdb819bff241a249bf5380\n - 75b1521dae1ff1fde17fda2e30e591f2e5d64b6a\n - 2d2232933b02d9396113662e44dca5f120d6830e\n - 002c9dd97a0c874fd1693a570383e2dd38cd40d5\n - 05843b1aa49df2ecc9b97c693b755bd1b6f856a9\n\nThe implementation has issues, mostly due to combining transactional and\nnon-transactional behavior of sequences. It's not clear how this could\nbe fixed, but it'll require reworking significant part of the patch.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical decoding busy wait sleep"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "revert:c2dc19342e05e081dc13b296787baa38352681ef",
+      "kind": "revert",
+      "title": "Revert recovery prefetching feature.",
+      "status": "Reverted",
+      "date": "2021-05-10",
+      "first_date": "2021-04-08",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=c2dc19342e05e081dc13b296787baa38352681ef",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOuzzgrn7iKnFRsB4MHp3UisEQAGgZMbk_ViTN4HV4-Ksq8zCg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20210409033703.GP6592@telsasoft.com",
+        "https://www.postgresql.org/message-id/flat/CA+hUKGJ4VJN8ttxScUFM8dOKX0BrBiboo5uz1cq=AovOddfHpA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20190418.210257.43726183.horiguchi.kyotaro@lab.ntt.co.jp",
+        "https://www.postgresql.org/message-id/flat/16997-ff16127f6e0d1390@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/20210413123139.GE6091@telsasoft.com"
+      ],
+      "authors": "Thomas Munro, Tom Lane",
+      "objectors": "",
+      "summary": "Revert recovery prefetching feature.\nReverted commit(s): Doc: Review for \"Optionally prefetch referenced data in recovery.\"; Optionally prefetch referenced data in recovery.; Add circular WAL decoding buffer.; Remove read_page callback from XLogReader.; Sync guc.c and postgresql.conf.sample with the SGML docs.",
+      "objection": "This set of commits has some bugs with known fixes, but at this late\nstage in the release cycle it seems best to revert and resubmit next\ntime, along with some new automated test coverage for this whole area.\n\nCommits reverted:\n\ndc88460c: Doc: Review for \"Optionally prefetch referenced data in recovery.\"\n1d257577: Optionally prefetch referenced data in recovery.\nf003d9f8: Add circular WAL decoding buffer.\n323cbe7c: Remove read_page callback from XLogReader.\n\nRemove the new GUC group WAL_RECOVERY recently added by a55a9847, as the\ncorresponding section of config.sgml is now reverted.",
+      "touch_points": [
+        "new GUC",
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "read_local_xlog_page polling"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 5,
+    "new_calls": 3,
+    "failed": 0,
+    "quotes_verified": 3,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 8
+  },
+  "precedent_cutoff": "2025-08-27",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "The pg_wal_replay_wait reverts ([P1], [P2]) were about a procedure that needs a snapshot-less backend. They do not apply to this internal callback, which already waits in the same context today."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 0,
+      "note": "The proposal adds no syntax, GUC, catalog object or dumped state, and v12 keeps the no-wait and timeline behavior, so nothing in the user contract changes. The one visible change is in pg_stat_activity: waiting decoding backends may now show the WAIT FOR wait events where pg_usleep showed none, which needs checking against the code and the event descriptions."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "The proposal adds no on-disk format, WAL record, catalog or protocol change. The only cross-process state is the shared LSN waiter queue, which is already committed."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The patch changes only how existing backend WAL readers wait for WAL: a 1 ms sleep loop becomes a WaitForLSN() wait on the committed facility. It adds no new SQL interface, privilege, setting or monitoring output, so no new user can reach it. The callers (slot creation, SQL decoding, slot sync) already need replication privileges, and the existing per-backend waiter slots bound the memory use. I found no new information leak, escalation path or denial-of-service route by an unprivileged user."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 1,
+      "note": "The change is small and reuses committed infrastructure, so it adds little code to maintain. Committability is weaker: no committer has reviewed the patch since message #16 in November 2025."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "Postgres has no existing feature, GUC or extension that removes this 1 ms poll, and an extension cannot change an internal page-read callback. The patch reuses the committed WaitForLSN() facility, so it adds no second mechanism of its own. The syncrep.c consolidation question in message #10 concerns that committed facility, so it is not an objection to this patch."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "No demand objection: this is an internal change with no user-visible surface, Michael Paquier called the goal a fine idea in message #6, and a TODO in xlogutils.c already asks for it. The cost falls on the feature path, since the flush and replay wakeups are already committed; the CPU-only gain and the benchmark shown only as an image are questions for the performance angle."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 3,
+      "new_survived": 1,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 60,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 14,
+    "wall_ms": 142906,
+    "cost_usd": 3.0640946,
+    "dry_run": false
+  }
+}

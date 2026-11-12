@@ -1,0 +1,1198 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:31:04.228Z",
+  "input": {
+    "arg": "5276",
+    "cf": {
+      "id": 5276,
+      "url": "https://commitfest.postgresql.org/patch/5276/",
+      "title": "Fix race between WAL flush and InstallXLogFileSegment()",
+      "status": "Needs review",
+      "authors": "Thomas Munro (macdice)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CA%2BhUKGLO02j2WLiQ73iZ%2BCEY1G%2BLPmHo3PXaYTaFY9Hj222mEQ%40mail.gmail.com",
+    "subject": "InstallXLogFileSegment() vs concurrent WAL flush",
+    "thread_start": "2024-02-02T10:18:18Z",
+    "messages_read": 6,
+    "messages_total": 6,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "0001-Fix-InstallXLogFileSegment-concurrency-bug.patch",
+      "0002-Track-end-of-installed-WAL-space-in-shared-memory.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection questions the fix itself: the window between rename() and the parent directory fsync is stated plainly and affects every installation that writes WAL. The two surviving objections, replication-ondisk-1 and maintenance-fit-1, are fixable design points about 0002. They ask how the tracked segment number stays a safe bound across timeline switches, and whether 0002 is needed without a measurement. A committer who knows WAL file handling can settle both.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Make WAL segment names durable before other backends write to them",
+    "problem": "Postgres creates WAL space by renaming a file into place, and there is a window between rename() and fsync of the parent directory. A backend can open the new name, write and fdatasync WAL, and then a power loss can drop the rename. Recovery then cannot find WAL that was flushed, which can break the log-before-data rule or lose a commit already reported to a client.",
+    "proposed_design": "Patch 0001 makes XLogFileInitInternal() wait until InstallXLogFileSegment() has made the new name durable, using ControlFileLock. Patch 0002 tracks the last known installed segment in shared memory, so a backend opening an earlier segment can skip the lock. A later version starts that value at the segment of the starting checkpoint.",
+    "user_visible_surface": [],
+    "author_claims": [
+      "The data loss window comes from reading the code, and the author has not seen it happen.",
+      "Breakage would need very bad luck, and the author sees no existing defence against it.",
+      "Waiting on every install is pessimistic, and 0002 avoids most of the waits.",
+      "The author is not sure 0002 is worth it, or whether a fsync before returning the fd is the better fix."
+    ],
+    "thread_state": "Yugo Nagata proposed an fsync before returning the fd, and Kyotaro Horiguchi and Soumyadeep Chakraborty preferred the lock approach with 0002. Soumyadeep posted v3 and asked whether other durable_rename() callers, such as the WAL summarizer, have the same window. Soumya S Murali reported regression tests pass, and the CommitFest entry still needs review and a rebase.",
+    "unclear": [
+      "The material gives no measurement of lock contention or latency from the extra wait during WAL segment switches.",
+      "The material does not say whether a test or fault injection shows the window can be hit.",
+      "The material does not say whether the fix should be back-patched to supported branches.",
+      "Nobody answered whether other durable_rename() callers, such as the WAL summarizer, need a similar fix.",
+      "The material does not say whether standby or archive recovery paths that install segments are covered."
+    ],
+    "search_queries": [
+      "InstallXLogFileSegment race",
+      "WAL segment rename fsync durability",
+      "durable_rename atomicity window",
+      "WAL recycling crash data loss",
+      "XLogFileInit lock concurrent write",
+      "fsync parent directory rename",
+      "WAL segment preallocation lock contention"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Skip-the-lock value tracks segment number only, but names carry timeline",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A standby is promoted, and end of recovery installs the last segment under the new timeline's file name. A backend opens that segment and skips the lock because its segment number is not above last_known_installed_segno, which was seeded from the starting checkpoint. It writes and flushes commits, then power loss drops the rename and recovery cannot find them.",
+      "argument": "0002 lets a backend skip waiting when the segment it opens is not later than the last known installed segment (message #1). v3 seeds that value from the starting checkpoint (message #5), and message #6 calls this a conservative lower bound. A WAL file name combines timeline and segment number, and promotion installs a file whose segment number may already lie at or below that bound. The material does not say whether a timeline switch resets or bypasses the tracked value.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        4,
+        5,
+        6
+      ],
+      "author_must_show": "After a timeline switch at promotion, can any backend skip the lock while opening a new-timeline segment whose segment number is at or below last_known_installed_segno?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Thomas Munro",
+          "date": "2024-02-02T10:18:18Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BhUKGLO02j2WLiQ73iZ%2BCEY1G%2BLPmHo3PXaYTaFY9Hj222mEQ%40mail.gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "Kyotaro Horiguchi",
+          "date": "2024-02-06T07:58:16Z",
+          "url": "https://www.postgresql.org/message-id/20240206.165816.1496814607463556734.horikyota.ntt%40gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Soumyadeep Chakraborty",
+          "date": "2024-10-31T08:03:06Z",
+          "url": "https://www.postgresql.org/message-id/CAE-ML%2B-vkbp_oU8qUdJux01EjQK1sDic48yT_aEPmoA0yC8mxw%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Soumya S Murali",
+          "date": "2026-01-14T05:16:49Z",
+          "url": "https://www.postgresql.org/message-id/CAMtXxw_U1N6wDrPO1UyYOMV63YZuehM12DW0Nm%2BTbMSB3fDdEg%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The stated scenario is weak, because the startup process finishes the end-of-recovery install before any backend may write WAL. But the tracked value holds a segment number only, and the thread does not say how recycling into new-timeline names after promotion stays safe.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Shared-memory install marker in 0002 is a silent invariant for future paths",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds or changes a path that installs WAL segments, such as promotion, timeline switch or restore from archive, and does not update last_known_installed_segno, or sets it too high. A backend then skips ControlFileLock for a segment whose name is not yet durable. The original window reopens, and nobody notices until a power loss makes flushed WAL unreachable.",
+      "argument": "0002 makes correctness depend on a value that every installer must keep as a safe bound, and an error in that value causes no test failure. The thread checks the starting-checkpoint initialization (messages #4, #5, #6) but does not cover standby or archive recovery paths, or segments with the same segno on a new timeline. The author says 0002 may not be worth it (message #1), and no measurement shows the lock wait from 0001 alone costs anything.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        4,
+        5,
+        6
+      ],
+      "author_must_show": "Which code paths install WAL segments, why does each keep last_known_installed_segno a safe lower bound, and what measurement shows 0001 alone is too slow?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Thomas Munro",
+          "date": "2024-02-02T10:18:18Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BhUKGLO02j2WLiQ73iZ%2BCEY1G%2BLPmHo3PXaYTaFY9Hj222mEQ%40mail.gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "Kyotaro Horiguchi",
+          "date": "2024-02-06T07:58:16Z",
+          "url": "https://www.postgresql.org/message-id/20240206.165816.1496814607463556734.horikyota.ntt%40gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Soumyadeep Chakraborty",
+          "date": "2024-10-31T08:03:06Z",
+          "url": "https://www.postgresql.org/message-id/CAE-ML%2B-vkbp_oU8qUdJux01EjQK1sDic48yT_aEPmoA0yC8mxw%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Soumya S Murali",
+          "date": "2026-01-14T05:16:49Z",
+          "url": "https://www.postgresql.org/message-id/CAMtXxw_U1N6wDrPO1UyYOMV63YZuehM12DW0Nm%2BTbMSB3fDdEg%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Segment installs go through InstallXLogFileSegment(), so the risk of a forgotten update is smaller than stated. But no measurement shows that 0001 alone is too slow, and the author doubts 0002 is worth the extra invariant.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Standby flush acknowledgements are not shown to be covered",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A synchronous standby's walreceiver writes into a just-installed segment, fsyncs it, and reports the flush position to the primary, which then reports the commit to the client. Power loss on the standby drops the rename. After failover to that standby, the commit is gone.",
+      "argument": "Message #1 states the risk for backends writing WAL on a primary. On a standby, the walreceiver flushes WAL into segments it creates, and synchronous_commit depends on that flush being durable. The brief lists standby and archive recovery install paths as open. Nobody in the thread said whether the walreceiver path waits on the same lock or relies on the same tracked value.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        5
+      ],
+      "author_must_show": "Does the walreceiver's segment creation go through the same wait, so that a flush position sent to a synchronous primary always refers to a durable segment name?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Thomas Munro",
+          "date": "2024-02-02T10:18:18Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BhUKGLO02j2WLiQ73iZ%2BCEY1G%2BLPmHo3PXaYTaFY9Hj222mEQ%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Soumyadeep Chakraborty",
+          "date": "2024-10-31T08:03:06Z",
+          "url": "https://www.postgresql.org/message-id/CAE-ML%2B-vkbp_oU8qUdJux01EjQK1sDic48yT_aEPmoA0yC8mxw%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "wrong_facts",
+        "reasoning": "The walreceiver creates segments through XLogFileInit(), which calls XLogFileInitInternal(), the function that 0001 makes wait. So the walreceiver's writes get the same wait as a backend's.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Point fix leaves the durable_rename() window for other callers",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A developer adds a durable_rename() caller whose target another process opens and writes before the parent directory fsync. Nothing in fd.c prevents this or warns about it. The bug shows up only as lost data after a power loss.",
+      "argument": "Message #5 says durable_rename() is less atomic than it looks, and asks whether the WAL summarizer has the same window, but nobody answered. v3 handles this with a comment in durable_rename(), which the author of that comment is not fully sure about. Each new caller must then find and handle the window on its own.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        5
+      ],
+      "author_must_show": "Have the other durable_rename() callers, such as the WAL summarizer, been checked, and should the rule be stated in the durable_rename() contract instead of handled per caller?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Soumyadeep Chakraborty",
+          "date": "2024-10-31T08:03:06Z",
+          "url": "https://www.postgresql.org/message-id/CAE-ML%2B-vkbp_oU8qUdJux01EjQK1sDic48yT_aEPmoA0yC8mxw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The scenario is a future durable_rename() caller, and that window exists today with or without this patch. The patch fixes the WAL segment case and makes no other caller worse, so the scenario is not a failure of this proposal.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "see objection replication-ondisk-1: Skip-the-lock value tracks segment number only, but names carry timeline"
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "Both patches change how xlog.c installs and opens WAL segment files, on primary and standby."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The entry is tagged Bugfix, but the thread does not say whether to back-patch; 0002 adds a shared-memory field."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "0002 adds a shared-memory value that every segment install path must keep as a safe lower bound."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "0001 makes XLogFileInitInternal() wait on ControlFileLock when a backend opens a new WAL segment."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "After a timeline switch, can a backend skip the lock while opening a new-timeline segment whose segment number is at or below last_known_installed_segno?",
+    "What measurement shows that 0001 alone, with the wait on ControlFileLock at each segment open, is too slow to commit without 0002?",
+    "Why is the lock wait preferred over Yugo Nagata's fsync of the directory before the fd is returned, and what does each cost at a segment switch?",
+    "Is the fix meant for back-patching, and if so, does 0001 alone go to the supported branches?",
+    "Does a test or fault injection show that flushed WAL becomes unreachable when the rename is lost, and that the patch closes that case?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "The review notes record that a committer wrote the patch; the final push still needs someone who knows WAL segment recycling, timeline switches and ControlFileLock usage.",
+    "liability": "The owner signs for WAL durability and for any stall at segment switches on all supported platforms, with no end date. With 0002, the owner also signs for the tracked value staying a safe bound as install paths change.",
+    "author_follow_up": "The author answered in message #3 on the day of posting. The shown messages give no later sign, and the entry needs a rebase since 2026-04."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "most users",
+    "maintenance_burden": "low",
+    "review_cost": "medium",
+    "recommended_action": "proceed",
+    "reason": "The fix guards flushed WAL for every installation, and both patches are small and confined to xlog.c. Review cost is in the crash-safety reasoning; a rebase and a decision on 0001 alone versus 0001 plus 0002 would unblock it."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, this review could not check where the tracked value is updated, how it handles timeline switches, or which lock mode and hold time 0001 uses. Messages #4 to #6 were not shown in full.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "revert:55b56865115eccd6449e79d6f06fe49d6ba3b792",
+      "kind": "revert",
+      "title": "Revert recent changes with durable_rename_excl()",
+      "status": "Reverted",
+      "date": "2022-04-28",
+      "first_date": "2022-04-28",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=55b56865115eccd6449e79d6f06fe49d6ba3b792",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/511362.1651116498@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20220407182954.GA1231544@nathanxps13"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert recent changes with durable_rename_excl()\nReverted commit(s): Remove durable_rename_excl(); Replace existing durable_rename_excl() calls with durable_rename()",
+      "objection": "This reverts commits 2c902bb and ccfbd92.  Per buildfarm members\nkestrel, rorqual and calliphoridae, the assertions checking that a TLI\nhistory file should not exist when created by a WAL receiver have been\nfailing, and switching to durable_rename() over durable_rename_excl()\nwould cause the newest TLI history file to overwrite the existing one.\nWe need to think harder about such cases, so revert the new logic for\nnow.\n\nNote that all the failures have been reported in the test\n025_stuck_on_old_timeline.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "WAL segment rename fsync durability",
+        "durable_rename atomicity window"
+      ],
+      "from_hint": false,
+      "score": 0.288,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:3181",
+      "kind": "cf",
+      "title": "Map WAL segment files on PMEM as WAL buffers",
+      "status": "Returned with feedback",
+      "date": "2022-08-01",
+      "first_date": "2021-05-19",
+      "url": "https://commitfest.postgresql.org/patch/3181/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOwnP3PHDOW=-BqutjJPN0qEdF8ocqBuOiE9bpe-_c-1bnQ1yA@mail.gmail.com"
+      ],
+      "authors": "Takashi Menjo (tmenjo)",
+      "objectors": "",
+      "summary": "The patchset maps WAL segment files that live on persistent memory (PMEM) directly into memory with libpmem and uses them as the WAL buffers, so WAL is written in place without a separate copy and write. It adds a --with-libpmem build option and a wal_pmem_map setting, and sizes the mapped buffers to min_wal_size with pre-allocation by walwriter.",
+      "objection": "No reviewer took it up. Jacob Champion returned it in a batch of patchsets that did not get enough reviewer interest, and he wrote that this was not a rejection and that there was little actionable feedback. Earlier messages only asked for build fixes, CI support and rebases, and the author did each of them.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "WAL segment rename fsync durability",
+        "WAL segment preallocation lock contention"
+      ],
+      "from_hint": false,
+      "score": 0.264,
+      "enriched": true,
+      "key_quote": "As discussed in [1], we're taking this opportunity to return some\npatchsets that don't appear to be getting enough reviewer interest.",
+      "quote_message_url": "https://www.postgresql.org/message-id/bdf08089-eb79-e96d-b8ce-4779000bba5a%40timescale.com",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:1919",
+      "kind": "cf",
+      "title": "Add timeline to partial WAL segments",
+      "status": "Returned with feedback",
+      "date": "2020-09-30",
+      "first_date": "2018-12-10",
+      "url": "https://commitfest.postgresql.org/patch/1919/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/c6433bac-65bc-555e-e318-2077dd153eab@pgmasters.net"
+      ],
+      "authors": "David Steele (dsteele)",
+      "objectors": "",
+      "summary": "The patch adds the timeline that a promoted server switches to into the name of the .partial WAL segment it archives, for example 000000010000000100000001.00000002.partial. This prevents archive conflicts when several promotions in HA setups produce the same .partial file; prioritizing .history files in the archiver was proposed alongside it.",
+      "objection": "The author stopped working on it. After discussion, Michael Paquier agreed with a revised scheme in which pg_receivewal would also use the timeline-suffixed name. The author then marked the patch Waiting on Author because it needed more work, and no new version followed for about 20 months. Robert Haas and Michael Paquier also objected to back-patching the naming change into minor releases, but that did not decide the entry.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "WAL segment rename fsync durability",
+        "WAL segment preallocation lock contention"
+      ],
+      "from_hint": false,
+      "score": 0.223,
+      "enriched": true,
+      "key_quote": "As nothing has happened here, I have marked the patch as RwF.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20200930071750.GM1996%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:3333",
+      "kind": "cf",
+      "title": "Harden against premature discarding of WAL segments in TAP tests",
+      "status": "Withdrawn",
+      "date": "2021-11-03",
+      "first_date": "2021-09-25",
+      "url": "https://commitfest.postgresql.org/patch/3333/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/32A1FDD1-9C7B-43B1-B3EE-49198DD3F887@enterprisedb.com"
+      ],
+      "authors": "Mark Dilger (mark.dilger)",
+      "objectors": "",
+      "summary": "Mark Dilger proposed hardening TAP tests that break under a small max_wal_size or with wal_consistency_checking=all, because WAL segments they need get removed. The patch set used a physical replication slot in 015_promotion_pages.pl and contrib/bloom, adjusted the pg_basebackup tests, and re-enabled the disabled bloom test.",
+      "objection": "The author withdrew the patch set. Tom Lane found that the bloom test failed because it waited for the standby to write the WAL, not replay it, and his fix was committed together with re-enabling the test. The author then judged that committing the other changes at the same time could confuse the diagnosis of any new intermittent buildfarm failures.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "WAL segment rename fsync durability",
+        "WAL segment preallocation lock contention"
+      ],
+      "from_hint": false,
+      "score": 0.211,
+      "enriched": true,
+      "key_quote": "The issues were intermittent on the buildfarm, and committing other changes along with what Tom already committed would seem to confuse matters if any new issues were to arise.",
+      "quote_message_url": "https://www.postgresql.org/message-id/223AD80F-7BD9-4CA6-B72B-1002073366FB%40enterprisedb.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:3800",
+      "kind": "cf",
+      "title": "Avoid Copying WAL Segments Before Divergence to Speed Up pg_rewind",
+      "status": "Returned with feedback",
+      "date": "2022-11-30",
+      "first_date": "2022-06-30",
+      "url": "https://commitfest.postgresql.org/patch/3800/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/181b4c6fa9c.b8b725681941212.7547232617810891479@viggy28.dev"
+      ],
+      "authors": "vignesh ravichandran (vigneshravichandran), Justin Kwan (justinpkwan.outlook.com)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch makes pg_rewind skip copying WAL segments that come before the segment holding the last common checkpoint, since source and target share them. The author reported that WAL files are over 95% of the data pg_rewind copies in their setups.",
+      "objection": "The author did not answer Michael Paquier's review of 2022-10-06, so the entry was marked returned with feedback. That review asked for tests that use command_checks_all() instead of reading log files, and an assertion that the WAL segment exists on both sides. It also asked about segments with older timelines and for WAL segments to be tracked in file_entry_t. Alexander Korotkov saw no design objections in the thread.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "WAL segment rename fsync durability",
+        "WAL segment preallocation lock contention"
+      ],
+      "from_hint": false,
+      "score": 0.202,
+      "enriched": true,
+      "key_quote": "This review has been done a few weeks ago, and there has been no\nupdate since, so I am marking this entry as returned with feedback in\nthe CF app.",
+      "quote_message_url": "https://www.postgresql.org/message-id/Y4cAQVJc10IeA0M7%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:1040",
+      "kind": "cf",
+      "title": "Add support for --end-segment-command in pg_receivewal",
+      "status": "Returned with feedback",
+      "date": "2017-03-21",
+      "first_date": "2017-02-23",
+      "url": "https://commitfest.postgresql.org/patch/1040/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB7nPqTpNkEW45w6beX=ZpvRs8VdMdZbxwRs7W8QfCRwXApDwA@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Peter Eisentraut",
+      "summary": "The thread first proposed that pg_receivexlog remove the oldest WAL segments when free space on the archive partition drops below one segment, using statvfs(). After review, the registered patch instead added a --end-segment-command option that runs a user command, with a %f placeholder, each time a segment is completed.",
+      "objection": "Reviewers did not agree on a design. Robert Haas suggested a built-in --limit-retained-segments option instead. Peter Eisentraut doubted that a size limit matches real retention policies and that a statvfs()-based automatic mode is portable, and he was not sure what the alternative meant for the presented patch. The author then marked the entry returned with feedback, saying he did not know how to proceed; Peter Eisentraut's direct objections to the command patch (messages 23 and 25) are not visible.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "WAL segment rename fsync durability",
+        "WAL segment preallocation lock contention"
+      ],
+      "from_hint": false,
+      "score": 0.159,
+      "enriched": true,
+      "key_quote": "Could be.  I'm not sure what that means for the presented patch, though.\nOr whether it addresses Michael's original use case at all.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2f00fa27-20d1-9c68-29f0-d27b612c9aee%402ndquadrant.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:4590",
+      "kind": "cf",
+      "title": "Incorrect handling of OOM in WAL replay leading to data loss",
+      "status": "Withdrawn",
+      "date": "2023-10-24",
+      "first_date": "2023-08-01",
+      "url": "https://commitfest.postgresql.org/patch/4590/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ZMh%2FWV+CuknqePQQ@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "The patch set adds an error code (none, out-of-memory, invalid data) to the xlogreader error state, so callers can tell an OOM apart from an invalid record. The startup process then retries the record on OOM during crash recovery, so recovery does not end early and lose data.",
+      "objection": "The author withdrew it. Commit 6b18b3fe2c2f had already made xlogreader.c fail harder on OOM, which leaves HEAD correct in the OOM cases. The patch set would have reverted that and made the xlogreader error layers more complicated, and nobody showed interest after a further commitfest.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "WAL recycling crash data loss"
+      ],
+      "from_hint": false,
+      "score": 0.149,
+      "enriched": true,
+      "key_quote": "I have been thinking about this patch for the last few days, and in light of 6b18b3fe2c2f I am going to withdraw it for now as this makes the error layers of the xlogreader more complicated.",
+      "quote_message_url": "https://www.postgresql.org/message-id/ZTdOalhqXp7GS36a%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "revert:e28bb885196916b0a3d898ae4f2be0e38108d81b",
+      "kind": "revert",
+      "title": "Revert changes to CONCURRENTLY that \"sped up\" Xmin advance",
+      "status": "Reverted",
+      "date": "2022-05-31",
+      "first_date": "2021-02-23",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e28bb885196916b0a3d898ae4f2be0e38108d81b",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/17485-396609c6925b982d@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/20210115133858.GA18931@alvherre.pgsql"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert changes to CONCURRENTLY that \"sped up\" Xmin advance\nReverted commit(s): VACUUM: ignore indexing operations with CONCURRENTLY",
+      "objection": "This reverts commit d9d076222f5b \"VACUUM: ignore indexing operations\nwith CONCURRENTLY\".\n\nThese changes caused indexes created with the CONCURRENTLY option to\nmiss heap tuples that were HOT-updated and HOT-pruned during the index\ncreation.  Before these changes, HOT pruning would have been prevented\nby the Xmin of the transaction creating the index, but because this\nchange was precisely to allow the Xmin to move forward ignoring that\nbackend, now other backends scanning the table can prune them.  This is\nnot a problem for VACUUM (which requires a lock that conflicts with a\nCREATE INDEX CONCURRENTLY operation), but HOT-prune can definitely\noccur.  In other words, Xmin advancement was sped up, but at the cost of\ncorrupting the resulting index.\n\nRegrettably, this means that the new feature in PG14 that RIC/CIC on\nvery large tables no longer force VACUUM to retain very old tuples goes\naway.  We might try to implement it again in a later release, but for\nnow the risk of indexes missing tuples is too high and there's no easy\nfix.\n\nBackpatch to 14, where this change appeared.\n\nDiagnosys-by: Andrey Borodin <x4mmm@yandex-team.ru>\nDiagnosys-by: Michael Paquier <michael@paquier.xyz>\nDiagnosys-by: Andres Freund <andres@anarazel.de>",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "XLogFileInit lock concurrent write"
+      ],
+      "from_hint": false,
+      "score": 0.144,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "revert:cc32ec24fdf3b9808617439d41b0ba7f3eb16b04",
+      "kind": "revert",
+      "title": "Revert the commits related to allowing page lock to conflict among parallel group members.",
+      "status": "Reverted",
+      "date": "2023-07-06",
+      "first_date": "2020-03-19",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=cc32ec24fdf3b9808617439d41b0ba7f3eb16b04",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJKUy5jffnRKNvRHKQ0LynRb0RJC-o4P8Ku3x9vGAVLwDBWumQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAD21AoCmT3cFQUN4aVvzy5chw7DuzXrJCbrjTU05B+Ss=Gn1LA@mail.gmail.com"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Revert the commits related to allowing page lock to conflict among parallel group members.\nReverted commit(s): Allow page lock to conflict among parallel group members.; Add assert to ensure that page locks don't participate in deadlock cycle.",
+      "objection": "This commit reverts the work done by commits 3ba59ccc89 and 72e78d831a.\nThose commits were incorrect in asserting that we never acquire any other\nheavy-weight lock after acquring page lock other than relation extension\nlock. We can acquire a lock on catalogs while doing catalog look up after\nacquring page lock.\n\nThis won't impact any existing feature but we need to think some other way\nto achieve this before parallelizing other write operations or even\nimproving the parallelism in vacuum (like allowing multiple workers\nfor an index).",
+      "touch_points": [
+        "catalog changes",
+        "security / privileges",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "XLogFileInit lock concurrent write"
+      ],
+      "from_hint": false,
+      "score": 0.135,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:3347",
+      "kind": "cf",
+      "title": "Atomic rename feature for Windows",
+      "status": "Returned with feedback",
+      "date": "2022-11-30",
+      "first_date": "2021-07-05",
+      "url": "https://commitfest.postgresql.org/patch/3347/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/a529b660-da15-5b62-21a0-9936768210fd@postgrespro.ru"
+      ],
+      "authors": "Victor Spirin (v.spirin)",
+      "objectors": "Michael Paquier, Thomas Munro",
+      "summary": "The patch makes pgrename() on Windows use SetFileInformationByHandle with FILE_RENAME_FLAG_POSIX_SEMANTICS, so a rename can replace a file that is still open, as on POSIX. It raised _WIN32_WINNT to Windows 10 and added a manifest so IsWindows10OrGreater() works; a later version used the feature only on Windows build 17763 and up.",
+      "objection": "The entry closed because Thomas Munro rebased and simplified the patch and moved the work to a new thread and CommitFest entry. Earlier review had objected to raising the minimum Windows version and to the extra manifest files. Thomas Munro's open questions were behavior on non-NTFS filesystems and whether to require POSIX rename, since the non-POSIX fallback would likely go untested.",
+      "touch_points": [],
+      "matched_queries": [
+        "durable_rename atomicity window"
+      ],
+      "from_hint": false,
+      "score": 0.133,
+      "enriched": true,
+      "key_quote": "As Thomas has incorporated this patch into another CommitFest entry\n[1], we'll close\nthe entry for this thread [2].",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB8KJ%3DjHfC_tBi7JaV1wFW9Su41nkiRzU2bZZRT-sVVOR7nk2w%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "revert:7f7f25f15edb6eacec58179ef5285e874aa4435b",
+      "kind": "revert",
+      "title": "Revert \"Fix race in Parallel Hash Join batch cleanup.\"",
+      "status": "Reverted",
+      "date": "2021-03-17",
+      "first_date": "2021-03-17",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=7f7f25f15edb6eacec58179ef5285e874aa4435b",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGJmcqAE3MZeDCLLXa62cWM0AJbKmp2JrJYaJ86bz36LFA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CA+hUKG+MDpwF2Eo2LAvzd=pOh81wUTsrwU1uAwR-v6OGBB6+7g@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20200929061142.GA29096@paquier.xyz"
+      ],
+      "authors": "Thomas Munro",
+      "objectors": "",
+      "summary": "Revert \"Fix race in Parallel Hash Join batch cleanup.\"\nReverted commit(s): Update the names of Parallel Hash Join phases.; Fix race in Parallel Hash Join batch cleanup.",
+      "objection": "This reverts commit 378802e3713c6c0fce31d2390c134cd5d7c30157.\nThis reverts commit 3b8981b6e1a2aea0f18384c803e21e9391de669a.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "InstallXLogFileSegment race"
+      ],
+      "from_hint": false,
+      "score": 0.128,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:442",
+      "kind": "cf",
+      "title": "Fix lock contention for HASHHDR.mutex",
+      "status": "Returned with feedback",
+      "date": "2016-02-08",
+      "first_date": "2015-12-11",
+      "url": "https://commitfest.postgresql.org/patch/442/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20151211170001.78ded9d7@fujitsu"
+      ],
+      "authors": "Aleksander Alekseev (a.alekseev)",
+      "objectors": "Robert Haas",
+      "summary": "The patch reduces contention on the single spinlock HASHHDR.mutex in dynahash by splitting each partitioned shared hash table's entry counter and freelist into per-partition copies with their own spinlocks. To do this it makes all partitioned shared hash tables use the same fixed number of partitions, 128, and raises the lock manager partitions from 16 to 128.",
+      "objection": "Robert Haas objected that the patch ties the number of freelists to the number of partition locks and forces every shared hash table, including the lock manager, to use 128 partitions. He said this constraint is not needed and that more partitions can cost more, for example in the deadlock detector, which must lock them all. He also found the benchmark used to justify 128 too unclear to replicate. Alvaro Herrera returned the patch and asked for answers to these points.",
+      "touch_points": [],
+      "matched_queries": [
+        "WAL segment preallocation lock contention"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": true,
+      "key_quote": "I'm not going to commit this patch if it imposes new constraints on choosing the number of partitions in a dynamic hash table, and I'm going to oppose anyone else committing it either.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoZKfuJog2MoZrmPsrVh4b8owruPU3%2BNm_7bMgVcc8U3WQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:da33a3894e0fc440ac53cdc0f2e360e703b13b8c",
+      "kind": "revert",
+      "title": "Revert exporting of internal GUC variable \"data_directory\".",
+      "status": "Reverted",
+      "date": "2015-05-29",
+      "first_date": "2010-12-03",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=da33a3894e0fc440ac53cdc0f2e360e703b13b8c",
+      "thread_urls": [],
+      "authors": "Robert Haas",
+      "objectors": "",
+      "summary": "Revert exporting of internal GUC variable \"data_directory\".\nReverted commit(s): Use GUC lexer for recovery.conf parsing.",
+      "objection": "This undoes a poorly-thought-out choice in commit 970a18687f9b3058, namely\nto export guc.c's internal variable data_directory.  The authoritative\nvariable so far as C code is concerned is DataDir; there is no reason for\nanything except specific bits of GUC code to look at the GUC variable.\n\nAfter yesterday's commits fixing the fsync-on-restart patch, the only\nremaining misuse of data_directory was in AlterSystemSetConfigFile(),\nwhich would be much better off just using a relative path anyhow: it's\nless code and it doesn't break if the DBA moves the data directory of a\nrunning system, which is a case we've taken some pains over in the past.\n\nThis is mostly cosmetic, so no need for a back-patch (and I'd be hesitant\nto remove a global variable in stable branches anyway).",
+      "touch_points": [
+        "new GUC",
+        "WAL / replication / standby",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "fsync parent directory rename"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3664",
+      "kind": "cf",
+      "title": "Deletion of the recycled future WAL files to free-up disk space if max_wal_size is reduced or wal_recycle is set to off",
+      "status": "Returned with feedback",
+      "date": "2022-08-01",
+      "first_date": "2022-05-06",
+      "url": "https://commitfest.postgresql.org/patch/3664/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACU3ovReRGggVGK6Q+CwX1Aiy0NRo7qn8fg8Ke1vngo-bQ@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "",
+      "summary": "Deletion of the recycled future WAL files to free-up disk space if max_wal_size is reduced or wal_recycle is set to off\nThreads: Can postgres ever delete the recycled future WAL files to free-up\ndisk space if max_wal_size is reduced or wal_recycle is set to off?",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "WAL recycling crash data loss"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:4517",
+      "kind": "cf",
+      "title": "Unlogged relation copy is not fsync'd",
+      "status": "Returned with feedback",
+      "date": "2024-01-05",
+      "first_date": "2023-08-25",
+      "url": "https://commitfest.postgresql.org/patch/4517/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/65e94fc8-ce1d-dd02-3be3-fda0fe8f2965@iki.fi"
+      ],
+      "authors": "Heikki Linnakangas (heikki)",
+      "objectors": "",
+      "summary": "Unlogged relation copy is not fsync'd\nThreads: Unlogged relation copy is not fsync'd",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "fsync parent directory rename"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:2230",
+      "kind": "cf",
+      "title": "pgrename_temp() – concurrent rename of temporary files on Windows",
+      "status": "Returned with feedback",
+      "date": "2020-04-05",
+      "first_date": "2017-11-27",
+      "url": "https://commitfest.postgresql.org/patch/2230/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAPpHfds7dyuGZt+PF2GL9qSSVV0OZnjNwqiCPjN7mirDw882tA@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov (smagen)",
+      "objectors": "",
+      "summary": "pgrename_temp() – concurrent rename of temporary files on Windows\nThreads: [PATCH] Atomic pgrename on Windows",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "durable_rename atomicity window"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:646",
+      "kind": "cf",
+      "title": "Prevent ALTER TABLE DROP NOT NULL on child tables if parent column has it",
+      "status": "Rejected",
+      "date": "2016-06-16",
+      "first_date": "2016-06-15",
+      "url": "https://commitfest.postgresql.org/patch/646/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB7nPqTPXgX9HiyhhtAgpW7jbA1iskMCSoqXPEEB_KYXYy1E1Q@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Prevent ALTER TABLE DROP NOT NULL on child tables if parent column has it\nThreads: Prevent ALTER TABLE DROP NOT NULL on child tables if parent column\nhas it",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "fsync parent directory rename"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:1613",
+      "kind": "cf",
+      "title": "Fsync queue forgets requests on failure",
+      "status": "Rejected",
+      "date": "2018-07-13",
+      "first_date": "2018-04-05",
+      "url": "https://commitfest.postgresql.org/patch/1613/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/87y3i1ia4w.fsf@news-spur.riddles.org.uk"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Fsync queue forgets requests on failure\nThreads: Checkpoint not retrying failed fsync?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "fsync parent directory rename"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:1455",
+      "kind": "cf",
+      "title": "Changing WAL Header to reduce contention during ReserveXLogInsertLocation()",
+      "status": "Returned with feedback",
+      "date": "2018-07-09",
+      "first_date": "2017-12-30",
+      "url": "https://commitfest.postgresql.org/patch/1455/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANP8+jKZidkCLHg_6nUi4tLQTN=d6w+qd7H5DYqzYa3eU-6Hzw@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon), Pavan Deolasee (pavan)",
+      "objectors": "",
+      "summary": "Changing WAL Header to reduce contention during ReserveXLogInsertLocation()\nThreads: Changing WAL Header to reduce contention during ReserveXLogInsertLocation()",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "WAL segment preallocation lock contention"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:1060",
+      "kind": "cf",
+      "title": "REINDEX CONCURRENTLY",
+      "status": "Returned with feedback",
+      "date": "2017-04-03",
+      "first_date": "2013-11-15",
+      "url": "https://commitfest.postgresql.org/patch/1060/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB7nPqSTFkuc7dZxCDX4HOTU63YXHRroNv2aoUzyD-Zz_8Z_Zg@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun), Andreas Karlsson (kandreas)",
+      "objectors": "",
+      "summary": "REINDEX CONCURRENTLY\nThreads: REINDEX CONCURRENTLY 2.0",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "XLogFileInit lock concurrent write"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "revert:1bd42cd70abdbc946ad64c3c8eaefed4bb8b1145",
+      "kind": "revert",
+      "title": "Better fix for \"unarchived WAL files get deleted on crash recovery\" bug.",
+      "status": "Partially reverted",
+      "date": "2013-02-15",
+      "first_date": "2013-02-15",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1bd42cd70abdbc946ad64c3c8eaefed4bb8b1145",
+      "thread_urls": [],
+      "authors": "Heikki Linnakangas",
+      "objectors": "",
+      "summary": "Better fix for \"unarchived WAL files get deleted on crash recovery\" bug.\nReverted commit(s): Don't delete unarchived WAL files during crash recovery.",
+      "objection": "Revert my earlier fix for the bug that unarchived WAL files get deleted on\ncrash recovery, commit c9cc7e05c6d82a9781883a016c70d95aa4923122. We create\na .done file for files streamed or restored from archive, so the WAL file\nrecycling logic used during normal operation works just as well during\narchive recovery.\n\nPer Fujii Masao's suggestion.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "WAL recycling crash data loss"
+      ],
+      "from_hint": false,
+      "score": 0.103,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "revert:faa189c932d51945b2285e277128b0f26b96afdd",
+      "kind": "revert",
+      "title": "Move libpq's write_failed mechanism down to pqsecure_raw_write().",
+      "status": "Partially reverted",
+      "date": "2022-02-12",
+      "first_date": "2019-03-19",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=faa189c932d51945b2285e277128b0f26b96afdd",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/17391-304f81bcf724b58b@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/CAEepm=2n6Nv+5tFfe8YnkUm1fXgvxR0Mm1FoD+QKG-vLNGLyKg@mail.gmail.com"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Move libpq's write_failed mechanism down to pqsecure_raw_write().\nReverted commit(s): Restructure libpq's handling of send failures.",
+      "objection": "Commit 1f39a1c06 implemented write-failure postponement in pqSendSome,\nwhich is above SSL/GSS processing.  However, we've now seen failures\nindicating that (some versions of?) OpenSSL have a tendency to report\nwrite failures prematurely too.  Hence, move the primary responsibility\nfor postponing write failures down to pqsecure_raw_write(), below\nSSL/GSS processing.  pqSendSome now sets write_failed only in corner\ncases where we'd lost the connection already.\n\nA side-effect of this change is that errors detected in the SSL/GSS\nlayer itself will be reported immediately (as if they were read\nerrors) rather than being postponed like write errors.  That's\nreverting an effect of 1f39a1c06, and I think it's fine: if there's\nnot a socket-level error, it's hard to be sure whether an OpenSSL\nerror ought to be considered a read or write failure anyway.\n\nAnother important point is that write-failure postponement is now\neffective during connection setup.  OpenSSL's misbehavior of this\nsort occurs during SSL_connect(), so that's a change we want.\n\nPer bug #17391 from Nazir Bilal Yavuz.  Possibly this should be\nback-patched, but I think it prudent to let it age awhile in HEAD\nfirst.",
+      "touch_points": [
+        "wire protocol / libpq",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "XLogFileInit lock concurrent write"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:2990",
+      "kind": "cf",
+      "title": "speed up pg_rewind by using copy_file_range() and skipping some fsync",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-01-27",
+      "url": "https://commitfest.postgresql.org/patch/2990/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/7C1703E7-F3F3-43FA-86EB-177C671BF33C@vmware.com"
+      ],
+      "authors": "Paul Guo (paulguo-vmware)",
+      "objectors": "",
+      "summary": "speed up pg_rewind by using copy_file_range() and skipping some fsync\nThreads: Two patches to speed up pg_rewind.",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "fsync parent directory rename"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:1730",
+      "kind": "cf",
+      "title": "Fix calculations on WAL recycling",
+      "status": "Rejected",
+      "date": "2018-07-23",
+      "first_date": "2018-07-23",
+      "url": "https://commitfest.postgresql.org/patch/1730/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20180723.135748.42558387.horiguchi.kyotaro@lab.ntt.co.jp"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti)",
+      "objectors": "",
+      "summary": "Fix calculations on WAL recycling\nThreads: Fix calculations on WAL recycling.",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "WAL recycling crash data loss"
+      ],
+      "from_hint": false,
+      "score": 0.101,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 3,
+    "new_calls": 5,
+    "failed": 0,
+    "quotes_verified": 5,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2024-02-02",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found. [P1] reverted a switch from durable_rename_excl() to durable_rename() because a TLI history file could be overwritten. That reason does not apply to closing the rename/fsync window in WAL segment install. The thread cites no earlier discussion of the idea."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 0,
+      "note": "The proposal has no user-facing contract to check: no SQL syntax, GUC, catalog object, pg_dump output or psql change, and both patches touch only xlog.c. The open questions are lock cost, whether the window can be shown, other durable_rename() callers and back-patching, and those belong to the safety and performance angles. Back-patch suitability cannot be judged without the code, because the new shared-memory counter's ABI effect depends on where it is placed."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 2,
+      "note": "The proposal changes no on-disk format, WAL record, catalog or protocol. Both objections ask the design to show it covers every path that installs a segment and then writes to it. Neither questions the fix itself."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal is an internal WAL durability fix with no privilege or exposure aspect. It adds no user-callable interface, privilege, setting or monitoring output, and the new waits on ControlFileLock happen only inside server WAL writing, which an unprivileged user cannot drive beyond normal write load."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "Neither objection is against the fix itself. The bug is real, the patch is small, and a committer wrote it, so these are requests to tighten 0002 and the durable_rename() contract."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "This is a crash-safety bugfix inside xlog.c. No existing feature, setting, extension or external tool closes the window between rename() and the parent directory fsync for WAL segments. Yugo Nagata's alternative (an fsync before the fd is returned) is a design choice inside the same fix, and other reviewers discuss it; this angle does not cover it. [P1] is about durable_rename_excl() and timeline history files, so it does not apply."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "The demand angle has no objection here, because this is a durability bugfix and its users are every Postgres installation that writes WAL. A possible loss of a commit already reported to the client does not need field reports to justify it; the missing reproduction and cost measurements belong to the design and safety angles."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 4,
+      "new_survived": 2,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 62,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 17,
+    "wall_ms": 142439,
+    "cost_usd": 1.4120072000000001,
+    "dry_run": false
+  }
+}

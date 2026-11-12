@@ -1,0 +1,1624 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:32:24.949Z",
+  "input": {
+    "arg": "5526",
+    "cf": {
+      "id": 5526,
+      "url": "https://commitfest.postgresql.org/patch/5526/",
+      "title": "Add storage I/O tracking to EXPLAIN IO option",
+      "status": "Needs review",
+      "authors": "Atsushi Torikoshi (atsushitorikoshi)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/c20f6340eb26f3b736abc59471bfada8%40oss.nttdata.com",
+    "subject": "RFC: Allow EXPLAIN to Output Page Fault Information",
+    "thread_start": "2024-12-24T08:53:06Z",
+    "messages_read": 50,
+    "messages_total": 50,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v13-0001-Add-storage-I-O-tracking-to-IO-option.patch",
+      "v1-0001-PoC-Allow-EXPLAIN-to-output-page-fault-info.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The goal has support in the thread, but v13 shows no Storage I/O output under io_method = worker, the default (maintenance-fit-1). Andres said in message #26 that the approach then fails where most users run, and nothing after v12 shows that he or Tom accepts hiding the output (prior-attempts-1). The thread also does not weigh an extension plus a small parallel-worker hook (already-exists-2). The level 2 objections were not evaluated.",
+  "failing_level": "1b",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "failed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "not_evaluated"
+    }
+  ],
+  "brief": {
+    "title": "Report storage I/O from getrusage() in EXPLAIN (ANALYZE, IO)",
+    "problem": "EXPLAIN BUFFERS shows shared buffer hits and reads, but not whether a read was served by the OS page cache or by storage. People who diagnose slow queries, especially where shared_buffers is much smaller than RAM, cannot tell if a query is really disk-bound.",
+    "proposed_design": "The backend calls getrusage() at the start and end of planning and of execution and reports the difference in ru_inblock and ru_oublock. Parallel workers send their counts to the leader, as is done for buffer and WAL usage. The IO option enables the output, so ANALYZE is required, and nothing is shown when io_method = worker.",
+    "user_visible_surface": [
+      "New \"Storage I/O: read=N write=N\" lines in the Planning and Execution sections of EXPLAIN (ANALYZE, IO) text output.",
+      "New \"Storage I/O Read\" and \"Storage I/O Write\" properties in JSON, XML and YAML EXPLAIN output.",
+      "No Storage I/O output when io_method = worker; values are always zero on Windows.",
+      "Changes to the Windows getrusage() port header (src/include/port/win32/sys/resource.h).",
+      "Documented auto_explain support is planned as a follow-up and is not in this patch."
+    ],
+    "author_claims": [
+      "Storage I/O is much slower than shared buffer or OS cache hits, so these counts show whether storage I/O is the bottleneck.",
+      "Calling getrusage() only at phase boundaries has small overhead; per-node calls were tried and were too slow.",
+      "The counters work with io_method = sync and io_uring; Andres's test showed correct counts with io_uring.",
+      "pg_stat_kcache has used the same counters for years without problem reports (Julien Rouhaud).",
+      "io_uring adoption is growing; RHEL 10.2 moved it out of Technology Preview."
+    ],
+    "thread_state": "Andres Freund and Tom Lane objected that the counts miss I/O done by worker-based AIO, bgwriter and checkpointer; Lukas Fittl asked whether there is a path forward when most installations use I/O workers. Jelte supports the patch; v13 is a rebase with no reply after it.",
+    "unclear": [
+      "Andres Freund's and Tom Lane's response to the v12 approach of hiding output under io_method = worker is not visible.",
+      "The material contains no benchmark of getrusage() overhead at phase boundaries or in parallel workers.",
+      "The material does not show the ru_inblock and ru_oublock units and semantics on the BSDs, macOS, AIX and Solaris.",
+      "The proposal does not say whether a user can tell \"zero I/O\" apart from \"not measurable\" on Windows.",
+      "The patch does not say how writes done by bgwriter or checkpointer for the query appear in the output."
+    ],
+    "search_queries": [
+      "EXPLAIN page faults getrusage",
+      "EXPLAIN storage I/O OS cache",
+      "ru_inblock ru_oublock",
+      "EXPLAIN rusage resource usage",
+      "OS page cache hit ratio",
+      "pg_stat_kcache in core",
+      "EXPLAIN IO option",
+      "kernel I/O statistics per query"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Counters vanish under the default io_method, where most users run",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "desirability",
+      "touch_points": [
+        "maintenance_burden",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user on a managed service, where only I/O workers are offered, runs EXPLAIN (ANALYZE, IO) to check whether a slow query is disk-bound. No Storage I/O line appears. The core feature gives that user nothing, but the project still carries its parallel plumbing, platform quirks and tests.",
+      "argument": "Message #39 says worker is now the default io_method. Message #46 reports that managed providers offer only I/O workers and that containers often lack io_uring. The author answers that sync and io_uring users still benefit and that io_uring adoption is growing (message #48, #49). A committer would likely ask whether a core EXPLAIN feature should rest on that forecast, since the cost lands on every release while the benefit reaches only a minority of installations.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        26,
+        39,
+        46,
+        48,
+        49
+      ],
+      "author_must_show": "What share of Postgres 19+ installations can use sync or io_uring today, and what evidence shows those users ask for this in EXPLAIN?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 26,
+          "from": "Andres Freund",
+          "date": "2025-02-11T15:36:55Z",
+          "url": "https://www.postgresql.org/message-id/3gz6ymrgnua75aviagsl4d4traoqxo2g2rzzykqa3yl4jyts3y%40gj6lcc6aziil"
+        },
+        {
+          "index": 39,
+          "from": "torikoshia",
+          "date": "2026-01-28T13:27:04Z",
+          "url": "https://www.postgresql.org/message-id/a8fb87e49a5a547519bb916e375ab563%40oss.nttdata.com"
+        },
+        {
+          "index": 46,
+          "from": "Lukas Fittl",
+          "date": "2026-05-25T18:43:43Z",
+          "url": "https://www.postgresql.org/message-id/CAP53PkyM8uRn9uPrEAmv6UaO%2B-O0f5VtQFGDWGWC3BD-Zo1UWQ%40mail.gmail.com"
+        },
+        {
+          "index": 48,
+          "from": "Atsushi Torikoshi",
+          "date": "2026-06-01T13:10:41Z",
+          "url": "https://www.postgresql.org/message-id/CAM6-o%3DCATBQpDQAa3akuKqw9gWfpN-N7nVr9%3D8qSejKV%2BQyHXQ%40mail.gmail.com"
+        },
+        {
+          "index": 49,
+          "from": "torikoshia",
+          "date": "2026-08-19T12:14:43Z",
+          "url": "https://www.postgresql.org/message-id/95ff66682bec0d10e18ea9c6a3dd3f93%40oss.nttdata.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #38 confirms worker is the default and message #46 reports providers that offer only workers. The author's answer in messages #48 and #49 is a forecast of io_uring adoption without numbers, so the gain reaches an unmeasured minority.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Earlier in-thread objection about I/O workers still stands for v13",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "prior_rejection",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator on a managed service that offers only io_method = worker runs EXPLAIN (ANALYZE, IO) on a slow query and gets no Storage I/O line. Others compare numbers taken under sync with numbers taken under worker and misread the difference. The bug reports go to the AIO maintainers.",
+      "argument": "In message #17 and message #26 Andres objected that the approach cannot work with worker-based AIO, the expected default, and that he would be on the hook for the bug reports. Hiding the output (message #35) answers the undercount in message #23 but not the demand question. Message #46 reports that worker is now the default and that some providers offer only workers. No reply from Andres or Tom follows v12 or v13.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        17,
+        23,
+        26,
+        35,
+        46,
+        49
+      ],
+      "author_must_show": "What share of Postgres 19 and later installations can use sync or io_uring, and do the AIO maintainers accept hiding the output under worker?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 17,
+          "from": "Andres Freund",
+          "date": "2025-02-09T17:59:27Z",
+          "url": "https://www.postgresql.org/message-id/myw76agwrlmisvamwbfl6ibxgwh5glzitydiwnfmtb5aui232i%40274yxxtnbnsp"
+        },
+        {
+          "index": 23,
+          "from": "Andres Freund",
+          "date": "2025-02-10T23:30:56Z",
+          "url": "https://www.postgresql.org/message-id/mzjytadtjqv4knvwukppaol5zx2qzt2bkuqvjlo4rjawvhn4ql%40qmdf64qkmxjo"
+        },
+        {
+          "index": 26,
+          "from": "Andres Freund",
+          "date": "2025-02-11T15:36:55Z",
+          "url": "https://www.postgresql.org/message-id/3gz6ymrgnua75aviagsl4d4traoqxo2g2rzzykqa3yl4jyts3y%40gj6lcc6aziil"
+        },
+        {
+          "index": 35,
+          "from": "torikoshia",
+          "date": "2025-04-11T13:18:06Z",
+          "url": "https://www.postgresql.org/message-id/0310f2ff46d990485f96624ac1744c01%40oss.nttdata.com"
+        },
+        {
+          "index": 46,
+          "from": "Lukas Fittl",
+          "date": "2026-05-25T18:43:43Z",
+          "url": "https://www.postgresql.org/message-id/CAP53PkyM8uRn9uPrEAmv6UaO%2B-O0f5VtQFGDWGWC3BD-Zo1UWQ%40mail.gmail.com"
+        },
+        {
+          "index": 49,
+          "from": "torikoshia",
+          "date": "2026-08-19T12:14:43Z",
+          "url": "https://www.postgresql.org/message-id/95ff66682bec0d10e18ea9c6a3dd3f93%40oss.nttdata.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #25 proposed hiding the numbers under worker, and Andres answered in message #26 that the feature then fails in the expected default. Nothing after v12 shows that he or Tom accepts the hiding approach.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "An extension could add this through existing EXPLAIN and executor hooks",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "does_not_fit",
+      "touch_points": [
+        "does_not_fit",
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Core takes on a counter that is empty under the default io_method = worker, always zero on Windows, and counted in different units on each platform. Andres expects to receive the resulting bug reports (message #26). An extension owner could carry the same cost alone, as pg_stat_kcache has done for years.",
+      "argument": "pg_stat_kcache already reads these counters and splits shared-buffer hits, OS-cache hits and disk reads per query (messages #3, #11). Extensions can already wrap the executor, and recent releases let them add EXPLAIN options and output. The only piece that may need core is passing worker counts to the leader. A small hook for that would cost less than a core option whose behaviour depends on io_method.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        11,
+        26,
+        46
+      ],
+      "author_must_show": "Which part of the feature, other than parallel-worker aggregation, cannot be built in an extension with today's executor and EXPLAIN extension hooks?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "torikoshia",
+          "date": "2024-12-26T04:15:59Z",
+          "url": "https://www.postgresql.org/message-id/6023c8ac6b1823e2126a001f668ef245%40oss.nttdata.com"
+        },
+        {
+          "index": 11,
+          "from": "Julien Rouhaud",
+          "date": "2025-01-06T09:59:02Z",
+          "url": "https://www.postgresql.org/message-id/Z3upZkA5Bi6lYS6a%40jrouhaud"
+        },
+        {
+          "index": 26,
+          "from": "Andres Freund",
+          "date": "2025-02-11T15:36:55Z",
+          "url": "https://www.postgresql.org/message-id/3gz6ymrgnua75aviagsl4d4traoqxo2g2rzzykqa3yl4jyts3y%40gj6lcc6aziil"
+        },
+        {
+          "index": 46,
+          "from": "Lukas Fittl",
+          "date": "2026-05-25T18:43:43Z",
+          "url": "https://www.postgresql.org/message-id/CAP53PkyM8uRn9uPrEAmv6UaO%2B-O0f5VtQFGDWGWC3BD-Zo1UWQ%40mail.gmail.com"
+        }
+      ],
+      "id": "already-exists-2",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Extensions can register EXPLAIN options and wrap planner and executor, and pg_stat_kcache reads the same counters. Messages #4, #7 and #46 show interest in core support, but the thread does not weigh an extension plus a small parallel-worker hook.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "Storage I/O counts mean different things on different platforms",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "sql_standard_syntax",
+      "touch_points": [
+        "sql_standard_syntax",
+        "psql_ux"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA compares EXPLAIN (ANALYZE, IO, FORMAT JSON) plans from a Linux server and a FreeBSD server, or feeds them to a plan visualizer. Both show \"Storage I/O Read\", but the unit and the moment of counting differ, so the numbers cannot be compared. The tool author learns this only from bug reports.",
+      "argument": "The documentation hunk says the unit is 512 bytes on Linux and that timing and unit \"may vary depending on the platform\". It also says writes are counted when a page is dirtied on Linux. Message #14 checked only that the fields exist on other platforms, not what they mean. EXPLAIN properties so far have one defined meaning everywhere, so a raw kernel counter under a stable property name is a new kind of contract.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        12,
+        14,
+        38
+      ],
+      "author_must_show": "Which unit and counting rule do ru_inblock and ru_oublock follow on each supported platform, and can the output be normalized or labeled so it means the same everywhere?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 12,
+          "from": "\"Jelte Fennema-Nio\"",
+          "date": "2025-01-06T20:09:04Z",
+          "url": "https://www.postgresql.org/message-id/D6V9GJ2LOLC5.1ZF3BWKKEBZWC%40jeltef.nl"
+        },
+        {
+          "index": 14,
+          "from": "torikoshia",
+          "date": "2025-01-27T09:04:59Z",
+          "url": "https://www.postgresql.org/message-id/2c9d6eaf26df17bec13bb03bf1e9bcbb%40oss.nttdata.com"
+        },
+        {
+          "index": 38,
+          "from": "\"Jelte Fennema-Nio\"",
+          "date": "2026-01-25T14:35:42Z",
+          "url": "https://www.postgresql.org/message-id/DFXQUHHKZN5U.2IAL4TGTP32IG%40jeltef.nl"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The documentation hunk gives the unit and counting rule for Linux only, and message #14 says the author is unsure about other platforms. Jelte accepted raw values in message #15, but the per-platform meaning is still not stated.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "Absent output, zero and real zero cannot be told apart",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "psql_ux",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user on Windows sees \"Storage I/O Read\": 0 and decides the query is fully cached. A user on the default io_method = worker sees no Storage I/O line and assumes there was no I/O, since text format omits zero values. Neither user can tell that the counter was not measured.",
+      "argument": "The documentation hunk says Windows always reports zero, while io_method = worker reports nothing. That gives two different signals for the same \"not measurable\" condition, and one of them looks the same as a measured zero. Message #23 warned that misleading numbers are worse than none. The brief lists this as unsettled.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        23,
+        38,
+        43
+      ],
+      "author_must_show": "How does a JSON consumer or a text reader tell \"not measured\" apart from \"measured zero\" on every platform and io_method?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 23,
+          "from": "Andres Freund",
+          "date": "2025-02-10T23:30:56Z",
+          "url": "https://www.postgresql.org/message-id/mzjytadtjqv4knvwukppaol5zx2qzt2bkuqvjlo4rjawvhn4ql%40qmdf64qkmxjo"
+        },
+        {
+          "index": 38,
+          "from": "\"Jelte Fennema-Nio\"",
+          "date": "2026-01-25T14:35:42Z",
+          "url": "https://www.postgresql.org/message-id/DFXQUHHKZN5U.2IAL4TGTP32IG%40jeltef.nl"
+        },
+        {
+          "index": 43,
+          "from": "Atsushi Torikoshi",
+          "date": "2026-05-22T16:07:12Z",
+          "url": "https://www.postgresql.org/message-id/CAM6-o%3DDnHSj2q9_%2BWohrvagd-QAqvpoepNRS9LRadMBCkTAMkw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The documentation confirms zero on Windows and no output under worker, and text format prints only non-zero values. A reader cannot tell a measured zero from an unmeasured one, and the proposal gives no marker for it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "Correct output depends on gating that future I/O changes must remember",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later release moves more I/O off the backend, for example writes, readahead or a new io_method that hands work to helper processes. Nobody updates the Storage I/O gating. EXPLAIN then prints a non-zero but low count, which is the misleading undercount message #23 warns about, and users report it as a bug.",
+      "argument": "The design is correct only while all query I/O runs in the backend or in parallel workers, and only io_method = worker is excluded by name. Nothing fails when a new path breaks that assumption, and the default regression output does not show the counters (message #38, item 8). Andres says in message #26 that he expects to be the one handling such bug reports. No committer in the visible thread has offered to own this area.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        18,
+        23,
+        26,
+        38
+      ],
+      "author_must_show": "What makes a future patch that moves backend I/O to another process fail a test or trip an assertion, instead of quietly causing an undercount?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 18,
+          "from": "Tom Lane",
+          "date": "2025-02-09T18:05:42Z",
+          "url": "https://www.postgresql.org/message-id/2035079.1739124342%40sss.pgh.pa.us"
+        },
+        {
+          "index": 23,
+          "from": "Andres Freund",
+          "date": "2025-02-10T23:30:56Z",
+          "url": "https://www.postgresql.org/message-id/mzjytadtjqv4knvwukppaol5zx2qzt2bkuqvjlo4rjawvhn4ql%40qmdf64qkmxjo"
+        },
+        {
+          "index": 26,
+          "from": "Andres Freund",
+          "date": "2025-02-11T15:36:55Z",
+          "url": "https://www.postgresql.org/message-id/3gz6ymrgnua75aviagsl4d4traoqxo2g2rzzykqa3yl4jyts3y%40gj6lcc6aziil"
+        },
+        {
+          "index": 38,
+          "from": "\"Jelte Fennema-Nio\"",
+          "date": "2026-01-25T14:35:42Z",
+          "url": "https://www.postgresql.org/message-id/DFXQUHHKZN5U.2IAL4TGTP32IG%40jeltef.nl"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The patch excludes only io_method = worker by name, and the default regression run does not show the counters. The material names no test or assertion that would fail if a later change moved backend I/O to another process.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "IO option gets a second, different meaning",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "psql_ux"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user turns on IO to see per-scan-node I/O and gets an extra whole-query OS counter. That counter includes temp file I/O from sorts and the backend's own reads. The user then subtracts the node totals from it and gets numbers that do not add up.",
+      "argument": "Message #45 notes that IO is documented as I/O \"performed by scan nodes\", while getrusage() covers all I/O done by the backend and its parallel workers. The patch handles this with a documentation sentence, and no one in the thread answered the concern raised in message #45. One option that reports Postgres-level per-node data and kernel-level whole-process data under the same name departs from how EXPLAIN options are grouped today.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        44,
+        45,
+        49
+      ],
+      "author_must_show": "Why should kernel-level whole-query counters sit under IO and not under a separate option or a separate output group?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 44,
+          "from": "Jelte Fennema-Nio",
+          "date": "2026-05-24T09:50:00Z",
+          "url": "https://www.postgresql.org/message-id/CAGECzQSOrmOTSyVHi1tkx9QDg9_PkVJudtdTH0B7ovHeZXtFLQ%40mail.gmail.com"
+        },
+        {
+          "index": 45,
+          "from": "Atsushi Torikoshi",
+          "date": "2026-05-25T12:17:56Z",
+          "url": "https://www.postgresql.org/message-id/CAM6-o%3DBL59LgruKXm3DCjzFzvr7TTJPtryEPj51YeGMFrWO0EQ%40mail.gmail.com"
+        },
+        {
+          "index": 49,
+          "from": "torikoshia",
+          "date": "2026-08-19T12:14:43Z",
+          "url": "https://www.postgresql.org/message-id/95ff66682bec0d10e18ea9c6a3dd3f93%40oss.nttdata.com"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The counts appear in the separate Planning and Execution groups at the end of the plan, and the documentation says they cover the whole query, unlike the per-node data. The subtraction scenario needs a reader to ignore both.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Extension path for this metric is not weighed against core",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "does_not_fit",
+      "touch_points": [
+        "does_not_fit",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Core takes on getrusage() semantics that differ across Linux, the BSDs, macOS, AIX and Solaris, and returns zero on Windows. The main use the commit message names, auto_explain, is left for a follow-up. Users who want this today already use pg_stat_kcache, so core gains a second, narrower copy.",
+      "argument": "Message #11 says pg_stat_kcache has used these counters for years. The documentation hunk says units and timing vary by platform, which places a non-portable, kernel-defined metric in core EXPLAIN output. The proposal does not say why extension EXPLAIN options, plus a small core hook for passing parallel-worker counters to the leader, would not be enough.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        11,
+        14
+      ],
+      "author_must_show": "Which part of this feature cannot be built as an extension EXPLAIN option, and would a narrow core hook for parallel-worker counters cover that part?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "torikoshia",
+          "date": "2024-12-26T04:15:59Z",
+          "url": "https://www.postgresql.org/message-id/6023c8ac6b1823e2126a001f668ef245%40oss.nttdata.com"
+        },
+        {
+          "index": 11,
+          "from": "Julien Rouhaud",
+          "date": "2025-01-06T09:59:02Z",
+          "url": "https://www.postgresql.org/message-id/Z3upZkA5Bi6lYS6a%40jrouhaud"
+        },
+        {
+          "index": 14,
+          "from": "torikoshia",
+          "date": "2025-01-27T09:04:59Z",
+          "url": "https://www.postgresql.org/message-id/2c9d6eaf26df17bec13bb03bf1e9bcbb%40oss.nttdata.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of already-exists-2, which states the extension path more exactly.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "log_executor_stats already reports the same getrusage block counters",
+      "level": "1b",
+      "rubric_item": 12,
+      "category": "desirability",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA checking whether one slow query is disk-bound can run `set log_executor_stats = on` with `client_min_messages = log` and read \"filesystem blocks in/out\" for that statement. With this patch Postgres has two getrusage paths for the same counters, each with its own rules for platforms and io_method. They can disagree, and the DBA learns this only when comparing them.",
+      "argument": "log_planner_stats and log_executor_stats already take a getrusage() delta around each phase and print ru_inblock and ru_oublock. Message #1 rejects them because always-on logging is too noisy, and says auto_explain is the main target. The patch leaves auto_explain to a later follow-up, so the noise problem stays unsolved. Per-query use with SET already works today. What the patch adds is parallel-worker totals and EXPLAIN formatting.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        49
+      ],
+      "author_must_show": "For one query, what does EXPLAIN (ANALYZE, IO) show that a session-level log_executor_stats run cannot, apart from parallel-worker totals?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "torikoshia",
+          "date": "2024-12-24T08:53:06Z",
+          "url": "https://www.postgresql.org/message-id/c20f6340eb26f3b736abc59471bfada8%40oss.nttdata.com"
+        },
+        {
+          "index": 49,
+          "from": "torikoshia",
+          "date": "2026-08-19T12:14:43Z",
+          "url": "https://www.postgresql.org/message-id/95ff66682bec0d10e18ea9c6a3dd3f93%40oss.nttdata.com"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "log_executor_stats needs superuser-level SET, omits parallel workers, and prints an undercount under io_method = worker with no gating. So it cannot do the job for parallel queries, where disk-bound scans are common, and two reporting paths that differ is not a failure.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Feature reaches only sync and io_uring users, a shrinking group",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user on a managed service, where only io_method = worker is offered, runs EXPLAIN (ANALYZE, IO) to check whether a slow query is disk-bound and gets no Storage I/O line. The same happens on the default configuration. Most users who would want the numbers never see them, while the project still carries the code and its bug reports.",
+      "argument": "Message #46 reports that managed providers offer only I/O workers and that container environments often lack io_uring, so most 19+ installations will not see the output. The interest shown in messages #5, #7, #42 and #46 is interest in the information, not in a version that hides it on the default io_method. Message #26 notes that the bug reports would land on the AIO maintainer. Messages #48 and #49 cite RHEL 10.2 io_uring support but give no adoption numbers.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        26,
+        28,
+        46,
+        48,
+        49
+      ],
+      "author_must_show": "Which deployments run io_method = sync or io_uring in production today, and is there evidence that their share will grow rather than shrink?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 26,
+          "from": "Andres Freund",
+          "date": "2025-02-11T15:36:55Z",
+          "url": "https://www.postgresql.org/message-id/3gz6ymrgnua75aviagsl4d4traoqxo2g2rzzykqa3yl4jyts3y%40gj6lcc6aziil"
+        },
+        {
+          "index": 28,
+          "from": "Andres Freund",
+          "date": "2025-02-11T16:19:14Z",
+          "url": "https://www.postgresql.org/message-id/zluvsuokej5tpqirkrmhwdikg5cwhkzu2dvlpkdizlukitu7vl%40yaglatfcccho"
+        },
+        {
+          "index": 46,
+          "from": "Lukas Fittl",
+          "date": "2026-05-25T18:43:43Z",
+          "url": "https://www.postgresql.org/message-id/CAP53PkyM8uRn9uPrEAmv6UaO%2B-O0f5VtQFGDWGWC3BD-Zo1UWQ%40mail.gmail.com"
+        },
+        {
+          "index": 48,
+          "from": "Atsushi Torikoshi",
+          "date": "2026-06-01T13:10:41Z",
+          "url": "https://www.postgresql.org/message-id/CAM6-o%3DCATBQpDQAa3akuKqw9gWfpN-N7nVr9%3D8qSejKV%2BQyHXQ%40mail.gmail.com"
+        },
+        {
+          "index": 49,
+          "from": "torikoshia",
+          "date": "2026-08-19T12:14:43Z",
+          "url": "https://www.postgresql.org/message-id/95ff66682bec0d10e18ea9c6a3dd3f93%40oss.nttdata.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "The stated main use, auto_explain, is deferred",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "desirability",
+      "touch_points": [
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator who wants storage I/O counts for slow production queries finds that this patch only helps when a query is rerun by hand with EXPLAIN ANALYZE. By then the OS cache state that made the query slow is usually gone. Per-query aggregates still have to come from pg_stat_kcache, and per-statement counts from log_statement_stats.",
+      "argument": "Message #1 and the v13 commit message both say the feature is mainly useful in auto_explain, and leave that as a TODO for after commit. A manual rerun of EXPLAIN changes the cache state it is meant to measure, so the delivered part is the weaker one. Message #11 confirms that pg_stat_kcache already provides the same counters and hit ratios. A committer would likely ask for the complete use case before taking on the interface.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        11
+      ],
+      "author_must_show": "What concrete diagnosis does manual EXPLAIN (ANALYZE, IO) enable that pg_stat_kcache plus log_statement_stats cannot, without the auto_explain part?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "torikoshia",
+          "date": "2024-12-24T08:53:06Z",
+          "url": "https://www.postgresql.org/message-id/c20f6340eb26f3b736abc59471bfada8%40oss.nttdata.com"
+        },
+        {
+          "index": 11,
+          "from": "Julien Rouhaud",
+          "date": "2025-01-06T09:59:02Z",
+          "url": "https://www.postgresql.org/message-id/Z3upZkA5Bi6lYS6a%40jrouhaud"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "Messages #9 and #20 show manual EXPLAIN runs that separate cached reads from storage reads and expose hint-bit writes. auto_explain support builds on the EXPLAIN part, so delivering EXPLAIN first is the usual order and not a gap in the use case.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The patch changes instrument.h and execParallel.h to pass storage I/O counts from parallel workers to the leader."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": true,
+      "reason": "EXPLAIN (ANALYZE, IO) gains \"Storage I/O\" lines in text output and two new properties in JSON, XML and YAML."
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Output depends on io_method and on getrusage() semantics per platform, and the patch changes the Windows getrusage() port."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "pg_stat_kcache already reads the same getrusage() counters, and extensions can add EXPLAIN options."
+    }
+  ],
+  "questions": [
+    "Do the AIO maintainers accept hiding Storage I/O output under io_method = worker, given the objection in message #26?",
+    "What share of Postgres 19 and later installations can use io_method = sync or io_uring, and what evidence shows that share?",
+    "Which part of the feature, other than passing parallel-worker counts to the leader, cannot be built as an extension EXPLAIN option?",
+    "How does a text reader or a JSON consumer tell \"not measured\" (Windows, io_method = worker) apart from a measured zero?",
+    "Which unit and counting rule do ru_inblock and ru_oublock follow on each supported platform other than Linux?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Andres Freund and Tom Lane took part, but as objectors, and neither has replied since v12. The owner would need to know the AIO subsystem and EXPLAIN instrumentation.",
+    "liability": "The owner signs for an EXPLAIN output whose correctness depends on which process does the I/O, and for getrusage() semantics per platform. Each later change to io_method or to where backend I/O runs must recheck the gating.",
+    "author_follow_up": "The author has kept the patch rebased through v13 across 9 CommitFests and plans an auto_explain follow-up."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "needs design rethink",
+    "reason": "Only io_method = sync and io_uring users see the output, and the thread gives no numbers for their share. The 75 KiB patch touches EXPLAIN, parallel executor instrumentation, parallel index builds and the Windows port, and the hiding approach has no visible agreement from the AIO maintainers."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, nobody can check the getrusage() overhead in parallel workers or whether the io_method gating covers every path. The level 2 objections on platform units, zero versus not measured, and future I/O changes were not evaluated.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:4236",
+      "kind": "cf",
+      "title": "Add estimated hit ratio to Memoize in EXPLAIN to explain cost adjustment",
+      "status": "Returned with feedback",
+      "date": "2023-09-01",
+      "first_date": "2023-03-05",
+      "url": "https://commitfest.postgresql.org/patch/4236/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAP53Pky29GWAVVk3oBgKBDqhND0BRBN6yTPeguV_qSivFL5N_g@mail.gmail.com"
+      ],
+      "authors": "Lukas Fittl (lfittl)",
+      "objectors": "David Rowley",
+      "summary": "Show the planner's estimated cache hit ratio on Memoize nodes in EXPLAIN, so users can see why a Nested Loop with Memoize costs much less than its inner rescans suggest. The author also offered to show the ndistinct estimate from cost_memoize_rescan instead or as well.",
+      "objection": "David Rowley asked for the ndistinct estimate and est_entries instead of the hit ratio alone, because the ratio by itself does not show how it was computed. Daniel Gustafsson asked in July for an updated patch, and the author said he had a draft. No updated patch appears in the visible messages before the entry was returned with feedback.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "EXPLAIN page faults getrusage",
+        "EXPLAIN rusage resource usage",
+        "OS page cache hit ratio",
+        "EXPLAIN IO option"
+      ],
+      "from_hint": false,
+      "score": 0.426,
+      "enriched": true,
+      "key_quote": "I think showing just the hit ratio number might often just\nraise too many questions about how that's calculated.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAApHDvrBctjUFjY77BFd_MqPD%2Byf4nOZSKzbdzP70XntkknY8A%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:3409",
+      "kind": "cf",
+      "title": "explain_regress, explain(MACHINE), and default to explain(BUFFERS)",
+      "status": "Withdrawn",
+      "date": "2023-01-15",
+      "first_date": "2021-11-12",
+      "url": "https://commitfest.postgresql.org/patch/3409/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANNMO++=LrJ4upoeydZhbmpd_ZgZjrTLueKSrivn6xmb=yFwQw@mail.gmail.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby), Nik Samokhvalov (nikolay)",
+      "objectors": "Tom Lane",
+      "summary": "The patch series adds a GUC explain_regress, set on by pg_regress, that turns off TIMING, SUMMARY, COSTS and BUFFERS, so that BUFFERS can become the default for EXPLAIN without changing regression output. An optional explain(MACHINE) option hides machine-dependent EXPLAIN ANALYZE output such as memory use, sort details and Heap Fetches.",
+      "objection": "Tom Lane objected that making EXPLAIN behave differently for developers and tests than for users may cause confusion and hide bugs. He also noted that the GUC had no documentation, that MACHINE is an unclear option name, that the GUC is not applied under make installcheck, and that the postgres_fdw change can break older postgres_fdw versions talking to new servers. The author then suggested closing the entry until someone finds another way to enable BUFFERS by default.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "EXPLAIN page faults getrusage",
+        "EXPLAIN rusage resource usage",
+        "EXPLAIN IO option"
+      ],
+      "from_hint": false,
+      "score": 0.296,
+      "enriched": true,
+      "key_quote": "Making\nEXPLAIN work significantly differently for developers and test\ncritters than it does for everyone else seems likely to promote\nconfusion and hide bugs.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2601890.1667659387%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:2354",
+      "kind": "cf",
+      "title": "Connection string usage for Core Postgresql client applications",
+      "status": "Withdrawn",
+      "date": "2020-01-21",
+      "first_date": "2019-05-17",
+      "url": "https://commitfest.postgresql.org/patch/2354/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB_COdiamM8HrthAXpGfg8B2rL-fzq-mvhZ4o=jYEhWAsMqiCA@mail.gmail.com"
+      ],
+      "authors": "Lætitia AVROT (arkhena)",
+      "objectors": "",
+      "summary": "The patch documents that the dbname argument or option of several client applications (clusterdb, pgbench, pg_dump, pg_restore, reindexdb, vacuumdb) accepts a connection string. The author also suggested making all client applications accept connection strings with the same syntax, such as a common -d switch.",
+      "objection": "The author withdrew the patch after review. Laurenz Albe supported it and asked for wording changes and for createdb and dropdb to be covered. The author replied that she was not satisfied with a documentation-only patch and wanted every client application to accept the same syntax, so she would rethink the approach.",
+      "touch_points": [
+        "pg_dump / restore",
+        "planner"
+      ],
+      "matched_queries": [
+        "EXPLAIN rusage resource usage",
+        "pg_stat_kcache in core"
+      ],
+      "from_hint": false,
+      "score": 0.243,
+      "enriched": true,
+      "key_quote": "I'm not very satisfied with this patch. I think I want to go further with unifying connection string usage.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB_COdh1RtpGoG%2BGA5HZrQiiR1DGnQB2zx8S2RkCOzvSF4%3D%2B3w%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:4340",
+      "kind": "cf",
+      "title": "pg_regress.c: Fix \"make check\" on Mac OS X: Pass DYLD_LIBRARY_PATH",
+      "status": "Returned with feedback",
+      "date": "2023-12-02",
+      "first_date": "2023-06-05",
+      "url": "https://commitfest.postgresql.org/patch/4340/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+HWA9Zhz+QqaKrWkBd4UVfxL1FANJvRyCTFY5J_hq3AhDBpJQ@mail.gmail.com"
+      ],
+      "authors": "Evan Jones (evanjonesdd)",
+      "objectors": "Peter Eisentraut, Tom Lane",
+      "summary": "The patch makes pg_regress pass DYLD_LIBRARY_PATH explicitly to the shell commands it runs on macOS, because System Integrity Protection removes that variable and \"make check\" then cannot load libpq from the temporary install. It adds a global extra_envvars string that is empty elsewhere and holds \"DYLD_LIBRARY_PATH=...\" on macOS.",
+      "objection": "The patch fixes only pg_regress, but other test suites hit the same problem, so a fix would need changes potentially everywhere system() is called. Tom Lane said a patch that does not handle all test cases from \"make check-world\" would not get much support. David Zhang's tests showed isolation and TAP tests still fail, and the visible messages contain no updated patch from the author.",
+      "touch_points": [],
+      "matched_queries": [
+        "EXPLAIN storage I/O OS cache",
+        "OS page cache hit ratio"
+      ],
+      "from_hint": false,
+      "score": 0.238,
+      "enriched": true,
+      "key_quote": "This addresses only pg_regress.  What about all the other test suites?\nPer the previous discussions, you'd need to patch up other places in a\nsimilar way, potentially everywhere system() is called.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2004d13a-6bd0-54c6-701b-f874a891dcb7%40eisentraut.org",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:5e04f3857c9369351edbf8f906d1d8c2665c8a1f",
+      "kind": "revert",
+      "title": "Revert change of inclusion order for pg_config_os.h;",
+      "status": "Reverted",
+      "date": "2003-05-15",
+      "first_date": "2003-05-15",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=5e04f3857c9369351edbf8f906d1d8c2665c8a1f",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert change of inclusion order for pg_config_os.h; this broke plperl on Linux and would have who knows what unpleasant effects on other platforms. If you need another include file for Windows, then add it; don't go messing with the semantics of every other port's include files.",
+      "objection": "Revert change of inclusion order for pg_config_os.h; this broke plperl\non Linux and would have who knows what unpleasant effects on other platforms.\nIf you need another include file for Windows, then add it; don't go\nmessing with the semantics of every other port's include files.",
+      "touch_points": [],
+      "matched_queries": [
+        "EXPLAIN storage I/O OS cache",
+        "OS page cache hit ratio"
+      ],
+      "from_hint": false,
+      "score": 0.15,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:4928",
+      "kind": "cf",
+      "title": "s/shm_mq_iovec/struct iovec/",
+      "status": "Returned with feedback",
+      "date": "2024-07-15",
+      "first_date": "2024-04-15",
+      "url": "https://commitfest.postgresql.org/patch/4928/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGLMs6O14yJDxv6TF7DPuBdMfDvRj6OQEZZ_CqdJei0+hg@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "Heikki Linnakangas",
+      "summary": "Replace the shm_mq module's own shm_mq_iovec struct with the standard POSIX struct iovec. The motivation was to remove a duplicate definition now that struct iovec can be used everywhere.",
+      "objection": "Heikki Linnakangas argued that the two structs belong to separate APIs and should stay separate. Reusing struct iovec could tie shm_mq to POSIX limits such as IOV_MAX, and it would stop shm_mq from adding its own fields later. The author accepted this and marked the entry returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "EXPLAIN IO option"
+      ],
+      "from_hint": false,
+      "score": 0.149,
+      "enriched": true,
+      "key_quote": "They serve a similar purpose,\nbut they belong to completely separate APIs; I think \"incidental\ndeduplication\" is the right term for that.",
+      "quote_message_url": "https://www.postgresql.org/message-id/6bc59788-f1b0-478a-891b-89c5757ec311%40iki.fi",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:4512",
+      "kind": "cf",
+      "title": "Support run-time partition pruning for hash join",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-08-21",
+      "url": "https://commitfest.postgresql.org/patch/4512/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMbWs49atE64_JjqrF2+BBZvG-h7afL89wCghg_GmvOHPB_LbQ@mail.gmail.com"
+      ],
+      "authors": "Richard Guo (richardguo)",
+      "objectors": "David Rowley",
+      "summary": "The patch prunes Append subnodes on the outer side of a hash join while the hash table is built: each inner row computes the partitions it can match, and Append skips the others. The design, ported from Greenplum's Partition Selector, builds PartitionPruneInfos in createplan.c, stores pruning results in executor parameters, and can intersect results across several join levels.",
+      "objection": "David Rowley was concerned that pruning runs for every row put into the hash table, may prune nothing, and has no worst-case overhead figures. The patch's costing therefore chose the pruning hash join only in very conservative cases. He suggested a different first step, parameterized scan paths on the partition key so that parameterized nested loops can use the existing run-time pruning. Richard Guo found this promising, the thread moved to that design, and no new hash join patch appears.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "ru_inblock ru_oublock"
+      ],
+      "from_hint": false,
+      "score": 0.136,
+      "enriched": true,
+      "key_quote": "Maybe instead of inventing a very pessimistic part prune Hash Join, it might be better to make the above work without the LATERAL + OFFSET 0 by creating the parameterized paths Seq Scan paths.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAApHDvrJOBnivfVCjrOOqwbofdLCLKxYc525G-mQ4cDbwXMWXA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:2173",
+      "kind": "cf",
+      "title": "Run-time pruning for ModifyTable",
+      "status": "Returned with feedback",
+      "date": "2020-04-07",
+      "first_date": "2019-06-27",
+      "url": "https://commitfest.postgresql.org/patch/2173/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKJS1f9R-2_D7jARRgEOC72=Y9ytLzk_FTeR0pTEMFJQy8gO+g@mail.gmail.com"
+      ],
+      "authors": "David Rowley (davidrowley)",
+      "objectors": "Tom Lane, Amit Langote, David Rowley",
+      "summary": "The patch adds run-time partition pruning to the ModifyTable node, so UPDATE and DELETE on partitioned tables skip result relations whose rows cannot match quals computed at execution time. It changes inheritance_planner() to pass pruning info and turns ModifyTableState's resultRelInfo into an array of pointers so pruned relations are ignored.",
+      "objection": "The author found that his inheritance_planner() changes were wrong when the SELECT and UPDATE/DELETE range table indexes differ, as with a view over a sub-partitioned table. Tom Lane suggested waiting for the planned removal of inheritance_planner(), and Amit Langote explained that this rewrite would make the whole feature redundant. The author then returned the patch with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "ru_inblock ru_oublock"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": true,
+      "key_quote": "Since it seems there's much less code that will be useful after the rewrite than I thought, combined with the fact that I'm not entirely sure the best way to reuse the partitioned table's RelOptInfo from the SELECT's PlannerInfo, then I'm going to return this one with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAApHDvoGawKdb95DMAdtBwtswzXhowhD8YxNqW7vw1dVnk_vhw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "revert:19db23bcbda99e93321cb0636677ec9c6e121a2a",
+      "kind": "revert",
+      "title": "Revert \"Include information on buffer usage during planning phase, in EXPLAIN output.\"",
+      "status": "Reverted",
+      "date": "2020-04-03",
+      "first_date": "2020-04-03",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=19db23bcbda99e93321cb0636677ec9c6e121a2a",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/16109-26a1a88651e90608@postgresql.org"
+      ],
+      "authors": "Fujii Masao",
+      "objectors": "",
+      "summary": "Revert \"Include information on buffer usage during planning phase, in EXPLAIN output.\"\nReverted commit(s): Include information on buffer usage during planning phase, in EXPLAIN output.",
+      "objection": "This reverts commit ed7a5095716ee498ecc406e1b8d5ab92c7662d10.\n\nPer buildfarm member prion.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "EXPLAIN rusage resource usage"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:2443",
+      "kind": "cf",
+      "title": "In bitmap scan explain node show how many relevant heap pages were not examined",
+      "status": "Returned with feedback",
+      "date": "2020-03-31",
+      "first_date": "2019-05-18",
+      "url": "https://commitfest.postgresql.org/patch/2443/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMkU=1xQcMJgMeNxatR60R+-Bv4TeeO1ZcWmrJS4McLvbBmoXg@mail.gmail.com"
+      ],
+      "authors": "Jeff Janes (jjanes)",
+      "objectors": "Tom Lane",
+      "summary": "The patch adds an \"unfetched\" count under \"Heap Blocks\" in EXPLAIN ANALYZE for Bitmap Heap Scan, next to \"exact\" and \"lossy\", for heap pages that the visibility map let the bitmap-only scan skip. The author also suggested renaming the node to \"Bitmap Only Heap Scan\" but did not implement it.",
+      "objection": "Tom Lane questioned the need for the counter, because index-only scans report only \"Heap Fetches: n\" and get no comparable data. He held that the two should be consistent and that the lack of complaints about index-only scans suggests users do not need the information. Amit Kapila marked the entry Returned with Feedback at the end of the commitfest, without further opinions.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "EXPLAIN page faults getrusage"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": true,
+      "key_quote": "Some of both: it seems like these ought to be consistent, and the\nlack of complaints so far about regular index-only scans suggests\nthat people don't need the info.",
+      "quote_message_url": "https://www.postgresql.org/message-id/25659.1585542569%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:2381",
+      "kind": "cf",
+      "title": "remove single character literal tokens from the core grammar",
+      "status": "Rejected",
+      "date": "2020-01-18",
+      "first_date": "2019-12-16",
+      "url": "https://commitfest.postgresql.org/patch/2381/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CACPNZCvG3rYfw-L-b9eaxtdDvgkOwz4U3TFriUVBOhKcuOBRkw@mail.gmail.com"
+      ],
+      "authors": "John Naylor (john.naylor)",
+      "objectors": "",
+      "summary": "remove single character literal tokens from the core grammar\nThreads: small Bison optimization: remove single character literal tokens",
+      "objection": "",
+      "touch_points": [
+        "SQL syntax / standard"
+      ],
+      "matched_queries": [
+        "pg_stat_kcache in core"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:3316",
+      "kind": "cf",
+      "title": "Asynchronous and \"direct\" IO support for PostgreSQL",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2021-02-23",
+      "url": "https://commitfest.postgresql.org/patch/3316/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210223100344.llw5an2aklengrmn@alap3.anarazel.de"
+      ],
+      "authors": "Andres Freund (andresfreund), David Rowley (davidrowley), Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Asynchronous and \"direct\" IO support for PostgreSQL\nThreads: Asynchronous and \"direct\" IO support for PostgreSQL.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "EXPLAIN IO option"
+      ],
+      "from_hint": false,
+      "score": 0.13,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:2958",
+      "kind": "cf",
+      "title": "Adaptive query optimization: create extented statistics using auto_explain extension",
+      "status": "Returned with feedback",
+      "date": "2021-11-04",
+      "first_date": "2019-10-14",
+      "url": "https://commitfest.postgresql.org/patch/2958/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/196f1e1a-5464-ed07-ab3c-0c9920564af7@postgrespro.ru"
+      ],
+      "authors": "Konstantin Knizhnik (knizhnik)",
+      "objectors": "",
+      "summary": "Adaptive query optimization: create extented statistics using auto_explain extension\nThreads: Columns correlation and adaptive query optimization",
+      "objection": "",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "kernel I/O statistics per query"
+      ],
+      "from_hint": false,
+      "score": 0.127,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:4416",
+      "kind": "cf",
+      "title": "Show WAL stats on pg_stat_io",
+      "status": "Returned with feedback",
+      "date": "2024-01-18",
+      "first_date": "2023-06-28",
+      "url": "https://commitfest.postgresql.org/patch/4416/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAN55FZ3AiQ+ZMxUuXnBpd0Rrh1YhwJ5FudkHg=JU0P+-W8T4Vg@mail.gmail.com"
+      ],
+      "authors": "Nazir Bilal Yavuz (nbyavuz)",
+      "objectors": "",
+      "summary": "Show WAL stats on pg_stat_io\nThreads: Show WAL write and fsync stats in pg_stat_io",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "EXPLAIN IO option"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:434",
+      "kind": "cf",
+      "title": "More stable query plans via more predictable column statistics",
+      "status": "Returned with feedback",
+      "date": "2016-02-03",
+      "first_date": "2015-12-01",
+      "url": "https://commitfest.postgresql.org/patch/434/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CACACo5RFCsMDZrsxwzZ0HsCBY51EttXB=HwZhfp+X7EGRgeSSQ@mail.gmail.com"
+      ],
+      "authors": "Alex Shulgin (ash)",
+      "objectors": "",
+      "summary": "More stable query plans via more predictable column statistics\nThreads: More stable query plans via more predictable column statistics",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "kernel I/O statistics per query"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "revert:b4529005fd387e863bfa9eb863629b1183c0449c",
+      "kind": "revert",
+      "title": "Revert \"Add single-item cache when looking at topmost XID of a subtrans XID\"",
+      "status": "Reverted",
+      "date": "2022-05-28",
+      "first_date": "2022-04-07",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=b4529005fd387e863bfa9eb863629b1183c0449c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20220524235250.gtt3uu5zktfkr4hv@alap3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/CANbhV-G8Co=yq4v4BkW7MJDqVt68K_8A48nAZ_+8UQS7LrwLEQ@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Add single-item cache when looking at topmost XID of a subtrans XID\"\nReverted commit(s): Add single-item cache when looking at topmost XID of a subtrans XID",
+      "objection": "This reverts commit 06f5295 as per issues with this approach, both in\nterms of efficiency impact and stability.  First, contrary to the\nsingle-item cache for transaction IDs in transam.c, the cache may finish\nby not be hit for a long time, and without an invalidation mechanism to\nclear it, it would cause inconsistent results on wraparound for\nexample.  Second, the use of SubTransGetTopmostTransaction() for the\ncaching has a limited impact on performance.  SubTransGetParent() could\nhave more impact, though the benchmarking of the single-item approach\nstill needs to be proved, particularly under the conditions where SLRU\nlookups are stressed in parallel with overflowed snapshots (aka more\nthan 64 subxids generated, for example).\n\nAfter discussion with Andres Freund.",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "OS page cache hit ratio"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "revert:29904f5f2fdafbbb96ef3685fd361053b061aeb1",
+      "kind": "revert",
+      "title": "Revert \"Disallow infinite endpoints in generate_series() for timestamps.\"",
+      "status": "Reverted",
+      "date": "2022-05-09",
+      "first_date": "2022-04-20",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=29904f5f2fdafbbb96ef3685fd361053b061aeb1",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3603504.1652068977@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CADkLM=dzw0Pvdqp5yWKxMd+VmNkAMhG=4ku7GnCZxebWnzmz3Q@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/91B44E7B-68D5-448F-95C8-B4B3B0F5DEAF@duckdblabs.com"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Disallow infinite endpoints in generate_series() for timestamps.\"\nReverted commit(s): Disallow infinite endpoints in generate_series() for timestamps.",
+      "objection": "This reverts commit eafdf9de06e9b60168f5e47cedcfceecdc6d4b5f\nand its back-branch counterparts.  Corey Huinker pointed out that\nwe'd discussed this exact change back in 2016 and rejected it,\non the grounds that there's at least one usage pattern with LIMIT\nwhere an infinite endpoint can usefully be used.  Perhaps that\nargument needs to be re-litigated, but there's no time left before\nour back-branch releases.  To keep our options open, restore the\nstatus quo ante; if we do end up deciding to change things, waiting\none more quarter won't hurt anything.\n\nRather than just doing a straight revert, I added a new test case\ndemonstrating the usage with LIMIT.  That'll at least remind us of\nthe issue if we forget again.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_kcache in core"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:2834",
+      "kind": "cf",
+      "title": "ResourceOwner refactoring",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2020-11-17",
+      "url": "https://commitfest.postgresql.org/patch/2834/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/cbfabeb0-cd3c-e951-a572-19b365ed314d@iki.fi"
+      ],
+      "authors": "Heikki Linnakangas (heikki)",
+      "objectors": "",
+      "summary": "ResourceOwner refactoring\nThreads: ResourceOwner refactoring",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "EXPLAIN rusage resource usage"
+      ],
+      "from_hint": false,
+      "score": 0.116,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:4428",
+      "kind": "cf",
+      "title": "Custom storage managers (SMGR), redux",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-06-30",
+      "url": "https://commitfest.postgresql.org/patch/4428/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2WgMySu2suO_TLvFyGY3URa4mAx22WeoEicnK=PCNWEMrA@mail.gmail.com"
+      ],
+      "authors": "Matthias van de Meent (mmeent), Tristan Partin (tristan957)",
+      "objectors": "",
+      "summary": "Custom storage managers (SMGR), redux\nThreads: Extensible storage manager API - SMGR hook Redux",
+      "objection": "",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "EXPLAIN storage I/O OS cache"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:3142",
+      "kind": "cf",
+      "title": "Logging plan of the currently running query",
+      "status": "Withdrawn",
+      "date": "2023-06-06",
+      "first_date": "2021-05-12",
+      "url": "https://commitfest.postgresql.org/patch/3142/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/cf8501bcd95ba4d727cbba886ba9eea8@oss.nttdata.com",
+        "https://www.postgresql.org/message-id/flat/d68c3ae31672664876b22d2dcbb526d2@postgrespro.ru"
+      ],
+      "authors": "atsushi torikoshi (atorik)",
+      "objectors": "",
+      "summary": "Logging plan of the currently running query\nThreads: RFC: Logging plan of the running query; Re: RFC: Logging plan of the running query",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "ru_inblock ru_oublock"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:3364",
+      "kind": "cf",
+      "title": "ResourceOwner refactoring",
+      "status": "Returned with feedback",
+      "date": "2022-02-07",
+      "first_date": "2020-11-17",
+      "url": "https://commitfest.postgresql.org/patch/3364/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/cbfabeb0-cd3c-e951-a572-19b365ed314d@iki.fi"
+      ],
+      "authors": "Heikki Linnakangas (heikki)",
+      "objectors": "",
+      "summary": "ResourceOwner refactoring\nThreads: ResourceOwner refactoring",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "EXPLAIN rusage resource usage"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:2386",
+      "kind": "cf",
+      "title": "Using multicolumn statistics for more precise join selectivity estimatation",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2019-10-14",
+      "url": "https://commitfest.postgresql.org/patch/2386/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/196f1e1a-5464-ed07-ab3c-0c9920564af7@postgrespro.ru"
+      ],
+      "authors": "Konstantin Knizhnik (knizhnik)",
+      "objectors": "",
+      "summary": "Using multicolumn statistics for more precise join selectivity estimatation\nThreads: Columns correlation and adaptive query optimization",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "kernel I/O statistics per query"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "revert:930fd68455576dada48521a6cef642caddea3c63",
+      "kind": "revert",
+      "title": "Revert the GinMaxItemSize calculation so that we fit 3 tuples per page.",
+      "status": "Reverted",
+      "date": "2014-12-30",
+      "first_date": "2014-01-22",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=930fd68455576dada48521a6cef642caddea3c63",
+      "thread_urls": [],
+      "authors": "Heikki Linnakangas",
+      "objectors": "",
+      "summary": "Revert the GinMaxItemSize calculation so that we fit 3 tuples per page.\nReverted commit(s): Compress GIN posting lists, for smaller index size.",
+      "objection": "Commit 36a35c55 changed the divisor from 3 to 6, for no apparent reason.\nReducing GinMaxItemSize like that created a dump/reload hazard: loading a\n9.3 database to 9.4 might fail with \"index row size XXX exceeds maximum 1352\nfor index ...\" error. Revert the change.\n\nWhile we're at it, make the calculation slightly more accurate. It used to\ndivide the available space on page by three, then subtract\nsizeof(ItemIdData), and finally round down. That's not totally accurate; the\nitem pointers for the three items are packed tight right after the page\nheader, but there is alignment padding after the item pointers. Change the\ncalculation to reflect that, like BTMaxItemSize does. I tested this with\ndifferent block sizes on systems with 4- and 8-byte alignment, and the value\nafter the final MAXALIGN_DOWN was the same with both methods on all\nconfigurations. So this does not make any difference currently, but let's be\ntidy.\n\nAlso add a comment explaining what the macro does.\n\nThis fixes bug #12292 reported by Robert Thaler. Backpatch to 9.4, where the\nbug was introduced.",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "EXPLAIN page faults getrusage"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:4352",
+      "kind": "cf",
+      "title": "Index-only filters without IOS",
+      "status": "Withdrawn",
+      "date": "2024-06-21",
+      "first_date": "2023-02-15",
+      "url": "https://commitfest.postgresql.org/patch/4352/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/N1xaIrU29uk5YxLyW55MGk5fz9s6V2FNtj54JRaVlFbPixD5z8sJ07Ite5CvbWwik8ZvDG07oSTN-usENLVMq2UAcizVTEd5b-o16ZGDIIU=@yamlcoder.me"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "Index-only filters without IOS\nThreads: Use of additional index columns in rows filtering",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "EXPLAIN IO option"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 3,
+    "new_calls": 5,
+    "failed": 0,
+    "quotes_verified": 5,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2024-12-24",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "No listed precedent matches this idea. [P9] reverts planning-phase BUFFERS output after a buildfarm failure, and its recorded reason does not apply to this proposal. The in-thread PAGEFAULTS version (message #1) was dropped for ru_inblock and ru_oublock after messages #8 to #10."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "Other angles, such as worker-based AIO accounting and demand, belong to other panel members."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The proposal adds no persistent or cross-node state: no on-disk format, WAL record, catalog, wire protocol or replication change. Its only cross-process state is per-query parallel-worker shared memory, freed with the query. The edits to nbtsort.c, brin.c, gininsert.c and vacuumparallel.c appear to pass parallel instrumentation only. The nbtree VACUUM bookkeeping invariant does not apply. The instrument.h and execParallel.h struct changes target a major release, where ABI breaks are accepted."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal adds no new privilege surface that I can find. EXPLAIN (ANALYZE, IO) runs the query with the caller's own privileges, and getrusage() reports only that backend's counters and its parallel workers' counters, so a user sees nothing from other sessions or relations they cannot read. The counts show whether the caller's own reads hit the OS page cache, which query timing already shows. No new GUC, role or default changes. Without the code I could not check whether worker counters can mix with another query's."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "Cost for non-users looks contained: getrusage() and the parallel shared memory are used only when IO is requested (message #49). The nbtree invariant on VACUUM bookkeeping does not apply, because the nbtsort.c change only adds parallel instrumentation."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 2,
+      "note": "Two objections from the already-exists angle. The io_method = worker coverage gap and the bgwriter/checkpointer attribution issue belong to other angles."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "The thread shows real interest in telling OS cache hits apart from storage reads (messages #5, #7, #11, #46). The objections above concern how many users the design as proposed can reach."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 12,
+      "new_objections": 11,
+      "new_survived": 6,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [
+    "invariants/nbtree.md"
+  ],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 106,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 21,
+    "wall_ms": 188382,
+    "cost_usd": 4.926283599999999,
+    "dry_run": false
+  }
+}

@@ -1,0 +1,1681 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:43:18.417Z",
+  "input": {
+    "arg": "6132",
+    "cf": {
+      "id": 6132,
+      "url": "https://commitfest.postgresql.org/patch/6132/",
+      "title": "Issue with synced logical replication slot during switchover",
+      "status": "Needs review",
+      "authors": "Fabrice Chapuis (fabricec)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAA5-nLAqGpBFEAr2XNYMj3E%2B39caQra_SJeB5MCtp7PCyLTiOg%40mail.gmail.com",
+    "subject": "Issue with logical replication slot during switchover",
+    "thread_start": "2025-08-07T13:20:04Z",
+    "messages_read": 66,
+    "messages_total": 66,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v1-0001-Resync-logical-replication-slot-after-switchover.patch",
+      "v1-0001-fix-failover-slot-issue-when-doing-a-switchover.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The entry does not name one design (maintenance-fit-3). The allow_overwrite series, the message #42 patch and the message #66 rule differ in on-disk and API cost. The demand is real and the goal is accepted in the thread. The reviewers still disagree on whether name plus failover=true is enough to overwrite a slot, so the list must settle the rule before code review makes sense.",
+  "failing_level": "1a",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "failed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "not_evaluated"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "not_evaluated"
+    }
+  ],
+  "brief": {
+    "title": "Let slot sync reuse failover slots on the old primary after switchover",
+    "problem": "After a switchover, the old primary joins as a standby but keeps its logical slots with failover=true and synced=false. The slot sync worker then stops with \"exiting from slot synchronization because same name slot ... already exists on the standby\". HA tools such as Patroni must drop these slots and wait for an asynchronous resync, so for a while no standby may hold ready logical slots.",
+    "proposed_design": "The latest patch (message #42) changes drop_local_obsolete_slots() and related helpers in slotsync.c. A local slot with failover=true and synced=false is treated as a sync candidate, then dropped and recreated from the primary's slot. An earlier series (v1 to v6) instead added an allow_overwrite slot property, set at creation and shown in pg_replication_slots.",
+    "user_visible_surface": [
+      "Changed slot sync behavior: a local slot with failover=true and synced=false no longer stops the slot sync worker and gets overwritten (latest patch).",
+      "Earlier series: new allow_overwrite argument to pg_create_logical_replication_slot().",
+      "Earlier series: new allow_overwrite column in pg_replication_slots.",
+      "Earlier series: new allow_overwrite field in the on-disk slot data and a changed ReplicationSlotCreate() C signature.",
+      "Discussed only: a pg_alter_logical_replication_slot() function to change slot properties after creation."
+    ],
+    "author_claims": [
+      "The failover flag alone shows that a slot was created on a primary and is meant to be synced, since logical failover slots cannot be created on a standby today.",
+      "A second switchover already works, because the synced flag is then true, so the first-switchover failure is an inconsistency.",
+      "pg_rewind removes pg_replslot, so failover=true and synced=false on a healthy standby can only follow a clean shutdown of the old primary (Kukushkin).",
+      "An allow_overwrite flag would be set unconditionally in practice, so it adds no safety (Kukushkin)."
+    ],
+    "thread_state": "Shveta Malik, Amit Kapila and Masahiko Sawada disagree on whether name plus failover=true is enough to overwrite a slot. Amit asks for extra slot metadata or a user API, Sawada shows a cascading case where allow_overwrite fails, and no approach has consensus; the CF entry needs a rebase.",
+    "unclear": [
+      "The commit message for the latest patch does not say which of the two designs the author now proposes.",
+      "The proposal does not say how a slot recreated on the old primary after divergence, without pg_rewind, is told apart from the original slot.",
+      "The proposal does not say how future logical failover slots created on a cascading standby would be protected from overwrite.",
+      "The latest patch has no documentation change and no tests are mentioned.",
+      "Message #66 proposes using synchronized_standby_slots and primary_conninfo to decide on overwrite, but no patch implements it.",
+      "The proposal does not say whether plugin, LSN or catalog_xmin of the local slot are checked before it is overwritten."
+    ],
+    "search_queries": [
+      "failover slot switchover synced flag",
+      "slot synchronization same name slot exists",
+      "logical slot sync old primary standby",
+      "allow_overwrite replication slot",
+      "pg_alter_replication_slot",
+      "overwrite existing replication slot standby",
+      "logical failover slots cascading standby",
+      "replication slot origin generation"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Two incompatible designs with no stated choice",
+      "level": "1a",
+      "rubric_item": 1,
+      "category": "problem_statement",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer picking up the CF entry cannot tell which design is proposed. The v6 series adds an allow_overwrite field to on-disk slot data and changes the ReplicationSlotCreate() signature that extensions call. The message #42 patch changes only sync behaviour, so the commit and pg_upgrade cost differ completely between the two.",
+      "argument": "The CF entry still points to the allow_overwrite series as reviewed in messages #28 to #31. The latest commit message does not say whether it replaces that series. Message #64 shows a cascading switchover where allow_overwrite blocks a wanted overwrite. Message #66 proposes a third rule based on synchronized_standby_slots and primary_conninfo, with no patch. A permanent on-disk field and ABI change should not land while the semantics are still moving.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        31,
+        42,
+        64,
+        66
+      ],
+      "author_must_show": "Which single design does the entry now propose, and does it change on-disk slot data or the ReplicationSlotCreate() signature?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 31,
+          "from": "Fabrice Chapuis",
+          "date": "2025-10-15T09:58:57Z",
+          "url": "https://www.postgresql.org/message-id/CAA5-nLDXU3zVAKmeE5TYF0nyWjUDrxzK_2w5hmy0mgwqsEspRw%40mail.gmail.com"
+        },
+        {
+          "index": 42,
+          "from": "Fabrice Chapuis",
+          "date": "2025-11-07T17:34:33Z",
+          "url": "https://www.postgresql.org/message-id/CAA5-nLDqGFgZhV1T2GwjRAAWA-b0oBuWCkd1g1g0Aup45Dpm8A%40mail.gmail.com"
+        },
+        {
+          "index": 64,
+          "from": "Masahiko Sawada",
+          "date": "2025-11-20T20:34:30Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoDH%2BNv62qoJ8P%2B2249u%3DHTyrWg3qGuk9vqOb014%3DzzWzg%40mail.gmail.com"
+        },
+        {
+          "index": 66,
+          "from": "Fabrice Chapuis",
+          "date": "2025-11-24T17:00:08Z",
+          "url": "https://www.postgresql.org/message-id/CAA5-nLCx5qL%3DGk7DYFmtyoOtASAEtsvDpo%3DZMyYFnuMv%3DqVFuQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #41 suggests the message #42 patch replaces the allow_overwrite series, but the author returns to allow_overwrite in message #63 and proposes a third rule in message #66. The entry does not name one design.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "Name and failover flag alone authorize dropping a local slot",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An old primary is rejoined without pg_rewind after a crash, and a slot with the same name and failover=true was recreated on it after divergence. The slot sync worker drops that slot and replaces it with the new primary's slot. The operator finds out only when a consumer of the local slot gets changes from a different position or plugin.",
+      "argument": "The latest patch (message #42) treats any local slot with failover=true and synced=false as overwritable. It does not compare plugin, database, LSNs or catalog_xmin. Kukushkin (message #46) argues that pg_rewind clears pg_replslot, but shveta (message #51) and Amit (messages #43, #49) describe rejoins without pg_rewind. Sawada (message #56) would accept an overwrite only when properties match and the local LSNs and XIDs are lower.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        42,
+        43,
+        46,
+        49,
+        51,
+        56
+      ],
+      "author_must_show": "Which properties of the local slot does the patch compare with the remote slot before dropping it, and what happens when they differ?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 42,
+          "from": "Fabrice Chapuis",
+          "date": "2025-11-07T17:34:33Z",
+          "url": "https://www.postgresql.org/message-id/CAA5-nLDqGFgZhV1T2GwjRAAWA-b0oBuWCkd1g1g0Aup45Dpm8A%40mail.gmail.com"
+        },
+        {
+          "index": 43,
+          "from": "Amit Kapila",
+          "date": "2025-11-10T12:10:14Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1%2BExdc27D2SByoO%2BiaSjacgfoAYgWDHXW%3DpYCq49CBFGA%40mail.gmail.com"
+        },
+        {
+          "index": 46,
+          "from": "Alexander Kukushkin",
+          "date": "2025-11-12T07:28:15Z",
+          "url": "https://www.postgresql.org/message-id/CAFh8B%3DnwHPrBRe7_wECYmu-bFbDoGy%2BLdPxAVc-V%2B9Xa%2BUSrYg%40mail.gmail.com"
+        },
+        {
+          "index": 49,
+          "from": "Amit Kapila",
+          "date": "2025-11-13T11:30:51Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1%2BXFL0dC0u2%2BOWUvKLU51Czd%3DfwFevG9i_ALxBijsKy3w%40mail.gmail.com"
+        },
+        {
+          "index": 51,
+          "from": "shveta malik",
+          "date": "2025-11-14T03:15:47Z",
+          "url": "https://www.postgresql.org/message-id/CAJpy0uBkF9OiXvb3ob%3Dh5uS_y_NUCP5S7%3DySyeYdaE5JXZfkNA%40mail.gmail.com"
+        },
+        {
+          "index": 56,
+          "from": "Masahiko Sawada",
+          "date": "2025-11-14T22:31:29Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoAa3tQZ-aW5nyy5SV%2B-UxFTi1sbzeQEMj-HtUaj1rrFGQ%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "A rejoin after real WAL divergence needs pg_rewind, which clears the slots, so that variant cannot happen. But message #51 gives a case with no divergence where a recreated slot is overwritten, and the patch adds none of the checks message #56 asks for.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1a: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "Failover flag reused as slot provenance blocks future standby-created failover slots",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later release allows creating logical failover slots on a cascading standby, as message #58 already sketches. Slot sync on that standby then drops or overwrites these user slots whenever the primary has a slot of the same name. Nothing in the code or the tests fails when the later patch's author misses this coupling.",
+      "argument": "The latest patch (message #42) treats failover=true with synced=false as proof that a slot came from a former primary. That holds only while message #33's claim that standbys cannot create failover slots stays true. Sawada (message #59) and Amit (message #60) say safe overwrite needs extra per-slot metadata such as an origin or generation (message #56). Without it, every later change to where failover slots can be created must recheck this inference.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        33,
+        42,
+        56,
+        58,
+        59,
+        60
+      ],
+      "author_must_show": "What slot state, other than failover=true, would still tell a former primary's slot apart once standbys may create failover slots?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 33,
+          "from": "Alexander Kukushkin",
+          "date": "2025-10-28T13:03:00Z",
+          "url": "https://www.postgresql.org/message-id/CAFh8B%3DnWryz6aHfobaXXpEGjFoq0eLTyB05dP2G_ZFP6cXGxCg%40mail.gmail.com"
+        },
+        {
+          "index": 42,
+          "from": "Fabrice Chapuis",
+          "date": "2025-11-07T17:34:33Z",
+          "url": "https://www.postgresql.org/message-id/CAA5-nLDqGFgZhV1T2GwjRAAWA-b0oBuWCkd1g1g0Aup45Dpm8A%40mail.gmail.com"
+        },
+        {
+          "index": 56,
+          "from": "Masahiko Sawada",
+          "date": "2025-11-14T22:31:29Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoAa3tQZ-aW5nyy5SV%2B-UxFTi1sbzeQEMj-HtUaj1rrFGQ%40mail.gmail.com"
+        },
+        {
+          "index": 58,
+          "from": "Amit Kapila",
+          "date": "2025-11-18T09:29:54Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1JhDEgH%2BRU4A6z9QUse0fEesKFcvesq23ie7a0ZCwafOg%40mail.gmail.com"
+        },
+        {
+          "index": 59,
+          "from": "Masahiko Sawada",
+          "date": "2025-11-19T00:55:39Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoBSgQoX99aC2PfL7dzCwM0NGvbgrfUD7ALihVCVtgqVXQ%40mail.gmail.com"
+        },
+        {
+          "index": 60,
+          "from": "Amit Kapila",
+          "date": "2025-11-19T06:27:08Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1LCf8L9H6kFfGLkOxdbjgMXZ0sbzS96dcfwJPAEkRXJNA%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Sawada calls the two issues independent in message #59, but he and Amit (message #60) both say overwrite needs per-slot metadata once standbys can create failover slots. The patch adds none, and nothing fails if a later patch misses the inference.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1a: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "Old primary's failover slots are dropped automatically with no opt-in",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "design",
+      "touch_points": [
+        "wal_replication",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After a switchover, an operator attaches the old primary to a different standby than the one that synced its slots. That primary lacks one of the old primary's failover slots. drop_local_obsolete_slots() now drops the slot, and the subscriber that relied on it finds out only when its next connection fails.",
+      "argument": "Message #42 widens get_local_synced_slots() to every failover slot, so both the overwrite and the drop now happen by default. Message #55 describes this topology and notes that core ships no switchover tool to rule it out. Once released, users and HA tools depend on the automatic drop, and adding an opt-in later changes behaviour. Amit (message #45) prefers a UI that external cluster tools call explicitly.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        42,
+        45,
+        55
+      ],
+      "author_must_show": "Why should core drop or overwrite these slots by default, when an explicit call that HA tools make after switchover would cover the Patroni case?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 42,
+          "from": "Fabrice Chapuis",
+          "date": "2025-11-07T17:34:33Z",
+          "url": "https://www.postgresql.org/message-id/CAA5-nLDqGFgZhV1T2GwjRAAWA-b0oBuWCkd1g1g0Aup45Dpm8A%40mail.gmail.com"
+        },
+        {
+          "index": 45,
+          "from": "Amit Kapila",
+          "date": "2025-11-12T04:22:09Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1LhogAeNQE5yy04oK%2BLx_tXGRkjmcmpcQT2c-d6Yj1gRg%40mail.gmail.com"
+        },
+        {
+          "index": 55,
+          "from": "Amit Kapila",
+          "date": "2025-11-14T10:39:38Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1KmLwYN_EkyW_W6qFcb2BD0qzGwEKM6cyCrDwSm9dHj_g%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Amit says in message #55 that such leftover slots should be removed, so the drop is not wrong in itself. Whether core does it by default or through an explicit call, as message #45 prefers, is still open in the thread.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1a: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "Latest patch automates a drop-and-resync that HA tools can already run",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "desirability",
+      "touch_points": [
+        "does_not_fit",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Patroni already drops failover=true, synced=false slots on the rejoined old primary with pg_drop_replication_slot(), then calls pg_sync_replication_slots(). The message #42 patch has the slot sync worker drop the slot and recreate it from the primary. The recreated slot still has to become sync-ready, so the window without ready logical slots that message #36 describes stays open.",
+      "argument": "Message #36 says the real need is to flip synced from false to true without dropping, because resync is asynchronous and unbounded. Message #37 moved the design back to drop and recreate, which is what message #40 says Patroni can do as a workaround. The core change would then save HA tools one drop call, and the gap is unchanged. The patch also adds a rule that drops slots on name and failover alone, which messages #43 and #59 question.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        36,
+        37,
+        40,
+        42,
+        43,
+        59
+      ],
+      "author_must_show": "How does the message #42 patch shorten the time without sync-ready slots compared with pg_drop_replication_slot() followed by pg_sync_replication_slots()?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 36,
+          "from": "Alexander Kukushkin",
+          "date": "2025-10-31T09:28:29Z",
+          "url": "https://www.postgresql.org/message-id/CAFh8B%3DkH4Nwd_69fWP4VxK9tjxxBUzdxEZLd%2BLCby9tbSMTcRA%40mail.gmail.com"
+        },
+        {
+          "index": 37,
+          "from": "Fabrice Chapuis",
+          "date": "2025-10-31T16:45:33Z",
+          "url": "https://www.postgresql.org/message-id/CAA5-nLAPrE729BiCGKKUU_9b%2BCA2nxrKLyc-W%2BSbmU2ojFeehQ%40mail.gmail.com"
+        },
+        {
+          "index": 40,
+          "from": "Alexander Kukushkin",
+          "date": "2025-11-04T13:01:45Z",
+          "url": "https://www.postgresql.org/message-id/CAFh8B%3DnM8mHpSPhVb5aGLf9nAeGWCci2Nn%3DQEV1%2BQLtUp1rX7g%40mail.gmail.com"
+        },
+        {
+          "index": 42,
+          "from": "Fabrice Chapuis",
+          "date": "2025-11-07T17:34:33Z",
+          "url": "https://www.postgresql.org/message-id/CAA5-nLDqGFgZhV1T2GwjRAAWA-b0oBuWCkd1g1g0Aup45Dpm8A%40mail.gmail.com"
+        },
+        {
+          "index": 43,
+          "from": "Amit Kapila",
+          "date": "2025-11-10T12:10:14Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1%2BExdc27D2SByoO%2BiaSjacgfoAYgWDHXW%3DpYCq49CBFGA%40mail.gmail.com"
+        },
+        {
+          "index": 59,
+          "from": "Masahiko Sawada",
+          "date": "2025-11-19T00:55:39Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoBSgQoX99aC2PfL7dzCwM0NGvbgrfUD7ALihVCVtgqVXQ%40mail.gmail.com"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The patch does help users with no HA tool, since the slot sync worker no longer stops. But message #36 asks to avoid the drop because resync is unbounded, and the proposal does not say whether the recreated slot is sync-ready in the same cycle.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 1b is above the failing level 1a: not evaluated (base-up stop rule)"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Latest patch returns to the failover-flag rule set aside in an earlier thread",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "prior_rejection",
+      "touch_points": [
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An old primary stays up after divergence, and a user or tool drops and recreates slot foo with failover=true. The node then rejoins as a standby without pg_rewind. Slot sync drops that local foo and replaces it with the new primary's foo, and the subscriber that used the local foo loses its position without any error.",
+      "argument": "Message #34 reports that this exact rule, name plus failover=true, was discussed in an earlier thread and not adopted, yet the message #42 patch keeps only that check. Message #43 gives the reason: slots have no history like WAL timelines, so a same-name slot may not be the same slot. The pg_rewind argument in message #46 is disputed in messages #49 and #51. The patch adds none of the checks message #56 suggests (plugin, LSNs, XIDs) and none of the metadata messages #59 and #60 call for.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        34,
+        43,
+        46,
+        49,
+        51,
+        56,
+        59,
+        60
+      ],
+      "author_must_show": "What new fact or check in this patch answers the reason the earlier thread gave for not trusting failover=true alone, as message #34 reports?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "shveta malik",
+          "date": "2025-08-08T05:38:52Z",
+          "url": "https://www.postgresql.org/message-id/CAJpy0uD9b-d28yS38mxF4ddDhoP9hX9FtP%3Dpt33bvaD6_wVrng%40mail.gmail.com"
+        },
+        {
+          "index": 34,
+          "from": "shveta malik",
+          "date": "2025-10-31T04:31:55Z",
+          "url": "https://www.postgresql.org/message-id/CAJpy0uBrEFeHz5VmOez17fSg0hHf7czcnUGcNJ7gZoz_%2BcfW0w%40mail.gmail.com"
+        },
+        {
+          "index": 43,
+          "from": "Amit Kapila",
+          "date": "2025-11-10T12:10:14Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1%2BExdc27D2SByoO%2BiaSjacgfoAYgWDHXW%3DpYCq49CBFGA%40mail.gmail.com"
+        },
+        {
+          "index": 46,
+          "from": "Alexander Kukushkin",
+          "date": "2025-11-12T07:28:15Z",
+          "url": "https://www.postgresql.org/message-id/CAFh8B%3DnwHPrBRe7_wECYmu-bFbDoGy%2BLdPxAVc-V%2B9Xa%2BUSrYg%40mail.gmail.com"
+        },
+        {
+          "index": 49,
+          "from": "Amit Kapila",
+          "date": "2025-11-13T11:30:51Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1%2BXFL0dC0u2%2BOWUvKLU51Czd%3DfwFevG9i_ALxBijsKy3w%40mail.gmail.com"
+        },
+        {
+          "index": 51,
+          "from": "shveta malik",
+          "date": "2025-11-14T03:15:47Z",
+          "url": "https://www.postgresql.org/message-id/CAJpy0uBkF9OiXvb3ob%3Dh5uS_y_NUCP5S7%3DySyeYdaE5JXZfkNA%40mail.gmail.com"
+        },
+        {
+          "index": 56,
+          "from": "Masahiko Sawada",
+          "date": "2025-11-14T22:31:29Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoAa3tQZ-aW5nyy5SV%2B-UxFTi1sbzeQEMj-HtUaj1rrFGQ%40mail.gmail.com"
+        },
+        {
+          "index": 59,
+          "from": "Masahiko Sawada",
+          "date": "2025-11-19T00:55:39Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoBSgQoX99aC2PfL7dzCwM0NGvbgrfUD7ALihVCVtgqVXQ%40mail.gmail.com"
+        },
+        {
+          "index": 60,
+          "from": "Amit Kapila",
+          "date": "2025-11-19T06:27:08Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1LCf8L9H6kFfGLkOxdbjgMXZ0sbzS96dcfwJPAEkRXJNA%40mail.gmail.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1, which states the same rejoin-without-pg_rewind case and the missing checks more concretely. The earlier decision is known here only through the report in message #34, so it adds little support.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Silent drop of failover slots changes behavior on upgrade",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "wal_replication",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator attaches an old primary to a standby other than the one it used to sync with. Its failover=true slot is missing on the new upstream, so the slot sync worker now drops it, and a subscriber that still points at that slot loses it. The operator finds out when the subscriber fails, with no ERROR and only a LOG line.",
+      "argument": "The latest patch (message #42) makes get_local_synced_slots() return failover slots too, so drop_local_obsolete_slots() can also drop slots the user created. Today the same case stops with an ERROR and leaves the slot intact. Amit describes this case in message #55. The patch has no documentation hunk for the new contract, and the CF entry is tagged Bugfix, which suggests backpatching a behavior change to 17.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        42,
+        55
+      ],
+      "author_must_show": "Which documented rule tells users that a local failover=true, synced=false slot may now be dropped or overwritten, and would this behavior go into a minor release?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 42,
+          "from": "Fabrice Chapuis",
+          "date": "2025-11-07T17:34:33Z",
+          "url": "https://www.postgresql.org/message-id/CAA5-nLDqGFgZhV1T2GwjRAAWA-b0oBuWCkd1g1g0Aup45Dpm8A%40mail.gmail.com"
+        },
+        {
+          "index": 55,
+          "from": "Amit Kapila",
+          "date": "2025-11-14T10:39:38Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1KmLwYN_EkyW_W6qFcb2BD0qzGwEKM6cyCrDwSm9dHj_g%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-2, which covers the same different-upstream drop. The CF entry targets version 19, so the backpatch concern has no support, and the missing documentation hunk is outside levels 1-2.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Using the failover flag as overwrite permission locks in its meaning",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "design",
+      "touch_points": [
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later release allows failover slots to be created on a cascading standby. A user creates slot1 there, and someone later creates a slot with the same name on the primary. Under the patch's rule, slot sync overwrites the user's slot, so the later feature needs a new flag and a second change of behavior.",
+      "argument": "The patch reads failover=true as \"this slot came from a primary and may be replaced\". This holds only while standbys cannot create failover slots. Sawada (messages #56, #59) and Amit (message #60) say extra per-slot metadata, such as a slot origin or generation, would then be needed. The earlier allow_overwrite design also fails in the cascading switchover case in message #64. So neither form of the contract is settled yet, and shipping either one now leaves later releases with two different meanings for the flag.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        56,
+        59,
+        60,
+        64
+      ],
+      "author_must_show": "How would the rule in message #42 tell a slot to overwrite from a user-created failover slot on a cascading standby, without changing what failover=true means for existing users?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 56,
+          "from": "Masahiko Sawada",
+          "date": "2025-11-14T22:31:29Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoAa3tQZ-aW5nyy5SV%2B-UxFTi1sbzeQEMj-HtUaj1rrFGQ%40mail.gmail.com"
+        },
+        {
+          "index": 59,
+          "from": "Masahiko Sawada",
+          "date": "2025-11-19T00:55:39Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoBSgQoX99aC2PfL7dzCwM0NGvbgrfUD7ALihVCVtgqVXQ%40mail.gmail.com"
+        },
+        {
+          "index": 60,
+          "from": "Amit Kapila",
+          "date": "2025-11-19T06:27:08Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1LCf8L9H6kFfGLkOxdbjgMXZ0sbzS96dcfwJPAEkRXJNA%40mail.gmail.com"
+        },
+        {
+          "index": 64,
+          "from": "Masahiko Sawada",
+          "date": "2025-11-20T20:34:30Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoDH%2BNv62qoJ8P%2B2249u%3DHTyrWg3qGuk9vqOb014%3DzzWzg%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1, which states the same future cascading-standby case and names the maintenance cost more concretely.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No persistent slot identity for future standby-created failover slots",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "wal_replication",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later release allows failover slots to be created on a cascading standby. Such a slot has failover=true and synced=false, so the worker treats it as a sync candidate. If a slot with the same name exists upstream, the worker drops the local slot, and if none exists, drop_local_obsolete_slots drops it.",
+      "argument": "Sawada (message #59) and Amit (message #60) say that allowing overwrite needs extra per-slot metadata, such as a slot origin or generation. Without that metadata a later fix must change the on-disk slot data and redefine what failover=true with synced=false means on clusters that already hold such slots. The CF entry is tagged as a bugfix, so the proposal should also say whether this change of slot sync behavior is meant for back branches.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        56,
+        58,
+        59,
+        60
+      ],
+      "author_must_show": "What per-slot state would tell a slot created on a primary apart from one created on a standby, and can it be added later without changing the meaning of existing slots?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 56,
+          "from": "Masahiko Sawada",
+          "date": "2025-11-14T22:31:29Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoAa3tQZ-aW5nyy5SV%2B-UxFTi1sbzeQEMj-HtUaj1rrFGQ%40mail.gmail.com"
+        },
+        {
+          "index": 58,
+          "from": "Amit Kapila",
+          "date": "2025-11-18T09:29:54Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1JhDEgH%2BRU4A6z9QUse0fEesKFcvesq23ie7a0ZCwafOg%40mail.gmail.com"
+        },
+        {
+          "index": 59,
+          "from": "Masahiko Sawada",
+          "date": "2025-11-19T00:55:39Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoBSgQoX99aC2PfL7dzCwM0NGvbgrfUD7ALihVCVtgqVXQ%40mail.gmail.com"
+        },
+        {
+          "index": 60,
+          "from": "Amit Kapila",
+          "date": "2025-11-19T06:27:08Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1LCf8L9H6kFfGLkOxdbjgMXZ0sbzS96dcfwJPAEkRXJNA%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1. The CF entry targets version 19, so the back-branch question has no support in the material.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Drop-and-recreate may keep the window with no ready slot",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After a switchover, the worker drops the old primary's slot and creates a synced slot. That slot stays temporary until the remote slot passes the locally reserved WAL and catalog_xmin. If the new primary fails in that interval, the old primary has no persistent logical slot to promote with.",
+      "argument": "Kukushkin (message #36) gives the stated problem as the asynchronous, unbounded resync window that follows dropping slots, and asks to flip synced instead. Fabrice (message #37) chose drop and recreate, and the latest patch (message #42) follows that choice. The proposal does not say whether the recreated slot becomes persistent in the same sync cycle.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        36,
+        37,
+        42
+      ],
+      "author_must_show": "After the local slot is dropped, how long can the replacement slot stay temporary, and is that shorter than the window Patroni sees today?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 36,
+          "from": "Alexander Kukushkin",
+          "date": "2025-10-31T09:28:29Z",
+          "url": "https://www.postgresql.org/message-id/CAFh8B%3DkH4Nwd_69fWP4VxK9tjxxBUzdxEZLd%2BLCby9tbSMTcRA%40mail.gmail.com"
+        },
+        {
+          "index": 37,
+          "from": "Fabrice Chapuis",
+          "date": "2025-10-31T16:45:33Z",
+          "url": "https://www.postgresql.org/message-id/CAA5-nLAPrE729BiCGKKUU_9b%2BCA2nxrKLyc-W%2BSbmU2ojFeehQ%40mail.gmail.com"
+        },
+        {
+          "index": 42,
+          "from": "Fabrice Chapuis",
+          "date": "2025-11-07T17:34:33Z",
+          "url": "https://www.postgresql.org/message-id/CAA5-nLDqGFgZhV1T2GwjRAAWA-b0oBuWCkd1g1g0Aup45Dpm8A%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-3",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of already-exists-1, which raises the same window without a sync-ready slot and also compares it with the drop that HA tools can do today.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "The earlier series adds an allow_overwrite field to the on-disk slot data."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "The latest patch changes when the slot sync worker drops and recreates local logical slots on a standby."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "The earlier series changes pg_proc.dat and system_functions.sql and adds a column to pg_replication_slots."
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The earlier series changes the ReplicationSlotCreate() C signature in slot.h."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The CF entry is tagged Bugfix for a failure reported on 17.5, but the fix changes slot sync behavior."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "The latest patch reads failover=true as slot provenance, which later changes to failover slot creation must recheck."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "HA tools can already drop the slot and call pg_sync_replication_slots(), as message #40 notes."
+    }
+  ],
+  "questions": [
+    "Which single design does the entry now propose: the allow_overwrite series, the message #42 patch, or the message #66 rule?",
+    "Does the chosen design change the on-disk slot data or the ReplicationSlotCreate() signature?",
+    "Which properties of the local slot (plugin, database, LSNs, catalog_xmin) does the patch compare with the remote slot before dropping it, and what happens when they differ?",
+    "What slot state, other than failover=true, would tell a former primary's slot apart once standbys may create failover slots?",
+    "How does the message #42 patch shorten the time without sync-ready slots compared with pg_drop_replication_slot() followed by pg_sync_replication_slots()?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Amit Kapila and Masahiko Sawada, who know slot sync, take part in the thread; neither has endorsed a design.",
+    "liability": "The owner signs for a rule that lets the slot sync worker drop user-visible logical slots. With the allow_overwrite series, the owner also signs for a permanent on-disk field and a function argument.",
+    "author_follow_up": "The author posted patches and new proposals up to message #66, but the CF entry has needed a rebase since 2026-10-02."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "needs design rethink",
+    "reason": "Message #1 reports a production failure with Patroni, and a Patroni maintainer confirms the gap in message #36, so the goal is valid. The latest patch is small and touches only slotsync.c, but three candidate rules are open and none has consensus."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, this review cannot tell whether the message #42 patch checks any local slot property before the drop. It also cannot tell whether the recreated slot becomes sync-ready in the same cycle.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:3393",
+      "kind": "cf",
+      "title": "Synchronize logical replication slots from primary to standby",
+      "status": "Returned with feedback",
+      "date": "2022-02-18",
+      "first_date": "2021-10-31",
+      "url": "https://commitfest.postgresql.org/patch/3393/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/514f6f2f-6833-4539-39f1-96cd1e011f23@enterprisedb.com"
+      ],
+      "authors": "Peter Eisentraut (petere)",
+      "objectors": "Andres Freund, James Coleman",
+      "summary": "A background worker on a physical standby periodically fetches logical replication slot information from the primary, so that after failover a logical subscriber finds up-to-date slots on the new primary. Later versions added synchronize_slot_names on the standby to pick which slots to sync, and standby_slot_names on the primary to hold logical replication back until the listed physical standbys catch up.",
+      "objection": "Andres Freund found that the patch breaks the catalog_xmin guarantee: row versions still needed for logical decoding on the standby can be removed. He said it needs a mechanism such as the \"Minimal logical decoding on standbys\" patch, which the author said was not near ready. Reviewers also objected to the blocking wait and the per-commit work added to reorderbuffer.c, and to the worker-per-database design tied to the logical replication launcher. The author listed these and an open configuration design as significant jobs still to do.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "failover slot switchover synced flag",
+        "slot synchronization same name slot exists",
+        "logical slot sync old primary standby",
+        "allow_overwrite replication slot",
+        "overwrite existing replication slot standby",
+        "logical failover slots cascading standby"
+      ],
+      "from_hint": false,
+      "score": 0.748,
+      "enriched": true,
+      "key_quote": "The patch as-is just breaks one of the fundamental guarantees necessary for logical decoding, that no rows versions can be removed that are still required for logical decoding (signalled via catalog_xmin).",
+      "quote_message_url": "https://www.postgresql.org/message-id/20220218222319.yozkbhren7vkjbi5%40alap3.anarazel.de",
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:3784",
+      "kind": "cf",
+      "title": "Reuse Workers and Replication Slots during Logical Replication",
+      "status": "Returned with feedback",
+      "date": "2024-01-10",
+      "first_date": "2022-07-05",
+      "url": "https://commitfest.postgresql.org/patch/3784/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGPVpCTq=rUDd4JUdaRc1XUWf4BrH2gdSNf3rtOMUGj9rPpfzQ@mail.gmail.com"
+      ],
+      "authors": "Melih Mutlu (melihmutlu)",
+      "objectors": "Amit Kapila, Peter Smith",
+      "summary": "The patch lets a tablesync worker, after it finishes one table, pick up the next table in init state and sync it, keeping its replication slot. This removes the cost of starting a new worker and creating and dropping a slot for each table, which matters most for many empty or small tables.",
+      "objection": "Benchmarks by reviewers showed regressions in some settings, and the v28 design #2 results were up to about twice as slow as HEAD and varied widely between runs. The patch also no longer applied to HEAD. Amit Kapila proposed Returned with feedback because the regressions still needed analysis, and vignesh C asked for a new entry with a fix for the regression.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "allow_overwrite replication slot",
+        "pg_alter_replication_slot",
+        "overwrite existing replication slot standby",
+        "logical failover slots cascading standby",
+        "replication slot origin generation"
+      ],
+      "from_hint": false,
+      "score": 0.653,
+      "enriched": true,
+      "key_quote": "IIRC, there were some regressions observed with this patch. So, one\nneeds to analyze those as well.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAA4eK1L3XfQzpWfzS-5PFwncEduiWz9PGgwYZtuQYOod7PEY7w%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:1961",
+      "kind": "cf",
+      "title": "Synchronizing slots from primary to standby",
+      "status": "Returned with feedback",
+      "date": "2019-09-30",
+      "first_date": "2018-12-30",
+      "url": "https://commitfest.postgresql.org/patch/1961/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3095349b-44d4-bf11-1b33-7eefb585d578@2ndquadrant.com"
+      ],
+      "authors": "Petr Jelínek (pjmodos)",
+      "objectors": "",
+      "summary": "The patch runs the logical replication launcher on a standby and adds a per-database slotsync worker that periodically fetches slot state from the primary. The worker fast-forwards matching logical slots on the standby, and a new replication command lists the slots on the primary.",
+      "objection": "The thread does not record a design objection. The patch depended on the \"logical decoding on standby\" patch, which was not in the Commitfest, and Thomas Munro reported that the patches no longer applied on top of it. He asked for a rebased patch set, and the shown messages contain no reply from the author before the entry was returned.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "failover slot switchover synced flag",
+        "slot synchronization same name slot exists",
+        "logical slot sync old primary standby",
+        "overwrite existing replication slot standby",
+        "logical failover slots cascading standby"
+      ],
+      "from_hint": false,
+      "score": 0.607,
+      "enriched": true,
+      "key_quote": "You patches no longer apply on top though.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BhUKGKJjfQYmMj0EL4ZvcSmFjS__odFuru04DJM66a3HuB%3Dsg%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:3445",
+      "kind": "cf",
+      "title": "Error \"initial slot snapshot too large\" in create replication slot",
+      "status": "Withdrawn",
+      "date": "2024-01-16",
+      "first_date": "2021-10-11",
+      "url": "https://commitfest.postgresql.org/patch/3445/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFiTN-tqopqpfS6HHug2nnOGieJJ_nm-Nvy0WBZ=Zpo-LqtSJA@mail.gmail.com"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti), Dilip Kumar (dilip.kumar)",
+      "objectors": "Robert Haas",
+      "summary": "The patch fixes the \"initial slot snapshot too large\" error in CREATE_REPLICATION_SLOT, which happens because SnapBuildInitialSnapshot puts top-level and subtransaction XIDs into the xip array and the count can exceed GetMaxSnapshotXidCount(). Versions tried excluding subtransactions, marking the snapshot takenDuringRecovery, asking the reorder buffer which XIDs are subtransactions, and finally using the subxip array as an extension of xip.",
+      "objection": "Robert Haas objected to the last version because it adds a third way of using the xip and subxip arrays, and he saw no consensus on an approach. Earlier approaches failed for other reasons: the reorder buffer cannot reliably tell subtransactions apart, using takenDuringRecovery was rejected, and resizing xip made procarray.c and snapmgr.c too complicated. The author withdrew the entry for lack of a simple fix.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "allow_overwrite replication slot",
+        "pg_alter_replication_slot",
+        "overwrite existing replication slot standby",
+        "replication slot origin generation"
+      ],
+      "from_hint": false,
+      "score": 0.495,
+      "enriched": true,
+      "key_quote": "It's bad enough that we\nalready use the xip/subxip arrays in two different ways depending on\nthe situation. Increasing that to three different ways seems painful.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoYhQGK5v05qLsuZ2FG9ov%3D1jWDHxbK-gZPgsXJh5X-tVA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:6ae701b4378db2284c77314560e95a93d0ba9484",
+      "kind": "revert",
+      "title": "Track invalidation_reason in pg_replication_slots.",
+      "status": "Partially reverted",
+      "date": "2024-03-22",
+      "first_date": "2024-01-04",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6ae701b4378db2284c77314560e95a93d0ba9484",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ZfR7HuzFEswakt%2Fa@ip-10-97-1-34.eu-west-3.compute.internal",
+        "https://www.postgresql.org/message-id/flat/CALj2ACW4aUe-_uFQOjdWCEN-xXoLGhmvRFnL8SNw_TZ5nJe+aw@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/ZYOE8IguqTbp-seF@paquier.xyz"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Track invalidation_reason in pg_replication_slots.\nReverted commit(s): Track conflict_reason in pg_replication_slots.",
+      "objection": "Till now, the reason for replication slot invalidation is not tracked\ndirectly in pg_replication_slots. A recent commit 007693f2a3 added\n'conflict_reason' to show the reasons for slot conflict/invalidation, but\nonly for logical slots.\n\nThis commit adds a new column 'invalidation_reason' to show invalidation\nreasons for both physical and logical slots. And, this commit also turns\n'conflict_reason' text column to 'conflicting' boolean column (effectively\nreverting commit 007693f2a3). The 'conflicting' column is true for\ninvalidation reasons 'rows_removed' and 'wal_level_insufficient' because\nthose make the slot conflict with recovery. When 'conflicting' is true,\none can now look at the new 'invalidation_reason' column for the reason\nfor the logical slot's conflict with recovery.\n\nThe new 'invalidation_reason' column will also be useful to track other\ninvalidation reasons in the future commit.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "allow_overwrite replication slot",
+        "pg_alter_replication_slot",
+        "overwrite existing replication slot standby",
+        "replication slot origin generation"
+      ],
+      "from_hint": false,
+      "score": 0.396,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:1128",
+      "kind": "cf",
+      "title": "Add function pg_advance_replication_slot",
+      "status": "Returned with feedback",
+      "date": "2017-11-29",
+      "first_date": "2017-05-04",
+      "url": "https://commitfest.postgresql.org/patch/1128/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABUevEwBdWPDXTs_cFy93GESq5JHbmo1v+y-6KWvce0sajLkhw@mail.gmail.com"
+      ],
+      "authors": "Magnus Hagander (mha)",
+      "objectors": "Michael Paquier, Andres Freund",
+      "summary": "Add a SQL function that moves a physical replication slot forward to a given WAL position without consuming the WAL, for example to keep slots in sync across servers. Later versions named it pg_advance_replication_slot, allowed forward moves only, and raised an error on logical slots.",
+      "objection": "Michael Paquier asked that moving the slot backwards raise an error with the current slot position instead of a warning, and that the logical-slot error use ERRCODE_FEATURE_NOT_SUPPORTED. Andres Freund added that neither message followed the message style guidelines. The patch got no update in the following two months, so it was returned with feedback.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "allow_overwrite replication slot",
+        "pg_alter_replication_slot",
+        "overwrite existing replication slot standby",
+        "replication slot origin generation"
+      ],
+      "from_hint": false,
+      "score": 0.384,
+      "enriched": true,
+      "key_quote": "True as well, and the patch did not get an update in two months to\nreflect that. So I am marking it as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB7nPqRykF03uk-3PxDBYQ75awn5Eki%3DsVdhOayxBqQ74LcCSw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:3425",
+      "kind": "cf",
+      "title": "pg_replslotdata - a tool for displaying replication slot information",
+      "status": "Rejected",
+      "date": "2022-01-17",
+      "first_date": "2021-11-23",
+      "url": "https://commitfest.postgresql.org/patch/3425/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACW0rV5gWK8A3m6_X62qH+Vfaq5hznC=i0R5Wojt5+yhyw@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "Andres Freund, Michael Paquier, Julien Rouhaud",
+      "summary": "A new client-side tool, pg_replslotdata, reads the binary replication slot files under pg_replslot/ and prints slot information such as restart LSN, xid, slot type and two-phase state. It works while the server is down, in the same way as pg_controldata and pg_waldump.",
+      "objection": "Committers judged that the use cases did not justify the cost of maintaining a separate tool in core, including its documentation and translations, and that most needs can be met with an online server. Since the tool is entirely client side, reviewers suggested keeping it in an external repository. The author agreed to drop the patch.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "allow_overwrite replication slot",
+        "pg_alter_replication_slot",
+        "overwrite existing replication slot standby",
+        "replication slot origin generation"
+      ],
+      "from_hint": false,
+      "score": 0.347,
+      "enriched": true,
+      "key_quote": "Weighed against the cost of maintaining (including documentation) a separate\ntool this doesn't seem sufficient reason.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20211201225243.hu5ygzyaxr546v52%40alap3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:295",
+      "kind": "cf",
+      "title": "expose confirmed_flush for replication slots",
+      "status": "Rejected",
+      "date": "2015-07-08",
+      "first_date": "2015-07-08",
+      "url": "https://commitfest.postgresql.org/patch/295/",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "expose confirmed_flush for replication slots",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "allow_overwrite replication slot",
+        "pg_alter_replication_slot",
+        "overwrite existing replication slot standby",
+        "replication slot origin generation"
+      ],
+      "from_hint": false,
+      "score": 0.313,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:1916",
+      "kind": "cf",
+      "title": "Making WAL receiver startup rely on GUC context for primary_conninfo and primary_slot_name",
+      "status": "Rejected",
+      "date": "2019-02-16",
+      "first_date": "2018-12-12",
+      "url": "https://commitfest.postgresql.org/patch/1916/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20181212053042.GK17695@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Andres Freund, Robert Haas",
+      "summary": "Remove the primary_conninfo and primary_slot_name arguments passed from the startup process to the WAL receiver at startup, and have the WAL receiver read these values directly from its own GUC context instead. This would also allow removing the ready_to_display flag from WAL receiver shared memory, since only the clobbered connection string would need to be stored there.",
+      "objection": "Andres Freund objected that reading the GUCs in the WAL receiver lets its state diverge from the startup process's because config reloads happen at different times, and that the simplification was not worth it. Robert Haas found the race real though narrow, saw no user-visible benefit, and suggested waiting until primary_conninfo becomes reloadable and committing the changes together. The author then said he would drop the patch given that two committers had concerns.",
+      "touch_points": [
+        "new GUC",
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "slot synchronization same name slot exists",
+        "logical slot sync old primary standby"
+      ],
+      "from_hint": false,
+      "score": 0.199,
+      "enriched": true,
+      "key_quote": "Since the logic will have to be further\nrevised anyway to make primary_conninfo PGC_SIGHUP, why not just wait\nuntil that's done and then commit all the changes together instead of\nguessing that this might make that easier?",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmobKaXssUhAnArKD%3DVVBBYjvfV77MMc5OxuLFk9XJYeHuQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:4686",
+      "kind": "cf",
+      "title": "Forbid the use of invalidated physical slots in streaming replication.",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2023-12-06",
+      "url": "https://commitfest.postgresql.org/patch/4686/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/OS0PR01MB5716A626A4AF5814E057CEE39484A@OS0PR01MB5716.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "Zhijie Hou (houzj)",
+      "objectors": "Ashutosh Bapat, Robert Haas",
+      "summary": "The patch makes StartReplication() reject a physical replication slot that has already been invalidated, for example by max_slot_wal_keep_size, as the logical walsender already does. Without it a walsender can stream from an invalidated slot, move its restart_lsn forward, and pg_replication_slots shows it as valid while it protects neither WAL nor rows.",
+      "objection": "The author stopped responding to review questions, so vignesh C moved the entry to Waiting on Author and then to Returned with Feedback. Ashutosh Bapat asked how a build before commit 15f8203 behaves and warned that changing long-released behaviour of physical slots could break backward compatibility. Robert Haas noted that the documentation does not match the current behaviour and that the intended interaction with physical slots is not clear.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "allow_overwrite replication slot",
+        "pg_alter_replication_slot"
+      ],
+      "from_hint": false,
+      "score": 0.176,
+      "enriched": true,
+      "key_quote": "I think making logical and physical slot behaviour consistent would be\nbetter but if the inconsistent behaviour is out there for some\nreleases, changing that now will break backward compatibility.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAExHW5t9w_iSU%2BVP-GqGLeRErRJnGzkqavxzYfCk8Z%2Be0pu-3w%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:293",
+      "kind": "cf",
+      "title": "Support multiple synchronous standby servers",
+      "status": "Returned with feedback",
+      "date": "2016-02-03",
+      "first_date": "2015-05-15",
+      "url": "https://commitfest.postgresql.org/patch/293/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOG9ApHYCPmTypAAwfD3_V7sVOkbnECFivmRc1AxhB40ZBSwNQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/trinity-4258acb0-b75a-4bf1-9657-f8237883cd0d-1442981475318@3capp-mailcom-lxa02"
+      ],
+      "authors": "Masahiko Sawada (masahikosawada), Beena Emerson (beena.emerson)",
+      "objectors": "",
+      "summary": "Support multiple synchronous standby servers\nThreads: Support for N synchronous standby servers - take 2; Re: Support for N synchronous standby servers - take 2",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "slot synchronization same name slot exists",
+        "logical slot sync old primary standby"
+      ],
+      "from_hint": false,
+      "score": 0.163,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "wiki:Configuration_files:4",
+      "kind": "do_not_want",
+      "title": "Allow synchronous_standby_names to be disabled after communication failure with all synchronous standby servers exceeds some timeout",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Configuration_files",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/BF2827DCCE55594C8D7A8F7FFD3AB7713DD9A622@SZXEML508-MBX.china.huawei.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "Allow synchronous_standby_names to be disabled after communication failure with all synchronous standby servers exceeds some timeout\nSection: Administration / Configuration files\nLinked: Standalone synchronous master",
+      "objection": "This also requires successful execution of a synchronous notification command.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "slot synchronization same name slot exists",
+        "logical slot sync old primary standby"
+      ],
+      "from_hint": false,
+      "score": 0.154,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:4559",
+      "kind": "cf",
+      "title": "pg_rewind with cascade standby doesn't work well",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-09-07",
+      "url": "https://commitfest.postgresql.org/patch/4559/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMyC8qqnxBVjAM+a5WgQ+bFSvd2ZoA_wuzEDo-y8_jbLCtHbjQ@mail.gmail.com"
+      ],
+      "authors": "Masaki Kuwamura (mackyson)",
+      "objectors": "",
+      "summary": "pg_rewind with cascade standby doesn't work well\nThreads: pg_rewind with cascade standby doesn't work well",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical failover slots cascading standby"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:5502",
+      "kind": "cf",
+      "title": "DOCS for generated column replication",
+      "status": "Rejected",
+      "date": "2025-03-12",
+      "first_date": "2025-02-02",
+      "url": "https://commitfest.postgresql.org/patch/5502/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHut+Pt_7GV8eHSW4XQsC6rF13TWrz-SrGeeiV71=SE14DC4Jg@mail.gmail.com"
+      ],
+      "authors": "Peter Smith (smithpb2250)",
+      "objectors": "",
+      "summary": "DOCS for generated column replication\nThreads: DOCS - Generated Column Replication Examples",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "replication slot origin generation"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "revert:c1543a81a7a89207b6c45b8f3f7f07b1148fcc6e",
+      "kind": "revert",
+      "title": "Revert timeline following in replication slots",
+      "status": "Reverted",
+      "date": "2016-05-04",
+      "first_date": "2016-03-30",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=c1543a81a7a89207b6c45b8f3f7f07b1148fcc6e",
+      "thread_urls": [],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert timeline following in replication slots\nReverted commit(s): test_slot_timelines: Fix alternate expected output; Fix logical_decoding_timelines test crashes; I forgot the alternate expected file in previous commit; Enable logical slots to follow timeline switches",
+      "objection": "This reverts commits f07d18b6e94d, 82c83b337202, 3a3b309041b0, and\n24c5f1a103ce.\n\nThis feature has shown enough immaturity that it was deemed better to\nrip it out before rushing some more fixes at the last minute.  There are\ndiscussions on larger changes in this area for the next release.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_alter_replication_slot"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:2676",
+      "kind": "cf",
+      "title": "Start WAL streaming as early as possible, without waiting for startup process to finish replaying existing WAL. This helps synchronous replication to resume quickly when significant replay lag has been built up.",
+      "status": "Returned with feedback",
+      "date": "2020-12-01",
+      "first_date": "2020-01-17",
+      "url": "https://commitfest.postgresql.org/patch/2676/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANXE4Tc3FNvZ_xAimempJWv_RH9pCvsZH7Yq93o1VuNLjUT-mQ@mail.gmail.com"
+      ],
+      "authors": "Asim Rama Praveen (apraveen), Hao Wu (hwu)",
+      "objectors": "",
+      "summary": "Start WAL streaming as early as possible, without waiting for startup process to finish replaying existing WAL. This helps synchronous replication to resume quickly when significant replay lag has been built up.\nThreads: Unnecessary delay in streaming replication due to replay lag",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "slot synchronization same name slot exists"
+      ],
+      "from_hint": false,
+      "score": 0.112,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:1631",
+      "kind": "cf",
+      "title": "hostorder and failover_timeout for libpq",
+      "status": "Returned with feedback",
+      "date": "2019-02-03",
+      "first_date": "2018-04-18",
+      "url": "https://commitfest.postgresql.org/patch/1631/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6976633a-eaf7-bbc0-f471-0a2d7ad20e5f@postgrespro.ru"
+      ],
+      "authors": "Ildar Musin (i.musin)",
+      "objectors": "",
+      "summary": "hostorder and failover_timeout for libpq\nThreads: hostorder and failover_timeout for libpq",
+      "objection": "",
+      "touch_points": [
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "failover slot switchover synced flag"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:5590",
+      "kind": "cf",
+      "title": "DOCS - Generated Column Logical Replication Examples",
+      "status": "Withdrawn",
+      "date": "2025-02-21",
+      "first_date": "2025-02-02",
+      "url": "https://commitfest.postgresql.org/patch/5590/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHut+Pt_7GV8eHSW4XQsC6rF13TWrz-SrGeeiV71=SE14DC4Jg@mail.gmail.com"
+      ],
+      "authors": "Peter Smith (smithpb2250)",
+      "objectors": "",
+      "summary": "DOCS - Generated Column Logical Replication Examples\nThreads: DOCS - Generated Column Replication Examples",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "replication slot origin generation"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:4485",
+      "kind": "cf",
+      "title": "Add force flag while doing pg_restore to force dropping database in case of existing connections",
+      "status": "Returned with feedback",
+      "date": "2024-01-14",
+      "first_date": "2023-07-18",
+      "url": "https://commitfest.postgresql.org/patch/4485/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAP4s+CEVVFREtnw8LpeNGUKcVowR0qMNiHw-A9+8h3-a0AQEaQ@mail.gmail.com"
+      ],
+      "authors": "Ahmed Ibrahim (ahmedibrahim)",
+      "objectors": "",
+      "summary": "Add force flag while doing pg_restore to force dropping database in case of existing connections\nThreads: There should be a way to use the force flag when restoring databases",
+      "objection": "",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "failover slot switchover synced flag"
+      ],
+      "from_hint": false,
+      "score": 0.103,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:1362",
+      "kind": "cf",
+      "title": "PARALLEL flag for cursors",
+      "status": "Returned with feedback",
+      "date": "2018-02-07",
+      "first_date": "2017-10-14",
+      "url": "https://commitfest.postgresql.org/patch/1362/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/98760523-a0d2-8705-38e3-c4602ecf2448@2ndquadrant.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "PARALLEL flag for cursors\nThreads: PATCH: enabling parallel execution for cursors explicitly\n(experimental)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "failover slot switchover synced flag"
+      ],
+      "from_hint": false,
+      "score": 0.096,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:2631",
+      "kind": "cf",
+      "title": "deferred primary key and logical replication",
+      "status": "Returned with feedback",
+      "date": "2020-11-29",
+      "first_date": "2020-05-10",
+      "url": "https://commitfest.postgresql.org/patch/2631/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAH503wA=QLV5bafAx4tVCcONUQoK3zDV-Q3apFjSOWuytqiwpQ@mail.gmail.com"
+      ],
+      "authors": "Euler Taveira (eulerto)",
+      "objectors": "",
+      "summary": "deferred primary key and logical replication\nThreads: deferred primary key and logical replication",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical slot sync old primary standby"
+      ],
+      "from_hint": false,
+      "score": 0.09,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:3665",
+      "kind": "cf",
+      "title": "An attempt to avoid locally-committed-but-not-replicated-to-standby-transactions in synchronous replication",
+      "status": "Returned with feedback",
+      "date": "2023-08-02",
+      "first_date": "2022-04-25",
+      "url": "https://commitfest.postgresql.org/patch/3665/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACUrOB59QaE6=jF2cFAyv1MR7fzD8tr4YM5+OwEYG1SNzA@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "",
+      "summary": "An attempt to avoid locally-committed-but-not-replicated-to-standby-transactions in synchronous replication\nThreads: An attempt to avoid locally-committed-but-not-replicated-to-standby-transactions\nin synchronous replication",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical slot sync old primary standby"
+      ],
+      "from_hint": false,
+      "score": 0.09,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:2637",
+      "kind": "cf",
+      "title": "audo-detect and use -moutline-atomics compilation flag for aarch64",
+      "status": "Rejected",
+      "date": "2020-09-29",
+      "first_date": "2020-07-01",
+      "url": "https://commitfest.postgresql.org/patch/2637/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/099F69EE-51D3-4214-934A-1F28C0A1A7A7@amazon.com"
+      ],
+      "authors": "Tsahi Zidenberg (tsahee)",
+      "objectors": "",
+      "summary": "audo-detect and use -moutline-atomics compilation flag for aarch64\nThreads: [PATCH] audo-detect and use -moutline-atomics compilation flag for\naarch64",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "failover slot switchover synced flag"
+      ],
+      "from_hint": false,
+      "score": 0.089,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:1084",
+      "kind": "cf",
+      "title": "Fix off-by-one in logical slot resource retention",
+      "status": "Returned with feedback",
+      "date": "2017-10-01",
+      "first_date": "2017-03-09",
+      "url": "https://commitfest.postgresql.org/patch/1084/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMsr+YGFvikx-U_mHQ0mAzTarqvCpwzvsPKv=7MfP9scDrMPjg@mail.gmail.com"
+      ],
+      "authors": "Craig Ringer (ringerc)",
+      "objectors": "",
+      "summary": "Fix off-by-one in logical slot resource retention\nThreads: [PATCH] Off-by-one error in logical slot resource retention",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical failover slots cascading standby"
+      ],
+      "from_hint": false,
+      "score": 0.088,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 6,
+    "new_calls": 2,
+    "failed": 0,
+    "quotes_verified": 2,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 2
+  },
+  "precedent_cutoff": "2025-08-07",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "P1 and P3 are earlier attempts at slot sync itself. One stalled on catalog_xmin safety and the other on a rebase, and neither reason applies to overwriting after a switchover. The only prior rejection that applies is the earlier thread named in message #34."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "Two objections from the standards and compatibility angle. pg_dump does not apply because replication slots are not dumped."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 3,
+      "note": "The listed precedents cover the first slot sync designs. Their recorded reasons do not apply to overwriting slots after a switchover."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "From the security angle there is nothing to object to. Both designs act only on slots that need the REPLICATION attribute or superuser to create, run inside the slot sync worker, and give no new access to data, files or other sessions. The risk of overwriting an unrelated slot is a correctness and design question for other angles."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "Hot-path cost is not a concern: the change runs only in the slot sync worker. Amit Kapila and Masahiko Sawada, who know slot sync, are engaged in the thread, so ownership is not the weak point."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "The allow_overwrite series (v1 to v6) adds a slot property that no existing feature offers, so this angle raises nothing against it."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "The material shows real demand. Message #1 reports a production failure on Postgres 17.5 with Patroni during a routine switchover, and message #36 from a Patroni maintainer says the drop-and-resync workaround can leave no standby with ready logical slots if the primary fails during the resync window. Sawada (message #56) calls the reuse idea reasonable, so the open questions are about design, not demand."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 9,
+      "new_objections": 10,
+      "new_survived": 5,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 101,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 14,
+    "wall_ms": 188722,
+    "cost_usd": 4.5553612,
+    "dry_run": false
+  }
+}

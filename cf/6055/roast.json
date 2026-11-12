@@ -1,0 +1,1723 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:40:56.279Z",
+  "input": {
+    "arg": "6055",
+    "cf": {
+      "id": 6055,
+      "url": "https://commitfest.postgresql.org/patch/6055/",
+      "title": "Whole-row fixes for DROP COLUMN, SET COLUMN DATA TYPE",
+      "status": "Needs review",
+      "authors": "Jian He (stayreal)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CACJufxGA6KVQy7DbHGLVw9s9KKmpGyZt5ME6C7kEfjDpr2wZCw%40mail.gmail.com",
+    "subject": "let ALTER TABLE DROP COLUMN drop whole-row referenced object",
+    "thread_start": "2025-09-08T02:53:00Z",
+    "messages_read": 17,
+    "messages_total": 17,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v14-0001-Whole-row-fixes-for-DROP-COLUMN-SET-COLUMN-DATA-TYPE.patch",
+      "v1-0001-let-ALTER-TABLE-DROP-COLUMN-drop-wholerow-referenced-object.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The bug is real and reviewers reproduced it, so the goal stands. The design is contested: message #17 argues that whole-row indexes stay valid and should be rebuilt, and that pg_depend should record whole-row dependencies, and no reply is visible (standards-compat-2, prior-attempts-2, maintenance-fit-1). The Backport tag adds an undiscussed behavior change for stable branches (replication-ondisk-1). The list needs to choose one design before code review is useful.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Handle whole-row references in DROP COLUMN and SET DATA TYPE",
+    "problem": "ALTER TABLE DROP COLUMN leaves behind CHECK constraints and indexes that use a whole-row reference such as `check (ts = row(1,1,1))`, because no pg_depend entry links them to the columns. After the drop, inserts fail with errors like \"cannot compare record types with different numbers of columns\". ALTER COLUMN SET DATA TYPE leaves such objects in the same broken state.",
+    "proposed_design": "During DROP COLUMN, the patch finds indexes, CHECK constraints, trigger WHEN clauses and row-level security policies with whole-row references and records a dependency on the dropped column, so performMultipleDeletions handles them. Indexes and constraints are then dropped like other column dependents, and triggers and policies need CASCADE. SET DATA TYPE raises an error when such objects exist, because record_eq cannot compare records whose columns have different types.",
+    "user_visible_surface": [
+      "ALTER TABLE ... DROP COLUMN now drops indexes and CHECK constraints that use a whole-row reference to the table.",
+      "ALTER TABLE ... DROP COLUMN fails without CASCADE when a trigger WHEN clause or a policy uses a whole-row reference.",
+      "ALTER TABLE ... ALTER COLUMN ... SET DATA TYPE fails with a new error when a whole-row dependent object exists.",
+      "New error message: \"cannot alter table column ... because constraint ... uses table ... row type\", with a HINT to drop the constraint."
+    ],
+    "author_claims": [
+      "The documentation says indexes and table constraints involving the column are dropped, so dropping whole-row dependents is the expected behavior.",
+      "Without the fix, inserts fail after DROP COLUMN or SET DATA TYPE and the cause is hard to find.",
+      "An explicit error in SET DATA TYPE helps users find the problem faster than the later record_eq error.",
+      "The CommitFest entry is tagged as a bug fix and backport candidate, with target version stable."
+    ],
+    "thread_state": "Chao Li, Kirill Reshke and Jinbinge reviewed the code, and lakshmi tested v8 and v14 and reported correct behavior. Matthias van de Meent objected that scanning catalogs is slow and that indexes should be rebuilt, not dropped, and pointed to his own patch (CF 7071). No reply to that objection is visible.",
+    "unclear": [
+      "The proposal does not say whether it is safe to backport a change that drops user indexes and constraints, or that makes DROP COLUMN fail where it worked before.",
+      "The thread does not answer whether whole-row indexes should be rebuilt after SET DATA TYPE instead of blocking the command.",
+      "The proposal gives no cost numbers for the catalog scans on tables with many indexes, constraints or policies.",
+      "The proposal does not say how it relates to CF 6755 (SET EXPRESSION) and CF 7071, which touch the same dependencies.",
+      "The patch changes no documentation, so the doc text on DROP COLUMN and SET DATA TYPE is not updated for policies and triggers.",
+      "The proposal does not say how whole-row references from a policy to another table are handled when that table changes."
+    ],
+    "search_queries": [
+      "whole-row reference drop column",
+      "whole-row Var dependency pg_depend",
+      "drop column check constraint row type",
+      "alter column type whole-row index",
+      "whole-row reference policy trigger",
+      "record_eq dissimilar column types",
+      "dependency tracking whole-row expression",
+      "drop column leaves invalid constraint"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P1",
+      "source_id": "revert:ec62cb0aac5ba31a82339606009ddbd7eb00e2ac",
+      "title": "Revert applying column aliases to the output of whole-row Vars.",
+      "kind": "revert",
+      "status": "Reverted",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ec62cb0aac5ba31a82339606009ddbd7eb00e2ac",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2950001.1638729947@sss.pgh.pa.us"
+      ],
+      "date": "2022-03-17",
+      "first_date": "2014-11-10",
+      "who_objected": "",
+      "quote": "What *is* kind of awful is to make such a behavioral change in a back-patched bug fix.",
+      "quote_url": null,
+      "enriched": false,
+      "reason": "In commit bf7ca1587, I had the bright idea that we could make the\nresult of a whole-row Var (that is, foo.*) track any column aliases\nthat had been applied to the FROM entry the Var refers to.  However,\nthat's not terribly logically consistent, because now the output of\nthe Var is no longer of the named composite type that the Var claims\nto emit.  bf7ca1587 tried to handle that by changing the output\ntuple values to be labeled with a blessed RECORD type, but that's\nreally pretty disastrous: we can wind up storing such tuples onto\ndisk, whereupon they're not readable by other sessions.\n\nThe only practical fix I can see is to give up on what bf7ca1587\ntried to do, and say that the column names of tuples produced by\na whole-row Var are always those of the underlying named composite\ntype, query aliases or no.  While this introduces some inconsistencies,\nit removes others, so it's not that awful in the abstract.  What *is*\nkind of awful is to make such a behavioral change in a back-patched\nbug fix.  But corrupt data is worse, so back-patched it will be.\n\n(A workaround available to anyone who's unhappy about this is to\nintroduce an extra level of sub-SELECT, so that the whole-row Var is\nreferring to the sub-SELECT's output and not to a named table type.\nThen the Var is of type RECORD to begin with and there's no issue.)\n\nPer report from Miles Delahunty.  The faulty commit dates to 9.5,\nso back-patch to all supported branches.",
+      "relation": "related_only",
+      "what_is_different": "P1 changed the column names that whole-row Vars output, a different feature. It is relevant only as an example of a behavior change back-patched to prevent corrupt on-disk data, which this proposal does not claim."
+    },
+    {
+      "precedent_id": "P20",
+      "source_id": "revert:ec48314708262d8ea6cdcb83f803fc83dd89e721",
+      "title": "Revert per-index collation version tracking feature.",
+      "kind": "revert",
+      "status": "Reverted",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ec48314708262d8ea6cdcb83f803fc83dd89e721",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGLhj5t1fcjqAu8iD9B3ixJtsTNqyCCD4V0aTO9kAKAjjA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CA+hUKGJ_hk3rU==g2FpAMChb_4i+TJacpjjqFsinY-tRM3FBmA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/3044030.1618261159@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/HK0PR01MB22744393C474D503E16C8509F4709@HK0PR01MB2274.apcprd01.prod.exchangelabs.com",
+        "https://www.postgresql.org/message-id/flat/3564817.1618420687@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20210117215940.GE8560@telsasoft.com"
+      ],
+      "date": "2021-05-07",
+      "first_date": "2020-11-15",
+      "who_objected": "",
+      "quote": "Misgivings were also expressed about the use of the pg_depend catalog for this purpose.",
+      "quote_url": null,
+      "enriched": false,
+      "reason": "Design problems were discovered in the handling of composite types and\nrecord types that would cause some relevant versions not to be recorded.\nMisgivings were also expressed about the use of the pg_depend catalog\nfor this purpose.  We're out of time for this release so we'll revert\nand try again.\n\nCommits reverted:\n\n1bf946bd: Doc: Document known problem with Windows collation versions.\ncf002008: Remove no-longer-relevant test case.\nef387bed: Fix bogus collation-version-recording logic.\n0fb0a050: Hide internal error for pg_collation_actual_version(<bad OID>).\nff942057: Suppress \"warning: variable 'collcollate' set but not used\".\nd50e3b1f: Fix assertion in collation version lookup.\nf24b1569: Rethink extraction of collation dependencies.\n257836a7: Track collation versions for indexes.\ncd6f479e: Add pg_depend.refobjversion.\n7d1297df: Remove pg_collation.collversion.",
+      "relation": "related_only",
+      "what_is_different": "P20 tracked collation versions in pg_depend and missed composite and record types. This patch records pg_depend entries only at DROP COLUMN time, for a different purpose."
+    }
+  ],
+  "objections": [
+    {
+      "title": "DROP COLUMN drops whole-row indexes that are still valid",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "sql_standard_syntax",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A table has a partial index `on t (b) where t is not null`. A DBA drops an unrelated column `a`. The index on `b` is dropped with no notice and no CASCADE, so queries that used it turn into sequential scans, and nobody sees it until they look at plans.",
+      "argument": "An expression such as `t is null` stays well defined after a column is dropped. Only comparisons with a fixed-width row constant break. The patch treats every whole-row reference like a direct column reference, so it drops valid objects along with broken ones. In message #17 Matthias van de Meent proposed rebuilding these indexes, and the thread does not answer him.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        17
+      ],
+      "author_must_show": "Which whole-row index or constraint definitions become invalid after DROP COLUMN, and why drop the ones that stay valid instead of rebuilding them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "jian he",
+          "date": "2025-09-08T02:53:00Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxGA6KVQy7DbHGLVw9s9KKmpGyZt5ME6C7kEfjDpr2wZCw%40mail.gmail.com"
+        },
+        {
+          "index": 17,
+          "from": "Matthias van de Meent",
+          "date": "2026-08-05T15:31:03Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2Wgg-GbHNJ7iijUoRX7yWPwTJSwZ%2Bq9kQK%2B9-yVw%3DjLucg%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The author's reply is the doc sentence that indexes involving the column are dropped, but `t is not null` stays well defined after the drop. Message #17 makes this point and the thread does not answer it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Competing fix in CF 7071 rebuilds indexes and has no reply",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "catalog",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "This patch ships and whole-row indexes are dropped on DROP COLUMN. A later release adopts the CF 7071 approach, which rebuilds them. Users then see the same command drop an index in one release and keep it in the next.",
+      "argument": "Message #17 says the whole-row index definition stays valid and only needs a rebuild. It points to CF 7071, which records whole-row Vars in pg_depend under their own objsubid. Message #14 ties this work to CF 6755, but no message answers message #17. Two fixes for one class of bug with opposite user-visible results would likely make a committer wait until one design is chosen.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        14,
+        17
+      ],
+      "author_must_show": "Why drop whole-row indexes on DROP COLUMN instead of rebuilding them as CF 7071 does, and can the two patches be reconciled into one design?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 14,
+          "from": "jian he",
+          "date": "2026-05-25T06:43:56Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxGv5zmiRyRB%2BbpEWjWKh0%2Bka_bVadnFKs8%2BspY7wSak4A%40mail.gmail.com"
+        },
+        {
+          "index": 17,
+          "from": "Matthias van de Meent",
+          "date": "2026-08-05T15:31:03Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2Wgg-GbHNJ7iijUoRX7yWPwTJSwZ%2Bq9kQK%2B9-yVw%3DjLucg%40mail.gmail.com"
+        }
+      ],
+      "id": "prior-attempts-2",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #17 names CF 7071 as a different fix for the same class of bug, and no reply is visible. Message #14 covers only CF 6755, so which design should win is still unanswered.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Per-catalog scans for whole-row references must be extended by hand",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "catalog"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later release adds a new kind of object that stores an expression over a table's row. Its author does not know that tablecmds.c keeps a hand-written list of catalogs to scan for whole-row Vars. DROP COLUMN then leaves the new object broken, and users find out only when inserts fail.",
+      "argument": "The patch scans pg_index, pg_constraint, pg_trigger and pg_policy one by one inside ALTER TABLE, and keeps pg_depend unchanged. Nothing fails loudly when an object class is missing from that list. Message #17 proposes recording whole-row Vars in pg_depend with their own objsubid, so the dependency code would cover every object class and the scan would cost O(whole-row dependencies), not O(all dependents). No reply to message #17 is visible.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        8,
+        15,
+        17
+      ],
+      "author_must_show": "Why is a scan list in tablecmds.c preferable to recording whole-row dependencies in pg_depend, and what makes a future object class fail loudly if it is left out?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 8,
+          "from": "jian he",
+          "date": "2025-12-23T01:49:26Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxEApboeVKP4jdYOkikOij22HrHWnuSb%3Du-cJ7AHMBcOxA%40mail.gmail.com"
+        },
+        {
+          "index": 15,
+          "from": "jian he",
+          "date": "2026-07-14T04:15:43Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxFeYySYRFOvUcvXeb6h0Q7FA6AAhn%2BxA%2BAaSbXU9c98Zw%40mail.gmail.com"
+        },
+        {
+          "index": 17,
+          "from": "Matthias van de Meent",
+          "date": "2026-08-05T15:31:03Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2Wgg-GbHNJ7iijUoRX7yWPwTJSwZ%2Bq9kQK%2B9-yVw%3DjLucg%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The patch does record pg_depend entries, but only at ALTER time after scanning four catalogs by hand. The proposal does not make a new expression-holding object class fail loudly, and message #17's alternative has no reply.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "SET DATA TYPE now fails for whole-row objects that would still work",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "design",
+      "touch_points": [
+        "sql_standard_syntax",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user widens `int` to `bigint` on a table that has an index on `(t is null)` or a policy using the row. Today the command succeeds and the index is rebuilt. With the patch, it errors and the HINT asks them to drop the object first, so a type change that used to be routine now needs manual drop and re-create.",
+      "argument": "The commit message justifies the error with record_eq, which only matters when a row is compared with another row value. The brief and message #15 describe the error as raised for any whole-row dependent object. That is broader than the failure it prevents. Message #17 argues for rebuilding instead, and no reply is visible.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4,
+        15,
+        17
+      ],
+      "author_must_show": "Can the error be limited to row comparisons that record_eq rejects, so that other whole-row objects are rebuilt as non-whole-row expression indexes are today?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "jian he",
+          "date": "2025-09-12T09:22:37Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxHmmsg7GTD_LpGGam09%2BAq4KkYHe2dfPgtGjrUELqbK%3Dw%40mail.gmail.com"
+        },
+        {
+          "index": 15,
+          "from": "jian he",
+          "date": "2026-07-14T04:15:43Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxFeYySYRFOvUcvXeb6h0Q7FA6AAhn%2BxA%2BAaSbXU9c98Zw%40mail.gmail.com"
+        },
+        {
+          "index": 17,
+          "from": "Matthias van de Meent",
+          "date": "2026-08-05T15:31:03Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2Wgg-GbHNJ7iijUoRX7yWPwTJSwZ%2Bq9kQK%2B9-yVw%3DjLucg%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The commit message justifies the error with record_eq but raises it for all whole-row dependent objects. An index on `(t is null)` does not go through record_eq, so the error is broader than its stated reason.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Backpatching silently drops user indexes and constraints in a minor release",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "catalog"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A deployment script runs `alter table ... drop column` after a minor update. A unique index on a whole-row expression is now dropped without notice, so later inserts are no longer checked for uniqueness. Where a policy or trigger WHEN clause uses the row, the same script now fails without CASCADE, and the release stops.",
+      "argument": "The CommitFest entry tags this Backport with target version stable. The patch changes DDL results in two ways: some objects are dropped implicitly, and some commands that succeeded before now fail. Matthias in message #17 argues that whole-row indexes should be rebuilt, not dropped, which would avoid losing them, and no reply is visible. A committer would likely ask for master-only behavior, or for a narrower back branch fix such as an error.",
+      "precedent_ids": [
+        "P1"
+      ],
+      "thread_message_refs": [
+        15,
+        17
+      ],
+      "author_must_show": "Why is dropping or blocking safe to backpatch, and why is a back branch fix that only raises an error, leaving existing objects untouched, not enough?",
+      "precedents": [
+        {
+          "id": "P1",
+          "title": "Revert applying column aliases to the output of whole-row Vars.",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ec62cb0aac5ba31a82339606009ddbd7eb00e2ac",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/2950001.1638729947@sss.pgh.pa.us"
+          ],
+          "date": "2022-03-17",
+          "status": "Reverted"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 15,
+          "from": "jian he",
+          "date": "2026-07-14T04:15:43Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxFeYySYRFOvUcvXeb6h0Q7FA6AAhn%2BxA%2BAaSbXU9c98Zw%40mail.gmail.com"
+        },
+        {
+          "index": 17,
+          "from": "Matthias van de Meent",
+          "date": "2026-08-05T15:31:03Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2Wgg-GbHNJ7iijUoRX7yWPwTJSwZ%2Bq9kQK%2B9-yVw%3DjLucg%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The CommitFest entry says Backport with target version stable, and no message discusses whether stable branches can take new implicit drops and new DROP COLUMN failures. [P1] is only an illustration; the objection stands without it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "Every DROP COLUMN pays catalog scans for a rare whole-row case",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator runs ALTER TABLE ... DROP COLUMN on a partitioned table with thousands of partitions, each with many indexes, constraints, triggers and policies. The patch reads and parses every index expression, CHECK expression, trigger WHEN clause and policy qual on each partition to find whole-row references that almost none of them contain. The DDL becomes slower for everyone, and only a few users gain from it.",
+      "argument": "The patch scans pg_index, pg_constraint, pg_trigger and pg_policy and then walks each expression. Matthias in message #17 calls this O(total_dependent_objects) instead of O(n_whole_row_dependencies), and no reply is visible. The thread shows no field report, no -bugs or -general case, and no production story. Every example in messages #1, #3 and #9 is constructed, so the affected group looks small while the cost falls on every DROP COLUMN and SET DATA TYPE. The bug is real, but the thread has not weighed how much it may cost for users who do not have it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3,
+        9,
+        17
+      ],
+      "author_must_show": "What does DROP COLUMN cost with and without the patch on a table with many partitions and indexes, and is there any user report of the bug from outside the thread?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "jian he",
+          "date": "2025-09-08T02:53:00Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxGA6KVQy7DbHGLVw9s9KKmpGyZt5ME6C7kEfjDpr2wZCw%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Chao Li",
+          "date": "2025-09-11T01:27:27Z",
+          "url": "https://www.postgresql.org/message-id/2B70C6CA-606B-438C-8EF2-84DCBA1C0813%40gmail.com"
+        },
+        {
+          "index": 9,
+          "from": "jian he",
+          "date": "2025-12-27T03:00:36Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxHvZbH6p%2Bh1HSQXn6D2aVNP%2Bxg5WQedYSaTuBkbd2jHdg%40mail.gmail.com"
+        },
+        {
+          "index": 17,
+          "from": "Matthias van de Meent",
+          "date": "2026-08-05T15:31:03Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2Wgg-GbHNJ7iijUoRX7yWPwTJSwZ%2Bq9kQK%2B9-yVw%3DjLucg%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The demand part does not hold, because the bug is reproducible and reviewers confirmed it. The cost part stands: message #17 raised the scan cost, no numbers are shown, and DROP COLUMN holds an ACCESS EXCLUSIVE lock while scanning.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Back-patched DROP COLUMN behavior change without data corruption to justify it",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user takes a minor update with this fix. A migration script that ran `alter table ... drop column` now fails because a policy or trigger WHEN clause uses a whole-row reference, or it silently drops a whole-row index the queries rely on. The user finds out when the deploy breaks or queries get slow.",
+      "argument": "The CommitFest entry tags this as Backport with target version stable. In [P1], a behavior change in a back-patched fix was accepted only because the bug could write unreadable tuples to disk. Here the bug makes later inserts fail, but no stored data is lost. The thread does not discuss whether a stable branch should take new drop and error behavior for this.",
+      "precedent_ids": [
+        "P1"
+      ],
+      "thread_message_refs": [
+        1,
+        15
+      ],
+      "author_must_show": "Why should stable branches get new index drops and new DROP COLUMN failures, when the bug causes insert errors and not corrupt data?",
+      "precedents": [
+        {
+          "id": "P1",
+          "title": "Revert applying column aliases to the output of whole-row Vars.",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ec62cb0aac5ba31a82339606009ddbd7eb00e2ac",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/2950001.1638729947@sss.pgh.pa.us"
+          ],
+          "date": "2022-03-17",
+          "status": "Reverted"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "jian he",
+          "date": "2025-09-08T02:53:00Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxGA6KVQy7DbHGLVw9s9KKmpGyZt5ME6C7kEfjDpr2wZCw%40mail.gmail.com"
+        },
+        {
+          "index": 15,
+          "from": "jian he",
+          "date": "2026-07-14T04:15:43Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxFeYySYRFOvUcvXeb6h0Q7FA6AAhn%2BxA%2BAaSbXU9c98Zw%40mail.gmail.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1, which states the same back-patch concern with a more concrete scenario and a narrower alternative for back branches.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Back-patching changes DROP COLUMN and SET DATA TYPE behavior in stable branches",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "sql_standard_syntax"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user on a minor release runs a migration script with `alter table ... drop column` or `alter column ... type`. After the minor update, the same script silently drops an index on `(t is null)`, or fails because a trigger WHEN clause or a policy uses the row. They find out when the script aborts in production, or later from a missing index.",
+      "argument": "The CF entry carries the Backport and Bugfix tags with target version stable. The patch makes DROP COLUMN fail without CASCADE where it worked before, and drops user indexes it did not drop before. [P1] back-patched a behavior change only because the alternative was corrupt on-disk data, and [P1] itself still described it as \"kind of awful\". The bug here is a broken but visible constraint, so the case for changing stable behavior is weaker.",
+      "precedent_ids": [
+        "P1"
+      ],
+      "thread_message_refs": [
+        9,
+        15
+      ],
+      "author_must_show": "Why must stable branches get the new behavior, given that master-only would leave existing minor-release scripts unchanged?",
+      "precedents": [
+        {
+          "id": "P1",
+          "title": "Revert applying column aliases to the output of whole-row Vars.",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ec62cb0aac5ba31a82339606009ddbd7eb00e2ac",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/2950001.1638729947@sss.pgh.pa.us"
+          ],
+          "date": "2022-03-17",
+          "status": "Reverted"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 9,
+          "from": "jian he",
+          "date": "2025-12-27T03:00:36Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxHvZbH6p%2Bh1HSQXn6D2aVNP%2Bxg5WQedYSaTuBkbd2jHdg%40mail.gmail.com"
+        },
+        {
+          "index": 15,
+          "from": "jian he",
+          "date": "2026-07-14T04:15:43Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxFeYySYRFOvUcvXeb6h0Q7FA6AAhn%2BxA%2BAaSbXU9c98Zw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1. The SET DATA TYPE part of the scenario is covered by standards-compat-3.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Clusters that already ran DROP COLUMN keep broken objects",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "catalog",
+        "pg_dump_round_trip"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user dropped a column on an older release, and that left a whole-row CHECK constraint or index behind. After a minor update or pg_upgrade, the broken constraint and the stale index entries are still there. Inserts still fail with the record_eq error, and the patch gives no way to find these objects.",
+      "argument": "The patch only stops new breakage at DDL time. It does not help with the catalog entries and index contents that the old behavior already left on disk, and pg_dump and pg_upgrade carry them over unchanged. Bug fixes of this kind usually ship with a release-note query or a REINDEX advisory, and the proposal mentions neither.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3,
+        15
+      ],
+      "author_must_show": "What query or release-note advice lets users find and repair whole-row constraints and indexes broken before this fix?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "jian he",
+          "date": "2025-09-08T02:53:00Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxGA6KVQy7DbHGLVw9s9KKmpGyZt5ME6C7kEfjDpr2wZCw%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Chao Li",
+          "date": "2025-09-11T01:27:27Z",
+          "url": "https://www.postgresql.org/message-id/2B70C6CA-606B-438C-8EF2-84DCBA1C0813%40gmail.com"
+        },
+        {
+          "index": 15,
+          "from": "jian he",
+          "date": "2026-07-14T04:15:43Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxFeYySYRFOvUcvXeb6h0Q7FA6AAhn%2BxA%2BAaSbXU9c98Zw%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The broken objects exist today without the patch, and the patch does not make that state worse. Release-note advice for existing clusters is outside levels 1-2 and does not count against the design.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Back-patching a change that drops user indexes and blocks DDL",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user applies a minor release and runs an existing migration that drops a column. Indexes with a whole-row expression are now dropped without CASCADE, so queries that used them get slower. Where a trigger WHEN clause or a policy uses a whole-row reference, the same migration now fails. The user finds out in production.",
+      "argument": "The CommitFest entry targets stable branches and is tagged as a backport. The proposal does not discuss whether stable branches can take a behavior change that removes user objects or makes DDL fail where it worked before. Message #17 argues that these indexes are still valid and should be rebuilt rather than dropped. If master later adopts that approach, back branches would keep a different behavior. [P1] shows a behavior change was back-patched once, but only to prevent on-disk corruption, and this proposal does not claim that.",
+      "precedent_ids": [
+        "P1"
+      ],
+      "thread_message_refs": [
+        1,
+        17
+      ],
+      "author_must_show": "Which parts are safe for stable branches, and would back-patching only the SET DATA TYPE error be enough for those branches?",
+      "precedents": [
+        {
+          "id": "P1",
+          "title": "Revert applying column aliases to the output of whole-row Vars.",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ec62cb0aac5ba31a82339606009ddbd7eb00e2ac",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/2950001.1638729947@sss.pgh.pa.us"
+          ],
+          "date": "2022-03-17",
+          "status": "Reverted"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "jian he",
+          "date": "2025-09-08T02:53:00Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxGA6KVQy7DbHGLVw9s9KKmpGyZt5ME6C7kEfjDpr2wZCw%40mail.gmail.com"
+        },
+        {
+          "index": 17,
+          "from": "Matthias van de Meent",
+          "date": "2026-08-05T15:31:03Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2Wgg-GbHNJ7iijUoRX7yWPwTJSwZ%2Bq9kQK%2B9-yVw%3DjLucg%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1. Its point about back branches diverging from master is a variant of the same back-patch concern.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Three patches change whole-row dependency handling without a shared plan",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "CF 6055, CF 6755 and CF 7071 are committed in different releases. Each one handles whole-row dependencies its own way: scans plus dropping, rebuilding for SET EXPRESSION, and pg_depend entries plus rebuilding. Later maintainers must keep three code paths consistent for a single concept.",
+      "argument": "Message #14 says v9 was reshaped to match CF 6755, and message #17 points to CF 7071, which takes a different approach to the same class of bugs. The proposal does not say which mechanism should be the long-term one, or whether this patch would be replaced or reverted if CF 7071 goes in.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        14,
+        17
+      ],
+      "author_must_show": "How does this patch relate to CF 7071 and CF 6755, and which of them should be the one long-term mechanism for whole-row dependencies?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 14,
+          "from": "jian he",
+          "date": "2026-05-25T06:43:56Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxGv5zmiRyRB%2BbpEWjWKh0%2Bka_bVadnFKs8%2BspY7wSak4A%40mail.gmail.com"
+        },
+        {
+          "index": 17,
+          "from": "Matthias van de Meent",
+          "date": "2026-08-05T15:31:03Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2Wgg-GbHNJ7iijUoRX7yWPwTJSwZ%2Bq9kQK%2B9-yVw%3DjLucg%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of prior-attempts-2. Message #14 already says how the patch relates to CF 6755, so only the CF 7071 question is open, and prior-attempts-2 covers it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Ad hoc catalog scans duplicate what pg_depend is meant to record",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "catalog",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds a new object kind that can hold an expression, such as a statistics expression or another policy-like object. Its whole-row references are recorded nowhere, and the scan in tablecmds.c does not know about the new kind. DROP COLUMN leaves it broken, and the record_eq error at insert time is how users find out.",
+      "argument": "Postgres tracks expression dependencies through pg_depend, and the patch keeps the gap noted in find_expr_references_walker (message #2). It finds whole-row users at ALTER time by scanning pg_index, pg_constraint, pg_trigger and pg_policy, each with its own detection rule (message #4, message #8). Message #17 proposes recording whole-row Vars in pg_depend instead and points to a competing patch for the same class of bugs, and no reply is visible. With two fixes for one gap, a committer would likely ask which one extends the existing mechanism.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        4,
+        8,
+        14,
+        17
+      ],
+      "author_must_show": "Why is scanning each catalog at ALTER time better than recording whole-row dependencies in pg_depend at creation, as message #17 and its competing patch propose?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "jian he",
+          "date": "2025-09-09T03:12:36Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxFMqpraCreGKTWWB7cyPAYP%2ByehwTMFm-CSx%2BrzWdHf%2BA%40mail.gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "jian he",
+          "date": "2025-09-12T09:22:37Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxHmmsg7GTD_LpGGam09%2BAq4KkYHe2dfPgtGjrUELqbK%3Dw%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "jian he",
+          "date": "2025-12-23T01:49:26Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxEApboeVKP4jdYOkikOij22HrHWnuSb%3Du-cJ7AHMBcOxA%40mail.gmail.com"
+        },
+        {
+          "index": 14,
+          "from": "jian he",
+          "date": "2026-05-25T06:43:56Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxGv5zmiRyRB%2BbpEWjWKh0%2Bka_bVadnFKs8%2BspY7wSak4A%40mail.gmail.com"
+        },
+        {
+          "index": 17,
+          "from": "Matthias van de Meent",
+          "date": "2026-08-05T15:31:03Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2Wgg-GbHNJ7iijUoRX7yWPwTJSwZ%2Bq9kQK%2B9-yVw%3DjLucg%40mail.gmail.com"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1, which makes the same point about per-catalog scans versus pg_depend and adds the missing loud failure for new object classes.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "The patch scans pg_index, pg_constraint, pg_trigger and pg_policy and writes pg_depend entries during DROP COLUMN."
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The patch changes src/include/optimizer/optimizer.h and var.c, so it adds or changes an exported helper."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": true,
+      "reason": "see objection standards-compat-2: DROP COLUMN drops whole-row indexes that are still valid"
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": true,
+      "reason": "see objection standards-compat-2: DROP COLUMN drops whole-row indexes that are still valid"
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "DROP COLUMN ... CASCADE now drops row-level security policies that use a whole-row reference."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The CommitFest entry is tagged Backport with target version stable, and the patch changes what DROP COLUMN and SET DATA TYPE do."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "tablecmds.c gets a hand-written list of four catalogs to scan, which each new expression-holding object class must extend."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Every DROP COLUMN and SET DATA TYPE scans and parses dependent expressions while holding an ACCESS EXCLUSIVE lock."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Which whole-row index and constraint definitions become invalid after DROP COLUMN, and why drop the ones that stay valid, such as `t is not null`, instead of rebuilding them?",
+    "How does this patch relate to CF 7071, and which of the two should be the long-term mechanism for whole-row dependencies?",
+    "Which parts of the patch are meant for stable branches, and why is a back-branch fix that only raises an error not enough?",
+    "Can the SET DATA TYPE error be limited to row comparisons that record_eq rejects, with other whole-row objects rebuilt as expression indexes are today?",
+    "What does DROP COLUMN cost with and without the patch on a partitioned table with many partitions, indexes, constraints and policies?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "It needs a committer who knows the dependency code (pg_depend, find_expr_references_walker) and ALTER TABLE in tablecmds.c. None is identifiable in the visible thread.",
+    "liability": "The owner signs for new implicit drops and new errors in DROP COLUMN and SET DATA TYPE, in every stable branch if back-patched. The owner also signs for a catalog scan list that later object classes must extend.",
+    "author_follow_up": "The author posted 14 versions and kept the CommitFest entry moving for over a year. No reply to message #17 is visible."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "fix design first",
+    "reason": "Whole-row references in constraints, indexes, triggers and policies are uncommon, but the bug leaves a table unusable for inserts. The single 33.6 KB patch is centered on tablecmds.c, and review is of limited use until the drop-or-rebuild question and the CF 7071 overlap are settled."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, this review could not check how the patch detects whole-row references in each catalog, how it handles partitions and policies that reference other tables, or whether the pg_depend entries written during DROP COLUMN are safe if the command fails.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "revert:ec62cb0aac5ba31a82339606009ddbd7eb00e2ac",
+      "kind": "revert",
+      "title": "Revert applying column aliases to the output of whole-row Vars.",
+      "status": "Reverted",
+      "date": "2022-03-17",
+      "first_date": "2014-11-10",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ec62cb0aac5ba31a82339606009ddbd7eb00e2ac",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2950001.1638729947@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert applying column aliases to the output of whole-row Vars.\nReverted commit(s): Ensure that RowExprs and whole-row Vars produce the expected column names.",
+      "objection": "In commit bf7ca1587, I had the bright idea that we could make the\nresult of a whole-row Var (that is, foo.*) track any column aliases\nthat had been applied to the FROM entry the Var refers to.  However,\nthat's not terribly logically consistent, because now the output of\nthe Var is no longer of the named composite type that the Var claims\nto emit.  bf7ca1587 tried to handle that by changing the output\ntuple values to be labeled with a blessed RECORD type, but that's\nreally pretty disastrous: we can wind up storing such tuples onto\ndisk, whereupon they're not readable by other sessions.\n\nThe only practical fix I can see is to give up on what bf7ca1587\ntried to do, and say that the column names of tuples produced by\na whole-row Var are always those of the underlying named composite\ntype, query aliases or no.  While this introduces some inconsistencies,\nit removes others, so it's not that awful in the abstract.  What *is*\nkind of awful is to make such a behavioral change in a back-patched\nbug fix.  But corrupt data is worse, so back-patched it will be.\n\n(A workaround available to anyone who's unhappy about this is to\nintroduce an extra level of sub-SELECT, so that the whole-row Var is\nreferring to the sub-SELECT's output and not to a named table type.\nThen the Var is of type RECORD to begin with and there's no issue.)\n\nPer report from Miles Delahunty.  The faulty commit dates to 9.5,\nso back-patch to all supported branches.",
+      "touch_points": [],
+      "matched_queries": [
+        "whole-row reference drop column",
+        "whole-row Var dependency pg_depend",
+        "drop column check constraint row type",
+        "alter column type whole-row index",
+        "whole-row reference policy trigger",
+        "record_eq dissimilar column types",
+        "dependency tracking whole-row expression"
+      ],
+      "from_hint": false,
+      "score": 0.956,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:646",
+      "kind": "cf",
+      "title": "Prevent ALTER TABLE DROP NOT NULL on child tables if parent column has it",
+      "status": "Rejected",
+      "date": "2016-06-16",
+      "first_date": "2016-06-15",
+      "url": "https://commitfest.postgresql.org/patch/646/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB7nPqTPXgX9HiyhhtAgpW7jbA1iskMCSoqXPEEB_KYXYy1E1Q@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Tom Lane",
+      "summary": "Prevent ALTER TABLE ... DROP NOT NULL on a child table when the same column in a parent table is marked NOT NULL, so that the constraint can only be dropped from the parent. The patch added a function in pg_inherits.c to list a relation's parents and a new index on pg_inherits.",
+      "objection": "Tom Lane said the approach was wrong because it does not help decide whether to propagate DROP NOT NULL from a parent to its children, and pointed to the earlier plan of storing NOT NULL constraints in pg_constraint with inheritance counts as CHECK constraints do. After Vitaly Burovoy reported that he was writing such a patch, which already forbids dropping inherited NOT NULLs, the author withdrew his proposal in favour of that work.",
+      "touch_points": [],
+      "matched_queries": [
+        "whole-row reference drop column",
+        "drop column check constraint row type",
+        "alter column type whole-row index",
+        "drop column leaves invalid constraint"
+      ],
+      "from_hint": false,
+      "score": 0.37,
+      "enriched": true,
+      "key_quote": "This doesn't sound like the right approach; in particular, it won't really\nhelp for deciding whether to propagate a DROP NOT NULL on a parent rel to\nits children.",
+      "quote_message_url": "https://www.postgresql.org/message-id/16589.1465997664%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "revert:c5e9b771275b93b09eec6b760677fe6c5e726ab2",
+      "kind": "revert",
+      "title": "Revert \"Temporarily make pg_ctl and server shutdown a whole lot chattier.\"",
+      "status": "Reverted",
+      "date": "2016-02-10",
+      "first_date": "2016-02-08",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=c5e9b771275b93b09eec6b760677fe6c5e726ab2",
+      "thread_urls": [],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Temporarily make pg_ctl and server shutdown a whole lot chattier.\"\nReverted commit(s): Temporarily make pg_ctl and server shutdown a whole lot chattier.",
+      "objection": "This reverts commit 3971f64843b02e4a55d854156bd53e46a0588e45 and a\ncouple of followon debugging commits; I think we've learned what we can\nfrom them.",
+      "touch_points": [],
+      "matched_queries": [
+        "whole-row reference drop column",
+        "whole-row Var dependency pg_depend",
+        "whole-row reference policy trigger",
+        "dependency tracking whole-row expression"
+      ],
+      "from_hint": false,
+      "score": 0.339,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:412",
+      "kind": "cf",
+      "title": "plpgsql - possibility to get element or array type for referenced variable type",
+      "status": "Rejected",
+      "date": "2016-03-16",
+      "first_date": "2015-10-19",
+      "url": "https://commitfest.postgresql.org/patch/412/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFj8pRCQREdqf_Oov0-8xENUf-VxyQRptgAAat0rPNU7B+BHRA@mail.gmail.com"
+      ],
+      "authors": "Pavel Stehule (okbobcz)",
+      "objectors": "Tom Lane, Joe Conway",
+      "summary": "The patch lets PL/pgSQL `%TYPE` refer to variables of composite type, including polymorphic parameters. It also adds syntax to derive the array type or the element type of a referenced variable, first as `%ARRAYTYPE`/`%ELEMENTTYPE` and later as `%TYPE[]` and `ELEMENT OF ...%TYPE`.",
+      "objection": "Tom Lane proposed rejecting this PL/pgSQL-only implementation. He wanted these type operators added to the core grammar's Typename production, so PL/pgSQL would pick them up automatically. Joe Conway and Jim Nasby agreed. The author then found that a reduced patch with only the composite `%TYPE` fix gave too little benefit, and asked for it to be rejected.",
+      "touch_points": [],
+      "matched_queries": [
+        "whole-row reference drop column",
+        "whole-row Var dependency pg_depend",
+        "whole-row reference policy trigger"
+      ],
+      "from_hint": false,
+      "score": 0.274,
+      "enriched": true,
+      "key_quote": "I played with the reduced patch, and the benefit without all other things\nis negligible. It should be rejected.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAFj8pRB%2BECM4hOhLD1ze-13uW%3DD9fhVi2ao5KLPvT_tYRU_ttg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:6f8bb7c1e9610dd7af20cdaf74c4ff6e6d678d44",
+      "kind": "revert",
+      "title": "Revert structural changes to not-null constraints",
+      "status": "Reverted",
+      "date": "2024-05-13",
+      "first_date": "2023-08-25",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6f8bb7c1e9610dd7af20cdaf74c4ff6e6d678d44",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/202405110940.joxlqcx4dogd@alvherre.pgsql",
+        "https://www.postgresql.org/message-id/flat/CAKOSWNkN6HSyatuys8xZxzRCR-KL1OkHS5-b9qd9bf1Rad3PLA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20230828.161658.1184657435220765047.horikyota.ntt@gmail.com",
+        "https://www.postgresql.org/message-id/flat/d57b4a69-7394-3146-5976-9a1ef27e7972@gmail.com",
+        "https://www.postgresql.org/message-id/flat/202309051744.y4mndw5gwzhh@alvherre.pgsql",
+        "https://www.postgresql.org/message-id/flat/b2ac2392-9727-5f76-e890-721ac80c1615@gmail.com"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert structural changes to not-null constraints\nReverted commit(s): Catalog not-null constraints; Disallow changing NO INHERIT status of a not-null constraint; Fix not-null constraint test; Move privilege check to the right place; Check stack depth in new recursive functions",
+      "objection": "There are some problems with the new way to handle these constraints\nthat were detected at the last minute, and require fixes that appear too\ninvasive to be doing this late in the cycle.  Revert this (again) for\nnow, we'll try again with these problems fixed.\n\nThe following commits are reverted:\n\n    b0e96f311985  Catalog not-null constraints\n    9b581c534186  Disallow changing NO INHERIT status of a not-null constraint\n    d0ec2ddbe088  Fix not-null constraint test\n    ac22a9545ca9  Move privilege check to the right place\n    b0f7dd915bca  Check stack depth in new recursive functions\n    3af721794272  Update information_schema definition for not-null constraints\n    c3709100be73  Fix propagating attnotnull in multiple inheritance\n    d9f686a72ee9  Fix restore of not-null constraints with inheritance\n    d72d32f52d26  Don't try to assign smart names to constraints\n    0cd711271d42  Better handle indirect constraint drops\n    13daa33fa5a6  Disallow NO INHERIT not-null constraints on partitioned tables\n    d45597f72fe5  Disallow direct change of NO INHERIT of not-null constraints\n    21ac38f498b3  Fix inconsistencies in error messages",
+      "touch_points": [
+        "catalog changes",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "drop column check constraint row type",
+        "drop column leaves invalid constraint"
+      ],
+      "from_hint": false,
+      "score": 0.254,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "revert:6ae701b4378db2284c77314560e95a93d0ba9484",
+      "kind": "revert",
+      "title": "Track invalidation_reason in pg_replication_slots.",
+      "status": "Partially reverted",
+      "date": "2024-03-22",
+      "first_date": "2024-01-04",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6ae701b4378db2284c77314560e95a93d0ba9484",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ZfR7HuzFEswakt%2Fa@ip-10-97-1-34.eu-west-3.compute.internal",
+        "https://www.postgresql.org/message-id/flat/CALj2ACW4aUe-_uFQOjdWCEN-xXoLGhmvRFnL8SNw_TZ5nJe+aw@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/ZYOE8IguqTbp-seF@paquier.xyz"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Track invalidation_reason in pg_replication_slots.\nReverted commit(s): Track conflict_reason in pg_replication_slots.",
+      "objection": "Till now, the reason for replication slot invalidation is not tracked\ndirectly in pg_replication_slots. A recent commit 007693f2a3 added\n'conflict_reason' to show the reasons for slot conflict/invalidation, but\nonly for logical slots.\n\nThis commit adds a new column 'invalidation_reason' to show invalidation\nreasons for both physical and logical slots. And, this commit also turns\n'conflict_reason' text column to 'conflicting' boolean column (effectively\nreverting commit 007693f2a3). The 'conflicting' column is true for\ninvalidation reasons 'rows_removed' and 'wal_level_insufficient' because\nthose make the slot conflict with recovery. When 'conflicting' is true,\none can now look at the new 'invalidation_reason' column for the reason\nfor the logical slot's conflict with recovery.\n\nThe new 'invalidation_reason' column will also be useful to track other\ninvalidation reasons in the future commit.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "dependency tracking whole-row expression",
+        "drop column leaves invalid constraint"
+      ],
+      "from_hint": false,
+      "score": 0.233,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:3767",
+      "kind": "cf",
+      "title": "Bug: Reading from single byte character column type may cause out of bounds memory reads",
+      "status": "Returned with feedback",
+      "date": "2022-09-08",
+      "first_date": "2022-07-13",
+      "url": "https://commitfest.postgresql.org/patch/3767/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFM5RapGbBQm+dH=7K80HcvBvEWiV5Tm7N=NRaYURfm98YWc8A@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "Tom Lane",
+      "summary": "The patch changes text_substring() so that it never copies more bytes than the input string holds, even when the last character is wrongly encoded. This stops the out-of-bounds read seen when left() runs on a \"char\" value that holds the first byte of a multibyte character.",
+      "objection": "Commit ec62ce55a, from a separate thread, fixed the conversion from \"char\" to text in HEAD and v15, so that case can no longer be reached. Tom Lane said the patch is therefore unnecessary, and that a fix in text_substring() alone is not enough because many other text functions assume valid encoding. Noah Misch argued that text functions should be safe on invalid text carried forward by pg_upgrade, but Tom Lane said the effort and performance cost were not justified.",
+      "touch_points": [],
+      "matched_queries": [
+        "drop column check constraint row type",
+        "record_eq dissimilar column types"
+      ],
+      "from_hint": false,
+      "score": 0.204,
+      "enriched": true,
+      "key_quote": "I think we should reject Aleksander's patch, on the grounds that\nit's now unnecessary --- or if you want to argue that it's still\nnecessary, then it's woefully inadequate, because there are surely\na bunch of other text-processing functions that will also misbehave\non wrongly-encoded data.",
+      "quote_message_url": "https://www.postgresql.org/message-id/591018.1662060952%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:3106",
+      "kind": "cf",
+      "title": "Avoid orphaned dependencies",
+      "status": "Returned with feedback",
+      "date": "2022-08-02",
+      "first_date": "2021-05-04",
+      "url": "https://commitfest.postgresql.org/patch/3106/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/8369ff70-0e31-f194-2954-787f4d9e21dd@amazon.com"
+      ],
+      "authors": "Bertrand Drouvot (bdrouvot)",
+      "objectors": "Tom Lane, Ronan Dunklau",
+      "summary": "The patch prevents orphaned pg_depend and pg_shdepend entries by using a new dirty catalog snapshot whenever a dependency is recorded. It checks for in-flight transactions that affect the referenced object and raises an error if it finds one, without using locks.",
+      "objection": "Tom Lane objected that the global variable that switches catalog lookups to a dirty snapshot is unsafe, since a syscache entry could be built from a row that may never commit. He also showed that the patch does not close the race: if DROP scans for dependents before CREATE adds and commits its entry, the orphan still appears. He suggested that creation DDL instead lock each referenced object in recordDependency. The entry then waited on the author until it was returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "whole-row Var dependency pg_depend",
+        "dependency tracking whole-row expression"
+      ],
+      "from_hint": false,
+      "score": 0.2,
+      "enriched": true,
+      "key_quote": "The bigger problem is that it fails to close the race condition that\nit's intending to solve.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2765982.1648054146%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:5035",
+      "kind": "cf",
+      "title": "Remove dependence on integer wrapping",
+      "status": "Withdrawn",
+      "date": "2024-06-17",
+      "first_date": "2024-06-09",
+      "url": "https://commitfest.postgresql.org/patch/5035/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAvxfHdBPOyEGS7s+xf4iaW0-cgiq25jpYdWBqQqvLtLe_t6tw@mail.gmail.com"
+      ],
+      "authors": "Joseph Koshakow (jkoshakow)",
+      "objectors": "",
+      "summary": "The patch fixes the signed integer overflows that make the existing regression tests trap when built with -ftrapv, so that the tests pass with that flag. It does this by adding overflow-aware negation helpers to int.h and using overflow-checked arithmetic in places such as numutils.c and timestamp parsing; a later version also added overflow checks to money arithmetic.",
+      "objection": "The visible messages do not show why. The patch was still being revised up to the last message shown, and Nathan Bossart had said he intended to commit it. Tom Lane said it was v18 material rather than something to back-patch, and he and Alexander Lakhin noted that the regression tests likely exposed only part of the overflow cases. None of the visible messages states that the entry was being withdrawn or gives a reason for it.",
+      "touch_points": [],
+      "matched_queries": [
+        "whole-row Var dependency pg_depend",
+        "dependency tracking whole-row expression"
+      ],
+      "from_hint": false,
+      "score": 0.195,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "revert:20d3fe9009ddbbbb3da3a2da298f922054b43f8c",
+      "kind": "revert",
+      "title": "In INSERT/UPDATE, use the table's real tuple descriptor as target.",
+      "status": "Partially reverted",
+      "date": "2020-10-26",
+      "first_date": "2020-10-25",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=20d3fe9009ddbbbb3da3a2da298f922054b43f8c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/16644-5da7ef98a7ac4545@postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "In INSERT/UPDATE, use the table's real tuple descriptor as target.\nReverted commit(s): Fix corner case for a BEFORE ROW UPDATE trigger returning OLD.",
+      "objection": "Previously, ExecInitModifyTable relied on ExecInitJunkFilter,\nand thence ExecCleanTypeFromTL, to build the target descriptor from\nthe query tlist.  While we just checked (in ExecCheckPlanOutput)\nthat the tlist produces compatible output, this is not a great\nsubstitute for the relation's actual tuple descriptor that's\navailable from the relcache.  For one thing, dropped columns will\nnot be correctly marked attisdropped; it's a bit surprising that\nwe've gotten away with that this long.  But the real reason for\nbeing concerned with this is that using the table's descriptor means\nthat the slot will have correct attrmissing data, allowing us to\nrevert the klugy fix of commit ba9f18abd.  (This commit undoes\nthat one's changes in trigger.c, but keeps the new test case.)\nThus we can solve the bogus-trigger-tuple problem with fewer cycles\nrather than more.\n\nNo back-patch, since this doesn't fix any additional bug, and it\nseems somewhat more likely to have unforeseen side effects than\nba9f18abd's narrow fix.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "whole-row reference drop column",
+        "drop column check constraint row type"
+      ],
+      "from_hint": false,
+      "score": 0.185,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "revert:09d09d4297b9acbc2848ec35e8bf030d6c1fae18",
+      "kind": "revert",
+      "title": "Fix pg_get_constraintdef for NOT NULL constraints on domains",
+      "status": "Partially reverted",
+      "date": "2024-11-27",
+      "first_date": "2024-05-13",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=09d09d4297b9acbc2848ec35e8bf030d6c1fae18",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/AS8PR01MB75110350415AAB8BBABBA1ECFE222@AS8PR01MB7511.eurprd01.prod.exchangelabs.com",
+        "https://www.postgresql.org/message-id/flat/202405110940.joxlqcx4dogd@alvherre.pgsql"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Fix pg_get_constraintdef for NOT NULL constraints on domains\nReverted commit(s): Revert structural changes to not-null constraints",
+      "objection": "We added pg_constraint rows for all not-null constraints, first for\ntables and later for domains; but while the ones for tables were\nreverted, the ones for domains were not.  However, we did accidentally\nrevert ruleutils.c support for the ones on domains in 6f8bb7c1e961,\nwhich breaks running pg_get_constraintdef() on them.  Put that back.\n\nThis is only needed in branch 17, because we've reinstated this code in\nbranch master with commit 14e87ffa5c54.  Add some new tests in both\nbranches.\n\nI couldn't find anything else that needs de-reverting.",
+      "touch_points": [],
+      "matched_queries": [
+        "drop column check constraint row type",
+        "drop column leaves invalid constraint"
+      ],
+      "from_hint": false,
+      "score": 0.173,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:2635",
+      "kind": "cf",
+      "title": "Change a constraint's index - ALTER TABLE ... ALTER CONSTRAINT ... USING INDEX ...",
+      "status": "Returned with feedback",
+      "date": "2020-09-30",
+      "first_date": "2020-07-05",
+      "url": "https://commitfest.postgresql.org/patch/2635/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/e759fb7631645fe75b5ad6c3e8e690e4@postgrespro.ru"
+      ],
+      "authors": "Marina Polyakova (whipping.top1991), Anna Akenteva (a.akenteva)",
+      "objectors": "Tom Lane, Alvaro Herrera, Laurenz Albe",
+      "summary": "The patch adds ALTER TABLE ... ALTER CONSTRAINT ... USING INDEX to replace the index behind an EXCLUDE, UNIQUE, PRIMARY KEY or FOREIGN KEY constraint with a similar index. The main use case is swapping a primary key index for one with INCLUDE columns, or back.",
+      "objection": "Tom Lane wanted the feature rejected because a primary key with a swapped index is no longer an accurate primary key, and information_schema cannot describe it. Alvaro Herrera and Laurenz Albe agreed that primary keys with INCLUDE columns would first need PRIMARY KEY syntax, so that pg_dump works. That leaves this command a narrow use case. The author did not answer the review, and Michael Paquier marked the entry returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "alter column type whole-row index",
+        "drop column leaves invalid constraint"
+      ],
+      "from_hint": false,
+      "score": 0.172,
+      "enriched": true,
+      "key_quote": "TBH I think if we really wanted the feature of primary keys with\nincluded columns, we'd have to add it to the PRIMARY KEY syntax rather\nthan having an ad-hoc ALTER TABLE ALTER CONSTRAINT USING INDEX command\nto replace the index underneath.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20200907144229.GA29048%40alvherre.pgsql",
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:c2dc19342e05e081dc13b296787baa38352681ef",
+      "kind": "revert",
+      "title": "Revert recovery prefetching feature.",
+      "status": "Reverted",
+      "date": "2021-05-10",
+      "first_date": "2021-04-08",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=c2dc19342e05e081dc13b296787baa38352681ef",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOuzzgrn7iKnFRsB4MHp3UisEQAGgZMbk_ViTN4HV4-Ksq8zCg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20210409033703.GP6592@telsasoft.com",
+        "https://www.postgresql.org/message-id/flat/CA+hUKGJ4VJN8ttxScUFM8dOKX0BrBiboo5uz1cq=AovOddfHpA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20190418.210257.43726183.horiguchi.kyotaro@lab.ntt.co.jp",
+        "https://www.postgresql.org/message-id/flat/16997-ff16127f6e0d1390@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/20210413123139.GE6091@telsasoft.com"
+      ],
+      "authors": "Thomas Munro, Tom Lane",
+      "objectors": "",
+      "summary": "Revert recovery prefetching feature.\nReverted commit(s): Doc: Review for \"Optionally prefetch referenced data in recovery.\"; Optionally prefetch referenced data in recovery.; Add circular WAL decoding buffer.; Remove read_page callback from XLogReader.; Sync guc.c and postgresql.conf.sample with the SGML docs.",
+      "objection": "This set of commits has some bugs with known fixes, but at this late\nstage in the release cycle it seems best to revert and resubmit next\ntime, along with some new automated test coverage for this whole area.\n\nCommits reverted:\n\ndc88460c: Doc: Review for \"Optionally prefetch referenced data in recovery.\"\n1d257577: Optionally prefetch referenced data in recovery.\nf003d9f8: Add circular WAL decoding buffer.\n323cbe7c: Remove read_page callback from XLogReader.\n\nRemove the new GUC group WAL_RECOVERY recently added by a55a9847, as the\ncorresponding section of config.sgml is now reverted.",
+      "touch_points": [
+        "new GUC",
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "whole-row reference drop column",
+        "whole-row reference policy trigger"
+      ],
+      "from_hint": false,
+      "score": 0.169,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "revert:6c8be5962aea2eee8c366c01bbbcf5bf5ddf5294",
+      "kind": "revert",
+      "title": "Revert \"Fix isolation test to be less timing-dependent\"",
+      "status": "Reverted",
+      "date": "2018-01-03",
+      "first_date": "2018-01-03",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6c8be5962aea2eee8c366c01bbbcf5bf5ddf5294",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20180103193728.ysqpcp2xjnqpiep7@alvherre.pgsql",
+        "https://www.postgresql.org/message-id/flat/20180103034445.t3utrtrnrevfsghm@alap3.anarazel.de"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert \"Fix isolation test to be less timing-dependent\"\nReverted commit(s): Fix isolation test to be less timing-dependent",
+      "objection": "This reverts commit 2268e6afd596.  It turned out that inconsistency in\nthe report is still possible, so go back to the simpler formulation of\nthe test and instead add an alternate expected output.",
+      "touch_points": [],
+      "matched_queries": [
+        "whole-row Var dependency pg_depend",
+        "dependency tracking whole-row expression"
+      ],
+      "from_hint": false,
+      "score": 0.146,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "revert:08fbad0afd62690cc82990c0504529ef238ac24d",
+      "kind": "revert",
+      "title": "Revert \"Have dtrace depend on object files directly, not objfiles.txt\"",
+      "status": "Reverted",
+      "date": "2015-10-15",
+      "first_date": "2015-10-13",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=08fbad0afd62690cc82990c0504529ef238ac24d",
+      "thread_urls": [],
+      "authors": "Robert Haas",
+      "objectors": "",
+      "summary": "Revert \"Have dtrace depend on object files directly, not objfiles.txt\"\nReverted commit(s): Have dtrace depend on object files directly, not objfiles.txt",
+      "objection": "This reverts commit 73537828537239923a0f827a92b20502a3efa52d.  Per\nreport from Tom Lane, this breaks parallel builds.",
+      "touch_points": [],
+      "matched_queries": [
+        "whole-row Var dependency pg_depend",
+        "dependency tracking whole-row expression"
+      ],
+      "from_hint": false,
+      "score": 0.146,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:4393",
+      "kind": "cf",
+      "title": "Optimize walsender handling invalid messages of 'drop publication'",
+      "status": "Withdrawn",
+      "date": "2023-10-20",
+      "first_date": "2023-02-27",
+      "url": "https://commitfest.postgresql.org/patch/4393/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAM_vCudj3_HdJ2G5erwq_Jj+-bwfr67yxmS8oh=-cjPXY4pihg@mail.gmail.com"
+      ],
+      "authors": "Bowen Shi (zxwsbg)",
+      "objectors": "Andres Freund",
+      "summary": "The patch changes how walsender handles invalidation messages from 'drop publication' on releases before PG 14, which lack the XLOG_XACT_INVALIDATIONS record type. pgoutput stops doing needless cache invalidation, and a relid-to-relfilenode hash map replaces a hash sequential search; the patch targets REL_13_STABLE and back branches only.",
+      "objection": "No one reviewed the patch for four months. Andres Freund then objected that users hitting the issue should upgrade, and that performance improvements are rarely backpatched, and not when they would go only into back branches without first maturing in the development branch. The author later withdrew the entry.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "drop column leaves invalid constraint"
+      ],
+      "from_hint": false,
+      "score": 0.144,
+      "enriched": true,
+      "key_quote": "It's one thing to decide to backpatch an\noptimization if it had time to \"mature\" in the development branch, but from\nwhat I undestand you're proposing to apply this just to the back branches.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20230626211301.mj2p2zl3jpxmpfrw%40awork3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:5484",
+      "kind": "cf",
+      "title": "Re: BUG #18741: Detaching a partition referencing a partitioned table fails with a trigger-related error",
+      "status": "Withdrawn",
+      "date": "2025-02-18",
+      "first_date": "2024-12-08",
+      "url": "https://commitfest.postgresql.org/patch/5484/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/18741-e4ef6f7aa8a956cb@postgresql.org"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "Alexander Lakhin reported that detaching a partition fails with an internal trigger error when the partition has a foreign key to a partitioned table and its new parent has no matching foreign key. Tender Wang and jian he discussed fixing this, mainly by rejecting such ATTACH PARTITION commands except where the partition references a non-partitioned table or its own parent's hierarchy.",
+      "objection": "The visible messages do not show why. They contain the bug report and two design suggestions with no patch, review or decision, and they do not say why the entry was withdrawn.",
+      "touch_points": [],
+      "matched_queries": [
+        "whole-row reference policy trigger"
+      ],
+      "from_hint": false,
+      "score": 0.135,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:3678",
+      "kind": "cf",
+      "title": "Allow foreign keys to reference a superset of unique columns",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-06-07",
+      "url": "https://commitfest.postgresql.org/patch/3678/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+CLzG8HZUk8Gb9BKN88fgdSEqHx=2iq5aDdvbz7JqSFjA2WxA@mail.gmail.com"
+      ],
+      "authors": "Kaiting Chen (ktchen14)",
+      "objectors": "",
+      "summary": "Allow foreign keys to reference a superset of unique columns\nThreads: Allow foreign keys to reference a superset of unique columns",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "whole-row reference drop column"
+      ],
+      "from_hint": false,
+      "score": 0.128,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:3382",
+      "kind": "cf",
+      "title": "Add support for ALTER INDEX .. ALTER [COLUMN] col_num {SET,RESET}",
+      "status": "Withdrawn",
+      "date": "2021-11-01",
+      "first_date": "2021-10-29",
+      "url": "https://commitfest.postgresql.org/patch/3382/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/YXuCDicA8rq4iryZ@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Add support for ALTER INDEX .. ALTER [COLUMN] col_num {SET,RESET}\nThreads: Add support for ALTER INDEX .. ALTER [COLUMN] col_num {SET,RESET}",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "alter column type whole-row index"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "revert:ec48314708262d8ea6cdcb83f803fc83dd89e721",
+      "kind": "revert",
+      "title": "Revert per-index collation version tracking feature.",
+      "status": "Reverted",
+      "date": "2021-05-07",
+      "first_date": "2020-11-15",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ec48314708262d8ea6cdcb83f803fc83dd89e721",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGLhj5t1fcjqAu8iD9B3ixJtsTNqyCCD4V0aTO9kAKAjjA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CA+hUKGJ_hk3rU==g2FpAMChb_4i+TJacpjjqFsinY-tRM3FBmA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/3044030.1618261159@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/HK0PR01MB22744393C474D503E16C8509F4709@HK0PR01MB2274.apcprd01.prod.exchangelabs.com",
+        "https://www.postgresql.org/message-id/flat/3564817.1618420687@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20210117215940.GE8560@telsasoft.com"
+      ],
+      "authors": "Thomas Munro, Tom Lane",
+      "objectors": "",
+      "summary": "Revert per-index collation version tracking feature.\nReverted commit(s): Doc: Document known problem with Windows collation versions.; Remove no-longer-relevant test case.; Fix bogus collation-version-recording logic.; Hide internal error for pg_collation_actual_version(<bad OID>).; Suppress \"warning: variable 'collcollate' set but not used\".",
+      "objection": "Design problems were discovered in the handling of composite types and\nrecord types that would cause some relevant versions not to be recorded.\nMisgivings were also expressed about the use of the pg_depend catalog\nfor this purpose.  We're out of time for this release so we'll revert\nand try again.\n\nCommits reverted:\n\n1bf946bd: Doc: Document known problem with Windows collation versions.\ncf002008: Remove no-longer-relevant test case.\nef387bed: Fix bogus collation-version-recording logic.\n0fb0a050: Hide internal error for pg_collation_actual_version(<bad OID>).\nff942057: Suppress \"warning: variable 'collcollate' set but not used\".\nd50e3b1f: Fix assertion in collation version lookup.\nf24b1569: Rethink extraction of collation dependencies.\n257836a7: Track collation versions for indexes.\ncd6f479e: Add pg_depend.refobjversion.\n7d1297df: Remove pg_collation.collversion.",
+      "touch_points": [
+        "catalog changes"
+      ],
+      "matched_queries": [
+        "dependency tracking whole-row expression"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:4463",
+      "kind": "cf",
+      "title": "CHECK constraint deferrable Support",
+      "status": "Withdrawn",
+      "date": "2024-01-15",
+      "first_date": "2023-07-05",
+      "url": "https://commitfest.postgresql.org/patch/4463/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAPF61jBFT6iGv-Af=NrZx3vhqLYqx8WDvfjqVuRVYv2DFbbY4A@mail.gmail.com"
+      ],
+      "authors": "Himanshu Upadhyaya (himanshuu)",
+      "objectors": "",
+      "summary": "CHECK constraint deferrable Support\nThreads: CHECK Constraint Deferrable",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "drop column check constraint row type"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:5184",
+      "kind": "cf",
+      "title": "[PROPOSAL] : Disallow use of empty column name in (column_name '') in ALTER or CREATE of foreign table.",
+      "status": "Rejected",
+      "date": "2025-03-26",
+      "first_date": "2024-08-16",
+      "url": "https://commitfest.postgresql.org/patch/5184/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CADrsxdYj2SMquRgf=DS9d_qLMW_gnF7PxzRp0VKTM7OfBsPpVg@mail.gmail.com"
+      ],
+      "authors": "Nishant Sharma (nishant-at-edb)",
+      "objectors": "",
+      "summary": "[PROPOSAL] : Disallow use of empty column name in (column_name '') in ALTER or CREATE of foreign table.\nThreads: [PROPOSAL] : Disallow use of empty column name in (column_name '') in\nALTER or CREATE of foreign table.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "alter column type whole-row index"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:1139",
+      "kind": "cf",
+      "title": "allow mix of composite and scalar variables in target list",
+      "status": "Returned with feedback",
+      "date": "2017-10-30",
+      "first_date": "2017-05-13",
+      "url": "https://commitfest.postgresql.org/patch/1139/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFj8pRB76FE2MVxJYPc1RvXmsf2upoTgoPCC9GsvSAssCM2APQ@mail.gmail.com"
+      ],
+      "authors": "Pavel Stehule (okbobcz)",
+      "objectors": "",
+      "summary": "allow mix of composite and scalar variables in target list\nThreads: issue: record or row variable cannot be part of multiple-item INTO list",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "whole-row Var dependency pg_depend"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:1975",
+      "kind": "cf",
+      "title": "Referential Integrity Checks with Statement Level Triggers",
+      "status": "Returned with feedback",
+      "date": "2019-08-01",
+      "first_date": "2018-12-17",
+      "url": "https://commitfest.postgresql.org/patch/1975/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CADkLM=dFuNHNiZ9Pop1pqa+HPh4T9WuwnjwSf6UAvnxcgUaQdA@mail.gmail.com"
+      ],
+      "authors": "Corey Huinker (coreyh)",
+      "objectors": "",
+      "summary": "Referential Integrity Checks with Statement Level Triggers\nThreads: Referential Integrity Checks with Statement-level Triggers",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "whole-row reference policy trigger"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 6,
+    "new_calls": 2,
+    "failed": 0,
+    "quotes_verified": 2,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 2
+  },
+  "precedent_cutoff": "2025-09-08",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 2,
+      "note": "No precedent found for the same idea. Both objections come from the backport tag and from the competing approach in message #17."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "Three objections raised. The touched files include no documentation changes, but that is outside this angle."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 2,
+      "note": "The patch adds no on-disk format, WAL record or wire protocol change. Its pg_depend entries are written inside the DDL transaction, so this angle sees no replay or standby concern."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The patch adds no new privilege, role or default, and every new path either errors out or follows the CASCADE rules that column-referencing policies and triggers already follow. A broken whole-row policy left by an unhandled case (for example, a reference to another table) fails at query time with a record_eq error, so it denies access and does not leak rows. This check rests on the prose only, since the code is not shown."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "Objections are listed above. No hot-path cost was found, because the scans run only during ALTER TABLE."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "There is no existing feature or extension that gives the right behavior today. The only workaround is to drop the affected objects by hand after the failure, so the goal itself is not already met."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "The underlying bug is real and leaves tables unusable for inserts, so a lack of demand alone would not justify rejecting a fix. The only demand-side objection is that every user pays for the check while few are affected."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 12,
+      "new_survived": 6,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "tone lint: 1 finding(s) remain after the repair call; see tone_lint in roast.json before forwarding this text"
+  ],
+  "tone_lint": {
+    "fields_checked": 109,
+    "hits_found": 2,
+    "sentences_rewritten": 2,
+    "repair_call": "done",
+    "remaining": [
+      {
+        "path": "refuted[1].argument",
+        "rule": "hyperbole",
+        "match": "awful",
+        "sentence": "[P1] back-patched a behavior change only because the alternative was corrupt on-disk data, and [P1] itself still described it as \"kind of awful\"."
+      }
+    ]
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 14,
+    "wall_ms": 175308,
+    "cost_usd": 2.3497237999999996,
+    "dry_run": false
+  }
+}

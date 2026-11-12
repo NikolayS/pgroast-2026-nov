@@ -1,0 +1,1250 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:45:07.476Z",
+  "input": {
+    "arg": "6201",
+    "cf": {
+      "id": 6201,
+      "url": "https://commitfest.postgresql.org/patch/6201/",
+      "title": "Fix orphaned backend processes on Windows using Job Objects",
+      "status": "Needs review",
+      "authors": "Bryan Green (lispyone)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/880214db-ab8c-4b9e-852c-b0f6d90d3f3d%40gmail.com",
+    "subject": "[PATCH] Fix orphaned backend processes on Windows using Job Objects",
+    "thread_start": "2025-11-03T15:12:03Z",
+    "messages_read": 10,
+    "messages_total": 10,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v2-0001-Use-Windows-Job-Objects-to-prevent-orphaned-child.patch",
+      "0001-Use-Windows-Job-Objects-to-prevent-orphaned-child-pr.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection is against the idea, and two committers in the thread support terminating children from the kernel. Three fixable points remain. The commit message and docs give a cause that message #7 withdrew (demand-1). Job membership also covers helper programs that are not backends (standards-compat-1). The job's name and access rights are not stated (security-1). Confidence is medium because security-1 rests on an inference from message #10.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Use Windows Job Objects to kill backends when the postmaster dies",
+    "problem": "On Windows, backends keep running after the postmaster crashes or is killed with taskkill /F, so they hold locks and shared memory and block a clean restart until someone kills them by hand. Backends created suspended, or stuck in a loop or holding a spinlock, never see the postmaster death event. This affects anyone who runs Postgres on Windows.",
+    "proposed_design": "PostmasterMain() creates a Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE and assigns the postmaster to it, so all children inherit membership. When the postmaster exits for any reason, the job handle closes and the kernel terminates all children. If the process is already in a job and assignment fails, the server logs a message and continues without orphan protection.",
+    "user_visible_surface": [
+      "New documentation section \"Process Management on Windows\" in runtime.sgml.",
+      "New log message when Job Object creation or assignment fails.",
+      "Backends on Windows now end at once when the postmaster dies, where before they kept running."
+    ],
+    "author_claims": [
+      "The kernel enforces the cleanup with no polling and no race conditions, unlike inherited event handles or shared memory flags.",
+      "Clean shutdown is unaffected, and a crash of a child does not terminate the postmaster.",
+      "Tested on Windows 10/11 with MSVC and MinGW; backends end about 100-200ms after the postmaster is killed.",
+      "It also covers children killed while still suspended, which the existing event handle cannot reach.",
+      "The code is about 200 lines and falls back to current behaviour on any failure."
+    ],
+    "thread_state": "Andres Freund asked for a test, and v2 added one to 013_crash_restart.pl; Thomas Munro gave a general +1 and plans to build his subprocess work on it. Harrison Booth posted a rebase plus an unnamed-job patch and asked the author to fix a comment and the access-denied message, with no reply visible.",
+    "unclear": [
+      "Why PostmasterHandle, which the kernel should signal on TerminateProcess(), does not already wake backends in the simple taskkill case.",
+      "Whether the patch targets only v19/v20 or also back branches; the author said v19, but the entry is now in the PG20 cycle.",
+      "Whether nested assignment is attempted or skipped; Harrison Booth reports the code tries it while its comment says it is skipped.",
+      "What happens to children started outside the postmaster, such as archive_command or restore_command programs, and to processes that pg_ctl starts.",
+      "Whether a named job lets other processes open or duplicate the job handle, and what rights it is created with."
+    ],
+    "search_queries": [
+      "Windows orphaned backend processes",
+      "Windows job objects postmaster",
+      "postmaster death Windows children",
+      "KILL_ON_JOB_CLOSE",
+      "kill backends when postmaster dies",
+      "Windows handle inheritance child processes",
+      "postmaster death detection",
+      "win32 process management cleanup"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P1",
+      "source_id": "cf:3066",
+      "title": "Use SIGIO to detect postmaster death",
+      "kind": "cf",
+      "status": "Withdrawn",
+      "url": "https://commitfest.postgresql.org/patch/3066/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGK1607VmtrDUHQXrsooU=ap4g4R2yaoByWOOA3m8xevUQ@mail.gmail.com"
+      ],
+      "date": "2021-07-13",
+      "first_date": "2020-09-17",
+      "who_objected": "Thomas Munro",
+      "quote": "On closer inspection, only the last backend to start up and do F_SETOWN on the pipe receives the signal.",
+      "quote_url": "https://www.postgresql.org/message-id/CA%2BhUKGLua5Pnx%2Brjjxg%3D3OPO4oOjtUPjeUYeZXh7TkH3gA7-Uw%40mail.gmail.com",
+      "enriched": true,
+      "reason": "The author withdrew the patch after finding that only the last backend to call F_SETOWN on the shared pipe receives the signal. A fix would need a separate pipe per backend, which he judged unwarranted at that point. Heikki Linnakangas and Tom Lane had reviewed it without objection.",
+      "relation": "similar_idea",
+      "what_is_different": "P1 signalled backends on Unix through SIGIO on a shared pipe, and only one backend got the signal. This proposal targets Windows and has the kernel terminate every job member, so that failure does not arise."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Stated problem and the reproduction in the commit message do not match",
+      "level": "1a",
+      "rubric_item": 1,
+      "category": "problem_statement",
+      "touch_points": [],
+      "severity": "fixable",
+      "failure_scenario": "A committer reads the commit message and docs, which say the taskkill /F case orphans backends because existing mechanisms need postmaster code to run at exit. Thomas Munro says PostmasterHandle is signalled by the kernel, and the author agreed. The commit would then record a wrong cause, and later readers cannot tell which cases the patch fixes and which the handle-inheritance patches fix.",
+      "argument": "Message #7 says the wording of the main reproduction in message #1 was imprecise. The likely real cause is inherited handles, which other CF entries address. The cases left to this patch are children still suspended, infinite loops and spinlock holds (messages #7 and #9). Thomas notes in message #8 that he recalls no recent \"manual orphan cleanup needed\" reports, so the field-visible problem may be smaller than the commit message says. He also agrees that preemptive termination is the right design.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        6,
+        7,
+        8,
+        9
+      ],
+      "author_must_show": "Which failure cases remain once the handle-inheritance patches land, and will the commit message and docs be rewritten to name only those cases?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Bryan Green",
+          "date": "2025-11-03T15:12:03Z",
+          "url": "https://www.postgresql.org/message-id/880214db-ab8c-4b9e-852c-b0f6d90d3f3d%40gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Thomas Munro",
+          "date": "2025-11-06T12:46:01Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BhUKGLVBGE2KkzLaDkKX9t7%3Dt2BvjtOLXef5NnMv4cAZyoz7w%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Bryan Green",
+          "date": "2025-11-06T14:13:31Z",
+          "url": "https://www.postgresql.org/message-id/f60065bd-bed3-4e78-beb6-7e81d5e3875d%40gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Thomas Munro",
+          "date": "2025-11-07T02:39:42Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BhUKGJo6hu6GToiXarBRF%2BAqhFPnzMTW2Nksm0x-%2B9m2%3DdskQ%40mail.gmail.com"
+        },
+        {
+          "index": 9,
+          "from": "Bryan Green",
+          "date": "2025-11-19T02:33:21Z",
+          "url": "https://www.postgresql.org/message-id/5e80ef94-fa47-4110-9e3a-7007a4ecef14%40gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #7 concedes the wording about existing mechanisms was loose, yet the v2 commit message still says they are less reliable for that reason. The commit message and docs do not name the cases the patch fixes: suspended children, loops, spinlock holds.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Job membership kills detached helper programs, even at clean shutdown",
+      "level": "2",
+      "rubric_item": 13,
+      "category": "design",
+      "touch_points": [],
+      "severity": "fixable",
+      "failure_scenario": "A Windows user's archive_command or COPY PROGRAM starts a detached helper, for example with `start /b`, that should finish an upload after the command returns. After upgrade the helper is still a job member. When the postmaster exits, even cleanly, the kernel kills it mid-upload, and the user finds out from missing or partial files.",
+      "argument": "The postmaster is assigned to the job, so every descendant inherits membership, not only backends, and KILL_ON_JOB_CLOSE fires on any postmaster exit. Message #1 says clean shutdown leaves \"nothing left to kill\", but that holds only for processes the postmaster waits for. Today such grandchildren survive the postmaster on Windows, so this changes behaviour for existing scripts and extensions without any request from the user. Neither the documentation hunk nor the thread covers archive_command, restore_command, COPY PROGRAM or extension-spawned processes, and the brief lists this as unclear.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        7
+      ],
+      "author_must_show": "Which processes outside the postmaster's own children stay in the job, and will the job allow breakaway or will the documentation state that they are killed on any postmaster exit?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Bryan Green",
+          "date": "2025-11-03T15:12:03Z",
+          "url": "https://www.postgresql.org/message-id/880214db-ab8c-4b9e-852c-b0f6d90d3f3d%40gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Bryan Green",
+          "date": "2025-11-06T14:13:31Z",
+          "url": "https://www.postgresql.org/message-id/f60065bd-bed3-4e78-beb6-7e81d5e3875d%40gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Job membership passes to every descendant unless breakaway is allowed, and the kernel kills members when the last handle closes, also at clean shutdown. The thread and the documentation hunk do not cover archive_command, COPY PROGRAM or extension-started helpers.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Named job object can be pre-created or opened by another local process",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A local account that is not the service account creates a job object with the expected name before the postmaster starts. CreateJobObject then returns a handle to that existing object, and the other account keeps its own handle. It can call TerminateJobObject to kill every backend, or hold the job open so orphans survive. The DBA sees only unexplained crashes or orphaned backends.",
+      "argument": "Message #10 adds a separate patch to use an unnamed job, which suggests v2 names its job object. Message #10 also says that naming the job, or leaving it unnamed, does not set the access policy. The patch prose does not give the name, the namespace, the security descriptor, or whether ERROR_ALREADY_EXISTS counts as a failure. A Windows named kernel object with a predictable name and default rights is a known way to take over another process's object, and the author has not answered message #10.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        10
+      ],
+      "author_must_show": "Does the postmaster create an unnamed job with a restrictive security descriptor and a non-inheritable handle, and does it refuse a job object that already exists?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 10,
+          "from": "Harrison Booth",
+          "date": "2026-10-16T19:01:21Z",
+          "url": "https://www.postgresql.org/message-id/CAAH-eSVh63%2B_OwacE8dkhc%2BVZkAwLcScumA-ChrReeodFmDuFw%40mail.gmail.com"
+        }
+      ],
+      "id": "security-1",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The job name is an inference from message #10, but that message adds an unnamed-job patch and its access question has no reply. The patch prose does not give the name, the security descriptor, or how an existing object is handled.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Orphan protection silently stops if any other handle to the job exists",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "security_privileges"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch launches a child with handle inheritance enabled, or another process opens the named job. The job then outlives the postmaster, so KILL_ON_JOB_CLOSE never fires and orphans return. Nobody notices until a crash on a production Windows host needs manual cleanup again.",
+      "argument": "KILL_ON_JOB_CLOSE acts only when the last handle to the job closes, and the proposal does not say that the job handle is made non-inheritable, or what access rights it has. Message #7 says handle inheritance on Windows is already a mess and needs two separate patches to fix. Message #10 says that an unnamed job does not prevent privileged handle duplication. The test in v2 covers one kill path and would not catch a leaked handle from some other launch site.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        7,
+        10
+      ],
+      "author_must_show": "How is the job handle kept non-inheritable and unopenable by other processes, and which test fails if a future change leaks it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "Bryan Green",
+          "date": "2025-11-06T14:13:31Z",
+          "url": "https://www.postgresql.org/message-id/f60065bd-bed3-4e78-beb6-7e81d5e3875d%40gmail.com"
+        },
+        {
+          "index": 10,
+          "from": "Harrison Booth",
+          "date": "2026-10-16T19:01:21Z",
+          "url": "https://www.postgresql.org/message-id/CAAH-eSVh63%2B_OwacE8dkhc%2BVZkAwLcScumA-ChrReeodFmDuFw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The named-job half is a duplicate of security-1. The other half needs a hypothetical later patch: backends already start with handle inheritance, so the v2 test in 013_crash_restart.pl would fail if the job handle were inheritable.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Windows-only mechanism with an unanswered review and no Windows owner",
+      "level": "2",
+      "rubric_item": 16,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After commit, a user running Postgres under a service manager or a CI runner that uses its own job reports that startup logs a failure or that pg_ctl misbehaves. The committer who must debug this needs Windows job semantics, and the visible thread names nobody who has them.",
+      "argument": "Thomas Munro, the only engaged committer, says in message #6 \"I'm not a Windows guy\". The last author message is message #9, from November 2025. Message #10 points out that the code attempts nested assignment while its comment says nesting is skipped, and asks for the real failure code in the log message, and no reply is visible. The entry has moved through three CommitFests, and its target version says 19 while it sits in the PG20 cycle.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        6,
+        9,
+        10
+      ],
+      "author_must_show": "Will a new version answer the points in message #10, and which committer with Windows knowledge will own regressions in nested-job and service-manager setups?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 6,
+          "from": "Thomas Munro",
+          "date": "2025-11-06T12:46:01Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BhUKGLVBGE2KkzLaDkKX9t7%3Dt2BvjtOLXef5NnMv4cAZyoz7w%40mail.gmail.com"
+        },
+        {
+          "index": 9,
+          "from": "Bryan Green",
+          "date": "2025-11-19T02:33:21Z",
+          "url": "https://www.postgresql.org/message-id/5e80ef94-fa47-4110-9e3a-7007a4ecef14%40gmail.com"
+        },
+        {
+          "index": 10,
+          "from": "Harrison Booth",
+          "date": "2026-10-16T19:01:21Z",
+          "url": "https://www.postgresql.org/message-id/CAAH-eSVh63%2B_OwacE8dkhc%2BVZkAwLcScumA-ChrReeodFmDuFw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "wrong_facts",
+        "reasoning": "Thomas Munro is not the only engaged committer: Andres Freund reviewed in messages #2 and #4, and Thomas plans to build on the patch. The unanswered message #10 is a committability note, which the rubric keeps apart from the verdict.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "The postmaster creates a kernel job object whose name, access rights and handle inheritance the patch prose does not state."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The entry is tagged Bugfix but changes process behaviour on Windows; the author targets a major release only."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "The patch adds a Windows-only file, pg_job_object.c, that depends on job semantics under service managers and nested jobs."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Which failure cases remain for this patch once the handle-inheritance patches land, and will the commit message and docs name only those cases?",
+    "Are helper programs started from archive_command, restore_command, COPY PROGRAM or an extension killed when the postmaster exits cleanly, or does the job allow breakaway?",
+    "Is the job object named, what security descriptor does it get, and does the postmaster refuse a job object that already exists?",
+    "Does the code attempt nested job assignment or skip it, given that message #10 reports the code and its comment disagree?",
+    "What happens when pg_ctl or a service manager has already placed the postmaster in a job, and which message does the server log?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Andres Freund reviewed and Thomas Munro supports the approach, but Thomas says in message #6 he is not a Windows person. The owner needs to know Windows job and handle semantics.",
+    "liability": "The owner signs for Windows process behaviour under service managers, CI runners and nested jobs, and for helper programs that the job now kills. This lasts as long as Windows is supported.",
+    "author_follow_up": "The author added the requested test in v2 and replied up to message #9. No reply to the review points in message #10 is visible."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "proceed",
+    "reason": "The patch is about 200 lines and Windows-only, and the remaining cases (suspended children, loops, spinlock holds) affect a small share of Windows users. Review needs Windows job knowledge, and progress waits on a new version that answers message #10."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, the job's name, security descriptor, handle inheritance and breakaway flags could not be checked. The interaction with a job that pg_ctl creates in service mode is also unchecked.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:3066",
+      "kind": "cf",
+      "title": "Use SIGIO to detect postmaster death",
+      "status": "Withdrawn",
+      "date": "2021-07-13",
+      "first_date": "2020-09-17",
+      "url": "https://commitfest.postgresql.org/patch/3066/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGK1607VmtrDUHQXrsooU=ap4g4R2yaoByWOOA3m8xevUQ@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "Thomas Munro",
+      "summary": "The patch uses SIGIO, set up with fcntl(O_ASYNC) and F_SETOWN on the postmaster death pipe, so backends get a signal when the postmaster exits. This gives a postmaster death signal on systems without USE_POSTMASTER_DEATH_SIGNAL, such as macOS and the BSDs.",
+      "objection": "The author withdrew the patch after finding that only the last backend to call F_SETOWN on the shared pipe receives the signal. A fix would need a separate pipe per backend, which he judged unwarranted at that point. Heikki Linnakangas and Tom Lane had reviewed it without objection.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "Windows job objects postmaster",
+        "postmaster death Windows children",
+        "kill backends when postmaster dies",
+        "postmaster death detection"
+      ],
+      "from_hint": false,
+      "score": 0.52,
+      "enriched": true,
+      "key_quote": "On closer inspection, only the last backend to start up and do\nF_SETOWN on the pipe receives the signal.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BhUKGLua5Pnx%2Brjjxg%3D3OPO4oOjtUPjeUYeZXh7TkH3gA7-Uw%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:5964",
+      "kind": "cf",
+      "title": "Do not exit on postmaster death event inside CRIT sections.",
+      "status": "Returned with feedback",
+      "date": "2025-08-28",
+      "first_date": "2025-08-06",
+      "url": "https://commitfest.postgresql.org/patch/5964/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/B3C69B86-7F82-4111-B97F-0005497BB745@yandex-team.ru"
+      ],
+      "authors": "Andrey Borodin (x4mmm)",
+      "objectors": "Tom Lane",
+      "summary": "The patch makes a process that detects postmaster death inside WaitEventSetWait defer its exit while it is in a critical section, and exit only after the section ends. The goal was to stop proc_exit(1) from releasing LWLocks mid-change, which let the checkpointer flush a modified buffer whose WAL record was never written.",
+      "objection": "Tom Lane objected that deferring exit leads to systems that fail to shut down. The author then confirmed that the checkpointer waits forever in LWLockAcquire in the test. Tom also argued that proc_exit(1) after postmaster death is the real defect, and that removing the death check is as hazardous as keeping it this late in the v18 cycle. The thread instead reverted commit bc22dc0e0, which had started using condition variables inside critical sections, and left better postmaster-death handling to a new thread.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "Windows job objects postmaster",
+        "postmaster death Windows children",
+        "kill backends when postmaster dies",
+        "postmaster death detection"
+      ],
+      "from_hint": false,
+      "score": 0.472,
+      "enriched": true,
+      "key_quote": "I do not like this patch one bit: it will replace one set of problems with another set, namely systems that fail to shut down.",
+      "quote_message_url": "https://www.postgresql.org/message-id/168715.1755441226%40sss.pgh.pa.us",
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:1772",
+      "kind": "cf",
+      "title": "Create a new session for postmaster in pg_ctl",
+      "status": "Returned with feedback",
+      "date": "2018-09-30",
+      "first_date": "2018-08-01",
+      "url": "https://commitfest.postgresql.org/patch/1772/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEET0ZH5Bf7dhZB3mYy8zZQttJrdZg_0Wwaj0o1PuuBny1JkEw@mail.gmail.com"
+      ],
+      "authors": "Paul Guo (paulguo-pivotal)",
+      "objectors": "Michael Paquier, Andres Freund",
+      "summary": "The patch made the postmaster call setsid() so it leaves the controlling terminal's session, which stops a Ctrl-C in the starting shell from killing the server. After Tom Lane's review, the author moved the setsid() call into pg_ctl start.",
+      "objection": "Michael Paquier objected that the pg_ctl version breaks a development workflow: Ctrl-C on pg_ctl during recovery no longer stops the started instance. He asked for an opt-in switch with the current behavior as default, while Tom Lane preferred detaching by default and suggested a postmaster switch that pg_ctl passes. Andres Freund opposed the postmaster daemonizing itself, and the patch was returned with feedback for an optional pg_ctl-based approach.",
+      "touch_points": [],
+      "matched_queries": [
+        "Windows job objects postmaster",
+        "postmaster death Windows children",
+        "kill backends when postmaster dies",
+        "postmaster death detection"
+      ],
+      "from_hint": false,
+      "score": 0.393,
+      "enriched": true,
+      "key_quote": "I would be ready to\naccept a patch which does not change the default behavior, and makes the\ndeamonization behavior activated only if an option switch is given by\nthe user, like -d/--daemon.  So I am -1 for what is proposed in its\ncurrent shape.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20180912065639.GI25160%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "revert:833451552925d0175e1e15128e411ddef9a36996",
+      "kind": "revert",
+      "title": "Revert \"postmaster: Start syslogger earlier\".",
+      "status": "Reverted",
+      "date": "2019-05-19",
+      "first_date": "2019-01-30",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=833451552925d0175e1e15128e411ddef9a36996",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/15804-3721117bf40fb654@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/d5d50936-20b9-85f1-06bc-94a01c5040c1@2ndquadrant.com"
+      ],
+      "authors": "Peter Eisentraut",
+      "objectors": "",
+      "summary": "Revert \"postmaster: Start syslogger earlier\".\nReverted commit(s): postmaster: Start syslogger earlier",
+      "objection": "This commit reverts 57431a911d3a650451d198846ad3194900666152.\n\nWhile that's still a good idea in the abstract, we found out\nthat there are multiple crasher bugs in it on Windows builds,\nmaking the logging_collector option unusable on Windows.\nThere's no time left to fix these issues before 12beta1,\nso revert the patch to allow Windows beta testing to proceed.\nWe'll try again at some future date.\n\nPer bug #15804 from Yulian Khodorkovskiy and additional\ninvestigation by Michael Paquier.",
+      "touch_points": [],
+      "matched_queries": [
+        "Windows job objects postmaster",
+        "postmaster death Windows children",
+        "kill backends when postmaster dies",
+        "postmaster death detection"
+      ],
+      "from_hint": false,
+      "score": 0.39,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:f38291e927fa8c04eb772e6a17a3dd44da2b69e8",
+      "kind": "revert",
+      "title": "Revert \"Hack pg_ctl to report postmaster's exit status.\"",
+      "status": "Reverted",
+      "date": "2019-10-13",
+      "first_date": "2019-10-07",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f38291e927fa8c04eb772e6a17a3dd44da2b69e8",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/18537.1570421268@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Hack pg_ctl to report postmaster's exit status.\"\nReverted commit(s): Hack pg_ctl to report postmaster's exit status.",
+      "objection": "This reverts commit 6a5084eed49552bfc8859c438c8d74ad09fc5d3f.\nWe learned what we needed to know from that.",
+      "touch_points": [],
+      "matched_queries": [
+        "Windows job objects postmaster",
+        "postmaster death Windows children",
+        "kill backends when postmaster dies",
+        "postmaster death detection"
+      ],
+      "from_hint": false,
+      "score": 0.349,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:816",
+      "kind": "cf",
+      "title": "Avoid possibly slow processing during postmaster abnormal or immediate shutdown",
+      "status": "Rejected",
+      "date": "2016-11-18",
+      "first_date": "2016-09-20",
+      "url": "https://commitfest.postgresql.org/patch/816/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/0A3221C70F24FB45833433255569204D1F5EF25A@G01JPEXMBYT05"
+      ],
+      "authors": "Takayuki Tsunakawa (maumau)",
+      "objectors": "Tom Lane, Peter Eisentraut",
+      "summary": "Two patches to shorten postmaster shutdown after a backend crash or an immediate shutdown. One makes the stats collector exit on SIGQUIT without writing the stats files, and the other closes the listening sockets as soon as the postmaster knows it will stop all children and exit.",
+      "objection": "Tom Lane argued that commit 82233ce7e in 9.4 already solves the problem better, because the postmaster now sends SIGKILL to child processes after 5 seconds during a crash or immediate shutdown. The original complaint was against 9.2. Peter Eisentraut agreed, and he also objected that early socket close stops PQping() and error-message monitoring and makes the crash and immediate modes behave differently from the other shutdown modes.",
+      "touch_points": [],
+      "matched_queries": [
+        "Windows job objects postmaster",
+        "postmaster death Windows children",
+        "kill backends when postmaster dies",
+        "postmaster death detection"
+      ],
+      "from_hint": false,
+      "score": 0.347,
+      "enriched": true,
+      "key_quote": "My feeling is that 82233ce7e has obsoleted all of the proposals made so\nfar in this thread, and that we should reject them all.",
+      "quote_message_url": "https://www.postgresql.org/message-id/21933.1479488412%40sss.pgh.pa.us",
+      "relevant": true
+    },
+    {
+      "id": "P7",
+      "source_id": "revert:c13070a27b63d9ce4850d88a63bf889a6fde26f0",
+      "kind": "revert",
+      "title": "Revert \"Get rid of WALBufMappingLock\"",
+      "status": "Reverted",
+      "date": "2025-08-22",
+      "first_date": "2025-04-02",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=c13070a27b63d9ce4850d88a63bf889a6fde26f0",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/B3C69B86-7F82-4111-B97F-0005497BB745@yandex-team.ru"
+      ],
+      "authors": "Alexander Korotkov",
+      "objectors": "",
+      "summary": "Revert \"Get rid of WALBufMappingLock\"\nReverted commit(s): Get rid of WALBufMappingLock",
+      "objection": "This reverts commit bc22dc0e0ddc2dcb6043a732415019cc6b6bf683.\nIt appears that conditional variables are not suitable for use inside\ncritical sections.  If WaitLatch()/WaitEventSetWaitBlock() face postmaster\ndeath, they exit, releasing all locks instead of PANIC.  In certain\nsituations, this leads to data corruption.",
+      "touch_points": [],
+      "matched_queries": [
+        "postmaster death Windows children",
+        "postmaster death detection"
+      ],
+      "from_hint": false,
+      "score": 0.231,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "revert:faae1c918e8aaae034eaf3ea103fcb6ba9adc5ab",
+      "kind": "revert",
+      "title": "Revert \"Replace PostmasterRandom() with a stronger way of generating randomness.\"",
+      "status": "Reverted",
+      "date": "2016-10-18",
+      "first_date": "2016-10-17",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=faae1c918e8aaae034eaf3ea103fcb6ba9adc5ab",
+      "thread_urls": [],
+      "authors": "Heikki Linnakangas",
+      "objectors": "",
+      "summary": "Revert \"Replace PostmasterRandom() with a stronger way of generating randomness.\"\nReverted commit(s): Replace PostmasterRandom() with a stronger way of generating randomness.",
+      "objection": "This reverts commit 9e083fd4683294f41544e6d0d72f6e258ff3a77c. That was a\nfew bricks shy of a load:\n\n* Query cancel stopped working\n* Buildfarm member pademelon stopped working, because the box doesn't have\n  /dev/urandom nor /dev/random.\n\nThis clearly needs some more discussion, and a quite different patch, so\nrevert for now.",
+      "touch_points": [],
+      "matched_queries": [
+        "Windows job objects postmaster",
+        "kill backends when postmaster dies",
+        "postmaster death detection"
+      ],
+      "from_hint": false,
+      "score": 0.216,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:3052",
+      "kind": "cf",
+      "title": "Merging statistics from children instead of re-sampling everything",
+      "status": "Returned with feedback",
+      "date": "2022-04-08",
+      "first_date": "2021-03-29",
+      "url": "https://commitfest.postgresql.org/patch/3052/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/c3162511-0e80-039e-765c-1d02d0fd0bab@enterprisedb.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "Robert Haas",
+      "summary": "The patch adds an ANALYZE (MERGE) option that builds statistics for a partitioned or inheritance parent by combining the children's existing pg_statistic entries, without sampling the children again. The goal was to make parent ANALYZE cheap enough to run often, without repeated sampling at each level of a partition tree.",
+      "objection": "The visible messages do not show the decision itself. Tomas Vondra said ndistinct and some other statistics cannot be reasonably merged from final per-child estimates. Robert Haas showed that merged MCV lists can miss a value that is common across all partitions but is not an MCV in any of them. The discussion then moved to storing per-partition samples, and no way to store them was agreed.",
+      "touch_points": [],
+      "matched_queries": [
+        "postmaster death Windows children",
+        "Windows handle inheritance child processes"
+      ],
+      "from_hint": false,
+      "score": 0.198,
+      "enriched": true,
+      "key_quote": "It seems possible that 0 is not an MCV in any partition, or in only some of them, but it might be more common overall than the #1 MCV of any single partition.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoYXTFpPBm3tMLBTAXAY02GCwrpSsAHhjQxDL0RuuWzttA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:5095",
+      "kind": "cf",
+      "title": "Improving the latch handling between logical replication launcher and worker processes.",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2024-04-25",
+      "url": "https://commitfest.postgresql.org/patch/5095/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALDaNm01_KEgHM1tKtgXkCGLJ5209SMSmGw3UmhZbOz365_=eA@mail.gmail.com"
+      ],
+      "authors": "vigneshwaran C (vignesh.postgres)",
+      "objectors": "Kyotaro Horiguchi",
+      "summary": "The patch fixes a lost wakeup in the logical replication launcher, which uses one latch for worker attach, worker exit and subscription creation, so a new subscription's apply worker can wait up to 180 seconds to start. The author listed three options and posted v2 using a separate latch for worker attach and exit, protected by a lock and owned only around each wait.",
+      "objection": "The visible messages do not state a closing reason. Kyotaro Horiguchi objected to v2 because it calls OwnLatch and DisownLatch often and nests latch waits across concurrent wakeup sources, and he proposed a flag in shared memory that ApplyLauncherMain checks before WaitLatch. The author agreed and posted a new patch for that approach, and Heikki Linnakangas noted that his proposed interrupts patches would make the fix simple. The thread ends there without a review of the new patch.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "Windows handle inheritance child processes"
+      ],
+      "from_hint": false,
+      "score": 0.146,
+      "enriched": true,
+      "key_quote": "Additionally, handling multiple concurrently operating trigger sources with nested latch waits seems bug-prone, which I’d prefer to avoid from both a readability and safety perspective.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20240904.120214.2117610340510711755.horikyota.ntt%40gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:2192",
+      "kind": "cf",
+      "title": "base backup client as auxiliary backend process",
+      "status": "Returned with feedback",
+      "date": "2020-02-28",
+      "first_date": "2019-06-29",
+      "url": "https://commitfest.postgresql.org/patch/2192/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/61b8d18d-c922-ac99-b990-a31ba63cdcbb@2ndquadrant.com"
+      ],
+      "authors": "Peter Eisentraut (petere)",
+      "objectors": "Peter Eisentraut, Andres Freund",
+      "summary": "The postmaster starts an auxiliary process that takes a base backup from the primary when it finds a basebackup.signal file in a minimal data directory created by initdb, then continues startup in standby mode. Connection settings come from postgresql.conf, so setting up a standby no longer needs pg_basebackup.",
+      "objection": "The author withdrew the entry because he could not finish it, and said the order of startup actions in postmaster.c needed more thinking. Andres Freund's review had questioned the polling wait loop in PostmasterMain, missing error and signal handling in the base backup process, the handling of shutdown during the backup, and putting the backup code in libpqwalreceiver.c. Some refactoring parts were committed separately.",
+      "touch_points": [],
+      "matched_queries": [
+        "Windows orphaned backend processes"
+      ],
+      "from_hint": false,
+      "score": 0.131,
+      "enriched": true,
+      "key_quote": "Unsurprisingly, the sequencing of startup actions in postmaster.c is\nextremely tricky and needs more thinking.",
+      "quote_message_url": "https://www.postgresql.org/message-id/d41527ae-717b-2123-5d5c-fa973f157447%402ndquadrant.com",
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:3523",
+      "kind": "cf",
+      "title": "Fix Windows network event handling",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2021-12-30",
+      "url": "https://commitfest.postgresql.org/patch/3523/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKG+OeoETZQ=Qw5Ub5h3tmwQhBmDA=nuNO3KG=zWfUypFAw@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "Robert Haas",
+      "summary": "On Windows, the patch moves socket event handles out of each WaitEventSet into a reference-counted per-socket hash table, and adds its own level-triggered event memory, so the edge-triggered FD_CLOSE event is no longer lost. It also changes simplehash for raw malloc/free and no-OOM behaviour, and would let the graceful socket shutdown on Windows be put back.",
+      "objection": "The entry was returned with feedback in the 2024-01 commitfest because CFbot showed test failures and no updated version followed. In review, Robert Haas questioned the simplehash changes: whether SH_RAW_FREE is needed, whether the no-OOM change in 0002 is a good idea at all, and why raw malloc/free is used instead of palloc/pfree. The visible messages show no reply to that review.",
+      "touch_points": [],
+      "matched_queries": [
+        "Windows handle inheritance child processes"
+      ],
+      "from_hint": false,
+      "score": 0.131,
+      "enriched": true,
+      "key_quote": "I wonder whether we really want 0002. It seems like a pretty significant behavior change -- now everybody using simplehash has to worry about whether failure cases are possible.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoaUZ-JusZD8KwZ4ZnCygNM_e3hZRvn4qsvDaKG3shv1jg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:98a9b37ba70f24b28478360d9cf7f190b0f75f8d",
+      "kind": "revert",
+      "title": "Revert commits 290acac92b and 8a7e9e9dad.",
+      "status": "Reverted",
+      "date": "2019-11-30",
+      "first_date": "2019-11-28",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=98a9b37ba70f24b28478360d9cf7f190b0f75f8d",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/E1iaD8h-0004us-K9@gemulon.postgresql.org",
+        "https://www.postgresql.org/message-id/flat/CAP_rwwmLJJbn70vLOZFpxGw3XD7nLB_7+NKz46H5EOO2k5H7OQ@mail.gmail.com"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Revert commits 290acac92b and 8a7e9e9dad.\nReverted commit(s): Move pump_until to TestLib.pm.; Add tests for '-f' option in dropdb utility.",
+      "objection": "This commit revert the commits to add a test case that tests the 'force'\noption when there is an active backend connected to the database being\ndropped.\n\nThis feature internally sends SIGTERM to all the backends connected to the\ndatabase being dropped and then the same is reported to the client.  We\nfound that on Windows, the client end of the socket is not able to read\nthe data once we close the socket in the server which leads to loss of\nerror message which is not what we expect.  We also observed  similar\nbehavior in other cases like pg_terminate_backend(),\npg_ctl kill TERM <pid>.  There are probably a few others like that.  The\nfix for this requires further study.",
+      "touch_points": [],
+      "matched_queries": [
+        "KILL_ON_JOB_CLOSE"
+      ],
+      "from_hint": false,
+      "score": 0.13,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:904",
+      "kind": "cf",
+      "title": "Fix cleanup of WSA events in WIN32 wait event code",
+      "status": "Rejected",
+      "date": "2016-12-27",
+      "first_date": "2016-12-13",
+      "url": "https://commitfest.postgresql.org/patch/904/",
+      "thread_urls": [],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Fix cleanup of WSA events in WIN32 wait event code",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "win32 process management cleanup"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "revert:ca266a069a20c32a8f0a1df982a5a67d9483bcb3",
+      "kind": "revert",
+      "title": "Revert \"Close stdin where it's not needed in TestLib.pm procedures\"",
+      "status": "Reverted",
+      "date": "2019-11-27",
+      "first_date": "2019-11-25",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ca266a069a20c32a8f0a1df982a5a67d9483bcb3",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2658c496-f885-02db-13bb-228423782524@2ndQuadrant.com",
+        "https://www.postgresql.org/message-id/flat/873ebb57-fc98-340d-949d-691b1810bf66@2ndQuadrant.com",
+        "https://www.postgresql.org/message-id/flat/20191126044110.GB5435@paquier.xyz"
+      ],
+      "authors": "Andrew Dunstan",
+      "objectors": "",
+      "summary": "Revert \"Close stdin where it's not needed in TestLib.pm procedures\"\nReverted commit(s): Close stdin where it's not needed in TestLib.pm procedures; Fix closing stdin in TestLib.pm",
+      "objection": "This reverts commits 9af34f3c6b and 792dba73c8.\n\nThe code has been found not to be portable.",
+      "touch_points": [],
+      "matched_queries": [
+        "KILL_ON_JOB_CLOSE"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "revert:2093eb4d4c2b55962df613fdd6f605ce4dc67217",
+      "kind": "revert",
+      "title": "Revert \"Ignore object files generated by ecpg test suite on Windows\"",
+      "status": "Reverted",
+      "date": "2015-03-09",
+      "first_date": "2015-03-09",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=2093eb4d4c2b55962df613fdd6f605ce4dc67217",
+      "thread_urls": [],
+      "authors": "Michael Meskes",
+      "objectors": "",
+      "summary": "Revert \"Ignore object files generated by ecpg test suite on Windows\"\nReverted commit(s): Ignore object files generated by ecpg test suite on Windows",
+      "objection": "This reverts commit b9e538b190d9cf4387361214eadc430393ebf852.",
+      "touch_points": [],
+      "matched_queries": [
+        "Windows job objects postmaster"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:2925",
+      "kind": "cf",
+      "title": "Key management with tests",
+      "status": "Withdrawn",
+      "date": "2021-07-15",
+      "first_date": "2021-01-01",
+      "url": "https://commitfest.postgresql.org/patch/2925/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210101045047.GB30966@momjian.us"
+      ],
+      "authors": "Stephen Frost (sfrost), Masahiko Sawada (masahikosawada), Bruce Momjian (bmomjian)",
+      "objectors": "",
+      "summary": "Key management with tests\nThreads: Key management with tests",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "win32 process management cleanup"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:1174",
+      "kind": "cf",
+      "title": "Optional message to signalled process in pg_terminate_backend()/pg_cancel_backend()",
+      "status": "Returned with feedback",
+      "date": "2017-10-02",
+      "first_date": "2017-06-19",
+      "url": "https://commitfest.postgresql.org/patch/1174/",
+      "thread_urls": [],
+      "authors": "Daniel Gustafsson (d_gustafsson)",
+      "objectors": "",
+      "summary": "Optional message to signalled process in pg_terminate_backend()/pg_cancel_backend()",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "Windows orphaned backend processes"
+      ],
+      "from_hint": false,
+      "score": 0.112,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "revert:29992a6a509b256efc4ac560a1586b51a64b2637",
+      "kind": "revert",
+      "title": "Revert \"graceful shutdown\" changes for Windows.",
+      "status": "Reverted",
+      "date": "2022-03-22",
+      "first_date": "2021-12-02",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=29992a6a509b256efc4ac560a1586b51a64b2637",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKG+OeoETZQ=Qw5Ub5h3tmwQhBmDA=nuNO3KG=zWfUypFAw@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CA+hUKGKkp2XkvSe9nG+bsgkXVKCdTeGSa_TR0Qx1jafc_oqCVA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/90b34057-4176-7bb0-0dbb-9822a5f6425b@greiz-reinsdorf.de",
+        "https://www.postgresql.org/message-id/flat/16678-253e48d34dc0c376@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/af5e0bf3-6a61-bb97-6cba-061ddf22ff6b@dunslane.net"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"graceful shutdown\" changes for Windows.\nReverted commit(s): On Windows, close the client socket explicitly during backend shutdown.; On Windows, also call shutdown() while closing the client socket.",
+      "objection": "This reverts commits 6051857fc and ed52c3707 in HEAD (they were already\nreverted in the back branches).  Further testing has shown that while\nthose changes do fix some things, they also break others; in particular,\nit looks like walreceivers fail to detect walsender-initiated connection\nclose reliably if the walsender shuts down this way.  A proper fix for\nthis seems possible but won't be done in time for v15.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "Windows orphaned backend processes"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:2374",
+      "kind": "cf",
+      "title": "VACUUM memory management",
+      "status": "Returned with feedback",
+      "date": "2020-07-02",
+      "first_date": "2019-12-10",
+      "url": "https://commitfest.postgresql.org/patch/2374/",
+      "thread_urls": [],
+      "authors": "Ibrar Ahmed (ibrar)",
+      "objectors": "",
+      "summary": "VACUUM memory management",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "win32 process management cleanup"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "revert:9d5c22d28f8c161aa729d841aeec936c646044d4",
+      "kind": "revert",
+      "title": "Improve logrotate test so that it meaningfully exercises syslogger.",
+      "status": "Partially reverted",
+      "date": "2019-05-19",
+      "first_date": "2019-03-03",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9d5c22d28f8c161aa729d841aeec936c646044d4",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/15804-3721117bf40fb654@postgresql.org"
+      ],
+      "authors": "Andrew Dunstan",
+      "objectors": "",
+      "summary": "Improve logrotate test so that it meaningfully exercises syslogger.\nReverted commit(s): Don't do pg_ctl logrotate test on Windows",
+      "objection": "Discussion of bug #15804 reveals that this test didn't really prove\nthat the syslogger child process ever launched successfully, much\nless did anything.  It was only checking that the expected log file\ngets created, and that's done in the postmaster.  Moreover, the\ntest assumed it could rename the log file, which is likely to fail\non Windows (cf. commit d611175e5).\n\nInstead, use the default log file name pattern, which should result\nin a new file name being chosen after 1 second, and verify that\nrotation has occurred by checking for a new file name.  Also add code\nto test that messages actually do propagate through the syslogger.\n\nIn theory this version of the test should work on Windows, so\nrevert d611175e5.",
+      "touch_points": [],
+      "matched_queries": [
+        "Windows handle inheritance child processes"
+      ],
+      "from_hint": false,
+      "score": 0.099,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:298",
+      "kind": "cf",
+      "title": "Improve handling of OOM errors in libpq making process hangling for COPY and bind (take 2)",
+      "status": "Returned with feedback",
+      "date": "2016-02-08",
+      "first_date": "2014-11-25",
+      "url": "https://commitfest.postgresql.org/patch/298/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/547480DE.4040408@vmware.com"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Improve handling of OOM errors in libpq making process hangling for COPY and bind (take 2)\nThreads: PQexec() hangs on OOM",
+      "objection": "",
+      "touch_points": [
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "Windows handle inheritance child processes"
+      ],
+      "from_hint": false,
+      "score": 0.098,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:2850",
+      "kind": "cf",
+      "title": "orphaned function",
+      "status": "Returned with feedback",
+      "date": "2021-04-08",
+      "first_date": "2020-11-30",
+      "url": "https://commitfest.postgresql.org/patch/2850/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/5a9daaae-5538-b209-6279-e903c3ea2157@amazon.com"
+      ],
+      "authors": "Bertrand Drouvot (bdrouvot)",
+      "objectors": "",
+      "summary": "orphaned function\nThreads: [BUG] orphaned function",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "Windows orphaned backend processes"
+      ],
+      "from_hint": false,
+      "score": 0.096,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:2196",
+      "kind": "cf",
+      "title": "KMS - Internal key management system",
+      "status": "Returned with feedback",
+      "date": "2020-09-30",
+      "first_date": "2018-05-25",
+      "url": "https://commitfest.postgresql.org/patch/2196/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/031401d3f41d$5c70ed90$1552c8b0$@lab.ntt.co.jp",
+        "https://www.postgresql.org/message-id/flat/CA+fd4k7q5o6Nc_AaX6BcYM9yqTbC6_pnH-6nSD=54Zp6NBQTCQ@mail.gmail.com"
+      ],
+      "authors": "Masahiko Sawada (masahikosawada), Ibrar Ahmed (ibrar), Insung Moon (tsukiwamoon)",
+      "objectors": "",
+      "summary": "KMS - Internal key management system\nThreads: [Proposal] Table-level Transparent Data Encryption (TDE) and Key Management Service (KMS); Internal key management system",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "win32 process management cleanup"
+      ],
+      "from_hint": false,
+      "score": 0.095,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 4,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 3
+  },
+  "precedent_cutoff": "2025-11-03",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent's recorded reason applies here. P2 was returned because deferring exit makes systems fail to shut down, and this proposal does the opposite by terminating children. P6 concerned slow shutdown while the postmaster is alive, which commit 82233ce7e had already solved. Message #8 links an earlier thread that, as message #8 reports it, concluded preemptive termination is the only approach that makes sense. That supports this proposal rather than arguing against it."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 1,
+      "note": "Other contract points look fine. There is no new syntax and no new GUC, and nothing changes for dumps or psql. Message #7 settled back-patching, since the author targets a major release."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The proposal changes no persistent or cross-node state: no on-disk format, WAL record, catalog, wire protocol or extension API, so pg_upgrade and standbys are unaffected. Forced kills after postmaster death match the existing crash-restart model, where WAL replay restores consistency. Not checked: whether archive_command or restore_command programs killed with the job can leave a partial file in the WAL archive."
+    },
+    {
+      "angle": "security",
+      "objections": 1,
+      "note": "The only security exposure is the job object's name and access rights. No new SQL-level privilege, GUC or data exposure is involved."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "The core idea fits core Postgres and adds no cost on the hot path. It runs once at postmaster start and only on Windows, and the only committer in the thread supports the approach."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "Postgres has no existing way to end children that are still suspended, spinning, or holding a spinlock when the postmaster dies. The PostmasterHandle event needs the child to run and check it, so it cannot do the job. A child or external tool cannot do it either without the postmaster creating the job, so this has to be in core. Not checked without the code: how this interacts with any job object that pg_ctl creates in service mode."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "Demand is otherwise adequate for a Windows bug fix. Thomas Munro researched the same approach on his own and plans to build on it. The cost falls only on Windows builds, and the patch falls back to current behaviour when job assignment fails."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 5,
+      "new_survived": 3,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "synthesis said NEEDS-COMMITTER-EYES but listed a level 1a objection (demand-1); changed to NEEDS-DESIGN-DISCUSSION"
+  ],
+  "tone_lint": {
+    "fields_checked": 73,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 16,
+    "wall_ms": 160154,
+    "cost_usd": 2.1795914,
+    "dry_run": false
+  }
+}

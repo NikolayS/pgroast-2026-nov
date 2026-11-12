@@ -1,0 +1,1494 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:35:21.050Z",
+  "input": {
+    "arg": "5671",
+    "cf": {
+      "id": 5671,
+      "url": "https://commitfest.postgresql.org/patch/5671/",
+      "title": "Produce LLVM bitcode files on meson builds",
+      "status": "Needs review",
+      "authors": "Andres Freund (andresfreund), Diego Fronza (dfronza), Nazir Bilal Yavuz (nbyavuz)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/206b001d-1884-4081-bd02-bed5c92f02ba%40eisentraut.org",
+    "subject": "meson vs. llvm bitcode files",
+    "thread_start": "2024-09-05T08:56:26Z",
+    "messages_read": 32,
+    "messages_total": 32,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v1-0001-meson-Add-generated-header-stamps.patch",
+      "v1-0002-meson-Add-postgresql-extension.pc-for-building-ex.patch",
+      "v1-0003-meson-Test-building-extensions-by-using-postgresq.patch",
+      "v1-0004-meson-WIP-Add-docs-for-postgresql-extension.pc.patch",
+      "v1-0005-meson-Add-LLVM-bitcode-emission.patch",
+      "v1-0006-meson-Generate-bitcode-files-of-contrib-extension.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection is against the core bitcode patches. They restore what the autoconf build already does, and messages #1, #25 and #27 show demand. All ranked objections concern the general extension .pc file in the last patch: no extension project is shown to need it (demand-1), its name and Requires list are not agreed (standards-compat-2, standards-compat-3), and autoconf builds do not install it (standards-compat-1). That patch is last in the series, so the rest can go in without it.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Produce LLVM bitcode files in meson builds",
+    "problem": "The meson build does not produce LLVM bitcode (.bc) files, so JIT inlining of server and contrib functions does not work with meson builds. Peter Eisentraut called this the last major regression for using meson in production. Christoph Berg says it blocked meson for package builds on apt.postgresql.org.",
+    "proposed_design": "Meson compiles selected server sources and five contrib modules (hstore, citext, intarray, ltree, pg_trgm) to bitcode and installs them in $pkglibdir/bitcode/ with ThinLTO indexes. A generated pkg-config file supplies the include paths and compiler flags. A last patch renames it to a general extension build interface, and another excludes Windows resource files from bitcode source lists.",
+    "user_visible_surface": [
+      "New installed files: .bc bitcode files and indexes under $pkglibdir/bitcode/ in meson builds with LLVM.",
+      "New pkg-config file postgresql-$version-llvm-jit-bitcode.pc, renamed in the last patch to postgresql-$version-extension.pc.",
+      "pkg-config variables such as dir_mod, dir_data, dir_include, dir_bitcode, pkglibdir and bindir.",
+      "New documentation section on building extensions with the .pc file, with an example meson.build.",
+      "New build helper script src/tools/irlink."
+    ],
+    "author_claims": [
+      "Bitcode loading and JIT inlining work for backend and contrib modules, per Diego Fronza's tests with intarray.",
+      "Bitcode only helps contrib modules with lightweight SQL operators or functions, so the patch limits the contrib list to five modules.",
+      "Removing an explicit dependency and using extracted objects as input avoids a 4x slowdown of build.ninja generation, about 22s versus 5.1s.",
+      "The .pc file can build extensions with other build systems as well as meson.",
+      "Christoph Berg reports v15 works in Debian postgresql-20 snapshot packages for months."
+    ],
+    "thread_state": "Patch is at v17, with review from Peter Eisentraut, Andres Freund, Zsolt Parragi, Christoph Berg and Harrison Booth. Christoph says the core bitcode part could be committed, while naming and scope of the general extension .pc file stay open.",
+    "unclear": [
+      "Whether the .pc file is installed and what it holds when built with -Dllvm=disabled.",
+      "Whether the Requires list, which pulls in every server dependency, is acceptable for extension builds; Peter and Andres disagree.",
+      "Whether the autoconf build will also produce the .pc file, since the autoconf patch was dropped.",
+      "No measurement shows the query-time benefit of the bitcode files.",
+      "How a meson-built bitcode set is tested in CI; JIT use is checked only by manual debug logging.",
+      "Full server JIT on Windows is untested."
+    ],
+    "search_queries": [
+      "meson llvm bitcode",
+      "meson bitcode emission",
+      "jit inlining bitcode extensions",
+      "postgresql-extension.pc pkg-config",
+      "pkg-config extension build",
+      "meson pgxs replacement",
+      "llvm jit inline contrib",
+      "meson build regression"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "General extension .pc file has no demonstrated users yet",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "maintenance_burden",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Postgres 20 installs postgresql-20-extension.pc as a public build interface, and extension authors start to depend on its variables and Requires list. A later release changes the Requires list or the compiler flags still disputed in message #19 and #20. Their builds break, and they find out on upgrade.",
+      "argument": "Demand for the bitcode part is shown in message #1, #25 and #27, but nobody asks for a general extension interface. Christoph proposed the rename in message #25 and says in message #27 that there are no extension builds yet. Andres said in message #21 that there is not enough agreement for a name this general. Committing patch 0006 makes it a public interface that must be kept stable, with no extension author shown to need it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        19,
+        20,
+        21,
+        25,
+        27
+      ],
+      "author_must_show": "Which extension projects outside core have built against postgresql-$version-extension.pc, and what did they need from it that PGXS or pg_config does not give them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 19,
+          "from": "Peter Eisentraut",
+          "date": "2026-03-31T07:43:11Z",
+          "url": "https://www.postgresql.org/message-id/c6b26dee-bd62-44d9-b4f3-730b6ecf95c6%40eisentraut.org"
+        },
+        {
+          "index": 20,
+          "from": "Andres Freund",
+          "date": "2026-04-01T13:19:34Z",
+          "url": "https://www.postgresql.org/message-id/3whtmw6twe442o3r44gsagheq5cs2clcghzjeo7rljstpdemrh%40oojczkhk2mbt"
+        },
+        {
+          "index": 21,
+          "from": "Andres Freund",
+          "date": "2026-04-06T20:09:26Z",
+          "url": "https://www.postgresql.org/message-id/blfq7kk5bylebetudvyslef5j2bvigrqikmwy66i4znvkv63uy%40smypdulfe7gb"
+        },
+        {
+          "index": 25,
+          "from": "Christoph Berg",
+          "date": "2026-07-15T12:10:52Z",
+          "url": "https://www.postgresql.org/message-id/ald4zLd-nes2CjuZ%40msg.df7cb.de"
+        },
+        {
+          "index": 27,
+          "from": "Christoph Berg",
+          "date": "2026-09-18T07:20:07Z",
+          "url": "https://www.postgresql.org/message-id/aqzmJ7-5202qXuzx%40msg.df7cb.de"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Christoph says in message #27 that there are no extension builds yet. Peter's remark in message #19 that extensions should switch eventually shows intent, but the thread shows no extension project asking for the file.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Installed .pc name and variables become a contract before agreement",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Version 20 ships postgresql-20-extension.pc with dir_mod, dir_bitcode and the full Requires list, and extensions start to depend on it. A later release changes the name, a variable or the Requires semantics. Extension builds then fail against the new server until every extension's build file is changed.",
+      "argument": "In message #21 Andres said there is not enough agreement yet for a name this general. In message #13 Peter asked whether \"extension\" is the right term. The disagreement between Peter (message #19) and Andres (message #20) on whether Requires should list every server dependency is still open, and Christoph in message #27 has no extension builds to report. The .pc file is installed even with -Dllvm=disabled (message #24), so a meson build with LLVM disabled also publishes the interface.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        13,
+        19,
+        20,
+        21,
+        24,
+        27
+      ],
+      "author_must_show": "Can the core bitcode patches be committed under the internal llvm-jit-bitcode name while the general extension .pc file waits for agreed names, variables and Requires semantics?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 13,
+          "from": "Peter Eisentraut",
+          "date": "2026-03-12T10:54:11Z",
+          "url": "https://www.postgresql.org/message-id/4286824f-40c3-4716-ad71-2085b83f3736%40eisentraut.org"
+        },
+        {
+          "index": 19,
+          "from": "Peter Eisentraut",
+          "date": "2026-03-31T07:43:11Z",
+          "url": "https://www.postgresql.org/message-id/c6b26dee-bd62-44d9-b4f3-730b6ecf95c6%40eisentraut.org"
+        },
+        {
+          "index": 20,
+          "from": "Andres Freund",
+          "date": "2026-04-01T13:19:34Z",
+          "url": "https://www.postgresql.org/message-id/3whtmw6twe442o3r44gsagheq5cs2clcghzjeo7rljstpdemrh%40oojczkhk2mbt"
+        },
+        {
+          "index": 21,
+          "from": "Andres Freund",
+          "date": "2026-04-06T20:09:26Z",
+          "url": "https://www.postgresql.org/message-id/blfq7kk5bylebetudvyslef5j2bvigrqikmwy66i4znvkv63uy%40smypdulfe7gb"
+        },
+        {
+          "index": 24,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-07-06T13:37:40Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ2V%2BX%3DWgyr2U0C-%3DhH1RWELmuQcqV523o0R1Yi22K4FCg%40mail.gmail.com"
+        },
+        {
+          "index": 27,
+          "from": "Christoph Berg",
+          "date": "2026-09-18T07:20:07Z",
+          "url": "https://www.postgresql.org/message-id/aqzmJ7-5202qXuzx%40msg.df7cb.de"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Andres's concern in message #21 about a general name was never withdrawn, and the Requires disagreement in messages #19 and #20 is open. Patch 0006 is last in the series, so the bitcode patches can go in without it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "General extension .pc file exists only in meson builds",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "pg_dump_round_trip",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension author follows the new docs and writes a meson.build that calls dependency('postgresql-20-extension'). A user or packager whose server was built with autoconf then cannot build that extension, because the .pc file is not installed. The author finds out from bug reports, platform by platform.",
+      "argument": "In message #13 Peter said that installed .pc files must also be built by the makefiles, or else not installed. The autoconf patch was dropped after Andres in message #21 proposed a narrow llvm-jit-bitcode name, so it would not be needed. The last patch (v17-0006) brings back the general postgresql-$version-extension.pc name and documents it as an extension build interface, but the autoconf part is not back. A user-facing interface that depends on how the server was built departs from PGXS and pg_config, which both build systems provide.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        13,
+        21,
+        22,
+        25,
+        26,
+        30
+      ],
+      "author_must_show": "Will autoconf builds install the same postgresql-$version-extension.pc file, or will the general rename wait until they do?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 13,
+          "from": "Peter Eisentraut",
+          "date": "2026-03-12T10:54:11Z",
+          "url": "https://www.postgresql.org/message-id/4286824f-40c3-4716-ad71-2085b83f3736%40eisentraut.org"
+        },
+        {
+          "index": 21,
+          "from": "Andres Freund",
+          "date": "2026-04-06T20:09:26Z",
+          "url": "https://www.postgresql.org/message-id/blfq7kk5bylebetudvyslef5j2bvigrqikmwy66i4znvkv63uy%40smypdulfe7gb"
+        },
+        {
+          "index": 22,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-07-01T10:25:00Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ0Y0J29rUqjpX8BMU7HwSgeSz2RxcJm%2B4PLhCeGjtWmhg%40mail.gmail.com"
+        },
+        {
+          "index": 25,
+          "from": "Christoph Berg",
+          "date": "2026-07-15T12:10:52Z",
+          "url": "https://www.postgresql.org/message-id/ald4zLd-nes2CjuZ%40msg.df7cb.de"
+        },
+        {
+          "index": 26,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-07-17T14:22:49Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ26ohMftt20NUtVAxU8Feqjhz-jEfUvFKATYEaRR%2Bxmqg%40mail.gmail.com"
+        },
+        {
+          "index": 30,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-11-02T10:19:30Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ3MWpX%2B6FddixNW7NEoYNnHVktsDzsbV060EPO3gxzsnw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #22 removed the autoconf patch, and v17-0006 brings back the general name without it. Peter's condition in message #13 is unanswered for the renamed file.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Requires list makes extension builds need every server -dev package",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "design",
+      "touch_points": [
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A packager builds a small extension against a distribution server package through the .pc file. pkg-config --cflags fails unless krb5, ldap, icu, libxml2, lz4, openssl, zlib and zstd development packages are all installed. Today the same extension builds with PGXS without most of these packages.",
+      "argument": "Peter in message #19 calls this a regression for extensions moving to the .pc file. Andres answers in message #20 that server headers include some of these dependencies, and that static linking needs them. That holds for headers such as libpq-be.h, but the proposal does not show which server headers need ldap, lz4 or zstd. It also does not say why Requires.private would not cover the static-linking case. The thread leaves this open.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        13,
+        14,
+        19,
+        20
+      ],
+      "author_must_show": "Which listed dependencies do installed server headers actually include, and why would Requires.private not cover the rest?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 13,
+          "from": "Peter Eisentraut",
+          "date": "2026-03-12T10:54:11Z",
+          "url": "https://www.postgresql.org/message-id/4286824f-40c3-4716-ad71-2085b83f3736%40eisentraut.org"
+        },
+        {
+          "index": 14,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-03-18T12:44:18Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ0KxMphg%2BM%2B4Shm%3DHmNV%2BXhC7LUKc6hrC%2B-QiovhzvdVA%40mail.gmail.com"
+        },
+        {
+          "index": 19,
+          "from": "Peter Eisentraut",
+          "date": "2026-03-31T07:43:11Z",
+          "url": "https://www.postgresql.org/message-id/c6b26dee-bd62-44d9-b4f3-730b6ecf95c6%40eisentraut.org"
+        },
+        {
+          "index": 20,
+          "from": "Andres Freund",
+          "date": "2026-04-01T13:19:34Z",
+          "url": "https://www.postgresql.org/message-id/3whtmw6twe442o3r44gsagheq5cs2clcghzjeo7rljstpdemrh%40oojczkhk2mbt"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Andres's reply in message #20 covers headers such as libpq-be.h, but it does not show that every listed package is needed. Peter did not accept it, and the thread has no later answer.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Nothing tests that meson-built bitcode is still used for inlining",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch changes include paths, compiler flags or a contrib source layout. The .bc files still build but no longer match, or are no longer installed, and JIT inlining quietly falls back. Packagers learn of it only through slower queries, if they notice.",
+      "argument": "In messages #4 and #26, inlining was confirmed only by adding debug logging to llvmjit_inline.cpp, and message #25 says it is hard to tell whether the .bc files are used. Meson now keeps its own bitcode flags and a hand-picked contrib list, separate from the makefile path, so each build-system change has a second place to keep right. Full server JIT on Windows is untested (message #28).",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4,
+        25,
+        26,
+        28
+      ],
+      "author_must_show": "Which automated test, run in CI, fails when a meson build installs bitcode that the server cannot load or inline?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "Diego Fronza",
+          "date": "2025-03-10T22:04:19Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BhiPX8R69OeApj55Fy1VXOhuHUKfdvp2f80icLy65z76Jy%3DJA%40mail.gmail.com"
+        },
+        {
+          "index": 25,
+          "from": "Christoph Berg",
+          "date": "2026-07-15T12:10:52Z",
+          "url": "https://www.postgresql.org/message-id/ald4zLd-nes2CjuZ%40msg.df7cb.de"
+        },
+        {
+          "index": 26,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-07-17T14:22:49Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ26ohMftt20NUtVAxU8Feqjhz-jEfUvFKATYEaRR%2Bxmqg%40mail.gmail.com"
+        },
+        {
+          "index": 28,
+          "from": "harrisontbooth(at)gmail(dot)com",
+          "date": "2026-10-13T23:14:05Z",
+          "url": "https://www.postgresql.org/message-id/CAAH-eSX_OniTafzLjiis%2BLsgnicS5JSuiJriQw_B2wEHM_q4mA%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #4, #25 and #26 confirm that inlining was checked only by hand-added debug logging. The makefile build may have the same gap, but the meson path adds a second flag set and contrib list that can drift silently.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "General extension .pc file duplicates pg_config and PGXS",
+      "level": "1b",
+      "rubric_item": 12,
+      "category": "does_not_fit",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension author moves from pg_config to postgresql-$version-extension.pc. The two sources can disagree on Requires (message #19 versus #20), compiler flags or paths, as the extra \"/usr\" in message #25 shows. The author first sees this as a failed build on a machine that lacks the -dev packages.",
+      "argument": "pg_config already reports the include paths, CFLAGS, pkglibdir and sharedir that non-make build systems need, and PGXS covers make. The bitcode build only needs the uninstalled .pc file internally (message #3), and Peter suggested not installing it for now (message #13). Andres asked for a narrow name because there is no agreement yet on a general one (message #21). Christoph's answer is that a standard needs users (message #25), but that is about convenience, not a gap pg_config cannot fill.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        13,
+        19,
+        20,
+        21,
+        25,
+        27
+      ],
+      "author_must_show": "Which extension builds need data from the installed .pc file that pg_config cannot give, and who uses it today?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2025-03-07T10:52:09Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ1JEotkU8TTwhNreUp0cTbY1ag6uOGbHJGSeqotGNUB5w%40mail.gmail.com"
+        },
+        {
+          "index": 13,
+          "from": "Peter Eisentraut",
+          "date": "2026-03-12T10:54:11Z",
+          "url": "https://www.postgresql.org/message-id/4286824f-40c3-4716-ad71-2085b83f3736%40eisentraut.org"
+        },
+        {
+          "index": 19,
+          "from": "Peter Eisentraut",
+          "date": "2026-03-31T07:43:11Z",
+          "url": "https://www.postgresql.org/message-id/c6b26dee-bd62-44d9-b4f3-730b6ecf95c6%40eisentraut.org"
+        },
+        {
+          "index": 20,
+          "from": "Andres Freund",
+          "date": "2026-04-01T13:19:34Z",
+          "url": "https://www.postgresql.org/message-id/3whtmw6twe442o3r44gsagheq5cs2clcghzjeo7rljstpdemrh%40oojczkhk2mbt"
+        },
+        {
+          "index": 21,
+          "from": "Andres Freund",
+          "date": "2026-04-06T20:09:26Z",
+          "url": "https://www.postgresql.org/message-id/blfq7kk5bylebetudvyslef5j2bvigrqikmwy66i4znvkv63uy%40smypdulfe7gb"
+        },
+        {
+          "index": 25,
+          "from": "Christoph Berg",
+          "date": "2026-07-15T12:10:52Z",
+          "url": "https://www.postgresql.org/message-id/ald4zLd-nes2CjuZ%40msg.df7cb.de"
+        },
+        {
+          "index": 27,
+          "from": "Christoph Berg",
+          "date": "2026-09-18T07:20:07Z",
+          "url": "https://www.postgresql.org/message-id/aqzmJ7-5202qXuzx%40msg.df7cb.de"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "pg_config reports the include paths, flags and directories, and the thread names no extension build that it cannot serve. The extra \"/usr\" paths were fixed in message #26, so that part of the scenario must not be used as support.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Last patch commits to a public extension build interface without agreement",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Extension authors adopt postgresql-$version-extension.pc as the supported way to build. A later release changes its Requires list or its -f flags, or autoconf builds never ship it. Builds then break or behave differently by build system, and the project has to keep the file's variables stable for every release after.",
+      "argument": "In message #21 Andres asked for a narrow bitcode-only name because there was not enough agreement on a general one, and he dropped the tests and the autoconf parts. Message #25 brought the general name back as a way to start a standard. Peter and Andres still disagree on the Requires list (messages #19 and #20), and Peter said in message #13 that an installed .pc file also needs a makefile build. Message #27 asks only for the core bitcode part to be committed.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        13,
+        19,
+        20,
+        21,
+        25,
+        27
+      ],
+      "author_must_show": "Can the general extension .pc rename be held back until the Requires list, the compiler flags and autoconf parity are agreed, so the bitcode patches can go in first?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 13,
+          "from": "Peter Eisentraut",
+          "date": "2026-03-12T10:54:11Z",
+          "url": "https://www.postgresql.org/message-id/4286824f-40c3-4716-ad71-2085b83f3736%40eisentraut.org"
+        },
+        {
+          "index": 19,
+          "from": "Peter Eisentraut",
+          "date": "2026-03-31T07:43:11Z",
+          "url": "https://www.postgresql.org/message-id/c6b26dee-bd62-44d9-b4f3-730b6ecf95c6%40eisentraut.org"
+        },
+        {
+          "index": 20,
+          "from": "Andres Freund",
+          "date": "2026-04-01T13:19:34Z",
+          "url": "https://www.postgresql.org/message-id/3whtmw6twe442o3r44gsagheq5cs2clcghzjeo7rljstpdemrh%40oojczkhk2mbt"
+        },
+        {
+          "index": 21,
+          "from": "Andres Freund",
+          "date": "2026-04-06T20:09:26Z",
+          "url": "https://www.postgresql.org/message-id/blfq7kk5bylebetudvyslef5j2bvigrqikmwy66i4znvkv63uy%40smypdulfe7gb"
+        },
+        {
+          "index": 25,
+          "from": "Christoph Berg",
+          "date": "2026-07-15T12:10:52Z",
+          "url": "https://www.postgresql.org/message-id/ald4zLd-nes2CjuZ%40msg.df7cb.de"
+        },
+        {
+          "index": 27,
+          "from": "Christoph Berg",
+          "date": "2026-09-18T07:20:07Z",
+          "url": "https://www.postgresql.org/message-id/aqzmJ7-5202qXuzx%40msg.df7cb.de"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-2, which states the same contract risk and the same request to hold back the rename. This one also says Andres dropped the tests and autoconf parts, but Nazir removed them in message #22.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The last patch installs postgresql-$version-extension.pc and documents it as an extension build interface."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": true,
+      "reason": "see objection standards-compat-1: General extension .pc file exists only in meson builds"
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Meson gets its own bitcode flags, a hand-picked contrib list, the irlink script and an installed .pc file to keep stable."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Meson builds start to inline server and contrib functions in JIT, and the thread shows no query-time measurement."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "The general extension .pc file overlaps with pg_config and PGXS, which both build systems already provide."
+    }
+  ],
+  "questions": [
+    "Can the core bitcode patches be committed under the llvm-jit-bitcode name while the general extension .pc rename waits for agreement?",
+    "Which extension projects outside core need the installed .pc file, and what does it give them that pg_config or PGXS does not?",
+    "Will autoconf builds install the same postgresql-$version-extension.pc file, or will the rename wait until they do?",
+    "Which dependencies in the Requires list do installed server headers include, and why would Requires.private not cover the rest?",
+    "Which automated CI test fails when a meson build installs bitcode that the server cannot load or inline?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Andres Freund co-authored the series and reviewed it in the thread. Peter Eisentraut reviewed it but removed himself as reviewer in April 2026.",
+    "liability": "The owner signs for a second set of bitcode flags and a contrib list that must follow the makefile build. If the last patch goes in, the .pc name, variables and Requires list must stay stable for every later release.",
+    "author_follow_up": "The series reached v17 and the CommitFest history shows rebases through October 2026, so the authors are still active."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "proceed",
+    "reason": "Packagers who build with meson and LLVM need the bitcode files, and Christoph Berg reports v15 working in Debian snapshot packages for months. The patch touches about 40 meson.build files but no server code. Review cost is an estimate because no patch code was read."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, this review could not check that the meson bitcode flags match the makefile build, what the irlink script does, or what the .pc file holds with -Dllvm=disabled. Only 3 of 32 messages were read directly.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:4410",
+      "kind": "cf",
+      "title": "Meson build updates",
+      "status": "Withdrawn",
+      "date": "2023-09-01",
+      "first_date": "2023-05-18",
+      "url": "https://commitfest.postgresql.org/patch/4410/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CSPIJVUDZFKX.3KHMOAVGF94RV@c3po"
+      ],
+      "authors": "Tristan Partin (tristan957)",
+      "objectors": "Andres Freund",
+      "summary": "A set of small cleanups to the Meson build, mostly for consistency with surrounding code. The larger changes added Meson overrides for binaries and libpq and removed the Meson program options for specifying tool paths in favor of machine files.",
+      "objection": "Andres Freund rejected removing the program path options because Meson machine files cannot be changed without a new build directory and are hard to use from the command line. He also found overrides for every binary not worth the extra boilerplate, so the author cut that patch down to libpq. Some patches were pushed in July 2023. The last message asks about the pending pkg-config(python3) patch with no visible reply, and the messages do not show why the entry was withdrawn.",
+      "touch_points": [],
+      "matched_queries": [
+        "meson llvm bitcode",
+        "meson bitcode emission",
+        "meson pgxs replacement",
+        "meson build regression"
+      ],
+      "from_hint": false,
+      "score": 0.545,
+      "enriched": true,
+      "key_quote": "So I really don't want to remove these options.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20230609164135.77fjwqkqzdxfs3f5%40awork3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:4208",
+      "kind": "cf",
+      "title": "Improvements to Meson docs",
+      "status": "Returned with feedback",
+      "date": "2024-01-20",
+      "first_date": "2022-10-19",
+      "url": "https://commitfest.postgresql.org/patch/4208/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJxrbywFPcgC4nP_v+HHPhaYSWX2JL8FZXY2aFOZxXxTkTJJPw@mail.gmail.com"
+      ],
+      "authors": "Samay Sharma (samaysharma)",
+      "objectors": "",
+      "summary": "The patch series adds and reorganizes the installation documentation for building Postgres with meson. Follow-up patches fix meson docs errors, add a data layout options sub-section, remove the Anti-Features section, reorder the Miscellaneous section and rewrite the short version of the install guide.",
+      "objection": "The author stopped responding. Andres Freund (section order, merging the Anti-Features options) and Tristan Partin (meson compile instead of ninja, directory layout for the short version) left review comments that got no follow-up for months, so the entry was returned with feedback. The initial documentation had already been committed.",
+      "touch_points": [],
+      "matched_queries": [
+        "meson llvm bitcode",
+        "meson bitcode emission",
+        "meson pgxs replacement",
+        "meson build regression"
+      ],
+      "from_hint": false,
+      "score": 0.506,
+      "enriched": true,
+      "key_quote": "I have changed the status of commitfest entry to \"Returned with\nFeedback\" as there was no followup on Tristan Partin and Andres's\ncomments from many months.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALDaNm3Wi-DfwCshESi81LXHpHX%3DapC_t66F6K3YZrRowArq%3Dg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:4914",
+      "kind": "cf",
+      "title": "Speed up clean meson builds by ~25%",
+      "status": "Rejected",
+      "date": "2024-05-20",
+      "first_date": "2024-04-04",
+      "url": "https://commitfest.postgresql.org/patch/4914/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGECzQQg4qmGbqqLbK9yyReWd1g=d7T07_gua+RKXsdsW9BG-Q@mail.gmail.com"
+      ],
+      "authors": "Jelte Fennema-Nio (jeltef)",
+      "objectors": "Tom Lane, Peter Eisentraut, Robert Haas",
+      "summary": "The patch moves the build of the generated ecpg preproc file near the top of the meson build order, so its long compile overlaps with other files. The author reported clean builds dropping from about 40 to about 30 seconds on a clang build.",
+      "objection": "Tom Lane planned an ecpg grammar fix for v18 that removes the slow compile, and did not want to change the build rules for a temporary problem. Retests showed small gains: Peter Eisentraut measured 1% slower with gcc-14 and 3% faster with clang-18, and Robert Haas saved about 3 seconds. Robert Haas concluded that the patch helps only back-branch builds using clang without ccache and an older ninja, which is too narrow to justify it.",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "meson llvm bitcode",
+        "meson bitcode emission",
+        "meson pgxs replacement",
+        "meson build regression"
+      ],
+      "from_hint": false,
+      "score": 0.483,
+      "enriched": true,
+      "key_quote": "I think\nthat's a small enough savings with enough conditionals that we should\nnot bother.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoZY8V3p%2BxY1sNcFL6HZHqeZ3eBYa5YQJqrWM4V604-csw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:5177",
+      "kind": "cf",
+      "title": "Invalid postgres version detection in meson.build",
+      "status": "Rejected",
+      "date": "2024-08-20",
+      "first_date": "2024-08-14",
+      "url": "https://commitfest.postgresql.org/patch/5177/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/7e0963e9-8775-46d9-b76f-6392474cb609@tantorlabs.ru"
+      ],
+      "authors": "Sergey Solovev (ashblade)",
+      "objectors": "Heikki Linnakangas",
+      "summary": "The patch changes the devel check in meson.build from pg_version.endswith('devel') to pg_version.contains('devel'), to match the beta and rc checks. The author considered the current check a bug in version detection.",
+      "objection": "Heikki Linnakangas replied that the current code is correct. Beta and rc version strings end with a number, such as \"17beta1\" or \"16rc2\", but devel version strings never do, such as \"17devel\", so endswith('devel') is enough.",
+      "touch_points": [],
+      "matched_queries": [
+        "meson llvm bitcode",
+        "meson bitcode emission",
+        "meson pgxs replacement",
+        "meson build regression"
+      ],
+      "from_hint": false,
+      "score": 0.431,
+      "enriched": true,
+      "key_quote": "I believe it's correct as it is.",
+      "quote_message_url": "https://www.postgresql.org/message-id/a0fd8c52-6945-454a-b1d6-9d7353544f27%40iki.fi",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:4203",
+      "kind": "cf",
+      "title": "Allow meson to find ICU in non-standard location",
+      "status": "Withdrawn",
+      "date": "2023-03-08",
+      "first_date": "2023-02-22",
+      "url": "https://commitfest.postgresql.org/patch/4203/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/10930b0dd06d7fbba2b67c07d39bc7ace08d5e42.camel@j-davis.com"
+      ],
+      "authors": "Jeff Davis (jdavis)",
+      "objectors": "",
+      "summary": "The patch changes meson so that it finds ICU in a non-standard location when -Dextra_lib_dirs and -Dextra_include_dirs are given, by searching for the library directly. The author was unsure about the approach, partly because meson then reports only \"YES\" and not the ICU version found.",
+      "objection": "The author withdrew it because setting -Dextra_lib_dirs, as Jacob Champion suggested, already worked with ICU 72 without the patch. Andres Freund had also pointed to -Dpkg_config_path, which finds ICU but did not add the RPATH in the author's test. The author said a clearer solution or doc updates would still help others.",
+      "touch_points": [],
+      "matched_queries": [
+        "meson llvm bitcode",
+        "meson bitcode emission",
+        "meson pgxs replacement",
+        "meson build regression"
+      ],
+      "from_hint": false,
+      "score": 0.389,
+      "enriched": true,
+      "key_quote": "Obviously we'd like a little better solution so that others don't get\nconfused, but it's not really a problem for me any more.",
+      "quote_message_url": "https://www.postgresql.org/message-id/875e58307282b963b4e8cc4671bad8a8473caca2.camel%40j-davis.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:3857",
+      "kind": "cf",
+      "title": "Enable jitlink as an alternative jit linker of legacy Rtdyld and add riscv jitting support",
+      "status": "Returned with feedback",
+      "date": "2023-09-01",
+      "first_date": "2022-08-29",
+      "url": "https://commitfest.postgresql.org/patch/3857/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20220829074622.2474104-1-alex.fan.q@gmail.com"
+      ],
+      "authors": "Alex Fan (alexfanqi)",
+      "objectors": "Andres Freund",
+      "summary": "The patch lets the LLVM JIT provider use JITLink (ObjectLinkingLayer) in place of RuntimeDyld, through a new C++ wrapper because LLVM has no C API for it. It turns this on for riscv with LLVM 15 or later and hard-codes riscv ABI names, CPU features, PIC relocation and the medium code model.",
+      "objection": "Andres Freund said the riscv ABI and target machine settings belong in LLVM, and that the missing JITLink C API should be proposed to LLVM. Thomas Munro asked why JITLink was used only for riscv and why riscv needed manual feature and ABI selection. The author agreed to try the LLVM patches later and asked to keep the workarounds meanwhile. No reviewer replied after that, and no new patch version appears.",
+      "touch_points": [],
+      "matched_queries": [
+        "meson llvm bitcode",
+        "jit inlining bitcode extensions",
+        "llvm jit inline contrib"
+      ],
+      "from_hint": false,
+      "score": 0.378,
+      "enriched": true,
+      "key_quote": "I think this is something that should go into the llvm code, rather than\npostgres.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20221225120153.vifxa5t2ezr3weqb%40alap3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "revert:b9a7a822723aebb16cbe7e5fb874e5124745b07e",
+      "kind": "revert",
+      "title": "Revert \"Add USER SET parameter values for pg_db_role_setting\"",
+      "status": "Reverted",
+      "date": "2023-05-17",
+      "first_date": "2022-12-09",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=b9a7a822723aebb16cbe7e5fb874e5124745b07e",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/d46f9265-ff3c-6743-2278-6772598233c2@pgmasters.net",
+        "https://www.postgresql.org/message-id/flat/CAPpHfdsLd6E--epnGqXENqLP6dLwuNZrPMcNYb3wJ87WR7UBOQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20221227065456.GU1153@telsasoft.com",
+        "https://www.postgresql.org/message-id/flat/20230102154240.GL1153@telsasoft.com"
+      ],
+      "authors": "Alexander Korotkov",
+      "objectors": "",
+      "summary": "Revert \"Add USER SET parameter values for pg_db_role_setting\"\nReverted commit(s): Add USER SET parameter values for pg_db_role_setting; Fix invalid role names introduced in 096dd80f3c; meson: Add 'running' test setup, as a replacement for installcheck; Remove extra regress check arguments from test_pg_db_role_setting; Fix wrong construct_array_builtin() call in GUCArrayDelete()",
+      "objection": "This reverts commit 096dd80f3ccc and its fixups beecbe8e5001, afdd9f7f0e00,\n529da086ba, db93e739ac61.\n\nCatversion is bumped.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "meson llvm bitcode",
+        "meson bitcode emission",
+        "meson build regression"
+      ],
+      "from_hint": false,
+      "score": 0.268,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:1285",
+      "kind": "cf",
+      "title": "JIT compiling expressions/tuple deforming",
+      "status": "Returned with feedback",
+      "date": "2017-11-30",
+      "first_date": "2017-09-01",
+      "url": "https://commitfest.postgresql.org/patch/1285/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20170901064131.tazjxwus3k2w3ybh@alap3.anarazel.de"
+      ],
+      "authors": "Andres Freund (andresfreund)",
+      "objectors": "",
+      "summary": "The patch series adds LLVM-based JIT compilation of expression evaluation, tuple deforming and aggregate transition calls, with optional inlining of builtin functions from bitcode. It also includes preparatory executor refactoring and configure support for LLVM.",
+      "objection": "Michael Paquier closed the entry because this thread had stalled, while the author kept working on the patches elsewhere; no objection to the design decided it. The author had also said the series was still far from committable, and he moved the work to a separate commitfest entry.",
+      "touch_points": [],
+      "matched_queries": [
+        "jit inlining bitcode extensions",
+        "llvm jit inline contrib"
+      ],
+      "from_hint": false,
+      "score": 0.243,
+      "enriched": true,
+      "key_quote": "I know that you are working on this actively per the set of patches you have sent lately, but this thread has stalled, so I am marking it as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB7nPqSBD%3DrM-3fmpThsfrFZo-fW_OuWzNiJV8%2BHW-_jnGXNbg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:3071",
+      "kind": "cf",
+      "title": "Lazy JIT IR code generation to increase JIT speed with partitions",
+      "status": "Withdrawn",
+      "date": "2023-01-27",
+      "first_date": "2020-12-28",
+      "url": "https://commitfest.postgresql.org/patch/3071/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/244ee08c-5e26-45d1-8d10-d7b4d16b08ae@swarm64.com"
+      ],
+      "authors": "David Geier (geidav), Luc Vlaming (luc.vlaming)",
+      "objectors": "Andres Freund",
+      "summary": "The patch delays JIT IR generation until an expression is first executed, so plan nodes that never run, such as most Parallel Append children over many partitions, are never compiled. A later version also cached the to-be-inlined bitcode modules and cloned them with llvm::CloneModule() instead of reloading them from disk.",
+      "objection": "Andres Freund objected that lazy generation emits roughly one module per function, which is inherently more expensive than emitting one module per query. He would not accept a one-function-per-module design as the base for usage-triggered JIT. He also warned that IRMover renames types in cloned modules, which can degrade code quality. David Geier then found that the module cache had stopped inlining altogether, and that cloning early made llvm::CloneModule() so slow that JIT time stayed high, so he stopped work on it.",
+      "touch_points": [],
+      "matched_queries": [
+        "jit inlining bitcode extensions",
+        "llvm jit inline contrib"
+      ],
+      "from_hint": false,
+      "score": 0.241,
+      "enriched": true,
+      "key_quote": "I think that's just inherently more expensive and thus a no-go.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20220704202347.umiphdqxttjkfi22%40awork3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:170",
+      "kind": "cf",
+      "title": "Configurable location for extension .control files",
+      "status": "Returned with feedback",
+      "date": "2015-07-30",
+      "first_date": "2013-06-04",
+      "url": "https://commitfest.postgresql.org/patch/170/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/51AE0845.8010600@ocharles.org.uk"
+      ],
+      "authors": "Oskari Saarenmaa (os)",
+      "objectors": "",
+      "summary": "Configurable location for extension .control files\nThreads: Configurable location for extension .control files",
+      "objection": "",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "postgresql-extension.pc pkg-config",
+        "pkg-config extension build"
+      ],
+      "from_hint": false,
+      "score": 0.228,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:745",
+      "kind": "cf",
+      "title": "Sample configuration files",
+      "status": "Returned with feedback",
+      "date": "2016-09-30",
+      "first_date": "2016-08-29",
+      "url": "https://commitfest.postgresql.org/patch/745/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ef027c98-d48a-3ba4-5540-b30600c737fa@2ndquadrant.fr"
+      ],
+      "authors": "Vik Fearing (xocolatl)",
+      "objectors": "",
+      "summary": "Sample configuration files\nThreads: Sample configuration files",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "postgresql-extension.pc pkg-config",
+        "pkg-config extension build"
+      ],
+      "from_hint": false,
+      "score": 0.219,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:4546",
+      "kind": "cf",
+      "title": "Add inline comments to the pg_hba_file_rules view",
+      "status": "Withdrawn",
+      "date": "2023-10-10",
+      "first_date": "2023-09-04",
+      "url": "https://commitfest.postgresql.org/patch/4546/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/4d623899-36ac-71b5-311d-2a4672d75736@uni-muenster.de"
+      ],
+      "authors": "Jim Jones (jimus)",
+      "objectors": "",
+      "summary": "Add inline comments to the pg_hba_file_rules view\nThreads: [PATCH] Add inline comments to the pg_hba_file_rules view",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "jit inlining bitcode extensions",
+        "llvm jit inline contrib"
+      ],
+      "from_hint": false,
+      "score": 0.21,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:1965",
+      "kind": "cf",
+      "title": "SQL Inlining Behavior",
+      "status": "Returned with feedback",
+      "date": "2019-02-03",
+      "first_date": "2018-11-09",
+      "url": "https://commitfest.postgresql.org/patch/1965/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CACowWR0TXXL0NfPMW2afCKzX++nHHBZLW3-BLusu_B0WjBB1=A@mail.gmail.com"
+      ],
+      "authors": "Adam Brightwell (abrightwell)",
+      "objectors": "",
+      "summary": "SQL Inlining Behavior\nThreads: Changing SQL Inlining Behaviour (or...?)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "jit inlining bitcode extensions",
+        "llvm jit inline contrib"
+      ],
+      "from_hint": false,
+      "score": 0.202,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "revert:e8d78581bb864369035c736a82ecfb57482a1a09",
+      "kind": "revert",
+      "title": "Revert \"Convert *GetDatum() and DatumGet*() macros to inline functions\"",
+      "status": "Reverted",
+      "date": "2022-09-12",
+      "first_date": "2022-09-12",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e8d78581bb864369035c736a82ecfb57482a1a09",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/8528fb7e-0aa2-6b54-85fb-0c0886dbd6ed@enterprisedb.com"
+      ],
+      "authors": "Peter Eisentraut",
+      "objectors": "",
+      "summary": "Revert \"Convert *GetDatum() and DatumGet*() macros to inline functions\"\nReverted commit(s): Convert *GetDatum() and DatumGet*() macros to inline functions",
+      "objection": "This reverts commit 595836e99bf1ee6d43405b885fb69bb8c6d3ee23.\n\nIt has problems when USE_FLOAT8_BYVAL is off.",
+      "touch_points": [],
+      "matched_queries": [
+        "jit inlining bitcode extensions",
+        "llvm jit inline contrib"
+      ],
+      "from_hint": false,
+      "score": 0.191,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:1069",
+      "kind": "cf",
+      "title": "Configurable file mode mask",
+      "status": "Returned with feedback",
+      "date": "2017-03-21",
+      "first_date": "2017-03-01",
+      "url": "https://commitfest.postgresql.org/patch/1069/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ad346fe6-b23e-59f1-ecb7-0e08390ad629@pgmasters.net"
+      ],
+      "authors": "Stephen Frost (sfrost), Adam Brightwell (abrightwell), David Steele (dsteele)",
+      "objectors": "",
+      "summary": "Configurable file mode mask\nThreads: PATCH: Configurable file mode mask",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "postgresql-extension.pc pkg-config",
+        "pkg-config extension build"
+      ],
+      "from_hint": false,
+      "score": 0.188,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "revert:fc8a81e3e73e30ac083cc60837ecf98b33d5cc7e",
+      "kind": "revert",
+      "title": "Revert inadvertant change in pg_config behavior",
+      "status": "Reverted",
+      "date": "2016-02-17",
+      "first_date": "2016-02-17",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=fc8a81e3e73e30ac083cc60837ecf98b33d5cc7e",
+      "thread_urls": [],
+      "authors": "Joe Conway",
+      "objectors": "",
+      "summary": "Revert inadvertant change in pg_config behavior\nReverted commit(s): Add new system view, pg_config",
+      "objection": "In commit a5c43b88 the behavior of command line pg_config was\ninadvertantly changed to include the config name when specific\nconfigs are requested, similar to when none are requested and\nall are emitted. This breaks scripts that expect to use\npg_config for e.g. PGXS. Revert the behavior to the previous.",
+      "touch_points": [
+        "catalog changes"
+      ],
+      "matched_queries": [
+        "postgresql-extension.pc pkg-config",
+        "pkg-config extension build"
+      ],
+      "from_hint": false,
+      "score": 0.18,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:3573",
+      "kind": "cf",
+      "title": "jit_warn_above_fraction parameter",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-02-25",
+      "url": "https://commitfest.postgresql.org/patch/3573/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABUevExR_9ZmkYj-aBvDreDKUinWLBBpORcmTbuPdNb5vGOLtA@mail.gmail.com"
+      ],
+      "authors": "Magnus Hagander (mha)",
+      "objectors": "",
+      "summary": "jit_warn_above_fraction parameter\nThreads: Add parameter jit_warn_above_fraction",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "jit inlining bitcode extensions",
+        "llvm jit inline contrib"
+      ],
+      "from_hint": false,
+      "score": 0.169,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "revert:87e9fae0696d9e3ff70a1438775ad9f786b854a5",
+      "kind": "revert",
+      "title": "Revert \"For all ppc compilers, implement pg_atomic_fetch_add_ with inline asm.\"",
+      "status": "Reverted",
+      "date": "2019-09-15",
+      "first_date": "2019-09-14",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=87e9fae0696d9e3ff70a1438775ad9f786b854a5",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/7517.1568470247@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20190831071157.GA3251746@rfd.leadboat.com"
+      ],
+      "authors": "Noah Misch",
+      "objectors": "",
+      "summary": "Revert \"For all ppc compilers, implement pg_atomic_fetch_add_ with inline asm.\"\nReverted commit(s): For all ppc compilers, implement pg_atomic_fetch_add_ with inline asm.",
+      "objection": "This reverts commit e7ff59686eacf5021fb84be921116986c3828d8a.  It\ndefined pg_atomic_fetch_add_u32_impl() without defining\npg_atomic_compare_exchange_u32_impl(), which is incompatible with\nsrc/include/port/atomics/fallback.h.  Per buildfarm member prairiedog.",
+      "touch_points": [],
+      "matched_queries": [
+        "jit inlining bitcode extensions",
+        "llvm jit inline contrib"
+      ],
+      "from_hint": false,
+      "score": 0.167,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:348",
+      "kind": "cf",
+      "title": "snapshot too old, configured by time",
+      "status": "Returned with feedback",
+      "date": "2016-02-01",
+      "first_date": "2015-08-31",
+      "url": "https://commitfest.postgresql.org/patch/348/",
+      "thread_urls": [],
+      "authors": "Kevin Grittner (kgrittn)",
+      "objectors": "",
+      "summary": "snapshot too old, configured by time",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "postgresql-extension.pc pkg-config",
+        "pkg-config extension build"
+      ],
+      "from_hint": false,
+      "score": 0.157,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:11",
+      "kind": "cf",
+      "title": "Add ssl_protocols configuration option",
+      "status": "Rejected",
+      "date": "2015-02-13",
+      "first_date": "2014-10-17",
+      "url": "https://commitfest.postgresql.org/patch/11/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/86a94vt131.fsf@nine.des.no"
+      ],
+      "authors": "Dag-Erling Smørgrav (des)",
+      "objectors": "",
+      "summary": "Add ssl_protocols configuration option\nThreads: [PATCH] add ssl_protocols configuration option",
+      "objection": "",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "postgresql-extension.pc pkg-config",
+        "pkg-config extension build"
+      ],
+      "from_hint": false,
+      "score": 0.154,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:2461",
+      "kind": "cf",
+      "title": "Fix PGXS so built control files work with VPATH builds",
+      "status": "Returned with feedback",
+      "date": "2020-07-31",
+      "first_date": "2020-02-07",
+      "url": "https://commitfest.postgresql.org/patch/2461/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMsr+YE6sG=KgpSAFEhTbrNq48M4_U0_2V+d2Vp3Hn75gfZLkQ@mail.gmail.com"
+      ],
+      "authors": "Craig Ringer (ringerc)",
+      "objectors": "",
+      "summary": "Fix PGXS so built control files work with VPATH builds\nThreads: [PATCH] Support built control file in PGXS VPATH builds",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "meson pgxs replacement"
+      ],
+      "from_hint": false,
+      "score": 0.136,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:2082",
+      "kind": "cf",
+      "title": "Mingw: Fix import library extension, build actual static libraries",
+      "status": "Returned with feedback",
+      "date": "2019-09-30",
+      "first_date": "2019-03-07",
+      "url": "https://commitfest.postgresql.org/patch/2082/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2a6c418e-373b-8466-fcb8-ce729aab255f@gmail.com"
+      ],
+      "authors": "Sandro Mani (sandrom)",
+      "objectors": "",
+      "summary": "Mingw: Fix import library extension, build actual static libraries\nThreads: [Patch] Mingw: Fix import library extension, build actual static\nlibraries",
+      "objection": "",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "pkg-config extension build"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "revert:512fc2dd790e3e7c35b3af8cd7586aeb25248c6e",
+      "kind": "revert",
+      "title": "Revert \"Make configure prefer python3 to plain python.\"",
+      "status": "Reverted",
+      "date": "2022-01-20",
+      "first_date": "2022-01-19",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=512fc2dd790e3e7c35b3af8cd7586aeb25248c6e",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2872c9a0-4b0a-1354-d5f6-94d6f85ba354@enterprisedb.com"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Make configure prefer python3 to plain python.\"\nReverted commit(s): Make configure prefer python3 to plain python.",
+      "objection": "This reverts commit f201da39edcd6ac1ab9a3edf3e20e2a73bbbe69e.\nThe buildfarm is not ready for python3, evidently, so we'll\ngive the owners some more time to get set up.",
+      "touch_points": [],
+      "matched_queries": [
+        "pkg-config extension build"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "revert:1d7dd18686d0373289a3bf2b3669edae20875cbc",
+      "kind": "revert",
+      "title": "Revert all new recent changes to add PGXS options for TAP and isolation",
+      "status": "Reverted",
+      "date": "2018-11-26",
+      "first_date": "2018-11-26",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1d7dd18686d0373289a3bf2b3669edae20875cbc",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert all new recent changes to add PGXS options for TAP and isolation",
+      "objection": "A set of failures in buildfarm machines are proving that this is not\nquite ready yet because of another set of issues:\n- MSVC scripts assume that REGRESS_OPTS can only use top_builddir.  Some\ntest suites actually finish by using top_srcdir, like pg_stat_statements\nwhich cause the regression tests to never run.\n- Trying to enforce top_builddir does not work either when using VPATH\nas this is not recognized properly.\n- TAP tests of bloom are unstable on various platforms, causing various\nfailures.",
+      "touch_points": [],
+      "matched_queries": [
+        "meson pgxs replacement"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 0,
+    "new_calls": 8,
+    "failed": 0,
+    "quotes_verified": 8,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 0
+  },
+  "precedent_cutoff": "2024-09-05",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found in the list. The thread names one earlier attempt, a 2022 meson bitcode patch by Andres Freund (message #2), and this series continues that work rather than reviving a rejected idea."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "The core bitcode emission restores autoconf behaviour and raises no compatibility issue from this angle. The objections concern only the general extension .pc file."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The proposal changes only the meson build and installed build artifacts (.bc files, ThinLTO indexes, a .pc file). It adds no on-disk cluster format, WAL record, catalog change, wire protocol message or server ABI change. The bitcode is not persistent cluster state, and the autoconf build already installs the same kind of bitcode files, so this angle has nothing to object to."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal changes only the meson build and its install layout, so it has no privilege or exposure aspect. The .bc files go under $pkglibdir/bitcode/ with the same ownership as the shared libraries, and the server loads them the same way as in autoconf builds today. The .pc file holds only build paths and flags. The proposal gives a non-superuser no new abilities and no new visibility."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "The core bitcode emission fixes a stated meson regression for packagers and adds no hot-path cost. Andres, a committer who knows this area, co-authored the patch and reviewed it."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "The bitcode part restores what the autoconf build already does, so it adds no second mechanism. The only overlap is the general extension .pc file in the last patch."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "Demand for the core bitcode part is real: Peter calls it the last major meson regression, and Christoph uses it in apt.postgresql.org packages. Only the general extension .pc file in the last patch lacks shown demand."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 7,
+      "new_survived": 6,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "synthesis said NEEDS-COMMITTER-EYES but listed a level 1b objection (demand-1); changed to NEEDS-DESIGN-DISCUSSION"
+  ],
+  "tone_lint": {
+    "fields_checked": 84,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 20,
+    "wall_ms": 152917,
+    "cost_usd": 3.6812945999999998,
+    "dry_run": false
+  }
+}

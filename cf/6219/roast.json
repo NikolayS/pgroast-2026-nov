@@ -1,0 +1,1302 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:46:35.183Z",
+  "input": {
+    "arg": "6219",
+    "cf": {
+      "id": 6219,
+      "url": "https://commitfest.postgresql.org/patch/6219/",
+      "title": "pg_dump flag for dumping tables data in multiple chunks, for huge tables can often give near-linear speedup when parallelized",
+      "status": "Needs review",
+      "authors": "Hannu Krosing (hannukrosing)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAMT0RQT_0qVxcTT6ycM20QUN-pEQ6iMLbz6gLWgLpeF0NmNOUA%40mail.gmail.com",
+    "subject": "Patch: dumping tables data in multiple chunks in pg_dump",
+    "thread_start": "2025-11-11T15:29:56Z",
+    "messages_read": 46,
+    "messages_total": 46,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v17--0001-Add-max-table-segment-pages-option-to-pg_dump-fo.patch",
+      "0001-adds-ability-to-dump-data-for-tables-in-multiple-chu.patch",
+      "README.pg_dump.md"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "The goal is clear and measured, and no surviving objection is against the idea. All four surviving objections are fixable level 2 points about restore correctness and the archive: replication-ondisk-2 and standards-compat-1 concern lost rows on restore, and replication-ondisk-1 concerns the unchanged archive version. Message #45 showed data loss in v16, and no reviewer has confirmed the v17 fix. A committer would likely want these answered before code review.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "pg_dump option to dump large heap tables in ctid-range segments",
+    "problem": "A parallel pg_dump gains little when one or a few huge tables hold most of the data, because each table is dumped by a single worker. The author also cites file size limits on target file systems, such as 4GB on FAT and 5TB on GCS.",
+    "proposed_design": "A new pg_dump option splits the data of heap tables larger than a page threshold into segments of that many main-fork pages. pg_dump dumps each segment as its own TABLE DATA entry with a ctid range query, so parallel workers can share one table. pg_restore loads all segments into the same table, and v17 adds restore dependencies so indexes and constraints wait for all segments.",
+    "user_visible_surface": [
+      "pg_dump option --max-table-segment-pages=npages, first named --huge-table-chunk-pages.",
+      "TOC entries labelled \"TABLE DATA (pages N:M)\", one per segment, visible in pg_restore --list.",
+      "Segmented tables produce several data files per table in a directory-format dump.",
+      "New frontend helper option_parse_uint32() in fe_utils/option_utils."
+    ],
+    "author_claims": [
+      "A 408GB table without TOAST dumped about 7 times faster with 8 workers and 1GB segments, 40 minutes down to 6 minutes.",
+      "Speedup stopped at 16 workers because disk read throughput of about 4TB/hour became the limit.",
+      "A 53GB mostly-TOAST table dumped in 30 seconds with 16 workers and 1000-page segments, against 240 seconds serially.",
+      "pg_restore needed no format change, since all segments are tied to the table in the TOC.",
+      "Segmenting works on servers before version 14, but without efficient TID range scans."
+    ],
+    "thread_state": "Rowley, Kumar, Parragi, Stehule and Banck reviewed it, and Rowley said he would drop out if quality did not improve by v11. Parragi found an assertion failure and data loss in parallel restore in v16, and v17 claims a fix that no one has yet confirmed.",
+    "unclear": [
+      "No reviewer has confirmed that v17 fixes the depCount assertion failure and data loss found in v16.",
+      "The option name and unit are open: Banck asked for a size such as '10GB', and the author kept pages.",
+      "The proposal does not say whether segmenting applies to formats other than directory, or how it interacts with custom format.",
+      "Benchmarks cover only one host, and none show restore time with segmented dumps.",
+      "The proposal does not say how segments of one table behave under the snapshot used by parallel workers or under --serializable-deferrable."
+    ],
+    "search_queries": [
+      "pg_dump parallel dump single large table",
+      "pg_dump split table data chunks",
+      "pg_dump ctid range dump",
+      "parallel pg_dump huge table",
+      "pg_dump table data segments",
+      "TID range scan pg_dump",
+      "pg_restore table data dependencies parallel",
+      "pg_dump intra-table parallelism"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Restore of several data entries into one table breaks the truncate-before-load invariant",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication",
+        "pg_dump_round_trip"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator runs a parallel or --clean restore of a segmented dump. One segment's load path truncates the table, or uses the created-in-this-transaction WAL-skip optimization, after another segment has already loaded rows. Rows go missing, and the operator learns this only when the restored data is checked.",
+      "argument": "pg_restore assumes one TABLE DATA entry per table. It uses that to decide when a table may be truncated, and when a COPY may skip WAL under wal_level=minimal. Message #37 reported truncation problems once segments were treated as table data. Message #45 showed an assertion failure and data loss in v16, and nobody has confirmed the v17 fix from message #46. The proposal does not state which invariant now guarantees that only the first segment truncates or skips WAL.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        37,
+        45,
+        46
+      ],
+      "author_must_show": "Which rule in v17 ensures that only one segment per table truncates or uses the WAL-skip path, and which TAP test covers --clean, --single-transaction and --jobs together?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 37,
+          "from": "Zsolt Parragi",
+          "date": "2026-02-03T21:10:12Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFMHr0gFx-DpKBy4SkVzuJC5f3S%3DpnkrMDC54OswBSuJNQ%40mail.gmail.com"
+        },
+        {
+          "index": 45,
+          "from": "Zsolt Parragi",
+          "date": "2026-03-30T21:32:22Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFN%3DiKYAhaki0eC-ADutk-aB3B5jOV26FrTewWouQiD6jQ%40mail.gmail.com"
+        },
+        {
+          "index": 46,
+          "from": "Hannu Krosing",
+          "date": "2026-08-06T12:56:47Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQTCipoCSHVZ7UamMZ9JnF-prN37hZNqrDwzQr5CpgJrzw%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Parallel pg_restore truncates a table it created before loading its data entry, so a second segment can remove rows a first one loaded. Message #37 saw this, and message #39 answers only \"should solve\", with no reviewer confirmation.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Page range stored in the TOC desc field breaks desc-based matching",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "pg_dump_round_trip",
+      "touch_points": [
+        "pg_dump_round_trip",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user restores a segmented dump with pg_restore -t big_table, -L from an edited list, or a pg_restore that does not know the new desc. Code that compares desc with \"TABLE DATA\" skips or misorders the segment entries. Some or all of the table's rows are missing after restore, and nothing reports an error.",
+      "argument": "The patch writes segment entries with desc \"TABLE DATA (pages N:M)\". Message #37 found that pg_backup_archiver.c tests desc for the exact string \"TABLE DATA\" in several places. v17 fixes dependency scheduling, but the proposal does not say whether every other desc check was audited, such as table selection, section and data-only filtering, and truncation. Encoding a parameter in desc departs from how the TOC records entry types today, so a later strcmp(desc, \"TABLE DATA\") can miss segments without any test failing.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        37,
+        45,
+        46
+      ],
+      "author_must_show": "Which pg_restore paths match desc against \"TABLE DATA\", and does each one handle segment entries, including archives read by an older pg_restore of the same archive version?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 37,
+          "from": "Zsolt Parragi",
+          "date": "2026-02-03T21:10:12Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFMHr0gFx-DpKBy4SkVzuJC5f3S%3DpnkrMDC54OswBSuJNQ%40mail.gmail.com"
+        },
+        {
+          "index": 45,
+          "from": "Zsolt Parragi",
+          "date": "2026-03-30T21:32:22Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFN%3DiKYAhaki0eC-ADutk-aB3B5jOV26FrTewWouQiD6jQ%40mail.gmail.com"
+        },
+        {
+          "index": 46,
+          "from": "Hannu Krosing",
+          "date": "2026-08-06T12:56:47Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQTCipoCSHVZ7UamMZ9JnF-prN37hZNqrDwzQr5CpgJrzw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #37 confirms that pg_restore compares desc with the exact string \"TABLE DATA\" in several places. The v17 commit message covers only depCount and --inserts, so selection and filtering paths are unanswered.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Segment identity lives only in the TOC desc string, not the archive format",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "pg_dump_round_trip",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user restores a segmented dump with a pg_restore that accepts the same archive version but predates this patch. That pg_restore matches \"TABLE DATA\" exactly, so it does not treat \"TABLE DATA (pages N:M)\" entries as table data. Indexes and constraints may then build before all segments load, and --data-only or --section filtering can misclassify the segments.",
+      "argument": "Message #1 says no pg_restore format change is needed, and the README in message #1 shows the dump version unchanged at 1.16-0. Message #37 found that pg_restore keys dependency tracking on the literal \"TABLE DATA\" desc. In message #39, v17 rebuilds segment dependencies at restore time, so only a new pg_restore knows that segments belong together. Third-party tools that parse pg_restore --list or the TOC face the same mismatch.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        37,
+        39,
+        46
+      ],
+      "author_must_show": "Will the archive version be bumped, or segment membership stored in the TOC, so that an older pg_restore rejects or handles these archives?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Hannu Krosing",
+          "date": "2025-11-11T15:29:56Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQT_0qVxcTT6ycM20QUN-pEQ6iMLbz6gLWgLpeF0NmNOUA%40mail.gmail.com"
+        },
+        {
+          "index": 37,
+          "from": "Zsolt Parragi",
+          "date": "2026-02-03T21:10:12Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFMHr0gFx-DpKBy4SkVzuJC5f3S%3DpnkrMDC54OswBSuJNQ%40mail.gmail.com"
+        },
+        {
+          "index": 39,
+          "from": "Hannu Krosing",
+          "date": "2026-03-28T10:59:18Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQSwbGpf4WSCb41dcyvHUEYAnVTYxdJ6SqLYf7HiUag%2BTA%40mail.gmail.com"
+        },
+        {
+          "index": 46,
+          "from": "Hannu Krosing",
+          "date": "2026-08-06T12:56:47Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQTCipoCSHVZ7UamMZ9JnF-prN37hZNqrDwzQr5CpgJrzw%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The README shows the archive version unchanged at 1.16, so a released pg_restore would accept a segmented dump without knowing the new desc. The thread does not discuss a version bump; the third-party tools point adds little.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Option unit is heap pages, an internal detail in a user tool",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "design",
+      "touch_points": [
+        "pg_dump_round_trip"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An administrator sets --max-table-segment-pages=131072 to get 1GB segments, as in message #3, against a server built with 32kB blocks. Each segment is about 4GB, and files exceed the FAT limit that motivated the option. The administrator finds out when a copy to the target file system fails.",
+      "argument": "Message #40 asked for a size such as '10GB', and message #41 kept pages because heap pages do not predict output size. But the page count also depends on the server's block_size, which the user may not know. No other pg_dump option exposes block counts. A size converted to pages via block_size would keep the author's honest caveat about TOAST and match how users think about file limits.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3,
+        40,
+        41
+      ],
+      "author_must_show": "Why should users reason in server block counts, when a size argument converted with the server's block_size would give the same segmentation with a familiar unit?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Hannu Krosing",
+          "date": "2025-11-11T15:29:56Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQT_0qVxcTT6ycM20QUN-pEQ6iMLbz6gLWgLpeF0NmNOUA%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Hannu Krosing",
+          "date": "2025-11-13T18:02:43Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQTHoL8S7OonFWC_aDSC-2oX7BGBBLAQ%2BOOBhRPcxV2eiw%40mail.gmail.com"
+        },
+        {
+          "index": 40,
+          "from": "Michael Banck",
+          "date": "2026-03-28T11:26:07Z",
+          "url": "https://www.postgresql.org/message-id/20260328112607.GA3202%40p46.dedyn.io%3Blightning.p46.dedyn.io"
+        },
+        {
+          "index": 41,
+          "from": "Hannu Krosing",
+          "date": "2026-03-28T15:32:23Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQRtLwi_CrOcD7KxYL0Gm1nGXb-HWmerVg%3DajEs6JP7m%2Bw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #41 explains why output size cannot be promised, but a size converted with the server's block_size would give the same segmentation. The unit is still open after message #40, though the 32kB FAT scenario is a rare case.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Many TABLE DATA entries per table break silent pg_restore assumptions",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "pg_dump_round_trip"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch to pg_backup_archiver.c tests for the \"TABLE DATA\" desc, or assumes one data entry per table, for truncation, filtering or scheduling. Segmented dumps then restore an index too early, or truncate rows that another segment already loaded. The user finds the missing rows only after a parallel restore.",
+      "argument": "pg_restore has assumed one data entry per table, and the patch breaks that assumption without any check that fails loudly when code ignores it. The thread shows the cost: the desc-string checks missed segments (message #37), the truncation path needed changes (message #37), --inserts dumped the whole table once per segment (message #46), and v16 lost data under -j (message #45). v17 claims fixes that no reviewer has confirmed. Each bug was found by hand, which is the kind of mistake future patches will repeat.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        37,
+        45,
+        46
+      ],
+      "author_must_show": "What fails loudly when restore code assumes one data entry per table, and which tests cover --clean, --single-transaction, -t, --section and --data-only on segmented dumps?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 37,
+          "from": "Zsolt Parragi",
+          "date": "2026-02-03T21:10:12Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFMHr0gFx-DpKBy4SkVzuJC5f3S%3DpnkrMDC54OswBSuJNQ%40mail.gmail.com"
+        },
+        {
+          "index": 45,
+          "from": "Zsolt Parragi",
+          "date": "2026-03-30T21:32:22Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFN%3DiKYAhaki0eC-ADutk-aB3B5jOV26FrTewWouQiD6jQ%40mail.gmail.com"
+        },
+        {
+          "index": 46,
+          "from": "Hannu Krosing",
+          "date": "2026-08-06T12:56:47Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQTCipoCSHVZ7UamMZ9JnF-prN37hZNqrDwzQr5CpgJrzw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1 for the desc checks and of replication-ondisk-2 for the truncation path. Those two state the same failures with more concrete scenarios.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Heap page count becomes a permanent pg_dump user contract",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Users script --max-table-segment-pages around 8kB heap pages. Later, a table AM or block size change makes the unit mean something else, or the option silently does nothing for non-heap tables. The project must then keep the old meaning or break those scripts.",
+      "argument": "The option exposes main-fork pages and ctid ranges, which are heap internals, in the interface of a basic user tool (message #40). Non-heap tables are skipped without notice, and message #14 already expects a second mechanism for other AMs, which would add another option. The author argues that a byte size would mislead because of TOAST (message #41). The page unit still does not predict output size, so neither unit helps users with the file-size limits cited in message #1.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        14,
+        40,
+        41
+      ],
+      "author_must_show": "Could a parallelism threshold that does not name heap pages express the same feature, and how would it extend to other table AMs without a new option?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Hannu Krosing",
+          "date": "2025-11-11T15:29:56Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQT_0qVxcTT6ycM20QUN-pEQ6iMLbz6gLWgLpeF0NmNOUA%40mail.gmail.com"
+        },
+        {
+          "index": 14,
+          "from": "Hannu Krosing",
+          "date": "2026-01-14T10:52:04Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQT_yk32%2BZyA-cBS9uMtAUOM-b%2Bhqj0zT0Ge-ikFMrmw%2BA%40mail.gmail.com"
+        },
+        {
+          "index": 40,
+          "from": "Michael Banck",
+          "date": "2026-03-28T11:26:07Z",
+          "url": "https://www.postgresql.org/message-id/20260328112607.GA3202%40p46.dedyn.io%3Blightning.p46.dedyn.io"
+        },
+        {
+          "index": 41,
+          "from": "Hannu Krosing",
+          "date": "2026-03-28T15:32:23Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQRtLwi_CrOcD7KxYL0Gm1nGXb-HWmerVg%3DajEs6JP7m%2Bw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-2, which states the unit concern with a concrete alternative. The remaining scenario of a future AM or block size change is vague, and skipping non-heap tables follows Rowley's advice in message #16.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "The file size limit use case is not served by a page-based option",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "problem_statement",
+      "touch_points": [
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user writes a directory-format dump to a FAT volume or to GCS and sets --max-table-segment-pages to keep each file under the limit. A TOAST-heavy segment comes out far larger than the limit, and the dump fails hours in when that one file hits it.",
+      "argument": "Message #1 gives file system limits (4GB on FAT, 5TB on GCS) as the second reason for the option. The documentation hunk and message #41 say the page count guarantees nothing about output size: one heap page can produce about 200GB. So the option cannot promise to keep files under a limit, and the proposal still lists that as a goal. Only the parallel dump speedup is backed by measurements (messages #3 to #5).",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3,
+        4,
+        5,
+        41
+      ],
+      "author_must_show": "Will the proposal drop the file size limit use case, or show how a user can choose a page count that keeps every file under a stated limit?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Hannu Krosing",
+          "date": "2025-11-11T15:29:56Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQT_0qVxcTT6ycM20QUN-pEQ6iMLbz6gLWgLpeF0NmNOUA%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Hannu Krosing",
+          "date": "2025-11-13T18:02:43Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQTHoL8S7OonFWC_aDSC-2oX7BGBBLAQ%2BOOBhRPcxV2eiw%40mail.gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "Hannu Krosing",
+          "date": "2025-11-13T18:39:26Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQAH1a8kY-mx7B07Uzn3T_zeaU9detqFFtW36_k67Su%2BA%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Hannu Krosing",
+          "date": "2025-11-13T20:24:33Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQr7KtPAY903%2BF42csiHc1EPHo70Xji-znkxEhwdoKa6w%40mail.gmail.com"
+        },
+        {
+          "index": 41,
+          "from": "Hannu Krosing",
+          "date": "2026-03-28T15:32:23Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQRtLwi_CrOcD7KxYL0Gm1nGXb-HWmerVg%3DajEs6JP7m%2Bw%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "The v17 commit message claims only parallel dumping, and the documentation note warns that one heap page can dump as a 200GB file. The file size claim appears only in message #1, and the measured use case does not depend on it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "Segmented dumps add a new kind of TOC entry to the archive while the archive version stays at 1.16."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "Several data entries per table reach the pg_restore truncate and WAL-skip load path used under wal_level=minimal."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": true,
+      "reason": "pg_restore must load several \"TABLE DATA (pages N:M)\" entries into one table before indexes and constraints."
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The CommitFest entry targets stable, and an older pg_restore accepts the archive without knowing the segment entries."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "pg_backup_archiver.c code that assumes one data entry per table must now handle segments."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Which rule in v17 ensures that only one segment per table truncates the table or uses the WAL-skip path during restore?",
+    "Which pg_restore paths compare desc with \"TABLE DATA\", and does each one handle segment entries for -t, -L, --section and --data-only?",
+    "Will the archive version be bumped, or segment membership stored in the TOC, so that an older pg_restore rejects or handles segmented dumps?",
+    "Which TAP test reproduces the v16 depCount assertion failure and data loss from message #45 and passes with v17?",
+    "Why should the option take heap pages when a size converted with the server's block_size would give the same segments?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "David Rowley reviewed the dump side but said he would drop out if quality did not improve. The restore side needs someone who knows parallel pg_restore scheduling in pg_backup_archiver.c.",
+    "liability": "The owner signs for restore correctness of every segmented dump, including silent row loss under -j, --clean and filtering. The option name, its unit and the new TOC entries stay while such archives exist.",
+    "author_follow_up": "The author has posted 17 versions over a year and moved the entry through five CommitFests, so follow-up looks likely."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "fix design first",
+    "reason": "Users with one or a few huge tables gain a measured speedup of about 7 times, and users who do not set the option pay nothing. The 32 KiB patch changes the parallel restore code in pg_backup_archiver.c, where v16 lost data and the v17 fix is unconfirmed."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, this review could not check how v17 keeps depCount correct, which desc comparisons remain, or how segments behave under the truncate and WAL-skip paths. It also could not check snapshot behaviour across segments or formats other than directory.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:2728",
+      "kind": "cf",
+      "title": "Improve pg_dump dumping publication tables",
+      "status": "Withdrawn",
+      "date": "2021-01-15",
+      "first_date": "2020-09-04",
+      "url": "https://commitfest.postgresql.org/patch/2728/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/EA6F1B1A-8081-4200-A83F-FB9DAC6B49D0@amazon.com"
+      ],
+      "authors": "John Hsu (jhsu)",
+      "objectors": "",
+      "summary": "The patch changes pg_dump's getPublicationTables() to fetch all publication-table memberships with a single query, instead of iterating over every table and issuing a separate query per table. The matching TableInfo for each row is then looked up in tblinfoindex, which should be faster when there are many tables.",
+      "objection": "The patch was superseded, not rejected: Tom Lane had already committed practically the same change in passing (commit 8e396a773), which also removed the server-side join. He therefore marked the entry withdrawn. Cary Huang's earlier concern about client-side memory use with very many publication tables was answered by Tom Lane as not significant compared to the per-table data pg_dump already collects.",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "pg_dump parallel dump single large table",
+        "pg_dump split table data chunks",
+        "pg_dump ctid range dump",
+        "parallel pg_dump huge table",
+        "pg_dump table data segments",
+        "TID range scan pg_dump",
+        "pg_dump intra-table parallelism"
+      ],
+      "from_hint": false,
+      "score": 0.85,
+      "enriched": true,
+      "key_quote": "I'll mark this CF entry \"withdrawn\", since it wasn't rejected\nexactly.  Too bad we don't have a classification of \"superseded\nby events\", or something like that.",
+      "quote_message_url": "https://www.postgresql.org/message-id/1679096.1610742123%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:5147",
+      "kind": "cf",
+      "title": "pg_dump: optimize dumpFunc()",
+      "status": "Withdrawn",
+      "date": "2024-08-02",
+      "first_date": "2024-08-01",
+      "url": "https://commitfest.postgresql.org/patch/5147/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/Zqu9aaYtNyHj8V7m@nathan"
+      ],
+      "authors": "Nathan Bossart (bossartn)",
+      "objectors": "Tom Lane",
+      "summary": "Replace pg_dump's per-function query in dumpFunc() with a single query that gathers data for all functions up front, keeping the PGresult in memory and using a sorted array of function OIDs to locate each function's row. The aim was to reduce dump time for databases with many functions (shown as about 0.25s to about 0.11s for 10k simple functions).",
+      "objection": "Tom Lane questioned whether the change helps databases with few functions and what it does to pg_dump's memory requirements when there are very many functions with large source text, and said the shown results did not justify the risk. The author agreed and withdrew the patch.",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "pg_dump parallel dump single large table",
+        "pg_dump split table data chunks",
+        "pg_dump ctid range dump",
+        "parallel pg_dump huge table",
+        "pg_dump table data segments",
+        "TID range scan pg_dump",
+        "pg_dump intra-table parallelism"
+      ],
+      "from_hint": false,
+      "score": 0.774,
+      "enriched": true,
+      "key_quote": "I'm not sure that the results you're showing justify taking any\nrisk here.",
+      "quote_message_url": "https://www.postgresql.org/message-id/3903370.1722576825%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:1644",
+      "kind": "cf",
+      "title": "Add --include-table-data-where option to pg_dump, to export only a subset of table data",
+      "status": "Returned with feedback",
+      "date": "2019-01-31",
+      "first_date": "2018-05-20",
+      "url": "https://commitfest.postgresql.org/patch/1644/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGiT_HNav5B=OfCdfyFoqTa+oe5W1vG=PXkTETCxXg4kcUTktA@mail.gmail.com"
+      ],
+      "authors": "Carter Thaxton (carter.thaxton)",
+      "objectors": "Andres Freund",
+      "summary": "Add a pg_dump option (initially --include-table-data-where=table:filter_clause, later discussed as --where) that applies a user-supplied WHERE clause to the data dump of tables matching a pattern, so that only a subset of rows is exported. The option could be given multiple times, and each filter applied to every table matching its pattern.",
+      "objection": "It was returned with feedback because the patch had merge conflicts and was not rebased after a reviewer asked for it; the author posted a rebased patch only after the entry had been closed. Reviewers had also raised open design points about the option syntax: the use of a colon to separate table from clause, how colons in table or column names would be parsed, and how the option interacts with --table. One participant also questioned whether the feature was needed, given psql \\copy.",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "pg_dump parallel dump single large table",
+        "pg_dump split table data chunks",
+        "pg_dump ctid range dump",
+        "parallel pg_dump huge table",
+        "pg_dump table data segments",
+        "pg_dump intra-table parallelism"
+      ],
+      "from_hint": false,
+      "score": 0.677,
+      "enriched": true,
+      "key_quote": "Given this patch has not been updated, I'm marking this as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20190131132108.ahjaupuruyagpz2k%40alap3.anarazel.de",
+      "relevant": true
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:2600",
+      "kind": "cf",
+      "title": "pg_dump --where option",
+      "status": "Returned with feedback",
+      "date": "2020-09-30",
+      "first_date": "2020-06-15",
+      "url": "https://commitfest.postgresql.org/patch/2600/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALAY4q8o00Sg5nemi2AuqNuLvmGLaR6br+YrvM41ZuSPjM2Qvg@mail.gmail.com"
+      ],
+      "authors": "Surafel Temesgen (surafel), Carter Thaxton (carter.thaxton)",
+      "objectors": "Daniel Gustafsson, Michael Paquier",
+      "summary": "Add a --where option to pg_dump that exposes pg_dump's existing internal ability to filter dumped table data with a WHERE clause, building on an earlier patch. This version aims to give clearer error messages for invalid clauses and to apply a filter only to a specified table instead of to every table matched by a pattern.",
+      "objection": "Daniel Gustafsson's review raised open issues: pasting arbitrary SQL into the query without schema-qualification checks may expose CVE-2018-1058-style problems, the patch had no tests, and it was unclear how quoted multibyte table names or table names containing colons would be handled. The author did not answer this review for two weeks, and Michael Paquier, noting that tests are needed, marked the entry returned with feedback.",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "pg_dump parallel dump single large table",
+        "pg_dump split table data chunks",
+        "pg_dump ctid range dump",
+        "parallel pg_dump huge table",
+        "pg_dump table data segments",
+        "TID range scan pg_dump",
+        "pg_dump intra-table parallelism"
+      ],
+      "from_hint": false,
+      "score": 0.638,
+      "enriched": true,
+      "key_quote": "Documenting something is well and good, but isn't allowing arbitrary SQL\ncopy-pasted into the query (which isn't checked for schema qualification)\nopening up for some of the ill-effects of CVE-2018-1058?",
+      "quote_message_url": "https://www.postgresql.org/message-id/2B42FF94-D3D7-4758-94AC-7602BADC8D29%40yesql.se",
+      "relevant": true
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:724",
+      "kind": "cf",
+      "title": "pg_dump -C Grant statement on create database",
+      "status": "Returned with feedback",
+      "date": "2016-10-03",
+      "first_date": "2016-06-30",
+      "url": "https://commitfest.postgresql.org/patch/724/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/D39AD151.20E45%25murphyke@email.chop.edu",
+        "https://www.postgresql.org/message-id/flat/CAOGQiiMYq=HNrL5X_DB2+EwdZG-hwy_93TyXoeQD9rCSACYQQQ@mail.gmail.com"
+      ],
+      "authors": "Haribabu Kommi (haribabu)",
+      "objectors": "",
+      "summary": "When pg_dump is run with -C (emit CREATE DATABASE), it would also emit the database-level GRANT statements (such as GRANT CREATE ON DATABASE), matching what pg_dumpall already produces. The patch makes emitting these grants subject to the existing -x (no privileges) option.",
+      "objection": "The visible messages do not show why. The thread contains only the original report, a reply agreeing it is an oversight, and the patch submission; no review or objection to the patch appears, and the entry was returned with feedback about three months later.",
+      "touch_points": [
+        "pg_dump / restore",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "pg_dump parallel dump single large table",
+        "pg_dump split table data chunks",
+        "pg_dump ctid range dump",
+        "parallel pg_dump huge table",
+        "pg_dump table data segments",
+        "TID range scan pg_dump",
+        "pg_dump intra-table parallelism"
+      ],
+      "from_hint": false,
+      "score": 0.614,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:164",
+      "kind": "cf",
+      "title": "Ignore attributes of tables part of extensions in pg_dump",
+      "status": "Rejected",
+      "date": "2015-02-23",
+      "first_date": "2015-02-16",
+      "url": "https://commitfest.postgresql.org/patch/164/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB7nPqSO28tQMyvCYHVuDO_jYhzBbAE17whhpPJ0-TyCbYky6w@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Michael Paquier",
+      "summary": "Change pg_dump so that getTableAttrs skips fetching column and type information for tables that are members of an extension, using the ext_member flag. The goal was to avoid gathering attributes for tables that pg_dump does not dump individually.",
+      "objection": "The author withdrew the patch. A reviewer asked why it checked ext_member rather than the usual dobj.dump flag. The author concluded that skipping attributes based on either flag would break binary upgrade, which still dumps extension member tables individually.",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "pg_dump parallel dump single large table",
+        "pg_dump split table data chunks",
+        "pg_dump ctid range dump",
+        "parallel pg_dump huge table",
+        "pg_dump table data segments",
+        "TID range scan pg_dump",
+        "pg_dump intra-table parallelism"
+      ],
+      "from_hint": false,
+      "score": 0.609,
+      "enriched": true,
+      "key_quote": "Hm. I have been pondering about this code more and I am dropping the patch as either adding a check based on the flag to track dumpable objects or ext_member visibly breaks the logic that binary upgrade and tables in extensions rely on.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB7nPqTyYdQeg%2BaR3sC1y45AfXZg8FiXsffz0P3c4KqkBxj_5Q%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:3051",
+      "kind": "cf",
+      "title": "pg_dump new feature: exporting functions only",
+      "status": "Returned with feedback",
+      "date": "2022-04-07",
+      "first_date": "2021-03-17",
+      "url": "https://commitfest.postgresql.org/patch/3051/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB_COdg3tUuymX2SxUF3G26-yxz7Frs2tEEdAfvvWizeiyOGsg@mail.gmail.com"
+      ],
+      "authors": "Lætitia AVROT (arkhena)",
+      "objectors": "Michael Paquier",
+      "summary": "Add a pg_dump switch (--functions-only) to dump only stored functions and procedures from a database, without resolving their dependencies on other objects. During the discussion the design moved toward pattern-based include/exclude options per object type (e.g. --routine/--exclude-routine alongside --table, --schema, --extension).",
+      "objection": "Reviewers asked for a different design: pattern-matching options per object type with matching exclude options, in line with --table and --extension, instead of an all-or-nothing --functions-only switch. The author summarised the new plan and said she would rewrite the patch, but no reworked patch is shown before the deadline. The committer closing the entry concluded that a different design was wanted and that it would not make v15.",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "pg_dump parallel dump single large table",
+        "pg_dump split table data chunks",
+        "pg_dump ctid range dump",
+        "parallel pg_dump huge table",
+        "pg_dump table data segments",
+        "TID range scan pg_dump",
+        "pg_dump intra-table parallelism"
+      ],
+      "from_hint": false,
+      "score": 0.586,
+      "enriched": true,
+      "key_quote": "Looks clear to me that a different design is wanted here, and that\nthis won't make it for v15, so I have marked the patch as returned\nwith feedback in the CF app.",
+      "quote_message_url": "https://www.postgresql.org/message-id/Yk56C4GRwccjAEIL%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "revert:d3adaabaf7d555ec8bb1d83c43f72e79f1bf0b7d",
+      "kind": "revert",
+      "title": "Revert \"pg_dump: Lock all relations, not just plain tables\".",
+      "status": "Reverted",
+      "date": "2020-11-06",
+      "first_date": "2020-10-27",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=d3adaabaf7d555ec8bb1d83c43f72e79f1bf0b7d",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/16703-e348f58aab3cf6cc@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/20201021200659.GA32358@alvherre.pgsql"
+      ],
+      "authors": "Alvaro Herrera, Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"pg_dump: Lock all relations, not just plain tables\".\nReverted commit(s): pg_dump: Lock all relations, not just plain tables; Avoid null pointer dereference if error result lacks SQLSTATE.",
+      "objection": "Revert 403a3d91c, as well as the followup fix 7f4235032, in all\nbranches.  We need to think a bit harder about what the behavior\nof LOCK TABLE on views should be, and there's no time for that\nbefore next week's releases.  We'll take another crack at this\nlater.",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "pg_dump parallel dump single large table",
+        "pg_dump split table data chunks",
+        "parallel pg_dump huge table",
+        "pg_dump table data segments",
+        "pg_dump intra-table parallelism"
+      ],
+      "from_hint": false,
+      "score": 0.498,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:4485",
+      "kind": "cf",
+      "title": "Add force flag while doing pg_restore to force dropping database in case of existing connections",
+      "status": "Returned with feedback",
+      "date": "2024-01-14",
+      "first_date": "2023-07-18",
+      "url": "https://commitfest.postgresql.org/patch/4485/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAP4s+CEVVFREtnw8LpeNGUKcVowR0qMNiHw-A9+8h3-a0AQEaQ@mail.gmail.com"
+      ],
+      "authors": "Ahmed Ibrahim (ahmedibrahim)",
+      "objectors": "Daniel Gustafsson",
+      "summary": "Add a --force option to pg_restore so that, with --create and --clean, it drops the target database with DROP DATABASE ... WITH (FORCE) and disconnects existing sessions. The patch rewrites the stored drop statement for the database entry and checks that the server version supports WITH (FORCE).",
+      "objection": "Daniel Gustafsson argued that the name --force suggests the restore will succeed regardless of state, but WITH (FORCE) still fails in common cases such as dropping the currently open database, so users would be confused. He also found that the --help output was updated for pg_dump instead of pg_restore and that the patch raised a compiler warning. Peter Eisentraut noted disagreement on whether the option was wanted, and the entry was returned because these comments were not addressed.",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "pg_restore table data dependencies parallel"
+      ],
+      "from_hint": false,
+      "score": 0.144,
+      "enriched": true,
+      "key_quote": "I think\nthe risk for user confusion outweighs the benefits, or maybe I'm just not smart\nenough to see all the benefits?",
+      "quote_message_url": "https://www.postgresql.org/message-id/D2DDFAA1-8ECA-4B6C-B531-B8689D587EB7%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "revert:ce9a6244b5b4ce1df71611512a757353803404a5",
+      "kind": "revert",
+      "title": "Revert Non text modes for pg_dumpall, and pg_restore support",
+      "status": "Reverted",
+      "date": "2025-07-30",
+      "first_date": "2025-04-04",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ce9a6244b5b4ce1df71611512a757353803404a5",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20250708212819.09.nmisch@google.com",
+        "https://www.postgresql.org/message-id/flat/cb103623-8ee6-4ba5-a2c9-f32e3a4933fa@dunslane.net",
+        "https://www.postgresql.org/message-id/flat/20250407.152721.1397761902317499205.horikyota.ntt@gmail.com"
+      ],
+      "authors": "Andrew Dunstan",
+      "objectors": "",
+      "summary": "Revert Non text modes for pg_dumpall, and pg_restore support\nReverted commit(s): Non text modes for pg_dumpall, correspondingly change pg_restore; Clean up from commit 1495eff7bdb; Add more TAP tests for pg_dumpall; Fix a couple of error messages and tests for them; Clean up error messages from 1495eff7bdb",
+      "objection": "Recent discussions of the mechanisms used to manage global data have\nraised concerns about their robustness and security. Rather than try\nto deal with those concerns at a very late stage of the release cycle,\nthe conclusion is to revert these features and work on them for the\nnext release.\n\nThis reverts parts or all of the following commits:\n\n1495eff7bdb Non text modes for pg_dumpall, correspondingly change pg_restore\n5db3bf7391d Clean up from commit 1495eff7bdb\n289f74d0cb2 Add more TAP tests for pg_dumpall\n2ef57908067 Fix a couple of error messages and tests for them\nb52a4a5f285 Clean up error messages from 1495eff7bdb\n4170298b6ec Further cleanup for directory creation on pg_dump/pg_dumpall\n22cb6d28950 Fix memory leak in pg_restore.c\n928394b664b Improve various new-to-v18 appendStringInfo calls\n39729ec01d2 Fix fat fingering in 22cb6d28950\n5822bf21d50 Add missing space in pg_restore documentation.\nf09088a01d3 Free memory properly in pg_restore.c\n40b9c27014d pg_restore cleanups\n4aad2cb7707 Portability fix: isdigit() must be passed an unsigned char.\n88e947136b4 Fix typos and grammar in the code\nf60420cff66 doc: Alphabetize long options for pg_dump[all].\nbc35adee8d7 doc: Put new options in consistent order on man pages\na876464abc7 Message style improvements\ndec6643487b Improve pg_dump/pg_dumpall help synopses and terminology\n0ebd2425558 Run pgperltidy\n\n\nBackpatch-to: 18",
+      "touch_points": [
+        "pg_dump / restore",
+        "security / privileges",
+        "SQL syntax / standard"
+      ],
+      "matched_queries": [
+        "pg_restore table data dependencies parallel"
+      ],
+      "from_hint": false,
+      "score": 0.136,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:4982",
+      "kind": "cf",
+      "title": "support tid range scan in parallel",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2024-04-29",
+      "url": "https://commitfest.postgresql.org/patch/4982/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/18f2c002a24.11bc2ab825151706.3749144144619388582@highgo.ca"
+      ],
+      "authors": "Cary Huang (cary)",
+      "objectors": "",
+      "summary": "support tid range scan in parallel\nThreads: Support tid range scan in parallel?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "TID range scan pg_dump"
+      ],
+      "from_hint": false,
+      "score": 0.133,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:1755",
+      "kind": "cf",
+      "title": "Tid range scan",
+      "status": "Returned with feedback",
+      "date": "2019-12-01",
+      "first_date": "2018-08-12",
+      "url": "https://commitfest.postgresql.org/patch/1755/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMyN-kB-nFTkF=VA_JPwFNo08S0d-Yk0F741S2B7LDmYAi8eyA@mail.gmail.com"
+      ],
+      "authors": "Edmund Horner (ejrh)",
+      "objectors": "",
+      "summary": "Tid range scan\nThreads: Tid scan improvements",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "TID range scan pg_dump"
+      ],
+      "from_hint": false,
+      "score": 0.13,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:4509",
+      "kind": "cf",
+      "title": "Improve pg_restore toc file parsing and format for better performances",
+      "status": "Returned with feedback",
+      "date": "2024-01-14",
+      "first_date": "2023-07-27",
+      "url": "https://commitfest.postgresql.org/patch/4509/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2656000.KRxA6XjA2N@peanuts2"
+      ],
+      "authors": "Pierre Ducroquet (pinaraf)",
+      "objectors": "",
+      "summary": "Improve pg_restore toc file parsing and format for better performances\nThreads: Improvements in pg_dump/pg_restore toc format and performances",
+      "objection": "",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "pg_restore table data dependencies parallel"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "revert:40b9c27014d90d77c61e8f5c77ddeb84fa9a6b69",
+      "kind": "revert",
+      "title": "pg_restore cleanups",
+      "status": "Partially reverted",
+      "date": "2025-04-16",
+      "first_date": "2025-04-04",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=40b9c27014d90d77c61e8f5c77ddeb84fa9a6b69",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/202504141220.343fmoxfsbj4@alvherre.pgsql"
+      ],
+      "authors": "Andrew Dunstan",
+      "objectors": "",
+      "summary": "pg_restore cleanups\nReverted commit(s): add new list type simple_oid_string_list to fe-utils/simple_list",
+      "objection": ". remove unnecessary oid_string list stuff\n. use pg_get_line_buf() instead of open-coding it\n. cleaner parsing of map.dat lines\n\nReverts 2b69afbe50d add new list type simple_oid_string_list to fe-utils/simple_list",
+      "touch_points": [
+        "pg_dump / restore",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "pg_restore table data dependencies parallel"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:803",
+      "kind": "cf",
+      "title": "Detect supported SET parameters when pg_restore is run",
+      "status": "Returned with feedback",
+      "date": "2016-11-29",
+      "first_date": "2016-09-27",
+      "url": "https://commitfest.postgresql.org/patch/803/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKOSWNkz0RfvBvsv+CRPC5z47seCwo9saHcAzPrxDOzYvfoL_A@mail.gmail.com"
+      ],
+      "authors": "Vitaly Burovoy (vitaly.burovoy)",
+      "objectors": "",
+      "summary": "Detect supported SET parameters when pg_restore is run\nThreads: Detect supported SET parameters when pg_restore is run",
+      "objection": "",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "pg_restore table data dependencies parallel"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:2841",
+      "kind": "cf",
+      "title": "Parallel Inserts in CREATE TABLE AS",
+      "status": "Withdrawn",
+      "date": "2021-03-20",
+      "first_date": "2020-09-23",
+      "url": "https://commitfest.postgresql.org/patch/2841/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACWFq6Z4_jd9RPByURB8-Y8wccQWzLf+0-Jg+KYT7ZO-Ug@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "",
+      "summary": "Parallel Inserts in CREATE TABLE AS\nThreads: Parallel Inserts in CREATE TABLE AS",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_restore table data dependencies parallel"
+      ],
+      "from_hint": false,
+      "score": 0.09,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:2987",
+      "kind": "cf",
+      "title": "Allow setting parallel_workers on partitioned tables",
+      "status": "Returned with feedback",
+      "date": "2021-09-04",
+      "first_date": "2021-02-15",
+      "url": "https://commitfest.postgresql.org/patch/2987/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/95b1dd96-8634-4545-b1de-e2ac779beb44@www.fastmail.com"
+      ],
+      "authors": "Seamus Abshere (seamusabshere)",
+      "objectors": "",
+      "summary": "Allow setting parallel_workers on partitioned tables\nThreads: A reloption for partitioned tables - parallel_workers",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_restore table data dependencies parallel"
+      ],
+      "from_hint": false,
+      "score": 0.085,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:187",
+      "kind": "cf",
+      "title": "Improving test coverage of extensions with pg_dump",
+      "status": "Returned with feedback",
+      "date": "2015-12-02",
+      "first_date": "2015-03-03",
+      "url": "https://commitfest.postgresql.org/patch/187/",
+      "thread_urls": [],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Improving test coverage of extensions with pg_dump",
+      "objection": "",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "pg_dump ctid range dump"
+      ],
+      "from_hint": false,
+      "score": 0.073,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "revert:08fbad0afd62690cc82990c0504529ef238ac24d",
+      "kind": "revert",
+      "title": "Revert \"Have dtrace depend on object files directly, not objfiles.txt\"",
+      "status": "Reverted",
+      "date": "2015-10-15",
+      "first_date": "2015-10-13",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=08fbad0afd62690cc82990c0504529ef238ac24d",
+      "thread_urls": [],
+      "authors": "Robert Haas",
+      "objectors": "",
+      "summary": "Revert \"Have dtrace depend on object files directly, not objfiles.txt\"\nReverted commit(s): Have dtrace depend on object files directly, not objfiles.txt",
+      "objection": "This reverts commit 73537828537239923a0f827a92b20502a3efa52d.  Per\nreport from Tom Lane, this breaks parallel builds.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_restore table data dependencies parallel"
+      ],
+      "from_hint": false,
+      "score": 0.068,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 7,
+    "new_calls": 1,
+    "failed": 0,
+    "quotes_verified": 1,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 2
+  },
+  "precedent_cutoff": "2025-11-11",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found. [P3] and [P4] add a user-supplied --where filter to pg_dump; their recorded reasons were a missing rebase and arbitrary SQL pasted into the query, and neither applies to internally generated ctid ranges. The thread does not point to any earlier attempt at intra-table parallel dump."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "Two objections listed, both fixable."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 2,
+      "note": "The proposal changes no server-side on-disk format, WAL, catalog or wire protocol. Both objections concern the pg_dump archive as persistent state read by pg_restore."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal has no privilege or exposure aspect. pg_dump still runs as the connecting role, and each segment query adds only ctid bounds that pg_dump computes from integers, with no user-supplied SQL, so the injection concern recorded in [P4] does not apply. The page count comes from pg_relation_size(), which any role can already call on any relation. Row-level security handling and the locks pg_dump takes are unchanged, and the number of connections is still set by -j. Not checked without the code: whether the --enable-row-security path keeps the user's policies when ctid quals are added."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "Users who do not set the option pay no hot-path cost, and the feature adds no new dependency. The two objections concern long-run restore correctness and the permanence of the user interface. Without the code, I could not check how v17 keeps depCount correct."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing Postgres feature splits one table's data across pg_dump workers inside a single archive with restore ordering. A manual route exists: pg_export_snapshot, pg_dump --snapshot and parallel ctid-range COPY sessions. It loses the single archive, needs hand-built restore ordering, and is far more than modest effort, so the new option adds something real. No extension does this. Precedents [P3] and [P4] cover row filtering, not this need."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "Demand for parallel dump of one huge table is plausible, and the material backs it with measured speedups of about 7 times on a 408GB table and 8 times on a TOAST-heavy table, plus support from Kumar and Rowley. The cost falls only on users who set the option. The material has no field reports from independent users and no restore timings."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 7,
+      "new_survived": 4,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 82,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 13,
+    "wall_ms": 158265,
+    "cost_usd": 3.3161199999999997,
+    "dry_run": false
+  }
+}

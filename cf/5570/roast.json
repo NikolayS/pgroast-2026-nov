@@ -1,0 +1,1248 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:33:14.503Z",
+  "input": {
+    "arg": "5570",
+    "cf": {
+      "id": 5570,
+      "url": "https://commitfest.postgresql.org/patch/5570/",
+      "title": "Bump soft open file limit (RLIMIT_NOFILE) to hard limit on startup",
+      "status": "Needs review",
+      "authors": "Jelte Fennema-Nio (jeltef)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAGECzQQh6VSy3KG4pN1d%3Dh9J%3DD1rStFCMR%2Bt7yh_Kwj-g87aLQ%40mail.gmail.com",
+    "subject": "Bump soft open file limit (RLIMIT_NOFILE) to hard limit on startup",
+    "thread_start": "2025-02-11T18:52:34Z",
+    "messages_read": 35,
+    "messages_total": 35,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v3-0003-Reflect-the-value-of-max_safe_fds-in-max_files_pe.patch",
+      "v3-0002-Bump-postmaster-soft-open-file-limit-RLIMIT_NOFIL.patch",
+      "v3-0001-Bump-pgbench-soft-open-file-limit-RLIMIT_NOFILE-t.patch",
+      "v1-0001-Bump-soft-open-file-limit-RLIMIT_NOFILE-to-hard-l.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "No level fails. Message #1 shows demand, and Andres Freund, Tom Lane and the reviewer accept the policy of raising the soft limit to already-open FDs plus max_files_per_process. Two fixable design points survive: standards-compat-2 (children started outside pg_system()/pg_popen() inherit the raised limit, also in the default configuration) and standards-compat-1 (an existing max_files_per_process value now allows more FDs per backend). A committer who knows fd.c and process startup has to judge both.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Raise postmaster soft open file limit to cover max_files_per_process",
+    "problem": "The default soft RLIMIT_NOFILE of 1024 is low, and users often fail to raise it because the effective setting depends on how Postgres is started, which cloud users often cannot control. io_uring-based AIO needs one FD per possible child process, and a future threaded server would share one FD limit across all sessions.",
+    "proposed_design": "At startup, set_max_safe_fds() counts the FDs already open and raises the soft limit, up to the hard limit, so that backends can open max_files_per_process files on top of those. Children started by system() and popen() go through new pg_system()/pg_popen() wrappers, which restore the original soft limit after fork and before exec, for programs that use select(2). A second patch copies max_safe_fds back into max_files_per_process.",
+    "user_visible_surface": [
+      "max_files_per_process changes meaning: it now counts files a backend may open beyond the FDs already open, and the docs drop the advice to lower it on \"Too many open files\".",
+      "The postmaster raises its soft RLIMIT_NOFILE when needed, up to the hard limit.",
+      "Shell commands such as archive_command, restore_command and COPY FROM PROGRAM run with the original soft limit.",
+      "max_files_per_process shows the computed max_safe_fds after startup, possibly as an override source.",
+      "New C functions pg_system() and pg_popen() in fd.c for extensions and core callers that run shell commands."
+    ],
+    "author_claims": [
+      "Opting in by raising the soft limit at startup is the practice recommended by the systemd author and used by Go and many Debian packages.",
+      "Many user reports show people raising ulimit or lowering max_files_per_process to avoid \"Too many open files\".",
+      "The change is needed for io_uring AIO and for a future threaded server.",
+      "The default configuration does not use many more FDs, since max_files_per_process stays at 1000.",
+      "Restoring the limit only in the child after fork means the server process never runs with a too-low limit."
+    ],
+    "thread_state": "The pgbench part was committed for PG18. Surya Poondla supports the policy and asked to keep the child path between fork and exec at syscall level; Jelte says v12 addresses those three points, and nobody has replied since.",
+    "unclear": [
+      "The patch prose does not say how io_uring FDs created before set_max_safe_fds() are counted, or whether the limit is adjusted twice.",
+      "No documentation hunk is shown for the newest version, so the final wording of max_files_per_process is unknown.",
+      "The prose gives no behaviour for macOS, where the hard limit is unlimited, or for Windows.",
+      "The proposal does not say whether PL languages that fork children also get the original limit.",
+      "No monitoring of VFD evictions is part of this patch, though Tomas Vondra and Tom Lane asked for it."
+    ],
+    "search_queries": [
+      "raise RLIMIT_NOFILE soft limit",
+      "max_files_per_process ulimit",
+      "too many open files postmaster",
+      "setrlimit open file limit startup",
+      "max_safe_fds file descriptors",
+      "popen system replacement fork exec",
+      "vfd cache file descriptor limit"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Default Linux installs raise the limit for children outside pg_system/pg_popen",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "design",
+      "touch_points": [
+        "security_privileges",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "With default settings on Linux, already-open FDs plus 1000 plus reserved FDs exceed 1024, so the postmaster raises the soft limit. A plpython function or an extension then starts a helper through its own fork or subprocess call. That helper inherits the raised limit, and a select(2)-based helper can get FDs at 1024 or above and misbehave.",
+      "argument": "Tom Lane asked about plperl and plpython in message #4. The material says only that core system() and popen() callers move to pg_system() and pg_popen(). The brief's claim that the default configuration is unaffected covers FD usage, but the soft limit can still be raised in the default case. Extensions that call system() directly keep the old call and get no reset.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4,
+        29
+      ],
+      "author_must_show": "Does the default configuration raise the soft limit on Linux, and how do PL language and extension child processes get the original limit back?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "Tom Lane",
+          "date": "2025-02-11T20:00:22Z",
+          "url": "https://www.postgresql.org/message-id/3208430.1739304022%40sss.pgh.pa.us"
+        },
+        {
+          "index": 29,
+          "from": "\"Jelte Fennema-Nio\"",
+          "date": "2025-12-07T15:55:17Z",
+          "url": "https://www.postgresql.org/message-id/DES3UPNP0UXY.35SEHGJ8F8OEQ%40jeltef.nl"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #4 asked about plperl and plpython, and no later message or patch prose answers it. With the new meaning, 1000 files on top of the already-open FDs can exceed 1024, so Tom Lane's relief in message #4 about the default no longer holds.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Same max_files_per_process value lets backends open more files after upgrade",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "new_guc",
+      "touch_points": [
+        "new_guc",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A BSD admin once lowered max_files_per_process to stop \"Too many open files\" and keeps the same postgresql.conf through pg_upgrade. Each backend can now open that many files on top of the inherited and reserved FDs, so the system-wide total grows with max_connections. The admin sees the old errors return and finds that the docs no longer say to lower the setting.",
+      "argument": "The v3 commit message says max_safe_fds changes from max_files_per_process minus already-open minus NUM_RESERVED_FDS to max_files_per_process itself. That silently changes what an existing configured value means. The documentation hunk drops the advice to lower the setting but adds no release-note or upgrade guidance. Tom Lane in message #7 described Postgres running the kernel out of FDs, which is the case this tuning was meant to prevent.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        7,
+        8
+      ],
+      "author_must_show": "How will users who tuned max_files_per_process for the old meaning learn the new meaning on upgrade, and what value keeps their old FD budget?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Tom Lane",
+          "date": "2025-02-11T19:20:13Z",
+          "url": "https://www.postgresql.org/message-id/3203865.1739301613%40sss.pgh.pa.us"
+        },
+        {
+          "index": 7,
+          "from": "Tom Lane",
+          "date": "2025-02-11T20:18:40Z",
+          "url": "https://www.postgresql.org/message-id/3209989.1739305120%40sss.pgh.pa.us"
+        },
+        {
+          "index": 8,
+          "from": "Andres Freund",
+          "date": "2025-02-11T21:14:21Z",
+          "url": "https://www.postgresql.org/message-id/7u7dbn6s2i6bf3hjzkbqaexj2bpoblqxwbkffbetl4rjv6dcom%40s2uickjc5z53"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The v3 commit message confirms the same value now gives each backend more FDs, and the docs hunk drops the advice to lower it. The increase is only the already-open plus reserved FDs, and release notes are not the patch's job, so this is a docs wording issue.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Raised limit leaks to any child not started via pg_system()/pg_popen()",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later core patch, an archive module, or a PL handler (plperl, plpython) runs a program through plain system(), popen() or its own fork/exec. That child inherits the raised soft limit, and a select(2)-based tool in it fails on a descriptor above 1024. Nothing in the build or the tests detects the direct call.",
+      "argument": "The select(2) protection only holds if every spawn path uses the new wrappers, so each future caller has to remember it. Tom Lane raised the PL languages in message #4, and the proposal still does not say what happens for them. No mechanism is described that would catch a missed call, such as a lint rule, a pg_attribute_deprecated on system(), or a test.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4,
+        29
+      ],
+      "author_must_show": "How will a new direct system() or popen() call in core or contrib be caught, and what do PL languages and extensions get?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "Tom Lane",
+          "date": "2025-02-11T20:00:22Z",
+          "url": "https://www.postgresql.org/message-id/3208430.1739304022%40sss.pgh.pa.us"
+        },
+        {
+          "index": 29,
+          "from": "\"Jelte Fennema-Nio\"",
+          "date": "2025-12-07T15:55:17Z",
+          "url": "https://www.postgresql.org/message-id/DES3UPNP0UXY.35SEHGJ8F8OEQ%40jeltef.nl"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-2, which covers the same children outside pg_system()/pg_popen() and adds the default-configuration point. The request for a check on direct system() calls can be folded into that one.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Core takes on its own popen() replacement",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Someone later adds work to the code path between fork and exec, for example logging or a memory allocation. It passes review because the restriction lives only in a comment. Once backends are threads, a child that hits that path can deadlock on a lock held by another thread, and the trigger is a routine archive_command run.",
+      "argument": "In message #26 the author judged reimplementing popen() to be more trouble than it is worth, and message #29 then adds one anyway. Message #34 had to find an ereport() hidden in the child path, which shows the invariant is easy to break without anyone noticing. The proposal does not cover Windows or say who owns this code across glibc, musl, macOS, the BSDs and Solaris.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        26,
+        29,
+        34
+      ],
+      "author_must_show": "Who maintains pg_popen() across all supported platforms, and what beyond a comment prevents unsafe calls between fork and exec?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 26,
+          "from": "\"Jelte Fennema-Nio\"",
+          "date": "2025-04-13T19:30:46Z",
+          "url": "https://www.postgresql.org/message-id/D95RE1URB4NV.1HOTIBF6OY7YD%40jeltef.nl"
+        },
+        {
+          "index": 29,
+          "from": "\"Jelte Fennema-Nio\"",
+          "date": "2025-12-07T15:55:17Z",
+          "url": "https://www.postgresql.org/message-id/DES3UPNP0UXY.35SEHGJ8F8OEQ%40jeltef.nl"
+        },
+        {
+          "index": 34,
+          "from": "surya poondla",
+          "date": "2026-09-15T23:04:23Z",
+          "url": "https://www.postgresql.org/message-id/CAOVWO5qeOkC1O-cs1pnBWxxn-%2Bmh6-Sjmeij9%3DLQVtoP6NLCgg%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "Message #34 concluded that a small fork/exec is the only workable approach and asked for syscall-only child work plus a comment, and message #35 says v12 does both. The deadlock needs a future threaded server and a future careless change, and ownership belongs under committability.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "io_uring descriptor ordering is still open despite being the main motivation",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "With io_uring and a high max_connections, the postmaster creates one ring descriptor per child during shared memory setup. That happens before set_max_safe_fds() raises the limit, so startup hits the original soft limit of 1024. Users see this as soon as they enable io_method=io_uring.",
+      "argument": "Message #10 shows io_uring descriptors are created before set_max_safe_fds(). Messages #13 and #15 list two fixes: delayed creation or a second round of adjustment. Message #17 notes that a second round would overwrite the saved original limit. The patch prose does not say which fix it uses, so the interface may only suit its current caller and need rework when AIO uses it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        10,
+        13,
+        15,
+        17
+      ],
+      "author_must_show": "How does v12 cover io_uring descriptors created during shared memory setup, and is the saved original limit kept if the limit is raised twice?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 10,
+          "from": "Andres Freund",
+          "date": "2025-02-11T22:27:09Z",
+          "url": "https://www.postgresql.org/message-id/xvd2cyrtd4wk42ugweydxfcy3bwtaymu4gqmky5fpfcu6xia4m%40qbgeq23yncch"
+        },
+        {
+          "index": 13,
+          "from": "Tom Lane",
+          "date": "2025-02-11T22:55:39Z",
+          "url": "https://www.postgresql.org/message-id/3226911.1739314539%40sss.pgh.pa.us"
+        },
+        {
+          "index": 15,
+          "from": "Andres Freund",
+          "date": "2025-02-11T23:13:26Z",
+          "url": "https://www.postgresql.org/message-id/v43qmocsld2vbbpylns5yfqnk6w2vqdigly2hwnctr7pior53d%403xdpzthtrzqq"
+        },
+        {
+          "index": 17,
+          "from": "Andres Freund",
+          "date": "2025-02-17T17:24:46Z",
+          "url": "https://www.postgresql.org/message-id/lj5q3h4zxwhfusvv2azjnwva74yjwthkrrsvcxrac67f636tpi%40ewtgldqjfwes"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The scenario describes what happens today without the patch, since ring creation before set_max_safe_fds() already runs under the original soft limit. The patch does not make it worse, and the user reports in message #1 justify it without io_uring; the v12 ordering is a fair question to ask.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "New pg_system() and pg_popen() in fd.h, which extensions must call to get the original soft limit in child processes."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": true,
+      "reason": "No new GUC, but max_files_per_process changes meaning and shows the computed max_safe_fds after startup."
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "The postmaster changes its own resource limit, and children of PL languages and extensions inherit the raised limit."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The changed meaning of max_files_per_process makes this a behaviour change for new major versions only."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Core gets its own fork/exec replacement for system() and popen(), and every new caller must use it."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "With default settings on Linux, does the postmaster raise the soft limit above 1024, given that 1000 files now come on top of the already-open FDs?",
+    "How do child processes started by plperl, plpython or an extension calling system() directly get the original soft limit back?",
+    "What catches a new direct system() or popen() call in core or contrib that bypasses pg_system() and pg_popen()?",
+    "What value of max_files_per_process keeps the old FD budget for a user who lowered it under the old meaning, and where do the docs say so?",
+    "How does v12 count io_uring FDs created before set_max_safe_fds(), and what does the patch do on macOS and Windows?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Tom Lane and Andres Freund shaped the design early in the thread, but neither has replied to v12. The owner needs to know fd.c, postmaster startup and child process handling across platforms.",
+    "liability": "The owner signs for the fork/exec replacement in pg_system()/pg_popen() on every supported platform, and for any child process that misbehaves under a raised limit, for as long as the code exists.",
+    "author_follow_up": "Good sign: the author has kept the patch alive through 9 CommitFests, reached v12, and answered the reviewer's three points in November 2026."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "proceed",
+    "reason": "Message #1 cites several independent user reports, and io_uring AIO needs the FDs. The patch is small and mostly in fd.c, but the fork/exec path and the GUC meaning change need careful review; no committer has responded to v12 yet."
+  },
+  "self_advice": [],
+  "provisional_note": "The v12 patch prose and documentation hunk were not shown, so the final max_files_per_process wording, the io_uring FD ordering, and the syscall-only child path between fork and exec could not be checked.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "revert:ed7bb5c311ce059294807cf4abfa9406d95feec0",
+      "kind": "revert",
+      "title": "Revert test added by commit d207038053.",
+      "status": "Reverted",
+      "date": "2020-01-14",
+      "first_date": "2020-01-02",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ed7bb5c311ce059294807cf4abfa9406d95feec0",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAA4eK1LHhERi06Q+MmP9qBXBBboi+7WV3910J0aUgz71LcnKAw@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/6485.1578583522@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CAJ3gD9c-sECEn79zXw4yBnBdOttacoE-6gAyP0oy60nfs_sabQ@mail.gmail.com"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Revert test added by commit d207038053.\nReverted commit(s): Fix running out of file descriptors for spill files.",
+      "objection": "This test was trying to test the mechanism to release kernel FDs as needed\nto get us under the max_safe_fds limit in case of spill files.  To do that,\nit needs to set max_files_per_process to a very low value which doesn't\neven permit starting of the server in the case when there are a few already\nopened files.  This test also won't work on platforms where we use one FD\nper semaphore.\n\nhttps://postgr.es/m/CAA4eK1LHhERi06Q+MmP9qBXBBboi+7WV3910J0aUgz71LcnKAw@mail.gmail.com\nhttps://postgr.es/m/6485.1578583522@sss.pgh.pa.us",
+      "touch_points": [],
+      "matched_queries": [
+        "max_files_per_process ulimit",
+        "setrlimit open file limit startup",
+        "max_safe_fds file descriptors",
+        "vfd cache file descriptor limit"
+      ],
+      "from_hint": false,
+      "score": 0.467,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "revert:9bacf0e3734f0b5dc821abf7cb312377876e22d3",
+      "kind": "revert",
+      "title": "Revert \"Use \"transient\" files for blind writes, take 2\".",
+      "status": "Reverted",
+      "date": "2012-10-17",
+      "first_date": "2011-06-10",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9bacf0e3734f0b5dc821abf7cb312377876e22d3",
+      "thread_urls": [],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert \"Use \"transient\" files for blind writes, take 2\".\nReverted commit(s): Use \"transient\" files for blind writes, take 2",
+      "objection": "This reverts commit fba105b1099f4f5fa7283bb17cba6fed2baa8d0c.\nThat approach had problems with the smgr-level state not tracking what\nwe really want to happen, and with the VFD-level state not tracking the\nsmgr-level state very well either.  In consequence, it was still possible\nto hold kernel file descriptors open for long-gone tables (as in recent\nreport from Tore Halset), and yet there were also cases of FDs being closed\nundesirably soon.  A replacement implementation will follow.",
+      "touch_points": [],
+      "matched_queries": [
+        "setrlimit open file limit startup",
+        "max_safe_fds file descriptors",
+        "vfd cache file descriptor limit"
+      ],
+      "from_hint": false,
+      "score": 0.29,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:4420",
+      "kind": "cf",
+      "title": "Unified file access using virtual file descriptors",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2023-06-29",
+      "url": "https://commitfest.postgresql.org/patch/4420/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/BYAPR13MB2677936EF82457FFA311626FA025A@BYAPR13MB2677.namprd13.prod.outlook.com"
+      ],
+      "authors": "John Morris (coyotebush)",
+      "objectors": "vignesh C",
+      "summary": "Make virtual file descriptors (VFDs) the common interface for most non-buffer-cache, non-WAL files, adding sequential read/write, seek/tell, append and ferror-style error calls to fd.c. A second patch converts many callers from system or C library file calls to VFDs, as groundwork for transparent encryption, compression or checksums.",
+      "objection": "The patch failed to compile on CFbot (an undeclared MAXIMUM_VFD in fd.c), and the author did not post a new version after this was reported. The commitfest manager returned it with feedback for that reason, and no design review appears in the thread.",
+      "touch_points": [],
+      "matched_queries": [
+        "max_safe_fds file descriptors",
+        "vfd cache file descriptor limit"
+      ],
+      "from_hint": false,
+      "score": 0.266,
+      "enriched": true,
+      "key_quote": "With no update to the thread and the compilation still failing I'm\nmarking this as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALDaNm0R2va6z7a0h9QPfcLmGNxOA8JpH6iONxANnVNDUoMZnQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:3664",
+      "kind": "cf",
+      "title": "Deletion of the recycled future WAL files to free-up disk space if max_wal_size is reduced or wal_recycle is set to off",
+      "status": "Returned with feedback",
+      "date": "2022-08-01",
+      "first_date": "2022-05-06",
+      "url": "https://commitfest.postgresql.org/patch/3664/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACU3ovReRGggVGK6Q+CwX1Aiy0NRo7qn8fg8Ke1vngo-bQ@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "Jacob Champion",
+      "summary": "When max_wal_size is reduced or wal_recycle is set to off, a checkpoint should delete recycled future WAL files to free disk space. The author suggested keeping recycled WAL files in a sorted list and, at checkpoint, deleting them from the newest end, rebuilding the list after restart if needed.",
+      "objection": "No patch was ever posted, so the commitfest entry had nothing to review. Jacob Champion closed it for that reason and invited the author to reopen it if a patch existed. Justin Pryzby supported the idea, and Tom Lane questioned only whether the behaviour was real.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "max_files_per_process ulimit",
+        "max_safe_fds file descriptors"
+      ],
+      "from_hint": false,
+      "score": 0.238,
+      "enriched": true,
+      "key_quote": "(This is registered in CF, but there doesn't seem to be a patch as part\nof this thread, so I don't think there's anything to review.",
+      "quote_message_url": "https://www.postgresql.org/message-id/f3664b22-ef52-3640-4487-40e6f193b288%40timescale.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:4320",
+      "kind": "cf",
+      "title": "doc: Add some OID/TOAST-related limitations to the limits appendix.",
+      "status": "Withdrawn",
+      "date": "2023-06-13",
+      "first_date": "2023-04-21",
+      "url": "https://commitfest.postgresql.org/patch/4320/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKZiRmwWhp2yxjqJLwbBjHdfbJBcUmmKMNAZyBjjtpgM9AMatQ@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "John Naylor",
+      "summary": "The patch adds a note to the limits appendix that a table can hold at most 4,294,967,296 out-of-line TOAST values, and that OID searches slow down inserts as the OID space fills. It also adds rows on the size and number of large objects in pg_largeobject.",
+      "objection": "The visible messages do not show why it was withdrawn. The last message is a second review from John Naylor that asks for more edits, and no author reply follows. He found the large object rows wrong (OIDs limit the number of large objects, not table size) and wanted the vacuum and partitioning advice removed.",
+      "touch_points": [],
+      "matched_queries": [
+        "raise RLIMIT_NOFILE soft limit",
+        "vfd cache file descriptor limit"
+      ],
+      "from_hint": false,
+      "score": 0.196,
+      "enriched": true,
+      "key_quote": "We don't need to tell people to vacuum, and we don't need to tell them about partitioning as a workaround -- it's a workaround for the table size limit, too, but we are just documenting the limits here.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAFBsxsEACdLoxS72TVfwd239ePymMTBmdJ3J%2BSO706fU9YqbZg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:2241",
+      "kind": "cf",
+      "title": "New GUC prepared_statement_limit to limit memory used by prepared statements",
+      "status": "Returned with feedback",
+      "date": "2019-11-28",
+      "first_date": "2019-08-17",
+      "url": "https://commitfest.postgresql.org/patch/2241/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ed51c14c-b3ff-5e2e-962c-69ac3ccb2c07@ikoffice.de"
+      ],
+      "authors": "Daniel Migowski (dmigowski)",
+      "objectors": "Tom Lane, Kyotaro Horiguchi",
+      "summary": "The patch adds a GUC, prepared_statement_limit, that caps the memory each session uses for saved CachedPlanSources, keeping them in an LRU list and invalidating query lists and generic plans when the limit is exceeded. It also changes the plan cache invalidation callbacks to free invalidated query lists at once instead of only marking them invalid.",
+      "objection": "The patch was returned with feedback because the author did not update it in the months after review. Reviewers had found it crashed in the regression tests: Tom Lane traced this to freeing data inside PlanCacheRelCallback and similar callbacks while outer call levels may still be using it. Tom Lane also doubted the design. A cache size limit risks sudden performance drops, only the regeneratable parts of an entry are freed, the limit applies to total rather than freeable usage, and CachedExpressions are not covered. Kyotaro Horiguchi noted that measuring memory through context stats is too expensive and that there was no consensus on how to prune caches in general.",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "raise RLIMIT_NOFILE soft limit",
+        "vfd cache file descriptor limit"
+      ],
+      "from_hint": false,
+      "score": 0.193,
+      "enriched": true,
+      "key_quote": "It's hard to tell where performance is going to fall off a cliff if you limit the cache size.",
+      "quote_message_url": "https://www.postgresql.org/message-id/6391.1567546041%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "revert:20d3fe9009ddbbbb3da3a2da298f922054b43f8c",
+      "kind": "revert",
+      "title": "In INSERT/UPDATE, use the table's real tuple descriptor as target.",
+      "status": "Partially reverted",
+      "date": "2020-10-26",
+      "first_date": "2020-10-25",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=20d3fe9009ddbbbb3da3a2da298f922054b43f8c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/16644-5da7ef98a7ac4545@postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "In INSERT/UPDATE, use the table's real tuple descriptor as target.\nReverted commit(s): Fix corner case for a BEFORE ROW UPDATE trigger returning OLD.",
+      "objection": "Previously, ExecInitModifyTable relied on ExecInitJunkFilter,\nand thence ExecCleanTypeFromTL, to build the target descriptor from\nthe query tlist.  While we just checked (in ExecCheckPlanOutput)\nthat the tlist produces compatible output, this is not a great\nsubstitute for the relation's actual tuple descriptor that's\navailable from the relcache.  For one thing, dropped columns will\nnot be correctly marked attisdropped; it's a bit surprising that\nwe've gotten away with that this long.  But the real reason for\nbeing concerned with this is that using the table's descriptor means\nthat the slot will have correct attrmissing data, allowing us to\nrevert the klugy fix of commit ba9f18abd.  (This commit undoes\nthat one's changes in trigger.c, but keeps the new test case.)\nThus we can solve the bogus-trigger-tuple problem with fewer cycles\nrather than more.\n\nNo back-patch, since this doesn't fix any additional bug, and it\nseems somewhat more likely to have unforeseen side effects than\nba9f18abd's narrow fix.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "max_safe_fds file descriptors",
+        "vfd cache file descriptor limit"
+      ],
+      "from_hint": false,
+      "score": 0.187,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:4502",
+      "kind": "cf",
+      "title": "Archive current timeline history file on archiver startup if needed",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2023-08-10",
+      "url": "https://commitfest.postgresql.org/patch/4502/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/BYAPR05MB6454BB023C78A0D33B0D56D4BD12A@BYAPR05MB6454.namprd05.prod.outlook.com"
+      ],
+      "authors": "Jimmy Yih (jyih)",
+      "objectors": "Robert Haas, Kyotaro Horiguchi",
+      "summary": "When a primary on a timeline above 1 has WAL archiving enabled after its last timeline switch, the history file for its current timeline is never archived. This breaks cascading standbys and explicit-timeline PITR built from `-X none` base backups. The patch proposed archiving that history file if it is not yet archived, first at archiver startup and later at the end of StartupXLOG, with an alternative patch letting recovery proceed when the initial timeline's history file cannot be fetched.",
+      "objection": "Kyotaro Horiguchi objected to archiving the same file repeatedly. Robert Haas rejected the alternative of fetching the history file and ignoring errors, and asked whether the two patches were alternatives. After Robert Haas's review the author did not reply, the entry was set to Waiting on Author, and it was later returned with feedback because the feedback had not been addressed.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "setrlimit open file limit startup"
+      ],
+      "from_hint": false,
+      "score": 0.147,
+      "enriched": true,
+      "key_quote": "It seems to me that trying to fetch a timeline history file and then\nignoring any error has got to be wrong.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoY6RaBKPwwp73a8Scv8iqNV37yxy-CqgKkbuLf6cQT_9Q%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "revert:c8ec5e0543b90372c8e6d5cc2cd3d2ff89ca0e82",
+      "kind": "revert",
+      "title": "Revert \"Add soft error handling to some expression nodes\"",
+      "status": "Reverted",
+      "date": "2023-10-02",
+      "first_date": "2023-10-02",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=c8ec5e0543b90372c8e6d5cc2cd3d2ff89ca0e82",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+HiwqE4XTdfb1nW=Ojoy_tQSRhYt-q_kb6i5d4xcKyrLC1Nbg@mail.gmail.com"
+      ],
+      "authors": "Amit Langote",
+      "objectors": "",
+      "summary": "Revert \"Add soft error handling to some expression nodes\"\nReverted commit(s): Add soft error handling to some expression nodes",
+      "objection": "This reverts commit 7fbc75b26ed8ec70c729c5e7f8233896c54c900f.\n\nLooks like the LLVM additions may not be totally correct.",
+      "touch_points": [],
+      "matched_queries": [
+        "raise RLIMIT_NOFILE soft limit"
+      ],
+      "from_hint": false,
+      "score": 0.145,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:3066",
+      "kind": "cf",
+      "title": "Use SIGIO to detect postmaster death",
+      "status": "Withdrawn",
+      "date": "2021-07-13",
+      "first_date": "2020-09-17",
+      "url": "https://commitfest.postgresql.org/patch/3066/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGK1607VmtrDUHQXrsooU=ap4g4R2yaoByWOOA3m8xevUQ@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "Thomas Munro",
+      "summary": "The patch uses SIGIO, set up with fcntl(O_ASYNC) and F_SETOWN on the postmaster death pipe, so backends get a signal when the postmaster exits. This gives a postmaster death signal on systems without USE_POSTMASTER_DEATH_SIGNAL, such as macOS and the BSDs.",
+      "objection": "The author withdrew the patch after finding that only the last backend to call F_SETOWN on the shared pipe receives the signal. A fix would need a separate pipe per backend, which he judged unwarranted at that point. Heikki Linnakangas and Tom Lane had reviewed it without objection.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "too many open files postmaster"
+      ],
+      "from_hint": false,
+      "score": 0.138,
+      "enriched": true,
+      "key_quote": "On closer inspection, only the last backend to start up and do\nF_SETOWN on the pipe receives the signal.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BhUKGLua5Pnx%2Brjjxg%3D3OPO4oOjtUPjeUYeZXh7TkH3gA7-Uw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "revert:6719b238e8f0ea83c39d2b1728c7670cdaa34e06",
+      "kind": "revert",
+      "title": "Rearrange execution of PARAM_EXTERN Params for plpgsql's benefit.",
+      "status": "Partially reverted",
+      "date": "2017-12-21",
+      "first_date": "2015-07-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6719b238e8f0ea83c39d2b1728c7670cdaa34e06",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/32589.1513706441@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Rearrange execution of PARAM_EXTERN Params for plpgsql's benefit.\nReverted commit(s): Further reduce overhead for passing plpgsql variables to the executor.",
+      "objection": "This patch does three interrelated things:\n\n* Create a new expression execution step type EEOP_PARAM_CALLBACK\nand add the infrastructure needed for add-on modules to generate that.\nAs discussed, the best control mechanism for that seems to be to add\nanother hook function to ParamListInfo, which will be called by\nExecInitExpr if it's supplied and a PARAM_EXTERN Param is found.\nFor stand-alone expressions, we add a new entry point to allow the\nParamListInfo to be specified directly, since it can't be retrieved\nfrom the parent plan node's EState.\n\n* Redesign the API for the ParamListInfo paramFetch hook so that the\nParamExternData array can be entirely virtual.  This also lets us get rid\nof ParamListInfo.paramMask, instead leaving it to the paramFetch hook to\ndecide which param IDs should be accessible or not.  plpgsql_param_fetch\nwas already doing the identical masking check, so having callers do it too\nseemed redundant.  While I was at it, I added a \"speculative\" flag to\nparamFetch that the planner can specify as TRUE to avoid unwanted failures.\nThis solves an ancient problem for plpgsql that it couldn't provide values\nof non-DTYPE_VAR variables to the planner for fear of triggering premature\n\"record not assigned yet\" or \"field not found\" errors during planning.\n\n* Rework plpgsql to get rid of the need for \"unshared\" parameter lists,\nby dint of turning the single ParamListInfo per estate into a nearly\nread-only data structure that doesn't instantiate any per-variable data.\nInstead, the paramFetch hook controls access to per-variable data and can\nmake the right decisions on the fly, replacing the cases that we used to\nneed multiple ParamListInfos for.  This might perhaps have been a\nperformance loss on its own, but by using a paramCompile hook we can\nbypass plpgsql_param_fetch entirely during normal query execution.\n(It's now only called when, eg, we copy the ParamListInfo into a cursor\nportal.  copyParamList() or SerializeParamList() effectively instantiate\nthe virtual parameter array as a simple physical array without a\nparamFetch hook, which is what we want in those cases.)  This allows\nreverting most of commit 6c82d8d1f, though I kept the cosmetic\ncode-consolidation aspects of that (eg the assign_simple_var function).\n\nPerformance testing shows this to be at worst a break-even change,\nand it can provide wins ranging up to 20% in test cases involving\naccesses to fields of \"record\" variables.  The fact that values of\nsuch variables can now be exposed to the planner might produce wins\nin some situations, too, but I've not pursued that angle.\n\nIn passing, remove the \"parent\" pointer from the arguments to\nExecInitExprRec and related functions, instead storing that pointer in a\ntransient field in ExprState.  The ParamListInfo pointer for a stand-alone\nexpression is handled the same way; we'd otherwise have had to add\nyet another recursively-passed-down argument in expression compilation.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "popen system replacement fork exec"
+      ],
+      "from_hint": false,
+      "score": 0.126,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:1253",
+      "kind": "cf",
+      "title": "add max_worker_processes_per_user setting",
+      "status": "Returned with feedback",
+      "date": "2017-11-30",
+      "first_date": "2017-01-10",
+      "url": "https://commitfest.postgresql.org/patch/1253/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKJS1f_6H2Gh3QyORyRP+G3YB3gZiNms_8QdtO5gvitfY5N9ig@mail.gmail.com"
+      ],
+      "authors": "Peter Eisentraut (petere)",
+      "objectors": "David Rowley, Robert Haas",
+      "summary": "Peter Eisentraut proposed a GUC, max_worker_processes_per_user, that limits how many background worker processes one user can run. Background workers had just stopped counting toward the role CONNECTION LIMIT, and the setting would cover background sessions, parallel workers, logical replication apply workers and extensions.",
+      "objection": "David Rowley asked why the limit is a GUC instead of a per-user option such as ALTER USER ... WORKER LIMIT. He also objected that hitting the limit makes worker registration fail, so queries could error at random instead of running with fewer workers. The author did not answer for three months, and Michael Paquier returned the patch with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "max_files_per_process ulimit"
+      ],
+      "from_hint": false,
+      "score": 0.126,
+      "enriched": true,
+      "key_quote": "Unless I've misunderstood something, it seems that this is going to\ngive random errors to users which might only occur when they run\nqueries against larger tables.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAKJS1f9cdGwxPJSd1jScJ%3D2pEiAUyLnyMTw7bMTiQ%3DZ%3DSfs6oA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:4779",
+      "kind": "cf",
+      "title": "Adding linux cachestat in file Readv and Prefetch",
+      "status": "Rejected",
+      "date": "2024-03-14",
+      "first_date": "2024-01-18",
+      "url": "https://commitfest.postgresql.org/patch/4779/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/cbe67692-ad03-4c5a-a5bb-405a438e9cda@abcSQL.com"
+      ],
+      "authors": "Cédric Villemain (c2main)",
+      "objectors": "Tomas Vondra, Robert Haas",
+      "summary": "The patch uses the Linux 6.5 cachestat() syscall in file reads and prefetch to collect page cache statistics for a file range. It also stops prefetching when recently evicted pages suggest memory pressure.",
+      "objection": "Tomas Vondra doubted that per-file cachestat data from one 1GB segment detects memory pressure, and he disagreed that prefetching should stop under memory pressure. He also noted that the patch had no performance evaluation. Robert Haas agreed and said pg_prewarm should read what the user asks for, and the thread does not show why the feature is needed.",
+      "touch_points": [],
+      "matched_queries": [
+        "vfd cache file descriptor limit"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": true,
+      "key_quote": "I'm not sure I even agree with the idea that we should stop prefetching\nwhen there is memory pressure. IMHO it's perfectly fine to keep\nprefetching stuff even if it triggers eviction of unnecessary pages from\npage cache.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2f1236b2-7722-4471-ac80-3a47d090244c%40enterprisedb.com",
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:1772",
+      "kind": "cf",
+      "title": "Create a new session for postmaster in pg_ctl",
+      "status": "Returned with feedback",
+      "date": "2018-09-30",
+      "first_date": "2018-08-01",
+      "url": "https://commitfest.postgresql.org/patch/1772/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEET0ZH5Bf7dhZB3mYy8zZQttJrdZg_0Wwaj0o1PuuBny1JkEw@mail.gmail.com"
+      ],
+      "authors": "Paul Guo (paulguo-pivotal)",
+      "objectors": "",
+      "summary": "Create a new session for postmaster in pg_ctl\nThreads: [Patch] Create a new session in postmaster by calling setsid()",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "too many open files postmaster"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "revert:2a41507dab0f293ff241fe8ae326065998668af8",
+      "kind": "revert",
+      "title": "Revert \"Do execGrouping.c via expression eval machinery.\"",
+      "status": "Reverted",
+      "date": "2018-02-16",
+      "first_date": "2018-02-16",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=2a41507dab0f293ff241fe8ae326065998668af8",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20171129080934.amqqkke2zjtekd4t@alap3.anarazel.de"
+      ],
+      "authors": "Andres Freund",
+      "objectors": "",
+      "summary": "Revert \"Do execGrouping.c via expression eval machinery.\"\nReverted commit(s): Do execGrouping.c via expression eval machinery.",
+      "objection": "This reverts commit 773aec7aa98abd38d6d9435913bb8e14e392c274.\n\nThere's an unresolved issue in the reverted commit: It only creates\none comparator function, but in for the nodeSubplan.c case we need\nmore (c.f. FindTupleHashEntry vs LookupTupleHashEntry calls in\nnodeSubplan.c).\n\nThis isn't too difficult to fix, but it's not entirely trivial\neither. The fact that the issue only causes breakage on 32bit systems\nshows that the current test coverage isn't that great.  To avoid\nturning half the buildfarm red till those two issues are addressed,\nrevert.",
+      "touch_points": [],
+      "matched_queries": [
+        "popen system replacement fork exec"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:3132",
+      "kind": "cf",
+      "title": "rand48 replacement",
+      "status": "Withdrawn",
+      "date": "2021-05-24",
+      "first_date": "2021-05-24",
+      "url": "https://commitfest.postgresql.org/patch/3132/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/alpine.DEB.2.22.394.2105241211230.165418@pseudo"
+      ],
+      "authors": "Fabien Coelho (calvin)",
+      "objectors": "",
+      "summary": "rand48 replacement\nThreads: rand48 replacement",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "popen system replacement fork exec"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:4543",
+      "kind": "cf",
+      "title": "Move bki file pre-processing from initdb to bootstrap",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2023-09-01",
+      "url": "https://commitfest.postgresql.org/patch/4543/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAPMWgZ9TCByVjpfdsgyte4rx=YsrAttYay2xDK4UN4Lm=-wJMQ@mail.gmail.com"
+      ],
+      "authors": "Krishnakumar Ravi (kkpgdev)",
+      "objectors": "",
+      "summary": "Move bki file pre-processing from initdb to bootstrap\nThreads: Move bki file pre-processing from initdb to bootstrap",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "max_files_per_process ulimit"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:387",
+      "kind": "cf",
+      "title": "rich constructor for plpy.Error class, possible raise structured exception",
+      "status": "Returned with feedback",
+      "date": "2016-02-03",
+      "first_date": "2015-10-08",
+      "url": "https://commitfest.postgresql.org/patch/387/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFj8pRCHfN-JXktA47Gnj6epKC05eGES9tBK-z3PoMp1FMKHmw@mail.gmail.com"
+      ],
+      "authors": "Pavel Stehule (okbobcz)",
+      "objectors": "",
+      "summary": "rich constructor for plpy.Error class, possible raise structured exception\nThreads: proposal: PL/Pythonu - function ereport",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "raise RLIMIT_NOFILE soft limit"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "revert:a6c70f68cdeb3bed591a2dd7d421bf3536ba5216",
+      "kind": "revert",
+      "title": "Revert recent changes related to handling of 2PC files at recovery",
+      "status": "Reverted",
+      "date": "2025-01-17",
+      "first_date": "2017-04-04",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=a6c70f68cdeb3bed591a2dd7d421bf3536ba5216",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20250116010051.f3.nmisch@google.com",
+        "https://www.postgresql.org/message-id/flat/11e597-676ab680-8d-374f23c0@145466129",
+        "https://www.postgresql.org/message-id/flat/13b5b6-676c3080-4d-531db900@47931709",
+        "https://www.postgresql.org/message-id/flat/CACG=ezZe1NQSCnfHOr78AtAZxJZeCvxrts0ygrxYwe=pyyjVWA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAJ7c6TPDOYBYrnCAeyndkBktO0WG2xSdYduTF0nxq+vfkmTF5Q@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAMGcDxf8Bn9ZPBBJZba9wiyQq-Qk5uqq=VjoMnRnW5s+fKST3w@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier, Alexander Korotkov, Simon Riggs",
+      "objectors": "",
+      "summary": "Revert recent changes related to handling of 2PC files at recovery\nReverted commit(s): Fix handling of orphaned 2PC files in the future at recovery; Fix failures with incorrect epoch handling for 2PC files at recovery; Make use FullTransactionId in 2PC filenames; Speedup 2PC recovery by skipping two phase state files in normal path",
+      "objection": "This commit reverts 8f67f994e8ea (down to v13) and c3de0f9eed38 (down to\nv17), as these are proving to not be completely correct regarding two\naspects:\n- In v17 and newer branches, c3de0f9eed38's check for epoch handling is\nincorrect, and does not correctly handle frozen epochs.  A logic closer\nto widen_snapshot_xid() should be used.  The 2PC code should try to\nintegrate deeper with FullTransactionIds, 5a1dfde8334b being not enough.\n- In v13 and newer branches, 8f67f994e8ea is a workaround for the real\nissue, which is that we should not attempt CLOG lookups without reaching\nconsistency.  This exists since 728bd991c3c4, and this is reachable with\nProcessTwoPhaseBuffer() called by restoreTwoPhaseData() at the beginning\nof recovery.\n\nPer discussion with Noah Misch.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "max_files_per_process ulimit"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:816",
+      "kind": "cf",
+      "title": "Avoid possibly slow processing during postmaster abnormal or immediate shutdown",
+      "status": "Rejected",
+      "date": "2016-11-18",
+      "first_date": "2016-09-20",
+      "url": "https://commitfest.postgresql.org/patch/816/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/0A3221C70F24FB45833433255569204D1F5EF25A@G01JPEXMBYT05"
+      ],
+      "authors": "Takayuki Tsunakawa (maumau)",
+      "objectors": "",
+      "summary": "Avoid possibly slow processing during postmaster abnormal or immediate shutdown\nThreads: [RFC] Should we fix postmaster to avoid slow shutdown?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "too many open files postmaster"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:2259",
+      "kind": "cf",
+      "title": "Startup Centralization",
+      "status": "Returned with feedback",
+      "date": "2019-12-01",
+      "first_date": "2019-02-25",
+      "url": "https://commitfest.postgresql.org/patch/2259/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMN686FE0OdZKp9YPO=htC6LnA6aW4r-+jq=3Q5RAoFQgW8EtA@mail.gmail.com"
+      ],
+      "authors": "Mike Palmiotto (mpalmiotto), Yulian Khodorkovskiy (ykhodo)",
+      "objectors": "",
+      "summary": "Startup Centralization\nThreads: Auxiliary Processes and MyAuxProc",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "setrlimit open file limit startup"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "revert:f38291e927fa8c04eb772e6a17a3dd44da2b69e8",
+      "kind": "revert",
+      "title": "Revert \"Hack pg_ctl to report postmaster's exit status.\"",
+      "status": "Reverted",
+      "date": "2019-10-13",
+      "first_date": "2019-10-07",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f38291e927fa8c04eb772e6a17a3dd44da2b69e8",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/18537.1570421268@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Hack pg_ctl to report postmaster's exit status.\"\nReverted commit(s): Hack pg_ctl to report postmaster's exit status.",
+      "objection": "This reverts commit 6a5084eed49552bfc8859c438c8d74ad09fc5d3f.\nWe learned what we needed to know from that.",
+      "touch_points": [],
+      "matched_queries": [
+        "too many open files postmaster"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:3957",
+      "kind": "cf",
+      "title": "Replace \"implementor\" with \"implementer\"",
+      "status": "Withdrawn",
+      "date": "2022-10-23",
+      "first_date": "2022-10-23",
+      "url": "https://commitfest.postgresql.org/patch/3957/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJ7c6TOZXPdh=tAV0T6H1+4WGWVPtLo110gCBMZ=n047qOFGCw@mail.gmail.com"
+      ],
+      "authors": "Aleksander Alekseev (a.alekseev)",
+      "objectors": "",
+      "summary": "Replace \"implementor\" with \"implementer\"\nThreads: [PATCH] Replace \"implementor\" with \"implementer\"",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "popen system replacement fork exec"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "revert:b4529005fd387e863bfa9eb863629b1183c0449c",
+      "kind": "revert",
+      "title": "Revert \"Add single-item cache when looking at topmost XID of a subtrans XID\"",
+      "status": "Reverted",
+      "date": "2022-05-28",
+      "first_date": "2022-04-07",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=b4529005fd387e863bfa9eb863629b1183c0449c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20220524235250.gtt3uu5zktfkr4hv@alap3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/CANbhV-G8Co=yq4v4BkW7MJDqVt68K_8A48nAZ_+8UQS7LrwLEQ@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Add single-item cache when looking at topmost XID of a subtrans XID\"\nReverted commit(s): Add single-item cache when looking at topmost XID of a subtrans XID",
+      "objection": "This reverts commit 06f5295 as per issues with this approach, both in\nterms of efficiency impact and stability.  First, contrary to the\nsingle-item cache for transaction IDs in transam.c, the cache may finish\nby not be hit for a long time, and without an invalidation mechanism to\nclear it, it would cause inconsistent results on wraparound for\nexample.  Second, the use of SubTransGetTopmostTransaction() for the\ncaching has a limited impact on performance.  SubTransGetParent() could\nhave more impact, though the benchmarking of the single-item approach\nstill needs to be proved, particularly under the conditions where SLRU\nlookups are stressed in parallel with overflowed snapshots (aka more\nthan 64 subxids generated, for example).\n\nAfter discussion with Andres Freund.",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "vfd cache file descriptor limit"
+      ],
+      "from_hint": false,
+      "score": 0.101,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 4,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2025-02-11",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found. The only listed row, [P1], reverted a test that set max_files_per_process very low, and its reason does not apply to raising the soft RLIMIT_NOFILE. Message #1 links older list threads [5], [6] and [8], but only as user reports of \"Too many open files\", not as earlier attempts at this change that were rejected."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "Two objections from the compatibility angle. The override of the administrator's soft limit, raised in message #6, was settled in messages #8 and #12, so it is not raised again here."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The proposal changes no persistent or cross-node state: no on-disk format, WAL record, catalog, wire protocol or changed struct. restore_command and archive_command run with the original soft limit as before, and pg_system()/pg_popen() are new functions, not changed signatures, so no ABI break follows."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal changes no privilege boundary: only the server owner sets max_files_per_process, the raised soft limit is capped by max_files_per_process and the hard limit, and shell commands such as COPY FROM PROGRAM (already gated by pg_execute_server_program) keep the original limit. A session lowering the limit with setrlimit() needs untrusted PL code, which is already superuser-only, and kernel FD exhaustion stays bounded by max_files_per_process as settled in messages #4 and #8."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "The basic policy of raising the soft limit to already-open descriptors plus max_files_per_process has support from Andres Freund, Tom Lane and the reviewer, so it is not challenged here."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing feature does this job. Setting LimitNOFILE in a systemd unit or running ulimit -n before pg_ctl does not help users who cannot control how Postgres starts, and cannot cover io_uring FDs that the postmaster creates itself. pg_system() and pg_popen() wrap system() and OpenPipeStream() rather than duplicating them, and P1 concerns a reverted test, not this design."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "The material shows real demand. Message #1 cites several independent field reports of \"Too many open files\" and of raising ulimit. Message #8 says cloud users often cannot change how Postgres starts, and message #10 says io_uring AIO needs one FD per possible child process. Andres Freund, Tom Lane, Tomas Vondra and Surya Poondla accept the policy, and only the mechanism is still debated."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 5,
+      "new_survived": 2,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 73,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 15,
+    "wall_ms": 124256,
+    "cost_usd": 3.0010184,
+    "dry_run": false
+  }
+}

@@ -1,0 +1,1509 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:46:36.488Z",
+  "input": {
+    "arg": "6233",
+    "cf": {
+      "id": 6233,
+      "url": "https://commitfest.postgresql.org/patch/6233/",
+      "title": "Bypassing cursors in postgres_fdw to enable parallel plans",
+      "status": "Needs review",
+      "authors": "Rafia Sabih (rafia.sabih)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CA%2BFpmFcmO5ctjYgQxSomJC%3DmCugqPo%2B51Le2wdxX0kWxjvBBig%40mail.gmail.com",
+    "subject": "Bypassing cursors in postgres_fdw to enable parallel plans",
+    "thread_start": "2025-01-06T08:52:10Z",
+    "messages_read": 58,
+    "messages_total": 58,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v19-0001-postgres_fdw-Rename-cursor_exists-flag-to-scan_i.patch",
+      "v19-0002-postgres_fdw-Add-streaming_fetch-option-for-curs.patch",
+      "0001-Add-a-fetch-mechanism-without-cursors.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The goal has no surviving fundamental objection, but the buffering design in v19 fails at level 2. Message #58 shows that a drain runs type input functions under another statement's user and search_path (security-1), and that a failed outer portal leaves the drain state pointing at freed memory (replication-ondisk-1). The reviewing committer asked for a redesign, and no patch or reply for it exists yet. Both points look solvable, so this is a design question and the idea stands.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "postgres_fdw streaming_fetch option to read results without remote cursors",
+    "problem": "postgres_fdw reads remote rows through a cursor, so the remote server never uses a parallel plan for the scan. Users with large foreign scans lose remote parallelism. A later reply adds that remote endpoints without cursor support, such as a DuckDB-based one, cannot serve postgres_fdw today.",
+    "proposed_design": "A new boolean option streaming_fetch, set per server or per table, runs the remote query with libpq chunked-rows mode and uses fetch_size as the chunk size. A connection carries one stream at a time, so when another scan or statement needs the connection, postgres_fdw drains the active scan into a work_mem-bounded tuplestore and replays it later. Scans that fetch ctid or lock rows still use a cursor, and async execution is disabled in this mode.",
+    "user_visible_surface": [
+      "New server and foreign table option streaming_fetch (boolean, default false); the table setting overrides the server setting.",
+      "EXPLAIN VERBOSE shows \"Streaming Fetch: true\" for scans that use the mode.",
+      "async_capable is disabled automatically when streaming_fetch is enabled.",
+      "New error when a scan reads from a tuplestore that lost rows during an interrupted drain."
+    ],
+    "author_claims": [
+      "Remote parallel plans become possible and can speed up large scans a lot.",
+      "A count(*) over about 1 million rows took about 25 ms with the mode versus 63 ms with a cursor.",
+      "Nested or interleaved scans on one connection stay correct without opening a second connection.",
+      "For queries that read few rows, early stops and rescans can make the mode slower than cursors."
+    ],
+    "thread_state": "Robert Haas has reviewed every version through v19. On 2026-11-09 he asked for a redesign, because type input functions run during a drain under another statement's security context, and a failed outer portal can leave dangling resource owner pointers. No reply to that review is visible.",
+    "unclear": [
+      "The proposal does not show how the redesign keeps raw PGresult data and delays type conversion, and no patch for it exists yet.",
+      "Kenan Yilmaz measured the mode as slower than cursors on a 20 million row scan, and the thread does not explain why.",
+      "No benchmark shows memory or disk use when large tuplestore spills happen during interleaved scans.",
+      "The proposal does not say how the mode should behave inside subtransactions with portals from outer levels."
+    ],
+    "search_queries": [
+      "postgres_fdw without cursors",
+      "postgres_fdw parallel query remote",
+      "postgres_fdw chunked rows mode",
+      "postgres_fdw use_cursor GUC",
+      "foreign scan cursor parallel plan",
+      "postgres_fdw fetch tuplestore buffering",
+      "libpq single row mode fdw",
+      "postgres_fdw streaming fetch option"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P11",
+      "source_id": "cf:1362",
+      "title": "PARALLEL flag for cursors",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/1362/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/98760523-a0d2-8705-38e3-c4602ecf2448@2ndquadrant.com"
+      ],
+      "date": "2018-02-07",
+      "first_date": "2017-10-14",
+      "who_objected": "",
+      "quote": null,
+      "quote_url": null,
+      "enriched": false,
+      "reason": "",
+      "relation": "similar_idea",
+      "what_is_different": "P11 tried to let cursors themselves run parallel plans in core. This proposal leaves cursors alone and avoids them in postgres_fdw through libpq chunked-rows mode."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Drain runs type input functions under another statement's security context",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Alice scans a foreign table whose column is a domain with a SQL-language check. Mid-scan she calls Bob's SECURITY DEFINER function, which uses the same foreign server and drains Alice's scan. Alice's domain checks then run as Bob with Bob's search_path, and an error is attributed to Bob's statement.",
+      "argument": "The drain converts remote rows to tuples, so domain input can run arbitrary SQL at a point chosen by whichever statement next needs the connection. Message #58 shows this with a reentrancy test and calls it not OK from a security perspective. The v19 design keeps this behaviour, and no reply or fix is visible. Message #58 says the remedy replaces the tuplestore with raw PGresult spooling, so the change is to the buffering design itself.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        58
+      ],
+      "author_must_show": "How does the redesign make sure that every type input and domain check runs only when its own scan returns the row, under that scan's user and search_path?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 58,
+          "from": "Robert Haas",
+          "date": "2026-11-09T18:39:37Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmobeqkqL0KdgDM57q41ZeuKB%3DCZt%3DNo3yfDNRTt9V-9HAw%40mail.gmail.com"
+        }
+      ],
+      "id": "security-1",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #58 confirms that v19 runs type input functions during a drain under another statement's user and search_path, and no reply is visible. The same message outlines a redesign that delays type conversion, so a new patch version could solve it.",
+        "original_severity": "fatal"
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Drained rows spilled to disk lack a defined owner across subtransaction abort",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user fetches from a cursor opened at an outer level, a subtransaction fails, and AtSubAbort_Portals frees the resource owner that owns the drain's temp file. A later scan on the same connection drains into that freed resource owner, or reads a freed active_scan pointer. The backend errors out or crashes.",
+      "argument": "In message #58, Robert Haas found that the scan's resource owner and the connection's active_scan pointer can outlive the memory they point to after an outer portal fails. His proposal of spool IDs, a transaction-lifespan hash table and per-spool ActivePortal tracking is only a sketch. No reply or patch shows when each spool and its temp files are created and removed on subtransaction abort, portal failure, rescan or connection close. As of v19, the drain state therefore has no proven cleanup point.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        56,
+        58
+      ],
+      "author_must_show": "For each drain spool and its temp files, which resource owner or callback removes it on subtransaction abort, outer-portal failure, rescan and connection loss, and what does a later drain do when the spool is gone?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 56,
+          "from": "Robert Haas",
+          "date": "2026-10-09T20:57:34Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmobcAQ6XZA3yjipTFxepVi-xfMLFz6c8BjqYO6kMN6Byhw%40mail.gmail.com"
+        },
+        {
+          "index": 58,
+          "from": "Robert Haas",
+          "date": "2026-11-09T18:39:37Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmobeqkqL0KdgDM57q41ZeuKB%3DCZt%3DNo3yfDNRTt9V-9HAw%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #58 shows that a failed outer portal leaves active_scan and its resource owner pointing at freed memory in v19. The spool-ID remedy is a sketch with no patch or reply, so the cleanup points are not yet defined.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Every query-sending path must remember to drain the active scan",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds a new place in postgres_fdw that sends SQL on a cached connection, such as a new callback, a new transaction-control command or an analyze helper, without calling the drain function. A user with streaming_fetch on runs a nested scan through that path. The query fails or returns wrong rows, and nothing catches it unless a test happens to cover that path with an overlapping scan.",
+      "argument": "The patch adds a second \"connection is busy\" mechanism next to pendingAreq, and each one needs its own handling at every site that sends a query. Review found missed sites several times: execute_foreign_modify, fetch_more_data_begin, GetConnection and the ANALYZE helpers in message #47, then RELEASE SAVEPOINT in pgfdw_subxact_callback in messages #50 and #56. Making pgfdw_exec_query drain by itself (message #48) covers only the callers that go through it. Message #47 suggested unifying with process_pending_request, and the material does not show that this was done.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        47,
+        48,
+        50,
+        56
+      ],
+      "author_must_show": "Can the async pendingAreq handling and the streaming drain share one path, so that a missed call fails loudly in every build?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 47,
+          "from": "Robert Haas",
+          "date": "2026-08-11T00:13:01Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmoYh8Mm0WkQq4b26Mt2bFNOGFiG3DR6dC9puhGcM7DQVYw%40mail.gmail.com"
+        },
+        {
+          "index": 48,
+          "from": "Rafia Sabih",
+          "date": "2026-08-21T10:25:50Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BFpmFe-suHRoOZPcPmyDO4jSVTNbFPGRAbwEe7KmpG3ofj4kQ%40mail.gmail.com"
+        },
+        {
+          "index": 50,
+          "from": "Robert Haas",
+          "date": "2026-08-27T15:52:02Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmoa-FXH9jZaxm039eWf8%3DnhnoBfDS%3DoeKfm50sbGEAZ58g%40mail.gmail.com"
+        },
+        {
+          "index": 56,
+          "from": "Robert Haas",
+          "date": "2026-10-09T20:57:34Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmobcAQ6XZA3yjipTFxepVi-xfMLFz6c8BjqYO6kMN6Byhw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Review found missed drain sites in messages #47, #50 and #56. Making pgfdw_exec_query drain by itself covers only its callers, and the thread does not show the suggested unification with process_pending_request.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "streaming_fetch silently overrides an explicit async_capable setting",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "psql_ux",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA sets async_capable 'true' on a server for Append over partitioned foreign tables, then sets streaming_fetch 'true' on one table. Async Append stops for that table with no notice or error. The DBA finds out only when queries slow down and EXPLAIN shows no Async Foreign Scan.",
+      "argument": "The commit message and doc hunk say async execution \"is disabled automatically\" when streaming_fetch is on. Postgres options usually either take effect or are rejected at validation, not quietly overridden by a sibling option. Message #20 made this choice to avoid touching a GUC, but no message weighs a reject-at-validation or warn-on-conflict rule. Table and server levels make it worse, because the two options can be set on different objects by different people.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        20
+      ],
+      "author_must_show": "Why should a conflicting async_capable setting be ignored silently, instead of rejected or reported when the options are set or the plan is built?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 20,
+          "from": "Rafia Sabih",
+          "date": "2026-04-02T18:00:25Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BFpmFeowaWiXUYAGxDsoXcDHQWL9me%2BRxPtc%2Bhz92NU%2BfCYpg%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The doc hunk states the override, but the thread never weighs rejecting or reporting the conflict. Because the two options can sit on different objects, a user can lose async Append without any message.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Benefit shown only on synthetic tests, with mixed results",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "maintenance_burden",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user turns on streaming_fetch for a large foreign scan, expecting remote parallelism to help. The scan runs slower than the cursor path, as in message #12 and message #14. Meanwhile postgres_fdw maintainers must keep the drain logic correct in every place that sends a query on a connection.",
+      "argument": "The gain rests on one count(*) test of about 1 million rows (message #11), and the only independent measurement found the mode 20-30% slower on 20 million rows (messages #12 and #14). No field report or production workload is cited. The only outside user is one endpoint without cursor support (message #52), which is a different need from remote parallelism. The cost is a 95 KiB patch whose drain logic touches transaction callbacks, rescans and every query-sending path (messages #47, #50 and #58), and that cost falls on everyone who maintains postgres_fdw.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        11,
+        12,
+        14,
+        47,
+        50,
+        52,
+        58
+      ],
+      "author_must_show": "Which real workloads, with measured numbers, run faster with streaming_fetch, and why was the 20 million row scan slower?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 11,
+          "from": "Rafia Sabih",
+          "date": "2025-11-14T16:06:08Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BFpmFfKtaRHcZ%3DtVQPRt0qt7xMGCotgbWZ9H0fpLoKA8%3DZJjA%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "KENAN YILMAZ",
+          "date": "2025-11-25T14:24:14Z",
+          "url": "https://www.postgresql.org/message-id/CAEV8nunoatq-bGLo%3DmD%3DWNAFers%2Bf4hqnxN-7gw-M%3DCg9qOqqA%40mail.gmail.com"
+        },
+        {
+          "index": 14,
+          "from": "KENAN YILMAZ",
+          "date": "2025-11-28T17:12:36Z",
+          "url": "https://www.postgresql.org/message-id/CAEV8nunSKsoWm-mpAvDMdwzy1V3_BrMSBJxprPjZ%2B%2B76qV8cRw%40mail.gmail.com"
+        },
+        {
+          "index": 47,
+          "from": "Robert Haas",
+          "date": "2026-08-11T00:13:01Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmoYh8Mm0WkQq4b26Mt2bFNOGFiG3DR6dC9puhGcM7DQVYw%40mail.gmail.com"
+        },
+        {
+          "index": 50,
+          "from": "Robert Haas",
+          "date": "2026-08-27T15:52:02Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmoa-FXH9jZaxm039eWf8%3DnhnoBfDS%3DoeKfm50sbGEAZ58g%40mail.gmail.com"
+        },
+        {
+          "index": 52,
+          "from": "Jelte Fennema-Nio",
+          "date": "2026-09-02T19:14:04Z",
+          "url": "https://www.postgresql.org/message-id/CAGECzQSTwxPsLrT9OUO_i8BUv958UeaTL9yHodb%3DDthbzZgQHA%40mail.gmail.com"
+        },
+        {
+          "index": 58,
+          "from": "Robert Haas",
+          "date": "2026-11-09T18:39:37Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmobeqkqL0KdgDM57q41ZeuKB%3DCZt%3DNo3yfDNRTt9V-9HAw%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #10 asked for best-case and worst-case measurements. The thread has one count(*) gain and an unexplained slower result on 20 million rows, though that test returned zero rows on a cold cache and so says little about the mode in general.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "The option does not guarantee cursor-free access for non-Postgres endpoints",
+      "level": "1b",
+      "rubric_item": 10,
+      "category": "design",
+      "touch_points": [
+        "wire_protocol",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user points postgres_fdw at a cursor-less endpoint such as the DuckDB-based one in message #52 and sets streaming_fetch. Plain SELECTs work, but a non-pushed-down UPDATE or a FOR UPDATE scan quietly falls back to DECLARE CURSOR and fails on the remote side at run time.",
+      "argument": "Message #52 presents the option as what makes such endpoints usable, and the doc hunk says it reads results \"without declaring a cursor\". The same hunk keeps cursors for ctid and row-locking scans, and message #55 justifies this. So users who enable the option for compatibility get a contract that holds only for some query shapes. Once users depend on it, every later fallback to cursors becomes a compatibility break for them.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        52,
+        55
+      ],
+      "author_must_show": "Is streaming_fetch meant only as a parallelism hint, or also as a promise of cursor-free access, and what should a fallback scan do against an endpoint without cursors?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 52,
+          "from": "Jelte Fennema-Nio",
+          "date": "2026-09-02T19:14:04Z",
+          "url": "https://www.postgresql.org/message-id/CAGECzQSTwxPsLrT9OUO_i8BUv958UeaTL9yHodb%3DDthbzZgQHA%40mail.gmail.com"
+        },
+        {
+          "index": 55,
+          "from": "Robert Haas",
+          "date": "2026-10-09T20:08:25Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmoaOGXa3i%3DmtRh4M5LPQgHDe20sWQoNtwD2uQFmWousANA%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The proposal states remote parallelism as its goal and documents the cursor fallback for ctid and row-locking scans. Cursor-free access for non-Postgres endpoints is a third-party remark in message #52, and postgres_fdw makes no promise about such endpoints.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "A per-table switch for a choice that depends on query shape",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "design",
+      "touch_points": [
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA enables streaming_fetch on a server to speed up a large reporting scan. Other queries on the same tables with un-pushed LIMITs or rescans now must drain every remote row before reusing the connection, and run slower. The DBA cannot tell which queries regressed until users complain.",
+      "argument": "The doc hunk says the mode can be slower when queries read few rows. Message #12 and message #14 measured it slower on a 20 million row scan with no explanation. The benefit depends on the query, but the option is attached to the server or table, so one setting must fit every query on that object. Message #23 moved from a GUC to this option without discussing whether postgres_fdw could choose per scan from cost estimates.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        12,
+        14,
+        23
+      ],
+      "author_must_show": "Why should users pick the fetch method per table rather than letting postgres_fdw choose per scan, and how would a user find which queries the option slows down?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 12,
+          "from": "KENAN YILMAZ",
+          "date": "2025-11-25T14:24:14Z",
+          "url": "https://www.postgresql.org/message-id/CAEV8nunoatq-bGLo%3DmD%3DWNAFers%2Bf4hqnxN-7gw-M%3DCg9qOqqA%40mail.gmail.com"
+        },
+        {
+          "index": 14,
+          "from": "KENAN YILMAZ",
+          "date": "2025-11-28T17:12:36Z",
+          "url": "https://www.postgresql.org/message-id/CAEV8nunSKsoWm-mpAvDMdwzy1V3_BrMSBJxprPjZ%2B%2B76qV8cRw%40mail.gmail.com"
+        },
+        {
+          "index": 23,
+          "from": "Rafia Sabih",
+          "date": "2026-05-11T11:03:09Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BFpmFdZaWRc38R7M6KrEpFOprU%3Dhmk2CYJUH4H6UiKWKRAgCA%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "Server and table options are how postgres_fdw already exposes fetch_size and async_capable, and the table setting overrides the server setting. The default is false, the docs state the few-rows cost, and EXPLAIN VERBOSE shows which scans use the mode.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Failed outer portal leaves active scan with freed resource owner",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An ordinary user opens a cursor over a streaming foreign scan, uses it inside a subtransaction that fails, and then issues another query on the same server. Postgres reaches drain_active_scan() with active_scan->resowner pointing at freed memory, which can crash the backend for all sessions.",
+      "argument": "Message #58 reports that AtSubAbort_Portals() can reparent and free resource owners of outer-level portals, which leaves dangling pointers in active_scan, and it attaches a test case. This needs only cursors and savepoints, so any user with USAGE on a foreign table can reach it. The spool-ID design in message #58 is a sketch, and the proposal does not yet say how it handles portals from outer subtransaction levels.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        58
+      ],
+      "author_must_show": "What invariant ties the lifetime of a spool and its files to subtransaction and portal cleanup, so that no later drain can touch memory freed by AtSubAbort_Portals()?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 58,
+          "from": "Robert Haas",
+          "date": "2026-11-09T18:39:37Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmobeqkqL0KdgDM57q41ZeuKB%3DCZt%3DNo3yfDNRTt9V-9HAw%40mail.gmail.com"
+        }
+      ],
+      "id": "security-2",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1, which covers the same freed resource owner and dangling active_scan pointer and also asks for the cleanup points.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Pending redesign adds feature-specific spool machinery with one engaged reviewer",
+      "level": "2",
+      "rubric_item": 16,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After commit, a subtransaction abort reparents an outer portal's resource owner, or a domain input function raises an error during a drain. The bug report lands on postgres_fdw maintainers. They must understand spool IDs, a transaction-lifetime hash table, BufFile spill files of raw strings and delayed type conversion, all of which exist only for this option.",
+      "argument": "Message #58 replaces the tuplestore with new infrastructure: raw PGresult spools, spool IDs, a hash table keyed by them, and portal tracking for subtransaction cleanup. No version of that design exists yet. Robert Haas is the only committer reviewing, and the same structural points came back over many versions (messages #35, #39, #47), so the cost of later fixes is likely to stay with him. Against this, the benefit evidence is mixed: one count(*) ran about 2.5 times faster (message #11), but a 20 million row scan was slower (messages #12, #14).",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        11,
+        12,
+        14,
+        35,
+        39,
+        47,
+        58
+      ],
+      "author_must_show": "Which committer besides the current reviewer will own the spool design, and which benchmarks show gains broad enough to justify a second fetch path in postgres_fdw?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 11,
+          "from": "Rafia Sabih",
+          "date": "2025-11-14T16:06:08Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BFpmFfKtaRHcZ%3DtVQPRt0qt7xMGCotgbWZ9H0fpLoKA8%3DZJjA%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "KENAN YILMAZ",
+          "date": "2025-11-25T14:24:14Z",
+          "url": "https://www.postgresql.org/message-id/CAEV8nunoatq-bGLo%3DmD%3DWNAFers%2Bf4hqnxN-7gw-M%3DCg9qOqqA%40mail.gmail.com"
+        },
+        {
+          "index": 14,
+          "from": "KENAN YILMAZ",
+          "date": "2025-11-28T17:12:36Z",
+          "url": "https://www.postgresql.org/message-id/CAEV8nunSKsoWm-mpAvDMdwzy1V3_BrMSBJxprPjZ%2B%2B76qV8cRw%40mail.gmail.com"
+        },
+        {
+          "index": 35,
+          "from": "Robert Haas",
+          "date": "2026-07-06T18:19:25Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmoaSG5fdV4kK%3Duq2ETy1m%3D9b_XEOO%2Bgz5K36e3orS7e3MQ%40mail.gmail.com"
+        },
+        {
+          "index": 39,
+          "from": "Robert Haas",
+          "date": "2026-07-20T20:31:59Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmoYZjnJnuMUwu%3DancqrsLYADVp99_HReR4P7k0f9A%3D1dHA%40mail.gmail.com"
+        },
+        {
+          "index": 47,
+          "from": "Robert Haas",
+          "date": "2026-08-11T00:13:01Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmoYh8Mm0WkQq4b26Mt2bFNOGFiG3DR6dC9puhGcM7DQVYw%40mail.gmail.com"
+        },
+        {
+          "index": 58,
+          "from": "Robert Haas",
+          "date": "2026-11-09T18:39:37Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmobeqkqL0KdgDM57q41ZeuKB%3DCZt%3DNo3yfDNRTt9V-9HAw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "A committer who knows the area has reviewed every version and proposed the redesign, which the rubric counts as lowering rejection confidence. The remaining points duplicate replication-ondisk-1, security-1 and demand-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": true,
+      "reason": "streaming_fetch disables async execution for the scan and lets the remote server choose a parallel plan."
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": true,
+      "reason": "see objection standards-compat-1: streaming_fetch silently overrides an explicit async_capable setting"
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "A drain runs type input and domain checks under the user and search_path of another statement (message #58)."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "A second fetch path in postgres_fdw needs a drain at every place that sends a query on a cached connection."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "With the option on, early stops and rescans must read and discard the rest of the remote result; the default path is unchanged."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "see objection demand-1: Benefit shown only on synthetic tests, with mixed results"
+    }
+  ],
+  "questions": [
+    "How does the redesign make every type input function and domain check run only when its own scan returns the row, under that scan's user and search_path?",
+    "Which resource owner or callback removes each drain spool and its temp files on subtransaction abort, outer-portal failure, rescan and connection loss?",
+    "Can the streaming drain and the async pendingAreq handling share one path, so that a query-sending site that skips the drain fails in every build?",
+    "Why does streaming_fetch silently disable a conflicting async_capable setting instead of rejecting or reporting the conflict?",
+    "Which workloads run faster with streaming_fetch, with measured numbers, and why was the 20 million row scan in messages #12 and #14 slower?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Robert Haas has reviewed every version through v19 and outlined the redesign in message #58. The owner must know postgres_fdw connection handling, resource owners and portal cleanup in subtransactions.",
+    "liability": "A second fetch path in postgres_fdw, kept for as long as the option exists. The owner signs for drain correctness at every query-sending site, spill file cleanup, and the security context of delayed type conversion.",
+    "author_follow_up": "The author posted new versions through v19 over almost two years. No reply to the redesign request in message #58 is visible, but that message is three days old."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "high",
+    "review_cost": "high",
+    "recommended_action": "fix design first",
+    "reason": "Users with large foreign scans gain remote parallelism, and a committer is engaged. The 95 KiB patch needs a new buffering design before more review makes sense, because v19 has an open security problem and an open resource owner problem."
+  },
+  "self_advice": [],
+  "provisional_note": "The redesign with raw PGresult spools exists only as a sketch in message #58, so its cleanup rules and memory or disk use could not be judged. Only the first 3 of 58 messages and the patch prose were read; no code was read.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:291",
+      "kind": "cf",
+      "title": "Asynchronous execution on postgres-fdw",
+      "status": "Rejected",
+      "date": "2015-08-10",
+      "first_date": "2015-07-02",
+      "url": "https://commitfest.postgresql.org/patch/291/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20150702.144824.266400086.horiguchi.kyotaro@lab.ntt.co.jp"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti)",
+      "objectors": "Heikki Linnakangas",
+      "summary": "The patch set adds a core pre-execution callback mechanism, so that nodes can register callbacks that run just before the ExecProc phase, and uses it to start postgres_fdw remote queries asynchronously, with one running query per foreign server. It also offers three experimental ways to set the fetch size: duration-based adaptation, a byte-limited FETCH, and a fetch_size foreign table option.",
+      "objection": "Heikki Linnakangas marked the entry rejected because a more general solution based on parallel workers was in progress and would largely make this patch obsolete, with the option to revisit it later in the release cycle. Earlier he had objected that the pre-execution callback has the same problems as starting execution in ExecInit, and that queries should start in the first IterateForeignScan() call. Robert Haas and Stephen Frost replied that the design questions were still open, and Stephen Frost did not like that the mechanism was specific to FDWs.",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw without cursors",
+        "postgres_fdw parallel query remote",
+        "postgres_fdw chunked rows mode",
+        "postgres_fdw use_cursor GUC",
+        "postgres_fdw fetch tuplestore buffering",
+        "postgres_fdw streaming fetch option"
+      ],
+      "from_hint": false,
+      "score": 0.681,
+      "enriched": true,
+      "key_quote": "I've marked this as rejected in the commitfest, because others are\nworking on a more general solution with parallel workers.",
+      "quote_message_url": "https://www.postgresql.org/message-id/55C8516B.10509%40iki.fi",
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:791",
+      "kind": "cf",
+      "title": "Push down more UPDATEs/DELETEs in postgres_fdw",
+      "status": "Returned with feedback",
+      "date": "2017-11-29",
+      "first_date": "2016-09-06",
+      "url": "https://commitfest.postgresql.org/patch/791/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/b9cee735-62f8-6c07-7528-6364ce9347d0@lab.ntt.co.jp"
+      ],
+      "authors": "Etsuro Fujita (efujita)",
+      "objectors": "",
+      "summary": "The patch extends postgres_fdw direct modification so that an UPDATE or DELETE that joins foreign tables on the same server is sent to the remote server as one statement, such as `DELETE ... USING`. It also deparses RETURNING lists that refer to columns of the joined relations.",
+      "objection": "The patch reached Ready for Committer, but Robert Haas found in review that it no longer applied after recent changes. He also asked for more comments, use of the new RelOptKind macros, and a regression test for the non-pushed path. The patch went to Waiting for author because it had bitrotted, no new version came, and the entry was returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw without cursors",
+        "postgres_fdw parallel query remote",
+        "postgres_fdw chunked rows mode",
+        "postgres_fdw use_cursor GUC",
+        "postgres_fdw fetch tuplestore buffering",
+        "postgres_fdw streaming fetch option"
+      ],
+      "from_hint": false,
+      "score": 0.618,
+      "enriched": true,
+      "key_quote": "No updates have showed up since, so returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB7nPqROcTZYqM_qcvNfxiNYwu%2Ba%3D6rnL%2BwxBJ-1v9V_u6BxBw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:32",
+      "kind": "cf",
+      "title": "Async execution of postgres_fdw.",
+      "status": "Rejected",
+      "date": "2015-05-09",
+      "first_date": "2014-12-15",
+      "url": "https://commitfest.postgresql.org/patch/32/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20141215.180944.242184148.horiguchi.kyotaro@lab.ntt.co.jp"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti)",
+      "objectors": "Stephen Frost, Tom Lane",
+      "summary": "The patch made postgres_fdw send the remote query asynchronously from ExecInitForeignScan, so several foreign scans could run on remote servers at the same time. It wrapped PGconn in a new PgFdwConn struct so that several scans could share one connection, and it cancelled a pending async query when another scan or modification used that connection.",
+      "objection": "Starting the remote query in ExecInitNode is against the documented FDW API, which says execution must not start before IterateForeignScan is called. Tom Lane added that ExecInitNode only builds runtime structures: a scan may never be iterated, for example on the inner side of a nestloop with an empty outer relation, and parameter values for a parameterized scan are not yet available. He also asked to drop the connection wrapper layer, which caused most of the code churn and added unchecked malloc failures.",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw without cursors",
+        "postgres_fdw parallel query remote",
+        "postgres_fdw chunked rows mode",
+        "postgres_fdw use_cursor GUC",
+        "postgres_fdw fetch tuplestore buffering",
+        "postgres_fdw streaming fetch option"
+      ],
+      "from_hint": false,
+      "score": 0.608,
+      "enriched": true,
+      "key_quote": "I certainly appreciate that you've put quite a bit of effort into this\nbut I'm afraid we can't accept it while it's starting to run a query on\nthe remote side during the ExecInitNode phase.  The query can not start\nexecuting on the remote side until InterateForeignScan is called.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20150509012440.GF30322%40tamriel.snowman.net",
+      "relevant": true
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:3144",
+      "kind": "cf",
+      "title": "postgres_fdw: Handle boolean comparison predicates",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-05-31",
+      "url": "https://commitfest.postgresql.org/patch/3144/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAE2gYzwD4m6PWn2iO=pXquZ61++axZYe2=UWbw44q4jbR6x-9A@mail.gmail.com"
+      ],
+      "authors": "Emre Hasegeli (hasegeli)",
+      "objectors": "Daniel Gustafsson, Ashutosh Bapat, Ronan Dunklau",
+      "summary": "The patch makes postgres_fdw push the boolean tests IS [NOT] TRUE/FALSE/UNKNOWN down to the remote server. It deparses each test into an equivalent expression, such as (NOT x OR x IS NULL) for IS NOT TRUE.",
+      "objection": "The patch stopped applying to HEAD, and the author did not post a rebased version after Daniel Gustafsson asked for one, so it was returned at the end of the commitfest. Ashutosh Bapat and Ronan Dunklau also asked why the tests are rewritten instead of sent as written, and asked for a test on a boolean column. The author did not answer these points.",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw without cursors",
+        "postgres_fdw parallel query remote",
+        "postgres_fdw chunked rows mode",
+        "postgres_fdw use_cursor GUC",
+        "postgres_fdw fetch tuplestore buffering",
+        "postgres_fdw streaming fetch option"
+      ],
+      "from_hint": false,
+      "score": 0.554,
+      "enriched": true,
+      "key_quote": "The patch no longer applies to HEAD, can you please submit a rebased version?",
+      "quote_message_url": "https://www.postgresql.org/message-id/77B273E8-DDE0-4370-8CBF-592DD5CDB4E5%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:1055",
+      "kind": "cf",
+      "title": "postgres_fdw: evaluate placeholdervars on remote server",
+      "status": "Returned with feedback",
+      "date": "2017-09-27",
+      "first_date": "2017-02-28",
+      "url": "https://commitfest.postgresql.org/patch/1055/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6533e100-dbdf-1ac3-23f3-6ca9da48adbb@lab.ntt.co.jp"
+      ],
+      "authors": "Etsuro Fujita (efujita)",
+      "objectors": "Etsuro Fujita, Robert Haas",
+      "summary": "The patch lets postgres_fdw evaluate PlaceHolderVars on the remote server, so left, right and full joins that contain PHVs can be pushed down. It also changes how whole-row references are deparsed and builds on the deparser support for subqueries from the full-join pushdown work.",
+      "objection": "The author said he was not satisfied with the patch and that it needed more work, and he did not rebase it for the September 2017 CommitFest after reminders. Robert Haas proposed marking patches like this Returned with Feedback when no rebase arrives before the CommitFest starts, and the author agreed and marked it so.",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw without cursors",
+        "postgres_fdw parallel query remote",
+        "postgres_fdw chunked rows mode",
+        "postgres_fdw use_cursor GUC",
+        "postgres_fdw fetch tuplestore buffering",
+        "postgres_fdw streaming fetch option"
+      ],
+      "from_hint": false,
+      "score": 0.536,
+      "enriched": true,
+      "key_quote": "Frankly, I think things where there was a ping multiple weeks before\nthe CommitFest started and no rebase before it started should be\nregarded as untimely submissions, and summarily marked Returned with\nFeedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoawtJWe-V21ZH0-jQ%3DubbyXtYPBZPqpD_fZCxsR8eanSA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:824",
+      "kind": "cf",
+      "title": "postgres_fdw super user checks",
+      "status": "Returned with feedback",
+      "date": "2016-12-02",
+      "first_date": "2016-10-16",
+      "url": "https://commitfest.postgresql.org/patch/824/",
+      "thread_urls": [],
+      "authors": "Jeff Janes (jjanes)",
+      "objectors": "",
+      "summary": "postgres_fdw super user checks",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw without cursors",
+        "postgres_fdw parallel query remote",
+        "postgres_fdw chunked rows mode",
+        "postgres_fdw use_cursor GUC",
+        "postgres_fdw fetch tuplestore buffering",
+        "postgres_fdw streaming fetch option"
+      ],
+      "from_hint": false,
+      "score": 0.508,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:1042",
+      "kind": "cf",
+      "title": "postgres_fdw: support parameterized foreign joins",
+      "status": "Returned with feedback",
+      "date": "2017-11-29",
+      "first_date": "2017-02-27",
+      "url": "https://commitfest.postgresql.org/patch/1042/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/be91628f-b754-0dcd-5998-451cea28ecd0@lab.ntt.co.jp"
+      ],
+      "authors": "Etsuro Fujita (efujita)",
+      "objectors": "",
+      "summary": "postgres_fdw would build parameterized foreign-join paths, so a join of foreign tables can be pushed to the remote server with a parameter from an outer local relation. The core planner records the required_outer relations it tried during add_paths_to_joinrel(), and postgresGetForeignJoinPaths() builds parameterized paths for them.",
+      "objection": "The patch was marked Ready for Committer but depended on the separate \"epqpath-for-foreignjoin\" patch and was not committed. It then bitrotted and was moved to Waiting for author. The author did not post an update for about six weeks, so Michael Paquier returned it with feedback. No design objection appears in the visible messages.",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw without cursors",
+        "postgres_fdw parallel query remote",
+        "postgres_fdw chunked rows mode",
+        "postgres_fdw use_cursor GUC",
+        "postgres_fdw fetch tuplestore buffering",
+        "postgres_fdw streaming fetch option"
+      ],
+      "from_hint": false,
+      "score": 0.508,
+      "enriched": true,
+      "key_quote": "One month and a half after, the already-rotten patch has not been\nupdated, so I am marking it as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB7nPqSgBUZ_K2-ciUBFKD7oEqru_wbznjpSJkOmN8MwviK6TQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:3265",
+      "kind": "cf",
+      "title": "Kerberos delegation support in libpq and postgres_fdw",
+      "status": "Returned with feedback",
+      "date": "2021-11-26",
+      "first_date": "2021-07-20",
+      "url": "https://commitfest.postgresql.org/patch/3265/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CO1PR05MB8023CC2CB575E0FAAD7DF4F8A8E29@CO1PR05MB8023.namprd05.prod.outlook.com"
+      ],
+      "authors": "Peifeng Qiu (pqiu)",
+      "objectors": "",
+      "summary": "The patch adds Kerberos credential delegation to libpq, so postgres_fdw can connect to another server and authenticate as the current login user. The backend stores the delegated proxy credential in an in-memory credential cache, and a superuser must set password_required to false in the user mapping.",
+      "objection": "The author stopped responding. Peter Eisentraut asked for the TAP tests to move under src/test/kerberos/ and for a check of dblink, and the patch later stopped applying after the Perl namespace changes. No rebase came, the author's email bounced, and Daniel Gustafsson marked the entry Returned with Feedback.",
+      "touch_points": [
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "postgres_fdw without cursors",
+        "postgres_fdw use_cursor GUC",
+        "postgres_fdw fetch tuplestore buffering",
+        "libpq single row mode fdw",
+        "postgres_fdw streaming fetch option"
+      ],
+      "from_hint": false,
+      "score": 0.461,
+      "enriched": true,
+      "key_quote": "As the thread has stalled, and the OP email bounces, I'm marking this patch\nReturned with Feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2322DE7A-DDD1-4739-AB6F-234B3ADD590E%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:3467",
+      "kind": "cf",
+      "title": "Trigger failsafe when VACUUM is run in single user mode",
+      "status": "Returned with feedback",
+      "date": "2022-04-07",
+      "first_date": "2021-12-09",
+      "url": "https://commitfest.postgresql.org/patch/3467/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFBsxsFL5LoWanSLDjt_SjS9=FU_9XWi22iHMexRS2SubkX-Vw@mail.gmail.com"
+      ],
+      "authors": "John Naylor (john.naylor)",
+      "objectors": "Noah Misch",
+      "summary": "The patch adds a VACUUM option for single-user mode, first called VACUUM LIMIT and later VACUUM (EMERGENCY), that vacuums only tables whose xid or mxid age passes a fixed cutoff, with failsafe behavior and no index cleanup or truncation. The aim is to get out of single-user mode quickly after a wraparound shutdown.",
+      "objection": "During review, the thread found that the v14 failsafe already turns off heap truncation, so plain VACUUM should work under the postmaster at xidStopLimit. The plan then moved to removing the advice to use single-user mode. Noah Misch then showed that VACUUM can still create multixacts at multiStopLimit, so more work was needed. The author was away sick and withdrew the work for v15.",
+      "touch_points": [],
+      "matched_queries": [
+        "libpq single row mode fdw"
+      ],
+      "from_hint": false,
+      "score": 0.141,
+      "enriched": true,
+      "key_quote": "I gather from subsequent discussion that a full solution goes beyond just a new warning message and documentation. Either way I'm not quite prepared to address this in time for v15.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAFBsxsHbn4atCHRFXtKQs4FWUhaErdvXa1fX_nouq70pUiC8tw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:5238",
+      "kind": "cf",
+      "title": "Add parallel columns for seq scan and index scan on pg_stat_all_tables and _indexes",
+      "status": "Returned with feedback",
+      "date": "2024-12-11",
+      "first_date": "2024-08-29",
+      "url": "https://commitfest.postgresql.org/patch/5238/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAECtzeXXuMkw-RVGTWvHGOJsmFdsRY+jK0ndQa80sw46y2uvVQ@mail.gmail.com"
+      ],
+      "authors": "Guillaume Lelarge (gleu)",
+      "objectors": "",
+      "summary": "Add parallel columns for seq scan and index scan on pg_stat_all_tables and _indexes\nThreads: Add parallel columns for seq scan and index scan on\npg_stat_all_tables and _indexes",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "foreign scan cursor parallel plan"
+      ],
+      "from_hint": false,
+      "score": 0.136,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:1362",
+      "kind": "cf",
+      "title": "PARALLEL flag for cursors",
+      "status": "Returned with feedback",
+      "date": "2018-02-07",
+      "first_date": "2017-10-14",
+      "url": "https://commitfest.postgresql.org/patch/1362/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/98760523-a0d2-8705-38e3-c4602ecf2448@2ndquadrant.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "PARALLEL flag for cursors\nThreads: PATCH: enabling parallel execution for cursors explicitly\n(experimental)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "foreign scan cursor parallel plan"
+      ],
+      "from_hint": false,
+      "score": 0.127,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:4982",
+      "kind": "cf",
+      "title": "support tid range scan in parallel",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2024-04-29",
+      "url": "https://commitfest.postgresql.org/patch/4982/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/18f2c002a24.11bc2ab825151706.3749144144619388582@highgo.ca"
+      ],
+      "authors": "Cary Huang (cary)",
+      "objectors": "",
+      "summary": "support tid range scan in parallel\nThreads: Support tid range scan in parallel?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "foreign scan cursor parallel plan"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:2003",
+      "kind": "cf",
+      "title": "Fix Deadlock Issue in Single User Mode When IO Failure Occurs",
+      "status": "Returned with feedback",
+      "date": "2020-02-01",
+      "first_date": "2018-11-30",
+      "url": "https://commitfest.postgresql.org/patch/2003/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CY4PR2101MB0804CE9836E582C0702214E8AAD30@CY4PR2101MB0804.namprd21.prod.outlook.com",
+        "https://www.postgresql.org/message-id/flat/CAKPRHzKsj0J0Q51L1SF-G7OmkgkXyifp1Aqe7T--S1gK0W7anQ@mail.gmail.com"
+      ],
+      "authors": "Chengchao Yu (allelujava)",
+      "objectors": "",
+      "summary": "Fix Deadlock Issue in Single User Mode When IO Failure Occurs\nThreads: [PATCH] Fix Proposal - Deadlock Issue in Single User Mode When IO\nFailure Occurs; RE: [PATCH] Fix Proposal - Deadlock Issue in Single User Mode When IO\nFailure Occurs",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "libpq single row mode fdw"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3713",
+      "kind": "cf",
+      "title": "Allow pageinspect's bt_page_stats function to return a set of rows instead of a single row",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-06-27",
+      "url": "https://commitfest.postgresql.org/patch/3713/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANugjht-=oGMRmNJKMqnBC69y7vr+wHDmm0ZK6-1pJsxoBKBbA@mail.gmail.com"
+      ],
+      "authors": "Hamid Akhtar (hamidakhtar)",
+      "objectors": "",
+      "summary": "Allow pageinspect's bt_page_stats function to return a set of rows instead of a single row\nThreads: Allow pageinspect's bt_page_stats function to return a set of rows\ninstead of a single row",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "libpq single row mode fdw"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "revert:8ec8760fc87ecde0516e511f1c55aec627b01ea7",
+      "kind": "revert",
+      "title": "Revert misguided change to postgres_fdw FOR UPDATE/SHARE code.",
+      "status": "Reverted",
+      "date": "2014-12-12",
+      "first_date": "2014-12-12",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=8ec8760fc87ecde0516e511f1c55aec627b01ea7",
+      "thread_urls": [],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert misguided change to postgres_fdw FOR UPDATE/SHARE code.\nReverted commit(s): Fix planning of SELECT FOR UPDATE on child table with partial index.",
+      "objection": "In commit 462bd95705a0c23ba0b0ba60a78d32566a0384c1, I changed postgres_fdw\nto rely on get_plan_rowmark() instead of get_parse_rowmark().  I still\nthink that's a good idea in the long run, but as Etsuro Fujita pointed out,\nit doesn't work today because planner.c forces PlanRowMarks to have\nmarkType = ROW_MARK_COPY for all foreign tables.  There's no urgent reason\nto change this in the back branches, so let's just revert that part of\nyesterday's commit rather than trying to design a better solution under\ntime pressure.\n\nAlso, add a regression test case showing what postgres_fdw does with FOR\nUPDATE/SHARE.  I'd blithely assumed there was one already, else I'd have\nrealized yesterday that this code didn't work.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "postgres_fdw chunked rows mode"
+      ],
+      "from_hint": false,
+      "score": 0.116,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "revert:04e7ecadf64d18f67ca1d0632d8ab71f120ca5e3",
+      "kind": "revert",
+      "title": "Revert \"Temporarily instrument postgres_fdw test to look for statistics changes.\"",
+      "status": "Reverted",
+      "date": "2018-03-08",
+      "first_date": "2018-03-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=04e7ecadf64d18f67ca1d0632d8ab71f120ca5e3",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/25502.1520277552@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Temporarily instrument postgres_fdw test to look for statistics changes.\"\nReverted commit(s): Temporarily instrument postgres_fdw test to look for statistics changes.",
+      "objection": "This reverts commit c2c537c56dc30ec3cdc12051f4ea5363aa66d73c.\nIt's now clear that whatever is going on there, it can't be blamed\non unexpected ANALYZE runs, because the statistics are the same\njust before the failing query as they were at the start of the test.",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw parallel query remote"
+      ],
+      "from_hint": false,
+      "score": 0.116,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "revert:9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "kind": "revert",
+      "title": "Fix index-only scan plans, take 2.",
+      "status": "Partially reverted",
+      "date": "2022-01-03",
+      "first_date": "2022-01-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3179992.1641150853@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/17350-b5bdcf476e5badbb@postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Fix index-only scan plans, take 2.\nReverted commit(s): Fix index-only scan plans when not all index columns can be returned.",
+      "objection": "Commit 4ace45677 failed to fix the problem fully, because the\nsame issue of attempting to fetch a non-returnable index column\ncan occur when rechecking the indexqual after using a lossy index\noperator.  Moreover, it broke EXPLAIN for such indexquals (which\nindicates a gap in our test cases :-().\n\nRevert the code changes of 4ace45677 in favor of adding a new field\nto struct IndexOnlyScan, containing a version of the indexqual that\ncan be executed against the index-returned tuple without using any\nnon-returnable columns.  (The restrictions imposed by check_index_only\nguarantee this is possible, although we may have to recompute indexed\nexpressions.)  Support construction of that during setrefs.c\nprocessing by marking IndexOnlyScan.indextlist entries as resjunk\nif they can't be returned, rather than removing them entirely.\n(We could alternatively require setrefs.c to look up the IndexOptInfo\nagain, but abusing resjunk this way seems like a reasonably safe way\nto avoid needing to do that.)\n\nThis solution isn't great from an API-stability standpoint: if there\nare any extensions out there that build IndexOnlyScan structs directly,\nthey'll be broken in the next minor releases.  However, only a very\ninvasive extension would be likely to do such a thing.  There's no\nchange in the Path representation, so typical planner extensions\nshouldn't have a problem.\n\nAs before, back-patch to all supported branches.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "foreign scan cursor parallel plan"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:3539",
+      "kind": "cf",
+      "title": "Allow parallel plan for referential integrity checks",
+      "status": "Returned with feedback",
+      "date": "2023-07-04",
+      "first_date": "2022-02-07",
+      "url": "https://commitfest.postgresql.org/patch/3539/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/0d21e3b4-dcde-290c-875e-6ed5013e8e52@dalibo.com"
+      ],
+      "authors": "Frédéric Yhuel (yhuelf)",
+      "objectors": "",
+      "summary": "Allow parallel plan for referential integrity checks\nThreads: Allow parallel plan for referential integrity checks?",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "foreign scan cursor parallel plan"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:4507",
+      "kind": "cf",
+      "title": "Allow parallel plan for referential integrity checks",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2022-02-07",
+      "url": "https://commitfest.postgresql.org/patch/4507/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/0d21e3b4-dcde-290c-875e-6ed5013e8e52@dalibo.com"
+      ],
+      "authors": "Juanjo Santamaria Flecha (juanjo.santamaria.gmail.com), Frédéric Yhuel (yhuelf)",
+      "objectors": "",
+      "summary": "Allow parallel plan for referential integrity checks\nThreads: Allow parallel plan for referential integrity checks?",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "foreign scan cursor parallel plan"
+      ],
+      "from_hint": false,
+      "score": 0.098,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:634",
+      "kind": "cf",
+      "title": "Batch (pipelined) mode for libpq",
+      "status": "Returned with feedback",
+      "date": "2016-11-22",
+      "first_date": "2016-05-23",
+      "url": "https://commitfest.postgresql.org/patch/634/",
+      "thread_urls": [],
+      "authors": "Craig Ringer (ringerc)",
+      "objectors": "",
+      "summary": "Batch (pipelined) mode for libpq",
+      "objection": "",
+      "touch_points": [
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "libpq single row mode fdw"
+      ],
+      "from_hint": false,
+      "score": 0.088,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:1024",
+      "kind": "cf",
+      "title": "Pipelining/batch mode support for libpq",
+      "status": "Returned with feedback",
+      "date": "2017-10-02",
+      "first_date": "2016-05-23",
+      "url": "https://commitfest.postgresql.org/patch/1024/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMsr+YFUjJytRyV4J-16bEoiZyH=4nj+sQ7JP9ajwz=B4dMMZw@mail.gmail.com"
+      ],
+      "authors": "Craig Ringer (ringerc), vaishnavi prabakaran (vaishnavip)",
+      "objectors": "",
+      "summary": "Pipelining/batch mode support for libpq\nThreads: PATCH: Batch/pipelining support for libpq",
+      "objection": "",
+      "touch_points": [
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "libpq single row mode fdw"
+      ],
+      "from_hint": false,
+      "score": 0.084,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:1317",
+      "kind": "cf",
+      "title": "Pipelining/batch mode support for libpq",
+      "status": "Returned with feedback",
+      "date": "2018-11-29",
+      "first_date": "2016-05-23",
+      "url": "https://commitfest.postgresql.org/patch/1317/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMsr+YFUjJytRyV4J-16bEoiZyH=4nj+sQ7JP9ajwz=B4dMMZw@mail.gmail.com"
+      ],
+      "authors": "Craig Ringer (ringerc), vaishnavi prabakaran (vaishnavip)",
+      "objectors": "",
+      "summary": "Pipelining/batch mode support for libpq\nThreads: PATCH: Batch/pipelining support for libpq",
+      "objection": "",
+      "touch_points": [
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "libpq single row mode fdw"
+      ],
+      "from_hint": false,
+      "score": 0.081,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "revert:0ba71107efeeccde9158f47118f95043afdca0bb",
+      "kind": "revert",
+      "title": "Revert changes for SSL compression in libpq",
+      "status": "Reverted",
+      "date": "2021-03-10",
+      "first_date": "2021-03-09",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=0ba71107efeeccde9158f47118f95043afdca0bb",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/YEbq15JKJwIX+S6m@paquier.xyz",
+        "https://www.postgresql.org/message-id/flat/CAEze2WiOcgdH4aQA8NtZq-4dgvnJzp8PohdeKchPkhMY-jWZXA@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert changes for SSL compression in libpq\nReverted commit(s): Switch back sslcompression to be a normal input field in libpq; Add support for more progress reporting in COPY",
+      "objection": "This partially reverts 096bbf7 and 9d2d457, undoing the libpq changes as\nit could cause breakages in distributions that share one single libpq\nversion across multiple major versions of Postgres for extensions and\napplications linking to that.\n\nNote that the backend is unchanged here, and it still disables SSL\ncompression while simplifying the underlying catalogs that tracked if\ncompression was enabled or not for a SSL connection.\n\nPer discussion with Tom Lane and Daniel Gustafsson.",
+      "touch_points": [
+        "wire protocol / libpq",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "libpq single row mode fdw"
+      ],
+      "from_hint": false,
+      "score": 0.081,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:2108",
+      "kind": "cf",
+      "title": "Parallel-aware file_fdw",
+      "status": "Returned with feedback",
+      "date": "2019-09-30",
+      "first_date": "2018-08-16",
+      "url": "https://commitfest.postgresql.org/patch/2108/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+z6ocRFEnThhXye3F9_ZjSMDSfOGdnGOt8hnXsVgGmFpNTYFA@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Parallel-aware file_fdw\nThreads: How to estimate the shared memory size required for parallel scan?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "foreign scan cursor parallel plan"
+      ],
+      "from_hint": false,
+      "score": 0.078,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 6,
+    "new_calls": 2,
+    "failed": 0,
+    "quotes_verified": 2,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 3
+  },
+  "precedent_cutoff": "2025-01-06",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent's recorded reason applies. P3 died for starting remote execution in ExecInitNode, and nothing shows this proposal does that. P1 was set aside for a parallel-worker solution that this proposal builds on. P11 records no reason, and the thread cites no earlier discussion. The open problems are the type-input security context and the failed-portal resource owners from message #58, which belong to other angles."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "pg_dump round-trip and EXPLAIN property format were checked: generic FDW options dump like existing ones, and the EXPLAIN format was raised and changed in message #39."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "The option is a generic FDW option, so it needs no catalog change, on-disk format change, WAL change or protocol change, and pg_dump already handles it. The only persistent state is the temp files written when a drain spills to disk, and the one objection covers their cleanup."
+    },
+    {
+      "angle": "security",
+      "objections": 2,
+      "note": "Other aspects need no new privilege: the option is set by the owner of the server or table, and the remote query runs under the existing user mapping."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "Non-users pay no clear hot-path cost, since the option defaults to false and Jelte's DuckDB report (message #52) shows real demand. So these objections concern long-run maintenance and are not a reason to reject the goal."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing feature does this job. A remote cursor rules out a parallel plan on the remote side, a larger fetch_size does not help, and dblink() gives up pushdown, joins and planner integration. Cursor-less endpoints such as the DuckDB-based one in message #52 have no other route. The draining overlap with pendingAreq was raised and handled in message #47."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "Remote parallelism through postgres_fdw is a plausible need, and a committer has reviewed every version. The objection asks for evidence of demand, not for rejection."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 9,
+      "new_survived": 5,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 92,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 13,
+    "wall_ms": 162624,
+    "cost_usd": 5.6082708,
+    "dry_run": false
+  }
+}

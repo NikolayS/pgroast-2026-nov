@@ -1,0 +1,1119 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:50:18.579Z",
+  "input": {
+    "arg": "6384",
+    "cf": {
+      "id": 6384,
+      "url": "https://commitfest.postgresql.org/patch/6384/",
+      "title": "llvmjit: always add the simplifycfg pass",
+      "status": "Needs review",
+      "authors": "Pierre Ducroquet (pinaraf)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/VS3dpR1Sf5jGnWwoFFJ-_x3GbW7fdmV0arzWPIDfrmbVzewifgu6DsQ7oDa-TAwRz9N2p817j3jGstHwfPOJJxOipbcp-nHdNj3zyxKvC4Q%3D%40pinaraf.info",
+    "subject": "[PATCH] llvmjit: always add the simplifycfg pass",
+    "thread_start": "2026-01-07T15:08:48Z",
+    "messages_read": 10,
+    "messages_total": 10,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "0001-llvmjit-always-use-the-simplifycfg-pass.patch",
+      "0001-llvmjit-always-use-the-simplifycfg-pass.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "No objection to the goal or to the design survived. The one surviving objection, maintenance-fit-1, is fixable: the thread has no compile-time numbers for deform functions with many columns, which message #7 asked for. The O0 path runs for every query above jit_above_cost, so someone who knows llvmjit has to judge that cost.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "llvmjit: run simplifycfg pass when JIT optimization is below O3",
+    "problem": "At O0, llvmjit does not run the simplifycfg pass, so tuple deforming code keeps many empty basic blocks. The generated machine code contains chains of redundant jumps and stack spills. This affects queries that use JIT but stay below jit_optimize_above_cost.",
+    "proposed_design": "The patch adds simplifycfg to the LLVM pass pipeline whenever default<O0> is the base. This covers both the plain path (default<O0>,mem2reg,simplifycfg) and the inlining path (default<O0>,mem2reg,simplifycfg,inline). The default<O3> pipeline is unchanged because it already includes simplifycfg.",
+    "user_visible_surface": [],
+    "author_claims": [
+      "On a simple select * from table where f = 42, the patch saved 7ms of runtime for 0.1ms of extra optimization time; the commit message says 0.2ms.",
+      "Code from the llvmjit provider, especially tuple deforming, depends heavily on simplifycfg, so O0 pipelines should always include it.",
+      "Other passes the author tried did not give a similar benefit for their cost.",
+      "With simplifycfg, stack spills in deform functions go away, which suggests mem2reg alone does less than expected."
+    ],
+    "thread_state": "Matheus Alcantara reviewed it, posted TPC-H Q1 and Q4 numbers (Q4 about 18% faster, Q1 unchanged) and gave +1. Andres Freund doubts these queries are a good benchmark, and the open question is why simplifycfg removes stack allocations that mem2reg did not.",
+    "unclear": [
+      "The patch does not show results on wide tables or deform routines with many columns, which Andres Freund asked about.",
+      "The thread does not explain why stack spills disappear, or whether mem2reg works as intended today.",
+      "The thread does not settle the pass order, mem2reg before or after simplifycfg.",
+      "The thread reports results for LLVM 19 on x86_64 only, not for other LLVM versions or architectures."
+    ],
+    "search_queries": [
+      "llvmjit simplifycfg pass",
+      "jit optimization pass pipeline",
+      "llvm passes O0 mem2reg",
+      "jit tuple deforming performance",
+      "jit_optimize_above_cost",
+      "llvm pass manager jit",
+      "jit compilation overhead optimization"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P2",
+      "source_id": "cf:2298",
+      "title": "JIT: Optimize generated functions earlier to lower memory usage",
+      "kind": "cf",
+      "status": "Withdrawn",
+      "url": "https://commitfest.postgresql.org/patch/2298/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAE-ML+_OE4-sHvn0AA_qakc5qkZvQvainxwb1ztuuT67SPMegw@mail.gmail.com"
+      ],
+      "date": "2019-11-12",
+      "first_date": "2019-10-07",
+      "who_objected": "",
+      "quote": null,
+      "quote_url": null,
+      "enriched": true,
+      "reason": "The visible messages do not show why. Only the author's opening message is shown, and the entry was withdrawn about a month later with no visible review or reply.",
+      "relation": "related_only",
+      "what_is_different": "P2 moved function-level passes earlier to lower memory use; this proposal adds one pass to the O0 pipeline for better code. P2 was withdrawn with no recorded reason."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Compile cost on wide deform functions is not measured",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "With jit = on by default, a query on a table with hundreds of columns crosses jit_above_cost but stays below jit_optimize_above_cost. Every execution then pays simplifycfg on a large deform function, the case where compile time matters most. A user notices it only as higher Optimization time in EXPLAIN ANALYZE.",
+      "argument": "The O0 path serves queries judged too cheap for full optimization, so extra compile time there is felt more than anywhere else. The only numbers are a small single-column query (message #1) and TPC-H Q1 and Q4 (message #4). In message #7, a committer who knows llvmjit said these do not exercise deform routines with many columns. No later message answers this.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        4,
+        7
+      ],
+      "author_must_show": "What do Optimization time and execution time look like for deform functions with about 100 to 1000 columns, with jit_optimize_above_cost = -1?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Pierre Ducroquet",
+          "date": "2026-01-07T15:08:48Z",
+          "url": "https://www.postgresql.org/message-id/VS3dpR1Sf5jGnWwoFFJ-_x3GbW7fdmV0arzWPIDfrmbVzewifgu6DsQ7oDa-TAwRz9N2p817j3jGstHwfPOJJxOipbcp-nHdNj3zyxKvC4Q%3D%40pinaraf.info"
+        },
+        {
+          "index": 4,
+          "from": "\"Matheus Alcantara\"",
+          "date": "2026-01-22T21:40:46Z",
+          "url": "https://www.postgresql.org/message-id/DFVG0AV650GW.2CNS5CZ4OG788%40gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Andres Freund",
+          "date": "2026-01-28T23:19:32Z",
+          "url": "https://www.postgresql.org/message-id/porx6mjfalwefma2f2d76hagxjin3xdgefjsklkzxsyit736ly%4034ubivd7buw2"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #7 asked for deform routines with many columns, and the only later data is a 6-column IR comparison in message #10 with no timings. The O0 path runs for every query above jit_above_cost, so the missing measurement matters.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "The gain rests on an LLVM side effect that nobody has explained",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later LLVM release changes what simplifycfg or the O0 register allocator does. The stack spills come back, and Postgres loses the gain with no test or error to show it. Nobody can tell why, because the thread never found the cause.",
+      "argument": "In message #9 the author reports that simplifycfg alone removes the stack spills, and suspects mem2reg no longer does what llvmjit expects. Message #10 offers a guess based on register allocation, without confirmation. The author also mentions patches that make llvmjit emit better IR, which might fix the cause directly. Message #7 notes that a pipeline Postgres manages itself is hard to keep right across LLVM versions, and results exist only for LLVM 19 on x86_64.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        7,
+        9,
+        10
+      ],
+      "author_must_show": "Why do the spills disappear, and would emitting simpler IR from llvmjit give the same gain without the extra pass, across the supported LLVM versions?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "Andres Freund",
+          "date": "2026-01-28T23:19:32Z",
+          "url": "https://www.postgresql.org/message-id/porx6mjfalwefma2f2d76hagxjin3xdgefjsklkzxsyit736ly%4034ubivd7buw2"
+        },
+        {
+          "index": 9,
+          "from": "Pierre Ducroquet",
+          "date": "2026-01-30T15:01:52Z",
+          "url": "https://www.postgresql.org/message-id/pJBA_YlJwSojFSBFctsdfSOfoSv2cPS9u68eH1niIUFzYj8eImTRvNCx1jaKGbBsHMM2o6plKbQZlBcoLqG7GjK0scAeuior6SkmggWrmLs%3D%40pinaraf.info"
+        },
+        {
+          "index": 10,
+          "from": "\"Matheus Alcantara\"",
+          "date": "2026-03-11T22:01:12Z",
+          "url": "https://www.postgresql.org/message-id/DH0AI37N67Q0.3RQQX4OZTJB9L%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "If a later LLVM release removes the effect, Postgres returns to today's behaviour, which is a lost gain and not a regression. Message #7's maintenance worry concerns replacing default<O3> with an explicit pass list, not adding one long-standing pass to the O0 string.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "The patch changes the LLVM pass strings in llvmjit.c, which must behave well across all supported LLVM versions."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Every query compiled by JIT below jit_optimize_above_cost pays the extra simplifycfg pass at compile time."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "What are Optimization time and execution time for deform functions with about 100 to 1000 columns, with jit_optimize_above_cost = -1?",
+    "Why does simplifycfg remove the stack spills that mem2reg leaves in deform functions?",
+    "Should mem2reg run before or after simplifycfg, and does the order change compile time or the generated code?",
+    "Do the gains hold on LLVM versions other than 19 and on architectures other than x86_64?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Andres Freund, who knows llvmjit, raised the benchmark question in the thread; a committer who knows the LLVM pass pipeline would have to own it.",
+    "liability": "The owner signs for JIT compile time on every query below jit_optimize_above_cost, and for the behaviour of the O0 pass string on each supported and future LLVM version.",
+    "author_follow_up": "The author rebased the patch the same day a reviewer asked (message #3) and moved the entry to a new CommitFest in August 2026."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "low",
+    "review_cost": "low",
+    "recommended_action": "proceed",
+    "reason": "The patch touches only llvmjit.c, adds no user-visible surface, and a reviewer measured TPC-H Q4 about 18% faster. The missing piece is one measurement on wide tables."
+  },
+  "self_advice": [],
+  "provisional_note": "Only 3 of 10 messages and no code were read. The pass order and the compile cost on large deform functions could not be checked.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:3857",
+      "kind": "cf",
+      "title": "Enable jitlink as an alternative jit linker of legacy Rtdyld and add riscv jitting support",
+      "status": "Returned with feedback",
+      "date": "2023-09-01",
+      "first_date": "2022-08-29",
+      "url": "https://commitfest.postgresql.org/patch/3857/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20220829074622.2474104-1-alex.fan.q@gmail.com"
+      ],
+      "authors": "Alex Fan (alexfanqi)",
+      "objectors": "Andres Freund",
+      "summary": "The patch lets the LLVM JIT provider use JITLink (ObjectLinkingLayer) in place of RuntimeDyld, through a new C++ wrapper because LLVM has no C API for it. It turns this on for riscv with LLVM 15 or later and hard-codes riscv ABI names, CPU features, PIC relocation and the medium code model.",
+      "objection": "Andres Freund said the riscv ABI and target machine settings belong in LLVM, and that the missing JITLink C API should be proposed to LLVM. Thomas Munro asked why JITLink was used only for riscv and why riscv needed manual feature and ABI selection. The author agreed to try the LLVM patches later and asked to keep the workarounds meanwhile. No reviewer replied after that, and no new patch version appears.",
+      "touch_points": [],
+      "matched_queries": [
+        "jit optimization pass pipeline",
+        "jit tuple deforming performance",
+        "jit_optimize_above_cost",
+        "llvm pass manager jit",
+        "jit compilation overhead optimization"
+      ],
+      "from_hint": false,
+      "score": 0.568,
+      "enriched": true,
+      "key_quote": "I think this is something that should go into the llvm code, rather than\npostgres.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20221225120153.vifxa5t2ezr3weqb%40alap3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:2298",
+      "kind": "cf",
+      "title": "JIT: Optimize generated functions earlier to lower memory usage",
+      "status": "Withdrawn",
+      "date": "2019-11-12",
+      "first_date": "2019-10-07",
+      "url": "https://commitfest.postgresql.org/patch/2298/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAE-ML+_OE4-sHvn0AA_qakc5qkZvQvainxwb1ztuuT67SPMegw@mail.gmail.com"
+      ],
+      "authors": "Soumyadeep Chakraborty (soumyadeep2007)",
+      "objectors": "",
+      "summary": "The patch lowers the memory used by JIT-compiled code by running the function-level LLVM optimization passes on each function as soon as it is generated. Today these passes run later, in llvm_optimize_module(), whose code comment suggests this move.",
+      "objection": "The visible messages do not show why. Only the author's opening message is shown, and the entry was withdrawn about a month later with no visible review or reply.",
+      "touch_points": [],
+      "matched_queries": [
+        "jit optimization pass pipeline",
+        "jit tuple deforming performance",
+        "jit_optimize_above_cost",
+        "llvm pass manager jit",
+        "jit compilation overhead optimization"
+      ],
+      "from_hint": false,
+      "score": 0.519,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:3071",
+      "kind": "cf",
+      "title": "Lazy JIT IR code generation to increase JIT speed with partitions",
+      "status": "Withdrawn",
+      "date": "2023-01-27",
+      "first_date": "2020-12-28",
+      "url": "https://commitfest.postgresql.org/patch/3071/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/244ee08c-5e26-45d1-8d10-d7b4d16b08ae@swarm64.com"
+      ],
+      "authors": "David Geier (geidav), Luc Vlaming (luc.vlaming)",
+      "objectors": "Andres Freund",
+      "summary": "The patch delays JIT IR generation until an expression is first executed, so plan nodes that never run, such as most Parallel Append children over many partitions, are never compiled. A later version also cached the to-be-inlined bitcode modules and cloned them with llvm::CloneModule() instead of reloading them from disk.",
+      "objection": "Andres Freund objected that lazy generation emits roughly one module per function, which is inherently more expensive than emitting one module per query. He would not accept a one-function-per-module design as the base for usage-triggered JIT. He also warned that IRMover renames types in cloned modules, which can degrade code quality. David Geier then found that the module cache had stopped inlining altogether, and that cloning early made llvm::CloneModule() so slow that JIT time stayed high, so he stopped work on it.",
+      "touch_points": [],
+      "matched_queries": [
+        "jit optimization pass pipeline",
+        "jit tuple deforming performance",
+        "jit_optimize_above_cost",
+        "llvm pass manager jit",
+        "jit compilation overhead optimization"
+      ],
+      "from_hint": false,
+      "score": 0.468,
+      "enriched": true,
+      "key_quote": "I think that's just inherently more expensive and thus a no-go.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20220704202347.umiphdqxttjkfi22%40awork3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:4837",
+      "kind": "cf",
+      "title": "JIT compilation per plan node",
+      "status": "Withdrawn",
+      "date": "2024-08-21",
+      "first_date": "2024-01-02",
+      "url": "https://commitfest.postgresql.org/patch/4837/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGPVpCSBn_-t3jvpmmhHsqNs2NOGo1tSBbyZNg1CjGgAcQJk+Q@mail.gmail.com"
+      ],
+      "authors": "David Rowley (davidrowley), Melih Mutlu (melihmutlu)",
+      "objectors": "David Rowley",
+      "summary": "The patch moves the JIT compilation decision from the whole query to each plan node, so a node is compiled when its cost times its estimated number of calls exceeds jit_above_cost. Inlining and optimization stay decided per query, and the patch passes estimated calls through createplan.c with a new CreatePlanContext.",
+      "objection": "No visible message states why the entry was withdrawn. Tomas Vondra and Robert Haas supported moving the decision to the node level. In the last messages, David Rowley questioned plan node total cost as the measure, proposed using the estimated number of executions of each ExprState instead, and said the costing design was still undecided. The thread then stops, three months before the withdrawal.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "jit tuple deforming performance",
+        "llvm pass manager jit",
+        "jit compilation overhead optimization"
+      ],
+      "from_hint": false,
+      "score": 0.339,
+      "enriched": true,
+      "key_quote": "Anyway, I don't think it's worth talking in detail about specifics about implementation for the total cost of the node idea when the whole replacement costing model design is still undecided.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAApHDvq2yMNXM%3Dc51BOLtcNBc_KN_Gtb3i-pAdbg6%3DvuyKcUxA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:1285",
+      "kind": "cf",
+      "title": "JIT compiling expressions/tuple deforming",
+      "status": "Returned with feedback",
+      "date": "2017-11-30",
+      "first_date": "2017-09-01",
+      "url": "https://commitfest.postgresql.org/patch/1285/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20170901064131.tazjxwus3k2w3ybh@alap3.anarazel.de"
+      ],
+      "authors": "Andres Freund (andresfreund)",
+      "objectors": "",
+      "summary": "The patch series adds LLVM-based JIT compilation of expression evaluation, tuple deforming and aggregate transition calls, with optional inlining of builtin functions from bitcode. It also includes preparatory executor refactoring and configure support for LLVM.",
+      "objection": "Michael Paquier closed the entry because this thread had stalled, while the author kept working on the patches elsewhere; no objection to the design decided it. The author had also said the series was still far from committable, and he moved the work to a separate commitfest entry.",
+      "touch_points": [],
+      "matched_queries": [
+        "jit tuple deforming performance",
+        "llvm pass manager jit",
+        "jit compilation overhead optimization"
+      ],
+      "from_hint": false,
+      "score": 0.312,
+      "enriched": true,
+      "key_quote": "I know that you are working on this actively per the set of patches you have sent lately, but this thread has stalled, so I am marking it as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB7nPqSBD%3DrM-3fmpThsfrFZo-fW_OuWzNiJV8%2BHW-_jnGXNbg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:3573",
+      "kind": "cf",
+      "title": "jit_warn_above_fraction parameter",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-02-25",
+      "url": "https://commitfest.postgresql.org/patch/3573/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABUevExR_9ZmkYj-aBvDreDKUinWLBBpORcmTbuPdNb5vGOLtA@mail.gmail.com"
+      ],
+      "authors": "Magnus Hagander (mha)",
+      "objectors": "Tom Lane",
+      "summary": "The patch adds a GUC, jit_warn_above_fraction, that logs a warning when JIT takes more than the given fraction of a query's run time. The aim is to find queries where bad estimates make JIT cost most of the runtime, so users can tune JIT for those queries instead of turning it off globally.",
+      "objection": "Tom Lane doubted that the warning would give useful information, and some earlier objections to the GUC, not shown here, made the same point. He also noted that a message at WARNING level is logged without the statement that triggered it, so it should be at LOG level, which would also change the GUC name. Julien Rouhaud agreed it should be LOG. The patch then stopped applying, a rebase was requested in September 2022, and no new version appears in the visible messages before it was returned in October.",
+      "touch_points": [],
+      "matched_queries": [
+        "jit optimization pass pipeline",
+        "jit tuple deforming performance",
+        "llvm pass manager jit"
+      ],
+      "from_hint": false,
+      "score": 0.281,
+      "enriched": true,
+      "key_quote": "The arguments against the GUC were not about whether it's convenient. They were about whether the information it gives you is actually going to be of any use.",
+      "quote_message_url": "https://www.postgresql.org/message-id/4106296.1649515332%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:5202",
+      "kind": "cf",
+      "title": "Add llvm version into the version string",
+      "status": "Returned with feedback",
+      "date": "2024-09-24",
+      "first_date": "2024-08-21",
+      "url": "https://commitfest.postgresql.org/patch/5202/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/znc72ymyoelvk5rjk5ub254v3qvcczfrk6autygjdobfvx2e7p@s3dssvf34twa"
+      ],
+      "authors": "Dmitry Dolgov (erthalion)",
+      "objectors": "Tom Lane",
+      "summary": "The patch adds the LLVM version to PG_VERSION_STR, the way the gcc version is already shown, so that JIT bug reports include it. A later version takes the runtime version from the loaded library through LLVMGetVersion, an API that exists from LLVM 16 on.",
+      "objection": "Tom Lane objected that the configure-time llvm-config version may not match the library loaded at run time. He also objected that changing what version() returns can break code that parses it, and that adding subsystem versions to it does not scale to ICU or libxml2. He suggested a new system view instead, the author agreed to try that direction, and others proposed showing both build-time and runtime versions in the view.",
+      "touch_points": [],
+      "matched_queries": [
+        "llvm passes O0 mem2reg",
+        "llvm pass manager jit"
+      ],
+      "from_hint": false,
+      "score": 0.267,
+      "enriched": true,
+      "key_quote": "Adding rows to a view over time seems way less likely to cause\nproblems than messing with a string people probably have crufty\nparsing code for.",
+      "quote_message_url": "https://www.postgresql.org/message-id/3203904.1727117118%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:3748",
+      "kind": "cf",
+      "title": "Support multiple password-based authentication tokens concurrently",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-03-02",
+      "url": "https://commitfest.postgresql.org/patch/3748/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGB+Vh5SQQorNDEKP+0G=smxHRhbhs+VkmQWD5Vh98fmn8X4dg@mail.gmail.com"
+      ],
+      "authors": "Joshua Brindle (joshuab)",
+      "objectors": "",
+      "summary": "Move role passwords into a new catalog (pg_auth_password) so that a role can have several named passwords valid at the same time, each with its own expiration. Expirations are set per password through new SQL grammar or a default validity-period GUC, so that passwords can be rotated without downtime.",
+      "objection": "The visible messages do not show why. The original author said he might not be able to continue the work, and Stephen Frost posted an updated version for the July commitfest while Gurjeet Singh said he planned to pick it up. No review objections or later activity appear before the entry was returned with feedback in October.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "llvmjit simplifycfg pass",
+        "llvm passes O0 mem2reg"
+      ],
+      "from_hint": false,
+      "score": 0.266,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:1309",
+      "kind": "cf",
+      "title": "Enhancements to passwordcheck",
+      "status": "Returned with feedback",
+      "date": "2017-11-02",
+      "first_date": "2017-09-25",
+      "url": "https://commitfest.postgresql.org/patch/1309/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/AC785D69-41EC-4D0A-AC37-1F9FF55C9E34@amazon.com"
+      ],
+      "authors": "Nathan Bossart (bossartn)",
+      "objectors": "",
+      "summary": "Enhancements to passwordcheck\nThreads: Enhancements to passwordcheck",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "llvmjit simplifycfg pass",
+        "llvm passes O0 mem2reg"
+      ],
+      "from_hint": false,
+      "score": 0.214,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:746",
+      "kind": "cf",
+      "title": "PassDownLimitBound for ForeignScan/CustomScan",
+      "status": "Rejected",
+      "date": "2016-09-28",
+      "first_date": "2016-08-29",
+      "url": "https://commitfest.postgresql.org/patch/746/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/9A28C8860F777E439AA12E8AEA7694F80121E662@BPXM15GP.gisp.nec.co.jp"
+      ],
+      "authors": "KaiGai Kohei (kaigai)",
+      "objectors": "",
+      "summary": "PassDownLimitBound for ForeignScan/CustomScan\nThreads: PassDownLimitBound for ForeignScan/CustomScan",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "llvmjit simplifycfg pass",
+        "llvm passes O0 mem2reg"
+      ],
+      "from_hint": false,
+      "score": 0.191,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:1064",
+      "kind": "cf",
+      "title": "PassDownLimitBound for ForeignScan/CustomScan",
+      "status": "Returned with feedback",
+      "date": "2017-03-24",
+      "first_date": "2016-11-24",
+      "url": "https://commitfest.postgresql.org/patch/1064/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAM2+6=VBkoPE54U_jGr8iSuR7Xe+BnwesiUK1tye3hckcy_AyQ@mail.gmail.com"
+      ],
+      "authors": "KaiGai Kohei (kaigai)",
+      "objectors": "",
+      "summary": "PassDownLimitBound for ForeignScan/CustomScan\nThreads: PassDownLimitBound for ForeignScan/CustomScan [take-2]",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "llvmjit simplifycfg pass",
+        "llvm passes O0 mem2reg"
+      ],
+      "from_hint": false,
+      "score": 0.179,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:4432",
+      "kind": "cf",
+      "title": "Multiple passwords, interval expirations",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2022-03-02",
+      "url": "https://commitfest.postgresql.org/patch/4432/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGB+Vh5SQQorNDEKP+0G=smxHRhbhs+VkmQWD5Vh98fmn8X4dg@mail.gmail.com"
+      ],
+      "authors": "Gurjeet Singh (gurjeet), Joshua Brindle (joshuab)",
+      "objectors": "",
+      "summary": "Multiple passwords, interval expirations\nThreads: [PoC/RFC] Multiple passwords, interval expirations",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "llvmjit simplifycfg pass",
+        "llvm passes O0 mem2reg"
+      ],
+      "from_hint": false,
+      "score": 0.174,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:866",
+      "kind": "cf",
+      "title": "Pass down Limit bounds [take-2]",
+      "status": "Returned with feedback",
+      "date": "2016-12-02",
+      "first_date": "2016-10-31",
+      "url": "https://commitfest.postgresql.org/patch/866/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/9A28C8860F777E439AA12E8AEA7694F8012505BC@BPXM15GP.gisp.nec.co.jp",
+        "https://www.postgresql.org/message-id/flat/CAM2+6=VBkoPE54U_jGr8iSuR7Xe+BnwesiUK1tye3hckcy_AyQ@mail.gmail.com"
+      ],
+      "authors": "KaiGai Kohei (kaigai)",
+      "objectors": "",
+      "summary": "Pass down Limit bounds [take-2]\nThreads: PassDownLimitBound for ForeignScan/CustomScan [take-2]; PassDownLimitBound for ForeignScan/CustomScan [take-2]",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "llvmjit simplifycfg pass",
+        "llvm passes O0 mem2reg"
+      ],
+      "from_hint": false,
+      "score": 0.165,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:1602",
+      "kind": "cf",
+      "title": "Two pass check for deadlock",
+      "status": "Returned with feedback",
+      "date": "2019-02-04",
+      "first_date": "2017-10-03",
+      "url": "https://commitfest.postgresql.org/patch/1602/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/bac42052debbd66e8d5f786d8abe8db1@postgrespro.ru"
+      ],
+      "authors": "Yura Sokolov (funny_falcon)",
+      "objectors": "",
+      "summary": "Two pass check for deadlock\nThreads: Two pass CheckDeadlock in contentent case",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "llvmjit simplifycfg pass",
+        "llvm passes O0 mem2reg"
+      ],
+      "from_hint": false,
+      "score": 0.164,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "revert:c7111d11b188bd631a63c98e9aab8532176007c3",
+      "kind": "revert",
+      "title": "Revert buggy optimization of index scans",
+      "status": "Reverted",
+      "date": "2016-03-03",
+      "first_date": "2014-11-18",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=c7111d11b188bd631a63c98e9aab8532176007c3",
+      "thread_urls": [],
+      "authors": "Simon Riggs",
+      "objectors": "",
+      "summary": "Revert buggy optimization of index scans\nReverted commit(s): Reduce btree scan overhead for < and > strategies",
+      "objection": "606c0123d627 attempted to reduce cost of index scans using > and <\nstrategies, though got that completely wrong in a few complex cases.\n\nRevert whole patch until we find a safe optimization.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "jit_optimize_above_cost",
+        "jit compilation overhead optimization"
+      ],
+      "from_hint": false,
+      "score": 0.151,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "revert:b4a07f532b40a64fb4714a3f7ab6063435411edb",
+      "kind": "revert",
+      "title": "Revert \"TupleHashTable: store additional data along with tuple.\"",
+      "status": "Reverted",
+      "date": "2025-01-13",
+      "first_date": "2025-01-11",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=b4a07f532b40a64fb4714a3f7ab6063435411edb",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/b9cbf0219a9859dc8d240311643ff4362fd9602c.camel@j-davis.com"
+      ],
+      "authors": "Jeff Davis",
+      "objectors": "",
+      "summary": "Revert \"TupleHashTable: store additional data along with tuple.\"\nReverted commit(s): TupleHashTable: store additional data along with tuple.",
+      "objection": "This reverts commit e0ece2a981ee9068f50c4423e303836c2585eb02 due to\nperformance regressions.",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "jit tuple deforming performance"
+      ],
+      "from_hint": false,
+      "score": 0.133,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:2582",
+      "kind": "cf",
+      "title": "Improve planner cost estimations for alternative subplans",
+      "status": "Withdrawn",
+      "date": "2020-11-13",
+      "first_date": "2020-06-05",
+      "url": "https://commitfest.postgresql.org/patch/2582/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/07b3fa88-aa4e-2e13-423d-8389eb1712cf@imap.cc"
+      ],
+      "authors": "Alexey Bashtanov (bashtanov)",
+      "objectors": "",
+      "summary": "Improve planner cost estimations for alternative subplans\nThreads: Improve planner cost estimations for alternative subplans",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "jit_optimize_above_cost"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "revert:81ca8686305c4c62d723ab224ad5c414f350a3a0",
+      "kind": "revert",
+      "title": "Improve management of SLRU statistics collection.",
+      "status": "Partially reverted",
+      "date": "2020-05-13",
+      "first_date": "2015-11-12",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=81ca8686305c4c62d723ab224ad5c414f350a3a0",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3618.1589313035@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20200119143707.gyinppnigokesjok@development"
+      ],
+      "authors": "Robert Haas, Tomas Vondra",
+      "objectors": "",
+      "summary": "Improve management of SLRU statistics collection.\nReverted commit(s): Move each SLRU's lwlocks to a separate tranche.; Collect statistics about SLRU caches",
+      "objection": "Instead of re-identifying which statistics bucket to use for a given\nSLRU on every counter increment, do it once during shmem initialization.\nThis saves a fair number of cycles, and there's no real cost because\nwe could not have a bucket assignment that varies over time or across\nbackends anyway.\n\nAlso, get rid of the ill-considered decision to let pgstat.c pry\ndirectly into SLRU's shared state; it's cleaner just to have slru.c\npass the stats bucket number.\n\nIn consequence of these changes, there's no longer any need to store\nan SLRU's LWLock tranche info in shared memory, so get rid of that,\nmaking this a net reduction in shmem consumption.  (That partly\nreverts fe702a7b3.)\n\nThis is basically code review for 28cac71bd, so I also cleaned up\nsome comments, removed a dangling extern declaration, fixed some\nthings that should be static and/or const, etc.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "llvm pass manager jit"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:2372",
+      "kind": "cf",
+      "title": "Allow FunctionScans to pipeline results",
+      "status": "Withdrawn",
+      "date": "2020-03-23",
+      "first_date": "2019-12-09",
+      "url": "https://commitfest.postgresql.org/patch/2372/",
+      "thread_urls": [],
+      "authors": "John Dent (denty)",
+      "objectors": "",
+      "summary": "Allow FunctionScans to pipeline results",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "jit optimization pass pipeline"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:634",
+      "kind": "cf",
+      "title": "Batch (pipelined) mode for libpq",
+      "status": "Returned with feedback",
+      "date": "2016-11-22",
+      "first_date": "2016-05-23",
+      "url": "https://commitfest.postgresql.org/patch/634/",
+      "thread_urls": [],
+      "authors": "Craig Ringer (ringerc)",
+      "objectors": "",
+      "summary": "Batch (pipelined) mode for libpq",
+      "objection": "",
+      "touch_points": [
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "jit optimization pass pipeline"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "revert:f4c7c410ee4a7baa06f51ebb8d5333c169691dd3",
+      "kind": "revert",
+      "title": "Revert \"Optimize order of GROUP BY keys\".",
+      "status": "Reverted",
+      "date": "2022-10-03",
+      "first_date": "2022-03-30",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f4c7c410ee4a7baa06f51ebb8d5333c169691dd3",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/TYAPR01MB586665EB5FB2C3807E893941F5579@TYAPR01MB5866.jpnprd01.prod.outlook.com",
+        "https://www.postgresql.org/message-id/flat/7c79e6a5-8597-74e8-0671-1c39d124c9d6@sigaev.ru",
+        "https://www.postgresql.org/message-id/flat/CA+q6zcW_4o2NC0zutLkOJPsFt80megSpX_dVRo6GK9PC-Jx_Ag@mail.gmail.com"
+      ],
+      "authors": "Tomas Vondra",
+      "objectors": "",
+      "summary": "Revert \"Optimize order of GROUP BY keys\".\nReverted commit(s): Optimize order of GROUP BY keys",
+      "objection": "This reverts commit db0d67db2401eb6238ccc04c6407a4fd4f985832 and\nseveral follow-on fixes.  The idea of making a cost-based choice\nof the order of the sorting columns is not fundamentally unsound,\nbut it requires cost information and data statistics that we don't\nreally have.  For example, relying on procost to distinguish the\nrelative costs of different sort comparators is pretty pointless\nso long as most such comparator functions are labeled with cost 1.0.\nMoreover, estimating the number of comparisons done by Quicksort\nrequires more than just an estimate of the number of distinct values\nin the input: you also need some idea of the sizes of the larger\ngroups, if you want an estimate that's good to better than a factor of\nthree or so.  That's data that's often unknown or not very reliable.\nWorse, to arrive at estimates of the number of calls made to the\nlower-order-column comparison functions, the code needs to make\nestimates of the numbers of distinct values of multiple columns,\nwhich are necessarily even less trustworthy than per-column stats.\nEven if all the inputs are perfectly reliable, the cost algorithm\nas-implemented cannot offer useful information about how to order\nsorting columns beyond the point at which the average group size\nis estimated to drop to 1.\n\nClose inspection of the code added by db0d67db2 shows that there\nare also multiple small bugs.  These could have been fixed, but\nthere's not much point if we don't trust the estimates to be\naccurate in-principle.\n\nFinally, the changes in cost_sort's behavior made for very large\nchanges (often a factor of 2 or so) in the cost estimates for all\nsorting operations, not only those for multi-column GROUP BY.\nThat naturally changes plan choices in many situations, and there's\nprecious little evidence to show that the changes are for the better.\nGiven the above doubts about whether the new estimates are really\ntrustworthy, it's hard to summon much confidence that these changes\nare better on the average.\n\nSince we're hard up against the release deadline for v15, let's\nrevert these changes for now.  We can always try again later.\n\nNote: in v15, I left T_PathKeyInfo in place in nodes.h even though\nit's unreferenced.  Removing it would be an ABI break, and it seems\na bit late in the release cycle for that.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "jit_optimize_above_cost"
+      ],
+      "from_hint": false,
+      "score": 0.099,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:400",
+      "kind": "cf",
+      "title": "Improve overflow checks potentially optimized away by compiler",
+      "status": "Returned with feedback",
+      "date": "2015-12-01",
+      "first_date": "2013-01-20",
+      "url": "https://commitfest.postgresql.org/patch/400/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/50FBA3B6.5040109@gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun), Greg Stark (stark)",
+      "objectors": "",
+      "summary": "Improve overflow checks potentially optimized away by compiler\nThreads: [RFC] overflow checks optimized away",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "jit compilation overhead optimization"
+      ],
+      "from_hint": false,
+      "score": 0.089,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "revert:6719b238e8f0ea83c39d2b1728c7670cdaa34e06",
+      "kind": "revert",
+      "title": "Rearrange execution of PARAM_EXTERN Params for plpgsql's benefit.",
+      "status": "Partially reverted",
+      "date": "2017-12-21",
+      "first_date": "2015-07-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6719b238e8f0ea83c39d2b1728c7670cdaa34e06",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/32589.1513706441@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Rearrange execution of PARAM_EXTERN Params for plpgsql's benefit.\nReverted commit(s): Further reduce overhead for passing plpgsql variables to the executor.",
+      "objection": "This patch does three interrelated things:\n\n* Create a new expression execution step type EEOP_PARAM_CALLBACK\nand add the infrastructure needed for add-on modules to generate that.\nAs discussed, the best control mechanism for that seems to be to add\nanother hook function to ParamListInfo, which will be called by\nExecInitExpr if it's supplied and a PARAM_EXTERN Param is found.\nFor stand-alone expressions, we add a new entry point to allow the\nParamListInfo to be specified directly, since it can't be retrieved\nfrom the parent plan node's EState.\n\n* Redesign the API for the ParamListInfo paramFetch hook so that the\nParamExternData array can be entirely virtual.  This also lets us get rid\nof ParamListInfo.paramMask, instead leaving it to the paramFetch hook to\ndecide which param IDs should be accessible or not.  plpgsql_param_fetch\nwas already doing the identical masking check, so having callers do it too\nseemed redundant.  While I was at it, I added a \"speculative\" flag to\nparamFetch that the planner can specify as TRUE to avoid unwanted failures.\nThis solves an ancient problem for plpgsql that it couldn't provide values\nof non-DTYPE_VAR variables to the planner for fear of triggering premature\n\"record not assigned yet\" or \"field not found\" errors during planning.\n\n* Rework plpgsql to get rid of the need for \"unshared\" parameter lists,\nby dint of turning the single ParamListInfo per estate into a nearly\nread-only data structure that doesn't instantiate any per-variable data.\nInstead, the paramFetch hook controls access to per-variable data and can\nmake the right decisions on the fly, replacing the cases that we used to\nneed multiple ParamListInfos for.  This might perhaps have been a\nperformance loss on its own, but by using a paramCompile hook we can\nbypass plpgsql_param_fetch entirely during normal query execution.\n(It's now only called when, eg, we copy the ParamListInfo into a cursor\nportal.  copyParamList() or SerializeParamList() effectively instantiate\nthe virtual parameter array as a simple physical array without a\nparamFetch hook, which is what we want in those cases.)  This allows\nreverting most of commit 6c82d8d1f, though I kept the cosmetic\ncode-consolidation aspects of that (eg the assign_simple_var function).\n\nPerformance testing shows this to be at worst a break-even change,\nand it can provide wins ranging up to 20% in test cases involving\naccesses to fields of \"record\" variables.  The fact that values of\nsuch variables can now be exposed to the planner might produce wins\nin some situations, too, but I've not pursued that angle.\n\nIn passing, remove the \"parent\" pointer from the arguments to\nExecInitExprRec and related functions, instead storing that pointer in a\ntransient field in ExprState.  The ParamListInfo pointer for a stand-alone\nexpression is handled the same way; we'd otherwise have had to add\nyet another recursively-passed-down argument in expression compilation.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "jit compilation overhead optimization"
+      ],
+      "from_hint": false,
+      "score": 0.088,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:1024",
+      "kind": "cf",
+      "title": "Pipelining/batch mode support for libpq",
+      "status": "Returned with feedback",
+      "date": "2017-10-02",
+      "first_date": "2016-05-23",
+      "url": "https://commitfest.postgresql.org/patch/1024/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMsr+YFUjJytRyV4J-16bEoiZyH=4nj+sQ7JP9ajwz=B4dMMZw@mail.gmail.com"
+      ],
+      "authors": "Craig Ringer (ringerc), vaishnavi prabakaran (vaishnavip)",
+      "objectors": "",
+      "summary": "Pipelining/batch mode support for libpq\nThreads: PATCH: Batch/pipelining support for libpq",
+      "objection": "",
+      "touch_points": [
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "jit optimization pass pipeline"
+      ],
+      "from_hint": false,
+      "score": 0.087,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 5,
+    "new_calls": 3,
+    "failed": 0,
+    "quotes_verified": 2,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2026-01-07",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "The only retrieved precedent [P2] is a different idea in the same area, and it was withdrawn with no recorded reason, so no earlier rejection reason applies. The thread does not point to any earlier discussion of adding simplifycfg at O0."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 0,
+      "note": "From the standards and compatibility angle there is nothing to object to. The patch adds no syntax, GUC, catalog entry, dump state or psql change, and query results stay the same. Only the internal LLVM pass list below jit_optimize_above_cost changes, and the other angles cover its cost and maintenance."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The patch changes only the in-memory LLVM pass list in llvmjit.c. JIT code lives only in the backend that compiles it, so nothing reaches disk, WAL, a standby, the catalog, the wire protocol or a struct that extensions use, and this angle has nothing to object to."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The patch only adds the simplifycfg pass to the internal LLVM pipeline used when JIT optimization is below O3. It adds no SQL surface, privilege, setting or new data exposure. Any user who can run a JIT-compiled query already controls when JIT runs, and a pass that removes empty blocks gives no new way to cause denial of service. A security angle has nothing to object to here."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "The change adds one pass name in llvmjit.c. Its costs fall only on queries that use JIT, and a reviewer has given +1. Neither objection is fatal."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "Postgres has no cheap way today to get simplifycfg on JIT code without the full default<O3> pipeline. Lowering jit_optimize_above_cost brings O3 and its much higher optimization time, and replacing the jit_provider means a whole new JIT provider. No contrib module or extension offers a configurable pass list, and the patch changes the existing pipeline strings instead of adding a second mechanism."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "No demand objection. The patch changes no user-visible surface, and every query compiled by JIT below jit_optimize_above_cost gets the faster code, with a small compile cost that only JIT users pay. Two people measured gains independently: Q4 about 18% faster in message #4, and 7ms in message #1. Whether the benchmarks cover wide tables is a question for the performance angle."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 9,
+      "new_objections": 2,
+      "new_survived": 1,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 53,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 16,
+    "wall_ms": 111861,
+    "cost_usd": 1.5138402,
+    "dry_run": false
+  }
+}

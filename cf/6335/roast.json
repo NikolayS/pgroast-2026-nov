@@ -1,0 +1,1333 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:49:08.892Z",
+  "input": {
+    "arg": "6335",
+    "cf": {
+      "id": 6335,
+      "url": "https://commitfest.postgresql.org/patch/6335/",
+      "title": "File locks for data directory lockfile in the context of Linux namespaces",
+      "status": "Needs review",
+      "authors": "Dmitry Dolgov (erthalion)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/z2u3jtjzhqofqhrjvfgkwl4cczhpqibz3t47gpx7fbe7ceaihk%40i5mveu2wfpxn",
+    "subject": "File locks for data directory lockfile in the context of Linux namespaces",
+    "thread_start": "2025-12-19T14:27:40Z",
+    "messages_read": 10,
+    "messages_total": 10,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v5-0001-Use-open-file-description-locks-for-lockfiles.patch",
+      "v1-0001-Use-open-file-description-locks-for-data-director.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The problem is stated, reproduced in message #3, and no surviving objection disputes the goal. Two fixable points remain. replication-ondisk-2 asks why a new startup FATAL should go into minor releases. standards-compat-1 shows that a child of archive_command or restore_command can keep the inherited lock and block a restart. Both need a committer who knows the startup interlock to decide.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Use open file description locks on postmaster.pid and socket lockfiles",
+    "problem": "Two postmasters in different Linux PID namespaces can start on the same data directory, because each sees its own PID in postmaster.pid and treats the file as stale. The author reports this happens with Kubernetes ReadWriteOnce volumes after a forced pod termination. It affects container users who share a data volume across pods.",
+    "proposed_design": "At startup Postgres takes an exclusive fcntl F_OFD_SETLK lock on each lockfile, on top of the existing PID check. If the lock is held, startup fails. If locking fails for another reason, Postgres logs a warning and continues as before. The lock fd is kept open without FD_CLOEXEC, so child processes inherit it.",
+    "user_visible_surface": [
+      "New FATAL at startup: cannot lock the lock file \"postmaster.pid\", with HINT \"Another server is starting.\"",
+      "Unix socket lockfiles (.s.PGSQL.nnnn.lock) are also OFD-locked, so a second postmaster on the same socket now fails to start.",
+      "New WARNING when the lock call fails with an unexpected error.",
+      "New configure and meson check for F_OFD_SETLK."
+    ],
+    "author_claims": [
+      "F_OFD_SETLK is now part of POSIX.1 2024, which removes the past portability objection.",
+      "The change fixes the namespace problem everywhere except NFSv3, where OFD locks become process-associated advisory locks.",
+      "On NFSv4 the author found no sign that locks are converted to advisory locks.",
+      "The scenario happens in the field with Kubernetes, mostly through misconfiguration.",
+      "Leaving out FD_CLOEXEC is intended, so the lock lasts as long as any process that may touch the data directory."
+    ],
+    "thread_state": "Ilmar Yunusov confirmed the namespace fix on Linux for v2 and v3, and Zsolt Parragi raised error-handling points on v4. v5 is posted with no reply yet, and the leak on the stale path and the elog versus ereport choice are still disputed.",
+    "unclear": [
+      "The patch does not say what happens on platforms without F_OFD_SETLK, such as Windows or older BSD and macOS releases.",
+      "No one tested NFS, so the NFSv3 and NFSv4 claims are unverified.",
+      "The thread does not show whether v5 fixed the Windows build failure from the LockFile typedef name clash.",
+      "The patch does not say how inherited lock fds behave in archive_command, restore_command or other children that outlive the postmaster.",
+      "The target is stable, but the thread does not discuss back-patching or risk to existing setups.",
+      "The patch has no documentation or tests for the new behaviour."
+    ],
+    "search_queries": [
+      "data directory lockfile fcntl lock",
+      "postmaster.pid file locking",
+      "open file description locks",
+      "PID namespace postmaster.pid",
+      "flock data directory interlock",
+      "containers same data directory two postmasters",
+      "advisory lock lock file NFS",
+      "stale lockfile PID reuse"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Stable target changes startup interlock behaviour in a minor release",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site applies a minor update and restarts during a hung restore_command on a standby. The restart worked on the previous minor release and now fails at the new FATAL. The same can happen where a container wrapper leaks the inherited fd. The site learns of the change only from a failed restart.",
+      "argument": "The CommitFest entry targets stable, but the thread has no discussion of back-patching. The patch adds a configure and meson check, a new FATAL path for postmaster.pid and the socket lockfiles, and new fd lifetime rules. A committer would likely want that in master first, with a release-notes entry, before releasing it to existing clusters.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        9
+      ],
+      "author_must_show": "Why should this ship in back branches rather than master only, given that it adds new startup failures for existing clusters?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Dmitry Dolgov",
+          "date": "2025-12-19T14:27:40Z",
+          "url": "https://www.postgresql.org/message-id/z2u3jtjzhqofqhrjvfgkwl4cczhpqibz3t47gpx7fbe7ceaihk%40i5mveu2wfpxn"
+        },
+        {
+          "index": 9,
+          "from": "Dmitry Dolgov",
+          "date": "2026-07-10T10:20:13Z",
+          "url": "https://www.postgresql.org/message-id/uljhsglx5lo4ox3xxkjoov4ye7l3s6xh66gw4gfysgxpla7vgk%40fl6arpructd2"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The CommitFest entry says target \"stable\", and no message discusses back-patching. A restart during a hung restore_command works on current minor releases and would fail with the new FATAL, so the request for master only stands.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Inherited lock fds can block restart while unrelated child processes live",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "design",
+      "touch_points": [
+        "backpatchability",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An archive_command, restore_command or COPY ... TO PROGRAM starts a long rsync or a background daemon, then the postmaster crashes or is killed. The child still holds the inherited fd and so the OFD lock, and restart fails with FATAL \"cannot lock the lock file\" and HINT \"Another server is starting.\" while no server runs.",
+      "argument": "Message #8 asked for FD_CLOEXEC, and message #9 kept the fd inheritable because \"the lock file is created by the bootstrap process and the postmaster\". That answer covers Postgres processes but not shell children, which do not attach to shared memory and so do not block restart today. The proposal adds a new way for startup to fail, with a HINT that points the DBA at the wrong cause.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        8,
+        9
+      ],
+      "author_must_show": "Which processes should hold the lock after exec, and what does a DBA see and do when an orphaned archive_command or TO PROGRAM child keeps it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 8,
+          "from": "Zsolt Parragi",
+          "date": "2026-07-06T22:07:35Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFMepY-70PqQjefnFFR1VFjvos5EnkpU75ho9bvQj%3DKXoQ%40mail.gmail.com"
+        },
+        {
+          "index": 9,
+          "from": "Dmitry Dolgov",
+          "date": "2026-07-10T10:20:13Z",
+          "url": "https://www.postgresql.org/message-id/uljhsglx5lo4ox3xxkjoov4ye7l3s6xh66gw4gfysgxpla7vgk%40fl6arpructd2"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Children started through system() inherit an fd without FD_CLOEXEC, and they detach from shared memory at exec, so they do not block a restart today. Message #9 only discusses the bootstrap process and the postmaster, and the HINT would name the wrong cause.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Stable target adds a new startup failure mode in minor releases",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site applies a minor update. Its setup shares a socket directory between postmasters, or a wrapper script starts postgres while an old child still holds the file. After the update, startup fails with a new FATAL that earlier releases of that branch never raised.",
+      "argument": "The CommitFest entry targets \"stable\", but no message in the thread discusses back-patching. The patch also changes configure and meson checks and, on purpose since message #4, the behaviour of the socket lockfile. A committer would likely ask for master only, since the problem comes from orchestrator misconfiguration and not from a regression in Postgres.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        4
+      ],
+      "author_must_show": "Why should a new FATAL at startup and changed socket lockfile behaviour go into minor releases and not only the next major version?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Dmitry Dolgov",
+          "date": "2025-12-19T14:27:40Z",
+          "url": "https://www.postgresql.org/message-id/z2u3jtjzhqofqhrjvfgkwl4cczhpqibz3t47gpx7fbe7ceaihk%40i5mveu2wfpxn"
+        },
+        {
+          "index": 4,
+          "from": "Dmitry Dolgov",
+          "date": "2026-06-19T15:11:11Z",
+          "url": "https://www.postgresql.org/message-id/54uh7vhavffktp72dmjm7ms26lntxacnvpwuaitiez4izugdi6%40emwc2yrpqwk2"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-2. Its shared socket directory scenario is also weak, because two postmasters on the same port and socket directory already conflict outside the namespace case.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Inherited lock fd lets surviving children block postmaster restart",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "design",
+      "touch_points": [
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "On a primary, the postmaster dies while an archive_command child is stuck pushing WAL to remote storage. The child keeps the inherited lockfile fd, so every restart attempt fails with \"cannot lock the lock file\" and the HINT \"Another server is starting\". The operator finds out only after tracing which process holds the lock.",
+      "argument": "v5 leaves FD_CLOEXEC off on purpose so the lock lasts \"as long as any existing process may access the data directory\" (message #9). Every process forked after startup inherits the fd, including shells run by archive_command, restore_command and COPY ... PROGRAM, and programs those shells leave in the background. These are not attached to shared memory, so the current interlock lets the server restart while they run. The proposal does not say which processes should hold the lock or how a stale holder is reported.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        8,
+        9
+      ],
+      "author_must_show": "Which child processes should keep the lock after the postmaster exits, and what an operator does when an orphaned archive_command or restore_command holds it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 8,
+          "from": "Zsolt Parragi",
+          "date": "2026-07-06T22:07:35Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFMepY-70PqQjefnFFR1VFjvos5EnkpU75ho9bvQj%3DKXoQ%40mail.gmail.com"
+        },
+        {
+          "index": 9,
+          "from": "Dmitry Dolgov",
+          "date": "2026-07-10T10:20:13Z",
+          "url": "https://www.postgresql.org/message-id/uljhsglx5lo4ox3xxkjoov4ye7l3s6xh66gw4gfysgxpla7vgk%40fl6arpructd2"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1, which states the same inherited fd scenario more briefly and adds the misleading HINT.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Inherited lock fd lets non-server children block a restart",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An archive_command or restore_command starts a background uploader that outlives the postmaster. After a crash or a fast shutdown, the uploader still holds the inherited fd. The next start fails with FATAL and \"Another server is starting\", and the DBA has no clue that the archive tool is the holder.",
+      "argument": "Message #9 keeps FD_CLOEXEC off on purpose, so that the lock lives as long as any process that may touch the data directory. Shell children of the archiver, the startup process, COPY TO PROGRAM and extensions that spawn tools inherit the fd too, though they never touch the data directory. Today the shared-memory interlock covers server processes only. The proposal widens the set of processes that can block a start and does not say how a DBA finds the holder.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        8,
+        9
+      ],
+      "author_must_show": "Which processes that are not Postgres server processes inherit the lock fd, and why should a leftover archive_command child be allowed to prevent a restart?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 8,
+          "from": "Zsolt Parragi",
+          "date": "2026-07-06T22:07:35Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFMepY-70PqQjefnFFR1VFjvos5EnkpU75ho9bvQj%3DKXoQ%40mail.gmail.com"
+        },
+        {
+          "index": 9,
+          "from": "Dmitry Dolgov",
+          "date": "2026-07-10T10:20:13Z",
+          "url": "https://www.postgresql.org/message-id/uljhsglx5lo4ox3xxkjoov4ye7l3s6xh66gw4gfysgxpla7vgk%40fl6arpructd2"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1. Its statement that these children never touch the data directory is also inexact, since archive_command reads WAL files from it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Stable target adds a new startup failure in minor releases",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user applies a minor update. On the next restart the server or a second postmaster that shares a socket directory stops with a new FATAL. That setup worked before the update. The user finds out during a maintenance window and cannot roll back easily.",
+      "argument": "The CommitFest entry targets stable. The patch adds a configure and meson check and a new hard startup error on two kinds of lockfile. No message in the thread talks about back-patching, about risk to setups that work today, or about older kernels and build environments in back branches. A change to the startup interlock with this many platform cases fits master better than minor releases.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3,
+        6
+      ],
+      "author_must_show": "Is the patch meant for back branches, and if so, which existing setups could start to fail after a minor update?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Dmitry Dolgov",
+          "date": "2025-12-19T14:27:40Z",
+          "url": "https://www.postgresql.org/message-id/z2u3jtjzhqofqhrjvfgkwl4cczhpqibz3t47gpx7fbe7ceaihk%40i5mveu2wfpxn"
+        },
+        {
+          "index": 3,
+          "from": "Ilmar Yunusov",
+          "date": "2026-06-05T12:37:26Z",
+          "url": "https://www.postgresql.org/message-id/178066304625.594057.12185296716401427152.pgcf%40coridan.postgresql.org"
+        },
+        {
+          "index": 6,
+          "from": "Ilmar Yunusov",
+          "date": "2026-07-06T07:30:04Z",
+          "url": "https://www.postgresql.org/message-id/178332300475.2568959.4097339122938147476.pgcf%40coridan.postgresql.org"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-2. Its example of a second postmaster sharing a socket directory that \"worked before\" describes only the broken namespace case the patch is meant to stop.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Second interlock with per-platform behaviour and no committer engaged",
+      "level": "2",
+      "rubric_item": 16,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Years later a report comes in that the lock gives a false conflict or does nothing on one filesystem, NFS mount or OS. Nobody who knows why the lockfile has two interlocks, or which platforms skip the OFD lock silently, is still around. The fix falls to whoever answers the bug.",
+      "argument": "The design keeps the PID check and adds a best-effort lock that works on Linux local filesystems. It does nothing on NFSv3, and its behaviour on NFSv4, Windows and older BSD or macOS is not tested (message #3). Messages #9 and #10 leave the dup leak and the error reporting open. No committer has posted in ten messages over about eleven months, and the patch adds no documentation or tests.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3,
+        9,
+        10
+      ],
+      "author_must_show": "Which platforms and filesystems get the OFD lock, which skip it, and how will a test catch a regression on each of them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Dmitry Dolgov",
+          "date": "2025-12-19T14:27:40Z",
+          "url": "https://www.postgresql.org/message-id/z2u3jtjzhqofqhrjvfgkwl4cczhpqibz3t47gpx7fbe7ceaihk%40i5mveu2wfpxn"
+        },
+        {
+          "index": 3,
+          "from": "Ilmar Yunusov",
+          "date": "2026-06-05T12:37:26Z",
+          "url": "https://www.postgresql.org/message-id/178066304625.594057.12185296716401427152.pgcf%40coridan.postgresql.org"
+        },
+        {
+          "index": 9,
+          "from": "Dmitry Dolgov",
+          "date": "2026-07-10T10:20:13Z",
+          "url": "https://www.postgresql.org/message-id/uljhsglx5lo4ox3xxkjoov4ye7l3s6xh66gw4gfysgxpla7vgk%40fl6arpructd2"
+        },
+        {
+          "index": 10,
+          "from": "Dmitry Dolgov",
+          "date": "2026-08-28T07:28:28Z",
+          "url": "https://www.postgresql.org/message-id/apE2v2ygGkuAr56a%40ddolgov-thinkpadt14sgen1.rmtde.csb"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The scenario is a possible future bug report on an unnamed platform, and where the lock is unavailable the design falls back to today's behaviour. Committer silence and missing tests belong to committability and level 4, and v5 followed the open points in message #9.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "Children of archive_command and restore_command inherit the lock fd and can block a restart of a primary or standby."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The CommitFest entry targets stable, and the patch adds a new startup FATAL and new configure and meson checks."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "A second interlock in miscinit.c behaves differently by platform and filesystem: Linux local filesystems, NFSv3, NFSv4, systems without F_OFD_SETLK."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Which processes should hold the lock after exec, and what does a DBA do when an orphaned archive_command, restore_command or COPY ... TO PROGRAM child keeps it?",
+    "Is the patch meant for back branches, and if so, why should a new startup FATAL ship in minor releases and not only in the next major version?",
+    "What does the patch do on platforms without F_OFD_SETLK, such as Windows or older BSD and macOS releases?",
+    "Has anyone tested the lock on NFSv3 and NFSv4, and does it ever report a false conflict there?",
+    "Does v5 fix the Windows build failure from the LockFile typedef name clash?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "It needs a committer who knows the postmaster startup interlock in miscinit.c and file locking behaviour across platforms and network filesystems.",
+    "liability": "The owner signs for the startup interlock on every platform and filesystem, including false lock conflicts that stop a server from starting, with no end date.",
+    "author_follow_up": "The author posted five versions over about eleven months and answered both reviewers, which suggests he stays for fixes."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "medium",
+    "review_cost": "low",
+    "recommended_action": "needs champion",
+    "reason": "The patch is about 13 KiB in one backend file plus build checks, and it prevents two postmasters on one data directory in container setups. It has been in five CommitFests with two reviewers and no committer in the visible thread."
+  },
+  "self_advice": [],
+  "provisional_note": "Only 3 of 10 messages and no code were read. How v5 handles the lock fd in child processes, the stale-lockfile path and platforms without F_OFD_SETLK could not be checked.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "revert:5daa50f962bd06e49af690efc2a8a27fdd37fb7d",
+      "kind": "revert",
+      "title": "Revert \"pg_resetwal: Improve error with wrong/missing data directory\"",
+      "status": "Reverted",
+      "date": "2023-09-29",
+      "first_date": "2023-09-28",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=5daa50f962bd06e49af690efc2a8a27fdd37fb7d",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/TYAPR01MB58664AD301F511B1EA5B72B4F5C0A@TYAPR01MB5866.jpnprd01.prod.outlook.com",
+        "https://www.postgresql.org/message-id/flat/0f3ab4a1-ae80-56e8-3426-6b4a02507687@eisentraut.org"
+      ],
+      "authors": "Peter Eisentraut",
+      "objectors": "",
+      "summary": "Revert \"pg_resetwal: Improve error with wrong/missing data directory\"\nReverted commit(s): pg_resetwal: Improve error with wrong/missing data directory",
+      "objection": "This reverts commit 1d863c250461410e60c9ed5d3180f32336f4c3e2.\n\nThis broke specifying the data directory as a relative path.",
+      "touch_points": [],
+      "matched_queries": [
+        "data directory lockfile fcntl lock",
+        "flock data directory interlock",
+        "containers same data directory two postmasters"
+      ],
+      "from_hint": false,
+      "score": 0.378,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:2018",
+      "kind": "cf",
+      "title": "pg_basebackup to adjust existing data directory permissions",
+      "status": "Returned with feedback",
+      "date": "2019-11-27",
+      "first_date": "2019-02-12",
+      "url": "https://commitfest.postgresql.org/patch/2018/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJrrPGdmQSbyRecDXe7gh-+En0qE1uJ2WbCOYjoDin3gOSH2wQ@mail.gmail.com"
+      ],
+      "authors": "Haribabu Kommi (haribabu)",
+      "objectors": "Peter Eisentraut, David Steele",
+      "summary": "pg_basebackup was proposed to change the permissions of an existing target data directory to the required permissions, as initdb does, so that the postmaster can start on the resulting backup. The discussion later extended this to a -g {inherit|none|group} option controlling group access on the backup, including changes to BASE_BACKUP so that tar-mode backups carry the chosen permissions.",
+      "objection": "Reviewers did not agree on the desired behavior. Peter Eisentraut and David Steele considered the proposed options too complicated for a problem the user can fix by changing permissions, while others wanted the current behavior changed; the author's tally showed support and opposition. Alvaro Herrera noted the discussion was inconclusive and the patch dormant, and after a further idle period the entry was closed as returned with little useful feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "data directory lockfile fcntl lock",
+        "flock data directory interlock",
+        "containers same data directory two postmasters"
+      ],
+      "from_hint": false,
+      "score": 0.378,
+      "enriched": true,
+      "key_quote": "There's been at lot of\ndiscussion but it doesn't seem conclusive; it doesn't look like we know\nwhat we actually want to do.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20190904201117.GA12986%40alvherre.pgsql",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "revert:da33a3894e0fc440ac53cdc0f2e360e703b13b8c",
+      "kind": "revert",
+      "title": "Revert exporting of internal GUC variable \"data_directory\".",
+      "status": "Reverted",
+      "date": "2015-05-29",
+      "first_date": "2010-12-03",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=da33a3894e0fc440ac53cdc0f2e360e703b13b8c",
+      "thread_urls": [],
+      "authors": "Robert Haas",
+      "objectors": "",
+      "summary": "Revert exporting of internal GUC variable \"data_directory\".\nReverted commit(s): Use GUC lexer for recovery.conf parsing.",
+      "objection": "This undoes a poorly-thought-out choice in commit 970a18687f9b3058, namely\nto export guc.c's internal variable data_directory.  The authoritative\nvariable so far as C code is concerned is DataDir; there is no reason for\nanything except specific bits of GUC code to look at the GUC variable.\n\nAfter yesterday's commits fixing the fsync-on-restart patch, the only\nremaining misuse of data_directory was in AlterSystemSetConfigFile(),\nwhich would be much better off just using a relative path anyhow: it's\nless code and it doesn't break if the DBA moves the data directory of a\nrunning system, which is a case we've taken some pains over in the past.\n\nThis is mostly cosmetic, so no need for a back-patch (and I'd be hesitant\nto remove a global variable in stable branches anyway).",
+      "touch_points": [
+        "new GUC",
+        "WAL / replication / standby",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "data directory lockfile fcntl lock",
+        "flock data directory interlock",
+        "containers same data directory two postmasters"
+      ],
+      "from_hint": false,
+      "score": 0.28,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:1343",
+      "kind": "cf",
+      "title": "Restrict pg_rewind to specified/needed directories",
+      "status": "Returned with feedback",
+      "date": "2018-02-01",
+      "first_date": "2017-10-28",
+      "url": "https://commitfest.postgresql.org/patch/1343/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAN-RpxDPE4baiMMJ6TLd6AiUvrG=YrC05tGxrgp4aUutH9j5TQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAN-RpxD1Mg4KAhPBx8x9sFmeVizdY1aJvv0iE25m6dKUNG_H8g@mail.gmail.com"
+      ],
+      "authors": "Chris Travers (einhverfr)",
+      "objectors": "Michael Paquier, David Steele, Stephen Frost",
+      "summary": "The patch makes pg_rewind synchronize only a fixed list of directories (base, global, pg_wal, pg_xact and other WAL-related directories), so it no longer copies logs, replication slots or configuration files from the source. The list of files is fetched with one query per listed directory.",
+      "objection": "Reviewers objected to an include list: a directory missing from it, such as one added by a new feature or an extension, can make a rewind silently corrupt. They asked pg_rewind to reuse the exclude list that base backups already use, by moving it to common code, and to add an option for more exclusions. The patch stayed in Waiting on Author, and Michael Paquier returned it with feedback and said he would work on the exclude-list approach himself.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "data directory lockfile fcntl lock",
+        "flock data directory interlock",
+        "containers same data directory two postmasters"
+      ],
+      "from_hint": false,
+      "score": 0.279,
+      "enriched": true,
+      "key_quote": "Forgetting something in the\nexclusion list just makes the process less efficient while forgetting\nsomething in the inclusion list may mean breakage.",
+      "quote_message_url": "https://www.postgresql.org/message-id/b984796f-3177-67c7-a09b-0050d3440ef0%40pgmasters.net",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:4165",
+      "kind": "cf",
+      "title": "psql BACKEND_PID variable",
+      "status": "Rejected",
+      "date": "2023-03-18",
+      "first_date": "2023-02-03",
+      "url": "https://commitfest.postgresql.org/patch/4165/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFj8pRBaSVj-8yXcMwKaF7ABx1kYSyUHRM4BdLxoQwf0+RfGsw@mail.gmail.com"
+      ],
+      "authors": "Pavel Stehule (okbobcz)",
+      "objectors": "Tom Lane, Peter Eisentraut",
+      "summary": "Add a built-in psql variable BACKEND_PID, set from PQbackendPID() at connect time and unset when the connection is lost. The stated benefits were tab completion of :BACKEND_PID, listing in \\set, and no need to rerun pg_backend_pid() after a reconnect.",
+      "objection": "Tom Lane and Peter Eisentraut held that the variable duplicates pg_backend_pid() and the %p prompt escape without making a real task easier. Tom Lane noted that while a slow query runs, the variable cannot be read any more than the function can be run. He also said each new built-in variable adds clutter. Andrew Dunstan moved the entry from Ready for Committer to Rejected, citing these comments, and the author agreed.",
+      "touch_points": [
+        "psql"
+      ],
+      "matched_queries": [
+        "PID namespace postmaster.pid",
+        "stale lockfile PID reuse"
+      ],
+      "from_hint": false,
+      "score": 0.269,
+      "enriched": true,
+      "key_quote": "I don't buy Pavel's argument that adding Yet Another built-in variable\nadds ease of use.  I think what it mostly adds is clutter.",
+      "quote_message_url": "https://www.postgresql.org/message-id/1267548.1676310743%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "revert:5035c93c8a5ac6804da79c67403460348b381924",
+      "kind": "revert",
+      "title": "Remove pgpid_t type, use pid_t instead",
+      "status": "Partially reverted",
+      "date": "2022-10-22",
+      "first_date": "2004-06-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=5035c93c8a5ac6804da79c67403460348b381924",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/289c2e45-c7d9-5ce4-7eff-a9e2a33e1580@enterprisedb.com"
+      ],
+      "authors": "Bruce Momjian",
+      "objectors": "",
+      "summary": "Remove pgpid_t type, use pid_t instead\nReverted commit(s): Add pgpid_t for use with pids.",
+      "objection": "It's unclear why a separate type would be needed here.  We use plain\npid_t (or int) everywhere else.\n\n(The only relevant platform where pid_t is not int is 64-bit MinGW,\nwhere it is long long int.  So defining pid_t as long (which is 32-bit\non Windows), as was done here, doesn't even accommodate that one.)\n\nReverts 66fa6eba5a61be740a6c07de92c42221fae79e9c.",
+      "touch_points": [],
+      "matched_queries": [
+        "PID namespace postmaster.pid",
+        "stale lockfile PID reuse"
+      ],
+      "from_hint": false,
+      "score": 0.243,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:1133",
+      "kind": "cf",
+      "title": "Moving relation extension locks out of heavyweight lock manager",
+      "status": "Returned with feedback",
+      "date": "2018-03-30",
+      "first_date": "2017-05-11",
+      "url": "https://commitfest.postgresql.org/patch/1133/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAD21AoCmT3cFQUN4aVvzy5chw7DuzXrJCbrjTU05B+Ss=Gn1LA@mail.gmail.com"
+      ],
+      "authors": "Masahiko Sawada (masahikosawada)",
+      "objectors": "Andres Freund",
+      "summary": "Move relation extension locks out of the heavyweight lock manager into a separate lightweight mechanism in shared memory, because these locks need neither multiple lock modes nor deadlock detection. The first draft used a shared hash table of LWLocks; later versions used a fixed-size array of lock entries (N_RELEXTLOCK_ENTS) indexed by a hash of the relation, so a backend can find and reuse a lock's address without a mapping lock.",
+      "objection": "Benchmarks showed regressions of up to 25% when different relations hashed to the same lock entry. Andres Freund was not convinced that such false collisions would be rare, citing partitioning and the birthday paradox, and doubted that a larger array would fix it. Robert Haas argued that removing collisions would require a mapping lock and extra atomic operations on every extension, and the question was not resolved. The thread then went quiet, and Michael Paquier returned the entry because it seemed hard to reach a committable state for v11.",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "postmaster.pid file locking",
+        "advisory lock lock file NFS"
+      ],
+      "from_hint": false,
+      "score": 0.237,
+      "enriched": true,
+      "key_quote": "Also, birthday paradoxon and all that make collisions not that unlikely. And you really don't need a 16 way conflict to feel pain, you'll imo feel it earlier.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20180301191730.sttildbhwbkmdj2o%40alap3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:1666",
+      "kind": "cf",
+      "title": "Moving relation extension locks out of heavyweight lock manager",
+      "status": "Returned with feedback",
+      "date": "2018-12-01",
+      "first_date": "2017-05-11",
+      "url": "https://commitfest.postgresql.org/patch/1666/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAD21AoCmT3cFQUN4aVvzy5chw7DuzXrJCbrjTU05B+Ss=Gn1LA@mail.gmail.com"
+      ],
+      "authors": "Masahiko Sawada (masahikosawada)",
+      "objectors": "",
+      "summary": "Move relation extension locks out of the heavyweight lock manager into a shared hash table of LWLock-like entries that are looked up per relation. The patch targeted lower overhead and future parallel utility commands such as parallel vacuum.",
+      "objection": "The author withdrew the patch in November 2018 after it no longer applied and needed a rebase. His parallel vacuum work had narrowed to parallel index vacuum, which does not need this change. Earlier in the thread, reviewers raised interruptibility and deadlock concerns, and a March 2018 commitfest closed the entry for lack of activity. The visible messages do not show these concerns as the deciding reason.",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "postmaster.pid file locking",
+        "advisory lock lock file NFS"
+      ],
+      "from_hint": false,
+      "score": 0.22,
+      "enriched": true,
+      "key_quote": "Therefore, I want to withdraw this patch and to reactivate when we need this enhancement.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAD21AoC09aMjvA0i0w3uQscAYwN_788gYFie9UTkGskHMv%3D1Tg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "revert:890d2182a2c425aaa80f9bf9f7116d31e0c6538e",
+      "kind": "revert",
+      "title": "Revert \"Display the time when the process started waiting for the lock, in pg_locks.\"",
+      "status": "Reverted",
+      "date": "2021-02-09",
+      "first_date": "2021-02-09",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=890d2182a2c425aaa80f9bf9f7116d31e0c6538e",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/a96013dc51cdc56b2a2b84fa8a16a993@oss.nttdata.com"
+      ],
+      "authors": "Fujii Masao",
+      "objectors": "",
+      "summary": "Revert \"Display the time when the process started waiting for the lock, in pg_locks.\"\nReverted commit(s): Display the time when the process started waiting for the lock, in pg_locks.",
+      "objection": "This reverts commit 3b733fcd04195399db56f73f0616b4f5c6828e18.\n\nPer buildfarm members prion and rorqual.",
+      "touch_points": [],
+      "matched_queries": [
+        "postmaster.pid file locking",
+        "advisory lock lock file NFS"
+      ],
+      "from_hint": false,
+      "score": 0.214,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:5710",
+      "kind": "cf",
+      "title": "Patch for migration of the pg_commit_ts directory",
+      "status": "Withdrawn",
+      "date": "2025-10-15",
+      "first_date": "2025-04-03",
+      "url": "https://commitfest.postgresql.org/patch/5710/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/182311743703924@mail.yandex.ru"
+      ],
+      "authors": "Sergey Levin (lsv)",
+      "objectors": "",
+      "summary": "pg_upgrade would copy the old cluster's pg_commit_ts directory to the new cluster when track_commit_timestamp = on, and set oldestCommitTsXid and newestCommitTsXid in the new cluster's control data. Later versions also check that the new cluster has track_commit_timestamp enabled and add a TAP test.",
+      "objection": "The visible messages do not show why. The last messages show reviewers approving the patch and Maxim Orlov offering to mark it ready for committer, and the entry was withdrawn the same day with no stated reason.",
+      "touch_points": [],
+      "matched_queries": [
+        "data directory lockfile fcntl lock",
+        "flock data directory interlock"
+      ],
+      "from_hint": false,
+      "score": 0.213,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:3220",
+      "kind": "cf",
+      "title": "Speed up LockReleaseAll",
+      "status": "Returned with feedback",
+      "date": "2021-12-03",
+      "first_date": "2021-06-30",
+      "url": "https://commitfest.postgresql.org/patch/3220/",
+      "thread_urls": [],
+      "authors": "David Rowley (davidrowley)",
+      "objectors": "",
+      "summary": "Speed up LockReleaseAll",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "postmaster.pid file locking",
+        "advisory lock lock file NFS"
+      ],
+      "from_hint": false,
+      "score": 0.203,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:1334",
+      "kind": "cf",
+      "title": "Lockable views",
+      "status": "Returned with feedback",
+      "date": "2017-11-29",
+      "first_date": "2017-10-11",
+      "url": "https://commitfest.postgresql.org/patch/1334/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20171011183629.eb2817b3.nagata@sraoss.co.jp"
+      ],
+      "authors": "Yugo Nagata (yugo.nagata)",
+      "objectors": "Robert Haas, Michael Paquier",
+      "summary": "The patch lets LOCK TABLE work on automatically updatable views without INSTEAD OF rules or triggers. Locking such a view also locks its base relation, recursively through nested views.",
+      "objection": "Robert Haas questioned the core behavior and expected LOCK TABLE on a view to lock only the view, pointing to earlier discussion. Michael Paquier agreed and returned the patch because the author had not replied to that objection for one month.",
+      "touch_points": [],
+      "matched_queries": [
+        "postmaster.pid file locking",
+        "advisory lock lock file NFS"
+      ],
+      "from_hint": false,
+      "score": 0.17,
+      "enriched": true,
+      "key_quote": "I would have expected LOCK TABLE v to lock the view and nothing else.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoa2ywTctLxnzq4QPpJQeAuGCSam6Y4Q52vFEbcf2KvF4Q%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:3503",
+      "kind": "cf",
+      "title": "pg_receivewal fail to streams when the partial file to write is not fully initialized present in the wal receiver directory",
+      "status": "Returned with feedback",
+      "date": "2024-01-22",
+      "first_date": "2022-01-03",
+      "url": "https://commitfest.postgresql.org/patch/3503/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHg+QDcVUss6ocOmbLbV5f4YeGLhOCt+1x2yLNfG2H_eDwU8tw@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy), SATYANARAYANA NARLAPURAM (satyanarayanan)",
+      "objectors": "Peter Smith",
+      "summary": "pg_receivewal fails to start when a leftover .partial segment is not fully zero-padded, for example after ENOSPC or a VM crash, so the user must delete the file by hand. The patch writes and pads a new segment under a temporary name, then renames it to the .partial name, and removes any leftover temporary file on the next call.",
+      "objection": "The entry stalled. After v9 in October 2022 no reviewer responded for more than 15 months, so Peter Smith returned it with feedback, citing low interest. Earlier, Michael Paquier said the fix does nothing for gzip or lz4 segments and that the real need is to reserve disk space for a full segment. He also asked why a temporary file is needed when the .partial file already serves that role. The visible messages do not show whether v9 answered these points.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "data directory lockfile fcntl lock",
+        "flock data directory interlock"
+      ],
+      "from_hint": false,
+      "score": 0.169,
+      "enriched": true,
+      "key_quote": "Since there seems not much interest, I have changed the status to \"Returned with Feedback\" [1].",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAHut%2BPv_oSdPp09ef2HwMCH-dA8mzAtCro%2BQ9NBn2j3WHCMdzA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:1480",
+      "kind": "cf",
+      "title": "Find additional connection service files in pg_service.conf.d directory",
+      "status": "Returned with feedback",
+      "date": "2018-09-30",
+      "first_date": "2018-01-12",
+      "url": "https://commitfest.postgresql.org/patch/1480/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMv20O9ZMcF7nZu-ZWhWDt5kOFTyWH0H6tGfyV=YLa1D4zqcag@mail.gmail.com"
+      ],
+      "authors": "Curt Tilmes (ctilmes)",
+      "objectors": "",
+      "summary": "Find additional connection service files in pg_service.conf.d directory\nThreads: [PATCH] Find additional connection service files in pg_service.conf.d directory",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "data directory lockfile fcntl lock",
+        "flock data directory interlock"
+      ],
+      "from_hint": false,
+      "score": 0.168,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:602",
+      "kind": "cf",
+      "title": "LOCK TABLE .. DEFERRABLE",
+      "status": "Returned with feedback",
+      "date": "2016-12-02",
+      "first_date": "2016-04-05",
+      "url": "https://commitfest.postgresql.org/patch/602/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKddOFDz0+F2uspVN5BZgtN7Wp+vQbeLuQPWfvGwap5JZvXPxQ@mail.gmail.com"
+      ],
+      "authors": "Rod Taylor (rbt)",
+      "objectors": "",
+      "summary": "LOCK TABLE .. DEFERRABLE\nThreads: LOCK TABLE .. DEFERRABLE",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "postmaster.pid file locking",
+        "advisory lock lock file NFS"
+      ],
+      "from_hint": false,
+      "score": 0.145,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:702",
+      "kind": "cf",
+      "title": "notice lock waits",
+      "status": "Returned with feedback",
+      "date": "2016-10-03",
+      "first_date": "2016-08-05",
+      "url": "https://commitfest.postgresql.org/patch/702/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMkU=1xGV=xEOYFeDmRxRXc1okzyGa+=J_7Brgi--MQO3Ej8XQ@mail.gmail.com"
+      ],
+      "authors": "Jeff Janes (jjanes)",
+      "objectors": "",
+      "summary": "notice lock waits\nThreads: Notice lock waits",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "postmaster.pid file locking",
+        "advisory lock lock file NFS"
+      ],
+      "from_hint": false,
+      "score": 0.145,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:4420",
+      "kind": "cf",
+      "title": "Unified file access using virtual file descriptors",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2023-06-29",
+      "url": "https://commitfest.postgresql.org/patch/4420/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/BYAPR13MB2677936EF82457FFA311626FA025A@BYAPR13MB2677.namprd13.prod.outlook.com"
+      ],
+      "authors": "John Morris (coyotebush)",
+      "objectors": "",
+      "summary": "Unified file access using virtual file descriptors\nThreads: Unified File API",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "open file description locks"
+      ],
+      "from_hint": false,
+      "score": 0.144,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:3784",
+      "kind": "cf",
+      "title": "Reuse Workers and Replication Slots during Logical Replication",
+      "status": "Returned with feedback",
+      "date": "2024-01-10",
+      "first_date": "2022-07-05",
+      "url": "https://commitfest.postgresql.org/patch/3784/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGPVpCTq=rUDd4JUdaRc1XUWf4BrH2gdSNf3rtOMUGj9rPpfzQ@mail.gmail.com"
+      ],
+      "authors": "Melih Mutlu (melihmutlu)",
+      "objectors": "",
+      "summary": "Reuse Workers and Replication Slots during Logical Replication\nThreads: [PATCH] Reuse Workers and Replication Slots during Logical Replication",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "stale lockfile PID reuse"
+      ],
+      "from_hint": false,
+      "score": 0.144,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "revert:befa3e648ce018d84cd2a0df701927c56fe3da4e",
+      "kind": "revert",
+      "title": "Revert 9.5 pgindent changes to atomics directory files",
+      "status": "Reverted",
+      "date": "2015-05-25",
+      "first_date": "2015-05-25",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=befa3e648ce018d84cd2a0df701927c56fe3da4e",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert 9.5 pgindent changes to atomics directory files",
+      "objection": "This is because there are many __asm__ blocks there that pgindent messes\nup.  Also configure pgindent to skip that directory in the future.",
+      "touch_points": [],
+      "matched_queries": [
+        "data directory lockfile fcntl lock",
+        "flock data directory interlock"
+      ],
+      "from_hint": false,
+      "score": 0.143,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:805",
+      "kind": "cf",
+      "title": "Contains and is contained by operators of inet datatypes",
+      "status": "Rejected",
+      "date": "2016-11-30",
+      "first_date": "2016-10-03",
+      "url": "https://commitfest.postgresql.org/patch/805/",
+      "thread_urls": [],
+      "authors": "Emre Hasegeli (hasegeli)",
+      "objectors": "",
+      "summary": "Contains and is contained by operators of inet datatypes",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "containers same data directory two postmasters"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:4212",
+      "kind": "cf",
+      "title": "some namespace.c refactoring",
+      "status": "Returned with feedback",
+      "date": "2024-01-26",
+      "first_date": "2023-02-14",
+      "url": "https://commitfest.postgresql.org/patch/4212/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/12f1b1d2-f8cf-c4a2-72ec-441bd79546cb@enterprisedb.com"
+      ],
+      "authors": "Peter Eisentraut (petere)",
+      "objectors": "",
+      "summary": "some namespace.c refactoring\nThreads: some namespace.c refactoring",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "PID namespace postmaster.pid"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:5987",
+      "kind": "cf",
+      "title": "Add OID descriptions to dumped parse/query/plan trees",
+      "status": "Withdrawn",
+      "date": "2025-08-25",
+      "first_date": "2025-08-22",
+      "url": "https://commitfest.postgresql.org/patch/5987/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/e0922caf-b9d8-4c2a-a670-4a82226d59d6@gmail.com"
+      ],
+      "authors": "Chao Li (chaol)",
+      "objectors": "",
+      "summary": "Add OID descriptions to dumped parse/query/plan trees\nThreads: Add OID descriptions to dumped parse/query/plan trees",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "open file description locks"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "revert:ed7bb5c311ce059294807cf4abfa9406d95feec0",
+      "kind": "revert",
+      "title": "Revert test added by commit d207038053.",
+      "status": "Reverted",
+      "date": "2020-01-14",
+      "first_date": "2020-01-02",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ed7bb5c311ce059294807cf4abfa9406d95feec0",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAA4eK1LHhERi06Q+MmP9qBXBBboi+7WV3910J0aUgz71LcnKAw@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/6485.1578583522@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CAJ3gD9c-sECEn79zXw4yBnBdOttacoE-6gAyP0oy60nfs_sabQ@mail.gmail.com"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Revert test added by commit d207038053.\nReverted commit(s): Fix running out of file descriptors for spill files.",
+      "objection": "This test was trying to test the mechanism to release kernel FDs as needed\nto get us under the max_safe_fds limit in case of spill files.  To do that,\nit needs to set max_files_per_process to a very low value which doesn't\neven permit starting of the server in the case when there are a few already\nopened files.  This test also won't work on platforms where we use one FD\nper semaphore.\n\nhttps://postgr.es/m/CAA4eK1LHhERi06Q+MmP9qBXBBboi+7WV3910J0aUgz71LcnKAw@mail.gmail.com\nhttps://postgr.es/m/6485.1578583522@sss.pgh.pa.us",
+      "touch_points": [],
+      "matched_queries": [
+        "open file description locks"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:5088",
+      "kind": "cf",
+      "title": "Doc: Improve hostssl related descriptions and option presentation",
+      "status": "Withdrawn",
+      "date": "2025-02-27",
+      "first_date": "2024-02-01",
+      "url": "https://commitfest.postgresql.org/patch/5088/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKFQuwa=iY13UkH2K4-Srut9iaXBi2FkLzWRxbok+mdSMPEDuA@mail.gmail.com"
+      ],
+      "authors": "David Johnston (polobo)",
+      "objectors": "",
+      "summary": "Doc: Improve hostssl related descriptions and option presentation\nThreads: [Doc] Improve hostssl related descriptions and option presentation",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "open file description locks"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 3,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 0
+  },
+  "precedent_cutoff": "2025-12-19",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found in the list, and message #1 and the commit message name only portability and NFS as past reasons, which the best-effort design on top of the PID check addresses. The thread gives no links to those earlier discussions, so other past reasons cannot be checked from the material."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "No SQL, GUC, pg_dump or psql surface is involved. The objections cover lock lifetime and the stable target only."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 2,
+      "note": "The patch changes no WAL, catalog, on-disk relation format or wire protocol. Its persistent state is the lockfiles and the lifetime of the inherited fds."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal adds no new privilege or exposure. The lockfiles are created mode 0600 by the server OS user, so no other local user can open them and hold the OFD lock. Children that inherit the lock fd, such as archive_command or COPY PROGRAM, already run as the server OS user and could open postmaster.pid anyway, so they gain no access. A long-lived inherited fd blocking restart is an availability and design question for another angle. If locking fails, the server behaves as it does today."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "Three objections from the maintenance angle. None is fatal. The basic idea, a best-effort OFD lock on top of the PID check, is small and is limited to startup."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing Postgres feature closes this gap. The postmaster.pid PID check and the SysV shared memory check in the lockfile are both scoped to a namespace, so a postmaster in a separate PID and IPC namespace passes both, as message #3 shows. An entrypoint wrapper such as flock(1) could take the same lock outside core, but only users who know about the risk would add it. The users in message #1 hit the problem through misconfiguration, so they would not add it. That makes the wrapper a partial idea rather than an equal alternative. A Kubernetes access mode is not raised here, because I cannot confirm that it covers the forced-termination case."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "No demand objection survives. The failure is two postmasters writing one data directory, which corrupts data. Message #1 reports it in the field with Kubernetes ReadWriteOnce volumes, and the reviewer reproduced it in message #3. The fix adds no GUC or syntax, and users without the problem see no change unless another server holds the lock. The thread gives no count of field reports, but for a cheap interlock that prevents corruption that would not justify a 'not now'."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 9,
+      "new_objections": 7,
+      "new_survived": 2,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "synthesis said NEEDS-COMMITTER-EYES but listed a level 1b objection (replication-ondisk-2); changed to NEEDS-DESIGN-DISCUSSION"
+  ],
+  "tone_lint": {
+    "fields_checked": 82,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 16,
+    "wall_ms": 143002,
+    "cost_usd": 2.0238408,
+    "dry_run": false
+  }
+}

@@ -1,0 +1,1425 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:43:48.646Z",
+  "input": {
+    "arg": "6137",
+    "cf": {
+      "id": 6137,
+      "url": "https://commitfest.postgresql.org/patch/6137/",
+      "title": "postgres_fdw: Use COPY to speed up batch inserts",
+      "status": "Needs review",
+      "authors": "Matheus Alcantara (matheus.alcantara)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/DDIZJ217OUDK.2R5WE4OGL5PTY%40gmail.com",
+    "subject": "postgres_fdw: Use COPY to speed up batch inserts",
+    "thread_start": "2025-10-15T15:02:01Z",
+    "messages_read": 37,
+    "messages_total": 37,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v15-0001-Extract-CopyEscapeText-for-reuse-outside-COPY-TO.patch",
+      "v15-0002-postgres_fdw-Use-COPY-as-remote-SQL-when-possibl.patch",
+      "v1-0001-postgres_fdw-Use-COPY-to-speed-up-batch-inserts.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The goal has support from several reviewers, but demand-1 survives at level 1b. The only whole-file benchmark (message #36) shows v14 and v16 about twice as slow as HEAD, and only a variant that keeps COPY IN open was faster. Message #35 rejected that variant for connection sharing, and no reply reconciles the two. The benefit of the design as proposed is not yet shown, so design objections were not ranked.",
+  "failing_level": "1b",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "failed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "not_evaluated"
+    }
+  ],
+  "brief": {
+    "title": "postgres_fdw: use remote COPY for COPY FROM into foreign tables",
+    "problem": "postgres_fdw sends batches to the remote server as prepared INSERT statements, even when the user runs COPY FROM on a foreign table. The author says remote COPY is faster for large batch loads into postgres_fdw tables.",
+    "proposed_design": "The latest version (v16) adds an optional FdwRoutine callback, ExecForeignBatchCopy, which CopyFrom() calls for each buffered batch when the target is a foreign table or foreign partition and batch_size > 1. postgres_fdw runs a self-contained COPY ... FROM STDIN in text format per call. It falls back to batch INSERT when the target has AFTER ROW triggers, and a refactor exposes CopyEscapeText() for reuse.",
+    "user_visible_surface": [
+      "New optional FDW API callback ExecForeignBatchCopy(estate, rinfo, slots, numSlots) in fdwapi.h, documented in the FDW docs.",
+      "New public function CopyEscapeText() and macros CopySendDataBuf() and CopySendCharBuf() in commands/copy.h.",
+      "postgres_fdw sends COPY ... FROM STDIN to the remote server, so remote logs and remote triggers that check current_query() see COPY.",
+      "Earlier versions added the table and server options use_copy_for_insert, use_copy_for_batch_insert and batch_with_copy_threshold; v16 drops them."
+    ],
+    "author_claims": [
+      "COPY FROM into a foreign table with 100 rows runs about twice as fast at batch_size 100 and 1000 (v14 numbers).",
+      "Self-contained COPY per batch lets foreign partitions share one cached connection and lets other queries run on it between batches.",
+      "With batch_size = 1, per-row COPY is slower than INSERT, so the patch keeps row-by-row INSERT then.",
+      "A dedicated callback could later support user-chosen COPY options and BeginForeignCopy/EndForeignCopy."
+    ],
+    "thread_state": "Masahiko Sawada reviewed several versions and agreed off-list to the dedicated callback design; Kirill Reshke benchmarked v14 and v16, found them about 2 times slower than HEAD across VMs without connection-level COPY caching, and reported uncancellable COPY. The CommitFest entry needs a rebase and no one has replied to Kirill.",
+    "unclear": [
+      "Whether v16 handles Kirill's report that a COPY in progress cannot be cancelled and loops in pgfdw_get_cleanup_result.",
+      "How the author answers Kirill's numbers showing v16 slower than HEAD, and whether keeping COPY IN open across batches conflicts with connection sharing.",
+      "Whether remote BEFORE ROW triggers that change rows are handled; Solaimurugan asked and got no answer.",
+      "Whether batch_size above 1000 has any effect, since CopyMultiInsertBuffer caps batches at 1000.",
+      "No v16 documentation hunk is shown, so the docs text for the callback and for batch_size is unknown."
+    ],
+    "search_queries": [
+      "postgres_fdw COPY batch insert",
+      "postgres_fdw bulk load COPY FROM",
+      "FDW API COPY callback",
+      "ExecForeignBatchInsert COPY",
+      "foreign table COPY FROM performance",
+      "BeginForeignCopy ExecForeignCopy",
+      "postgres_fdw batch_size COPY protocol",
+      "postgres_fdw remote COPY FROM STDIN"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Only independent benchmark shows v16 slower than HEAD for COPY FROM",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "desirability",
+      "touch_points": [
+        "hot_path_performance",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user loading a large file with `COPY ft FROM` into a postgres_fdw table with batch_size set upgrades and expects a faster load. In Kirill's two-VM setup the load of 1M rows takes about twice as long as on HEAD. The user finds out on the first production load.",
+      "argument": "The author's speedup numbers (message #31) come from pgbench running COPY of 100 rows per transaction. Kirill measured COPY of whole files in message #36: v14 and v16 were slower than HEAD on local and cross-AZ VMs, and only his draft connection-level COPY caching made it faster. That caching keeps COPY IN open across batches, which message #35 rejected because of connection sharing. No reply to message #36 is visible, so the user benefit of the design as proposed is not shown.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        31,
+        35,
+        36
+      ],
+      "author_must_show": "For a bulk COPY FROM of a large file across a real network, is v16 faster than HEAD, and if only with persistent COPY IN, how does that work with shared connections?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 31,
+          "from": "\"Matheus Alcantara\"",
+          "date": "2026-04-07T21:00:56Z",
+          "url": "https://www.postgresql.org/message-id/DHN84NSGBYYO.123WDP7K8D21D%40gmail.com"
+        },
+        {
+          "index": 35,
+          "from": "Matheus Alcantara",
+          "date": "2026-08-05T21:33:15Z",
+          "url": "https://www.postgresql.org/message-id/CAFY6G8ekRx2U9Bno7ft9fTkth2HX1rA9GKNVnJtqn%3D2X76Xcyw%40mail.gmail.com"
+        },
+        {
+          "index": 36,
+          "from": "Kirill Reshke",
+          "date": "2026-09-09T20:10:37Z",
+          "url": "https://www.postgresql.org/message-id/CALdSSPho7cJBAtNnHJLpCz_zOAqA%3DhQz%3DK125zpSORKaW%3DJA5g%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The goal has support in message #2, but the only whole-file measurements (message #36) show v14 and v16 slower than HEAD. The author's numbers use 100-row COPY in pgbench, and no reply addresses the difference.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "Remote COPY silently replaces INSERT, with different semantics on the remote side",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "sql_standard_syntax",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user has a postgres_fdw table with batch_size = 100 that points at a remote auto-updatable view, at a table with row-level security, or at a table with INSERT rules. After the upgrade, a nightly `copy ft from ...` that worked fails with a remote COPY error, or skips the remote rules. The user finds out when the load job breaks.",
+      "argument": "Remote COPY FROM is not INSERT. It rejects tables where row-level security applies to the user, rejects views that have no INSTEAD OF INSERT trigger, and ignores rules. Message #17 says that switching all COPY FROM to remote COPY \"can cause breaking changes\", and v5 through v14 kept an opt-in table and server option for that reason. v16 drops the option, so every existing setup with batch_size > 1 changes behaviour on upgrade, and the user cannot turn it off.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        13,
+        17,
+        18,
+        35
+      ],
+      "author_must_show": "How does v16 handle remote targets that accept INSERT but reject or treat COPY differently, and why is there no option to keep the INSERT path?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 13,
+          "from": "\"Matheus Alcantara\"",
+          "date": "2025-11-06T23:49:37Z",
+          "url": "https://www.postgresql.org/message-id/DE20J06SWW40.IN0FOXQSFUEA%40gmail.com"
+        },
+        {
+          "index": 17,
+          "from": "\"Matheus Alcantara\"",
+          "date": "2025-11-26T20:51:36Z",
+          "url": "https://www.postgresql.org/message-id/DEIX9LJ0S9KG.19VG2P7S0I793%40gmail.com"
+        },
+        {
+          "index": 18,
+          "from": "\"Matheus Alcantara\"",
+          "date": "2025-12-11T12:03:23Z",
+          "url": "https://www.postgresql.org/message-id/DEVDFCCDBMBS.X39YHQNM1HFJ%40gmail.com"
+        },
+        {
+          "index": 35,
+          "from": "Matheus Alcantara",
+          "date": "2026-08-05T21:33:15Z",
+          "url": "https://www.postgresql.org/message-id/CAFY6G8ekRx2U9Bno7ft9fTkth2HX1rA9GKNVnJtqn%3D2X76Xcyw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Remote COPY FROM does reject RLS-restricted tables and plain views, and it skips rules, while remote INSERT accepts them. Message #35 lists only the AFTER ROW trigger fallback and v16 has no opt-out, so the upgrade scenario stands.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "Abort cleanup does not handle a remote connection left in COPY IN",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "wire_protocol",
+      "touch_points": [
+        "wire_protocol"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user cancels a long `copy ft from` with v16, or a row fails partway through a batch. pgfdw_abort_cleanup keeps looping in pgfdw_get_cleanup_result because the connection is still in COPY_IN state. The backend neither finishes nor accepts a cancel, and an operator has to terminate it.",
+      "argument": "Each ExecForeignBatchCopy call puts the cached remote connection into COPY_IN mode. The design says the connection is idle between calls (message #35), but it does not say how an error or a cancel inside a call ends COPY_IN, for example through PQputCopyEnd with an error message. Kirill reproduced the hang with both v14 and v16 and posted a backtrace (message #36), and message #3 reported a similar loop as early as v1. No later message answers this.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        35,
+        36
+      ],
+      "author_must_show": "What does the v16 transaction-abort and cancel path do to end an open COPY IN on the remote connection, and is there a test for it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Jakub Wartak",
+          "date": "2025-10-17T09:28:44Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmyMRYDMUdssdeBp3WRM0qB37jEeCd-0kSOxtemMLCAOiA%40mail.gmail.com"
+        },
+        {
+          "index": 35,
+          "from": "Matheus Alcantara",
+          "date": "2026-08-05T21:33:15Z",
+          "url": "https://www.postgresql.org/message-id/CAFY6G8ekRx2U9Bno7ft9fTkth2HX1rA9GKNVnJtqn%3D2X76Xcyw%40mail.gmail.com"
+        },
+        {
+          "index": 36,
+          "from": "Kirill Reshke",
+          "date": "2026-09-09T20:10:37Z",
+          "url": "https://www.postgresql.org/message-id/CALdSSPho7cJBAtNnHJLpCz_zOAqA%3DhQz%3DK125zpSORKaW%3DJA5g%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #36 gives a backtrace of the loop in pgfdw_get_cleanup_result with v14 and v16, and no later message answers it. The brief lists this as open, and message #35 does not say how an error or cancel ends COPY_IN.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "New FDW callback is shaped around a design measured slower than HEAD",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden",
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Core ships ExecForeignBatchCopy with one self-contained COPY per batch, and third-party FDWs implement it. A later release adds BeginForeignCopy/EndForeignCopy to keep COPY IN open across batches, which Kirill found to be the fast case. Those FDWs then need code changes, and core keeps both call paths in CopyFrom().",
+      "argument": "Message #35 calls v16 a PoC and already plans BeginForeignCopy/EndForeignCopy and user COPY options. In message #36, v16 is about twice as slow as HEAD across two VMs, and only the cached-connection variant beats HEAD. No reply in the thread reconciles that result with the connection-sharing reason given in message #35. A committer would likely ask that the callback set be settled before a public FDW API is frozen around the variant that loses.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        35,
+        36
+      ],
+      "author_must_show": "Which callback set covers both connection sharing and a COPY IN kept open across batches, and does v16 beat HEAD between two hosts?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 35,
+          "from": "Matheus Alcantara",
+          "date": "2026-08-05T21:33:15Z",
+          "url": "https://www.postgresql.org/message-id/CAFY6G8ekRx2U9Bno7ft9fTkth2HX1rA9GKNVnJtqn%3D2X76Xcyw%40mail.gmail.com"
+        },
+        {
+          "index": 36,
+          "from": "Kirill Reshke",
+          "date": "2026-09-09T20:10:37Z",
+          "url": "https://www.postgresql.org/message-id/CALdSSPho7cJBAtNnHJLpCz_zOAqA%3DhQz%3DK125zpSORKaW%3DJA5g%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #35 calls v16 a PoC and already plans BeginForeignCopy/EndForeignCopy, and message #36 shows only the open-COPY variant beating HEAD. Masahiko Sawada's off-list agreement lowers the weight, but the thread does not settle the callback set.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "New FDW callback duplicates ExecForeignBatchInsert for one caller",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch changes how CopyFrom() flushes batches, for example the 1000-row buffer cap or the trigger rules, and updates only the ExecForeignBatchInsert path. ExecForeignBatchCopy then behaves differently for FDWs that implement it. Nothing fails at build time, so users see it only when one FDW loads rows differently.",
+      "argument": "Versions v10 to v15 (messages #24, #33) did remote COPY inside postgres_fdw alone, by detecting a COPY caller in BeginForeignInsert, with no core API change. v16 (message #35) adds a second batch callback with almost the same signature as ExecForeignBatchInsert, plus a separate dispatch loop in CopyFrom() (message #37). The author justifies it by future COPY options and BeginForeignCopy/EndForeignCopy, but neither is implemented yet. A committer would likely ask whether a flag passed to BeginForeignInsert, saying the caller is COPY, would give the FDW the same information at lower API cost.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        24,
+        33,
+        35,
+        37
+      ],
+      "author_must_show": "What can ExecForeignBatchCopy do that ExecForeignBatchInsert cannot, given a flag saying the caller is COPY FROM, and which FDW besides postgres_fdw needs it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 24,
+          "from": "\"Matheus Alcantara\"",
+          "date": "2026-01-29T14:02:45Z",
+          "url": "https://www.postgresql.org/message-id/DG14NFEZD6M8.QIUMWJP9OCA6%40gmail.com"
+        },
+        {
+          "index": 33,
+          "from": "\"Matheus Alcantara\"",
+          "date": "2026-05-27T23:22:47Z",
+          "url": "https://www.postgresql.org/message-id/DITUGI3X54S8.346G3XFY7DRDK%40gmail.com"
+        },
+        {
+          "index": 35,
+          "from": "Matheus Alcantara",
+          "date": "2026-08-05T21:33:15Z",
+          "url": "https://www.postgresql.org/message-id/CAFY6G8ekRx2U9Bno7ft9fTkth2HX1rA9GKNVnJtqn%3D2X76Xcyw%40mail.gmail.com"
+        },
+        {
+          "index": 37,
+          "from": "Kirill Reshke",
+          "date": "2026-09-09T20:16:16Z",
+          "url": "https://www.postgresql.org/message-id/CALdSSPhi0ca0zEz3qTBYeCg-J%3DR72uc4dZF-_0XDf9U3q1RDPw%40mail.gmail.com"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Optional per-operation callbacks are existing FDW practice and a committer agreed to the design off-list, which lowers the weight. But message #35 justifies the callback only by features not yet implemented, so the question about a COPY flag stands.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Remote COPY rejects targets that remote INSERT accepts today",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wire_protocol",
+      "touch_points": [
+        "wire_protocol",
+        "security_privileges"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user has a foreign table whose remote object is an auto-updatable view, or a table with row-level security that applies to the mapped role. Today `copy ft from 'file'` with batch_size > 1 succeeds through remote INSERT. After upgrading the local server, the same load fails on the remote with an error such as \"cannot copy to view\", and the user finds out in production.",
+      "argument": "The remote server applies different rules to COPY FROM than to INSERT: plain views and RLS-restricted tables accept INSERT but reject COPY FROM. v16 switches automatically whenever batch_size > 1 and there are no AFTER ROW triggers (message #35). The opt-in options from earlier versions are gone, so no setting brings back the old behaviour. Message #27 covers local WITH CHECK OPTION views only, not remote views or remote RLS.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        27,
+        35
+      ],
+      "author_must_show": "How does v16 behave when the remote object is a view or an RLS-protected table, and what switch lets users keep remote INSERT?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 27,
+          "from": "Masahiko Sawada",
+          "date": "2026-03-03T19:47:19Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoBKc_Gzze2R1O7Y7K2pG37ivW4d0YxiFtnZqBd1OBukAg%40mail.gmail.com"
+        },
+        {
+          "index": 35,
+          "from": "Matheus Alcantara",
+          "date": "2026-08-05T21:33:15Z",
+          "url": "https://www.postgresql.org/message-id/CAFY6G8ekRx2U9Bno7ft9fTkth2HX1rA9GKNVnJtqn%3D2X76Xcyw%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1, which covers the same remote view and RLS cases and also rules.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Remote COPY in progress cannot be cancelled during abort cleanup",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A role with only INSERT on a foreign table runs a large COPY into it and then cancels it, or the COPY fails. The backend loops in pgfdw_get_cleanup_result while the connection is in COPY_IN state and does not respond to cancel. The DBA notices a stuck backend holding locks and a remote connection.",
+      "argument": "Message #36 reports that v14 and v16 COPY cannot be cancelled, with a stack trace in pgfdw_abort_cleanup. Message #3 reported a similar endless loop after an error in an earlier version. Abort cleanup in postgres_fdw does not handle the COPY_IN state, and v16 does not say how it does now. No reply to message #36 appears in the thread, so any role with INSERT on a foreign table can still trigger this.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        36
+      ],
+      "author_must_show": "How does v16 leave COPY_IN mode on cancel or error, and is there a test that cancels a remote COPY in progress?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Jakub Wartak",
+          "date": "2025-10-17T09:28:44Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmyMRYDMUdssdeBp3WRM0qB37jEeCd-0kSOxtemMLCAOiA%40mail.gmail.com"
+        },
+        {
+          "index": 36,
+          "from": "Kirill Reshke",
+          "date": "2026-09-09T20:10:37Z",
+          "url": "https://www.postgresql.org/message-id/CALdSSPho7cJBAtNnHJLpCz_zOAqA%3DhQz%3DK125zpSORKaW%3DJA5g%40mail.gmail.com"
+        }
+      ],
+      "id": "security-1",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-2. The privilege framing adds no separate failure, since the same hang is the whole scenario.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Remote tables with row-level security reject COPY FROM",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The user mapping connects as a role that is subject to RLS on the remote table. Today COPY into the foreign table works, because remote INSERT applies the policies. After upgrade, remote COPY FROM fails with \"COPY FROM not supported with row-level security\", and the load job breaks.",
+      "argument": "Postgres refuses COPY FROM for a role on which RLS is in force, but allows INSERT with policies applied. The v16 design switches to remote COPY whenever batch_size > 1 and there are no AFTER ROW triggers. Since v16 dropped use_copy_for_insert and the related options, users have no switch to turn this off. The thread does not discuss RLS on the remote side.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        35
+      ],
+      "author_must_show": "What happens when the remote role is subject to RLS, and will the patch fall back to INSERT or offer an option to turn remote COPY off?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 35,
+          "from": "Matheus Alcantara",
+          "date": "2026-08-05T21:33:15Z",
+          "url": "https://www.postgresql.org/message-id/CAFY6G8ekRx2U9Bno7ft9fTkth2HX1rA9GKNVnJtqn%3D2X76Xcyw%40mail.gmail.com"
+        }
+      ],
+      "id": "security-2",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1, which already includes the remote RLS case and the missing opt-out.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "postgres_fdw cleanup paths do not handle a connection left in COPY IN",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user cancels a large COPY into a foreign table. The backend loops in pgfdw_get_cleanup_result during abort and does not respond to the cancel. The user finds out when the session hangs and must be terminated.",
+      "argument": "Message #36 reports this hang with both v14 and v16 and traces it to the abort cleanup path in connection.c. Abort, cancel and connection-reuse code in connection.c assumes a connection is idle or running a query. The patch adds a COPY IN state that every later change to that file must also handle, and nothing fails loudly when a change misses it. No message after #36 says whether v16 fixes this.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        36
+      ],
+      "author_must_show": "How does each abort, cancel and connection-reuse path in connection.c handle a connection in COPY IN, and which test covers a cancel during a remote COPY?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Jakub Wartak",
+          "date": "2025-10-17T09:28:44Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmyMRYDMUdssdeBp3WRM0qB37jEeCd-0kSOxtemMLCAOiA%40mail.gmail.com"
+        },
+        {
+          "index": 36,
+          "from": "Kirill Reshke",
+          "date": "2026-09-09T20:10:37Z",
+          "url": "https://www.postgresql.org/message-id/CALdSSPho7cJBAtNnHJLpCz_zOAqA%3DhQz%3DK125zpSORKaW%3DJA5g%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-2. The added claim about future changes to connection.c names no concrete case beyond the same cancel hang.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "v16 adds the optional FdwRoutine callback ExecForeignBatchCopy and exports CopyEscapeText() in commands/copy.h."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "Remote COPY FROM treats row-level security, views and rules differently from the remote INSERT used today."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "A new public FDW callback and a COPY IN state that postgres_fdw abort and cancel code must handle."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "The patch changes how CopyFrom() flushes each batch to foreign tables, and message #36 measured it slower than HEAD."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "For COPY FROM of a large file between two hosts, is v16 faster than HEAD, and at which batch_size values?",
+    "If only a COPY IN kept open across batches beats HEAD, how does that work with foreign partitions that share one cached connection?",
+    "How does v16 end an open COPY IN on the remote connection when the user cancels or a row fails, and which test covers it?",
+    "What happens when the remote target is a view, has rules, or has row-level security for the mapped role, and how can users keep remote INSERT?",
+    "What can ExecForeignBatchCopy do that ExecForeignBatchInsert cannot, given a flag that says the caller is COPY FROM?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Masahiko Sawada reviewed several versions and agreed off-list to the callback design. The owner needs to know the FDW API, CopyFrom() batching and postgres_fdw connection cleanup.",
+    "liability": "A public FDW callback that third-party FDWs may implement and that is hard to change later. Also the COPY IN state in postgres_fdw abort and cancel handling, for as long as postgres_fdw exists.",
+    "author_follow_up": "The author posted 16 versions and moved the entry forward on 2026-10-01. The entry has needed a rebase since 2026-09-09 and message #36 has no reply."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "needs design rethink",
+    "reason": "Users who bulk load into postgres_fdw tables or foreign partitions would gain, and a committer is engaged. But the per-batch COPY design measured slower than HEAD in message #36, and the callback set is not settled, so more code review should wait."
+  },
+  "self_advice": [],
+  "provisional_note": "Only 3 of 37 messages and no v16 patch text were read, so the benchmark and cancel reports rest on the brief's summary of message #36. The four surviving level 2 objections were not evaluated because level 1b fails first.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "revert:8ec8760fc87ecde0516e511f1c55aec627b01ea7",
+      "kind": "revert",
+      "title": "Revert misguided change to postgres_fdw FOR UPDATE/SHARE code.",
+      "status": "Reverted",
+      "date": "2014-12-12",
+      "first_date": "2014-12-12",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=8ec8760fc87ecde0516e511f1c55aec627b01ea7",
+      "thread_urls": [],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert misguided change to postgres_fdw FOR UPDATE/SHARE code.\nReverted commit(s): Fix planning of SELECT FOR UPDATE on child table with partial index.",
+      "objection": "In commit 462bd95705a0c23ba0b0ba60a78d32566a0384c1, I changed postgres_fdw\nto rely on get_plan_rowmark() instead of get_parse_rowmark().  I still\nthink that's a good idea in the long run, but as Etsuro Fujita pointed out,\nit doesn't work today because planner.c forces PlanRowMarks to have\nmarkType = ROW_MARK_COPY for all foreign tables.  There's no urgent reason\nto change this in the back branches, so let's just revert that part of\nyesterday's commit rather than trying to design a better solution under\ntime pressure.\n\nAlso, add a regression test case showing what postgres_fdw does with FOR\nUPDATE/SHARE.  I'd blithely assumed there was one already, else I'd have\nrealized yesterday that this code didn't work.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "postgres_fdw COPY batch insert",
+        "postgres_fdw bulk load COPY FROM",
+        "FDW API COPY callback",
+        "postgres_fdw batch_size COPY protocol",
+        "postgres_fdw remote COPY FROM STDIN"
+      ],
+      "from_hint": false,
+      "score": 0.516,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:291",
+      "kind": "cf",
+      "title": "Asynchronous execution on postgres-fdw",
+      "status": "Rejected",
+      "date": "2015-08-10",
+      "first_date": "2015-07-02",
+      "url": "https://commitfest.postgresql.org/patch/291/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20150702.144824.266400086.horiguchi.kyotaro@lab.ntt.co.jp"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti)",
+      "objectors": "Heikki Linnakangas",
+      "summary": "The patch set adds a core pre-execution callback mechanism, so that nodes can register callbacks that run just before the ExecProc phase, and uses it to start postgres_fdw remote queries asynchronously, with one running query per foreign server. It also offers three experimental ways to set the fetch size: duration-based adaptation, a byte-limited FETCH, and a fetch_size foreign table option.",
+      "objection": "Heikki Linnakangas marked the entry rejected because a more general solution based on parallel workers was in progress and would largely make this patch obsolete, with the option to revisit it later in the release cycle. Earlier he had objected that the pre-execution callback has the same problems as starting execution in ExecInit, and that queries should start in the first IterateForeignScan() call. Robert Haas and Stephen Frost replied that the design questions were still open, and Stephen Frost did not like that the mechanism was specific to FDWs.",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw COPY batch insert",
+        "postgres_fdw bulk load COPY FROM",
+        "postgres_fdw batch_size COPY protocol",
+        "postgres_fdw remote COPY FROM STDIN"
+      ],
+      "from_hint": false,
+      "score": 0.404,
+      "enriched": true,
+      "key_quote": "I've marked this as rejected in the commitfest, because others are\nworking on a more general solution with parallel workers.",
+      "quote_message_url": "https://www.postgresql.org/message-id/55C8516B.10509%40iki.fi",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:32",
+      "kind": "cf",
+      "title": "Async execution of postgres_fdw.",
+      "status": "Rejected",
+      "date": "2015-05-09",
+      "first_date": "2014-12-15",
+      "url": "https://commitfest.postgresql.org/patch/32/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20141215.180944.242184148.horiguchi.kyotaro@lab.ntt.co.jp"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti)",
+      "objectors": "Stephen Frost, Tom Lane",
+      "summary": "The patch made postgres_fdw send the remote query asynchronously from ExecInitForeignScan, so several foreign scans could run on remote servers at the same time. It wrapped PGconn in a new PgFdwConn struct so that several scans could share one connection, and it cancelled a pending async query when another scan or modification used that connection.",
+      "objection": "Starting the remote query in ExecInitNode is against the documented FDW API, which says execution must not start before IterateForeignScan is called. Tom Lane added that ExecInitNode only builds runtime structures: a scan may never be iterated, for example on the inner side of a nestloop with an empty outer relation, and parameter values for a parameterized scan are not yet available. He also asked to drop the connection wrapper layer, which caused most of the code churn and added unchecked malloc failures.",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw COPY batch insert",
+        "postgres_fdw bulk load COPY FROM",
+        "postgres_fdw batch_size COPY protocol",
+        "postgres_fdw remote COPY FROM STDIN"
+      ],
+      "from_hint": false,
+      "score": 0.369,
+      "enriched": true,
+      "key_quote": "I certainly appreciate that you've put quite a bit of effort into this\nbut I'm afraid we can't accept it while it's starting to run a query on\nthe remote side during the ExecInitNode phase.  The query can not start\nexecuting on the remote side until InterateForeignScan is called.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20150509012440.GF30322%40tamriel.snowman.net",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:791",
+      "kind": "cf",
+      "title": "Push down more UPDATEs/DELETEs in postgres_fdw",
+      "status": "Returned with feedback",
+      "date": "2017-11-29",
+      "first_date": "2016-09-06",
+      "url": "https://commitfest.postgresql.org/patch/791/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/b9cee735-62f8-6c07-7528-6364ce9347d0@lab.ntt.co.jp"
+      ],
+      "authors": "Etsuro Fujita (efujita)",
+      "objectors": "",
+      "summary": "The patch extends postgres_fdw direct modification so that an UPDATE or DELETE that joins foreign tables on the same server is sent to the remote server as one statement, such as `DELETE ... USING`. It also deparses RETURNING lists that refer to columns of the joined relations.",
+      "objection": "The patch reached Ready for Committer, but Robert Haas found in review that it no longer applied after recent changes. He also asked for more comments, use of the new RelOptKind macros, and a regression test for the non-pushed path. The patch went to Waiting for author because it had bitrotted, no new version came, and the entry was returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw COPY batch insert",
+        "postgres_fdw bulk load COPY FROM",
+        "postgres_fdw batch_size COPY protocol",
+        "postgres_fdw remote COPY FROM STDIN"
+      ],
+      "from_hint": false,
+      "score": 0.367,
+      "enriched": true,
+      "key_quote": "No updates have showed up since, so returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB7nPqROcTZYqM_qcvNfxiNYwu%2Ba%3D6rnL%2BwxBJ-1v9V_u6BxBw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:3144",
+      "kind": "cf",
+      "title": "postgres_fdw: Handle boolean comparison predicates",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-05-31",
+      "url": "https://commitfest.postgresql.org/patch/3144/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAE2gYzwD4m6PWn2iO=pXquZ61++axZYe2=UWbw44q4jbR6x-9A@mail.gmail.com"
+      ],
+      "authors": "Emre Hasegeli (hasegeli)",
+      "objectors": "Daniel Gustafsson, Ashutosh Bapat, Ronan Dunklau",
+      "summary": "The patch makes postgres_fdw push the boolean tests IS [NOT] TRUE/FALSE/UNKNOWN down to the remote server. It deparses each test into an equivalent expression, such as (NOT x OR x IS NULL) for IS NOT TRUE.",
+      "objection": "The patch stopped applying to HEAD, and the author did not post a rebased version after Daniel Gustafsson asked for one, so it was returned at the end of the commitfest. Ashutosh Bapat and Ronan Dunklau also asked why the tests are rewritten instead of sent as written, and asked for a test on a boolean column. The author did not answer these points.",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw COPY batch insert",
+        "postgres_fdw bulk load COPY FROM",
+        "postgres_fdw batch_size COPY protocol",
+        "postgres_fdw remote COPY FROM STDIN"
+      ],
+      "from_hint": false,
+      "score": 0.366,
+      "enriched": true,
+      "key_quote": "The patch no longer applies to HEAD, can you please submit a rebased version?",
+      "quote_message_url": "https://www.postgresql.org/message-id/77B273E8-DDE0-4370-8CBF-592DD5CDB4E5%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:824",
+      "kind": "cf",
+      "title": "postgres_fdw super user checks",
+      "status": "Returned with feedback",
+      "date": "2016-12-02",
+      "first_date": "2016-10-16",
+      "url": "https://commitfest.postgresql.org/patch/824/",
+      "thread_urls": [],
+      "authors": "Jeff Janes (jjanes)",
+      "objectors": "",
+      "summary": "postgres_fdw super user checks",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw COPY batch insert",
+        "postgres_fdw bulk load COPY FROM",
+        "postgres_fdw batch_size COPY protocol",
+        "postgres_fdw remote COPY FROM STDIN"
+      ],
+      "from_hint": false,
+      "score": 0.321,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:1042",
+      "kind": "cf",
+      "title": "postgres_fdw: support parameterized foreign joins",
+      "status": "Returned with feedback",
+      "date": "2017-11-29",
+      "first_date": "2017-02-27",
+      "url": "https://commitfest.postgresql.org/patch/1042/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/be91628f-b754-0dcd-5998-451cea28ecd0@lab.ntt.co.jp"
+      ],
+      "authors": "Etsuro Fujita (efujita)",
+      "objectors": "",
+      "summary": "postgres_fdw would build parameterized foreign-join paths, so a join of foreign tables can be pushed to the remote server with a parameter from an outer local relation. The core planner records the required_outer relations it tried during add_paths_to_joinrel(), and postgresGetForeignJoinPaths() builds parameterized paths for them.",
+      "objection": "The patch was marked Ready for Committer but depended on the separate \"epqpath-for-foreignjoin\" patch and was not committed. It then bitrotted and was moved to Waiting for author. The author did not post an update for about six weeks, so Michael Paquier returned it with feedback. No design objection appears in the visible messages.",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw COPY batch insert",
+        "postgres_fdw bulk load COPY FROM",
+        "postgres_fdw batch_size COPY protocol",
+        "postgres_fdw remote COPY FROM STDIN"
+      ],
+      "from_hint": false,
+      "score": 0.3,
+      "enriched": true,
+      "key_quote": "One month and a half after, the already-rotten patch has not been\nupdated, so I am marking it as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB7nPqSgBUZ_K2-ciUBFKD7oEqru_wbznjpSJkOmN8MwviK6TQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:2660",
+      "kind": "cf",
+      "title": "Adding Support for Copy callback functionality on COPY TO api",
+      "status": "Returned with feedback",
+      "date": "2020-09-30",
+      "first_date": "2020-07-01",
+      "url": "https://commitfest.postgresql.org/patch/2660/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/253C21D1-FCEB-41D9-A2AF-E6517015B7D7@amazon.com"
+      ],
+      "authors": "Bilva Sanaba (bilvas)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch adds a data destination callback to the COPY TO API, matching the data source callback that COPY FROM already has. Extensions could then use COPY TO to send rows to their own destinations, for example for storage, backup or analytics.",
+      "objection": "The author did not answer review feedback for two weeks, so the patch was returned with feedback. The open review points were to run pgindent, to add an in-tree user of the callback, and to have the callback return the number of bytes written and report failure.",
+      "touch_points": [],
+      "matched_queries": [
+        "FDW API COPY callback",
+        "ExecForeignBatchInsert COPY"
+      ],
+      "from_hint": false,
+      "score": 0.266,
+      "enriched": true,
+      "key_quote": "This feedback has not been answered after two weeks, so I have marked\nthe patch as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20200930074151.GR1996%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:2409",
+      "kind": "cf",
+      "title": "TRUNCATE on foreign tables",
+      "status": "Returned with feedback",
+      "date": "2020-01-28",
+      "first_date": "2020-01-01",
+      "url": "https://commitfest.postgresql.org/patch/2409/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOP8fzb_gkReLput7OvOK+8NHgw-RKqNv59vem7=524krQTcWA@mail.gmail.com"
+      ],
+      "authors": "KaiGai Kohei (kaigai)",
+      "objectors": "Michael Paquier",
+      "summary": "Add an optional ExecForeignTruncate callback to FdwRoutine so that TRUNCATE works on foreign tables, including foreign partitions of a partitioned table. The callback gets the foreign tables of one server as a list, with DropBehavior and restart_seqs, and postgres_fdw sends one remote TRUNCATE for them.",
+      "objection": "Michael Paquier marked it returned with feedback because the implementation, the docs and the tests needed more work. The open issues at that point were ONLY handling, since TRUNCATE ONLY on a local foreign table could truncate the whole inheritance tree on the remote server, and a possible separate truncatable option for postgres_fdw. Missing postgres_fdw documentation and missing inheritance tests were also still open.",
+      "touch_points": [],
+      "matched_queries": [
+        "foreign table COPY FROM performance",
+        "BeginForeignCopy ExecForeignCopy"
+      ],
+      "from_hint": false,
+      "score": 0.213,
+      "enriched": true,
+      "key_quote": "For now, as the patch needs more work for its implementation, docs and tests, I am marking it as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20200128040346.GC1552%40paquier.xyz",
+      "relevant": true
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:2499",
+      "kind": "cf",
+      "title": "TRUNCATE on foreign tables",
+      "status": "Returned with feedback",
+      "date": "2020-08-02",
+      "first_date": "2020-01-01",
+      "url": "https://commitfest.postgresql.org/patch/2499/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOP8fzb_gkReLput7OvOK+8NHgw-RKqNv59vem7=524krQTcWA@mail.gmail.com"
+      ],
+      "authors": "KaiGai Kohei (kaigai)",
+      "objectors": "",
+      "summary": "Add an optional FDW callback, ExecForeignTruncate, that ExecuteTruncateGuts calls for foreign tables, so TRUNCATE works on them, including partitioned tables with foreign leaves. postgres_fdw would use it to send TRUNCATE to the remote server, grouping relations by server and passing ONLY and CASCADE/RESTRICT through.",
+      "objection": "The v5 patch from March 2020 stopped applying to HEAD because of conflicts in the postgres_fdw expected test output. Daniel Gustafsson asked for a rebase in July, and the visible messages show no reply from the author. The entry was then closed as stalled. Earlier, in January, Michael Paquier had returned the patch because its implementation, docs and tests needed more work.",
+      "touch_points": [],
+      "matched_queries": [
+        "foreign table COPY FROM performance",
+        "BeginForeignCopy ExecForeignCopy"
+      ],
+      "from_hint": false,
+      "score": 0.199,
+      "enriched": true,
+      "key_quote": "As this has stalled, I've marked this patch Returned with Feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/A6105B51-5B85-4DF6-8996-60F5FECEDB2C%40yesql.se",
+      "relevant": true
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:1055",
+      "kind": "cf",
+      "title": "postgres_fdw: evaluate placeholdervars on remote server",
+      "status": "Returned with feedback",
+      "date": "2017-09-27",
+      "first_date": "2017-02-28",
+      "url": "https://commitfest.postgresql.org/patch/1055/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6533e100-dbdf-1ac3-23f3-6ca9da48adbb@lab.ntt.co.jp"
+      ],
+      "authors": "Etsuro Fujita (efujita)",
+      "objectors": "",
+      "summary": "postgres_fdw: evaluate placeholdervars on remote server\nThreads: postgres_fdw: evaluate placeholdervars on remote server",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw batch_size COPY protocol",
+        "postgres_fdw remote COPY FROM STDIN"
+      ],
+      "from_hint": false,
+      "score": 0.196,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:5525",
+      "kind": "cf",
+      "title": "explain plans for foreign servers",
+      "status": "Returned with feedback",
+      "date": "2025-08-05",
+      "first_date": "2024-11-11",
+      "url": "https://commitfest.postgresql.org/patch/5525/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAP+B4TD=iy-C2EnsrJgjpwSc7_4pd3Xh-gFzA0bwsw3q8u860g@mail.gmail.com"
+      ],
+      "authors": "Dinesh Salve (dinesh-salve)",
+      "objectors": "",
+      "summary": "explain plans for foreign servers\nThreads: explain plans for foreign servers",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "BeginForeignCopy ExecForeignCopy"
+      ],
+      "from_hint": false,
+      "score": 0.136,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:06bd311bce24083c76d9741ae89c98750aaf4b41",
+      "kind": "revert",
+      "title": "Revert \"Refactor CopyReadAttributes{CSV,Text}() to use a callback in COPY FROM\"",
+      "status": "Reverted",
+      "date": "2024-02-14",
+      "first_date": "2024-02-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=06bd311bce24083c76d9741ae89c98750aaf4b41",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20240206014125.qofww7ew3dx3v3uk@awork3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/20231204.153548.2126325458835528809.kou@clear-code.com"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Refactor CopyReadAttributes{CSV,Text}() to use a callback in COPY FROM\"\nReverted commit(s): Refactor CopyReadAttributes{CSV,Text}() to use a callback in COPY FROM; Revert \"Refactor CopyAttributeOut{CSV,Text}() to use a callback in COPY TO\"",
+      "objection": "This reverts commit 95fb5b49024, for reasons similar to what led to\n1aa8324b81fa.  In this case, the callback was called once per row, which\nis less worse than the previous callback introduced for COPY TO called\nonce per argument for each row, still the patch set discussed to plug in\ncustom routines to the COPY paths would be able to know which subroutine\nto use depending on its CopyFromState, so this led to a suboptimal\napproach at the end.\n\nFor now, this part is reverted to consider better which approach to use.",
+      "touch_points": [],
+      "matched_queries": [
+        "FDW API COPY callback"
+      ],
+      "from_hint": false,
+      "score": 0.131,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:1357",
+      "kind": "cf",
+      "title": "postgres_fdw: Add support for INSERT OVERRIDING clause",
+      "status": "Returned with feedback",
+      "date": "2017-12-28",
+      "first_date": "2017-10-31",
+      "url": "https://commitfest.postgresql.org/patch/1357/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/e3a42b23-4dd0-6570-f4f6-6a27d7207c39@2ndquadrant.com"
+      ],
+      "authors": "Peter Eisentraut (petere)",
+      "objectors": "",
+      "summary": "postgres_fdw: Add support for INSERT OVERRIDING clause\nThreads: postgres_fdw: Add support for INSERT OVERRIDING clause",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw COPY batch insert"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:751",
+      "kind": "cf",
+      "title": "Asynchronous execution of ForeignScans",
+      "status": "Returned with feedback",
+      "date": "2016-12-02",
+      "first_date": "2016-08-29",
+      "url": "https://commitfest.postgresql.org/patch/751/",
+      "thread_urls": [],
+      "authors": "Kyotaro Horiguchi (horiguti)",
+      "objectors": "",
+      "summary": "Asynchronous execution of ForeignScans",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "BeginForeignCopy ExecForeignCopy"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "revert:1aa8324b81fa4979ffdc6ccf81d560eac9446948",
+      "kind": "revert",
+      "title": "Revert \"Refactor CopyAttributeOut{CSV,Text}() to use a callback in COPY TO\"",
+      "status": "Reverted",
+      "date": "2024-02-06",
+      "first_date": "2024-02-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1aa8324b81fa4979ffdc6ccf81d560eac9446948",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20240206014125.qofww7ew3dx3v3uk@awork3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/20231204.153548.2126325458835528809.kou@clear-code.com"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Refactor CopyAttributeOut{CSV,Text}() to use a callback in COPY TO\"\nReverted commit(s): Refactor CopyAttributeOut{CSV,Text}() to use a callback in COPY TO",
+      "objection": "This reverts commit 2889fd23be56, following a discussion with Andres\nFreund as this callback, being called once per attribute when sending a\nrelation's row, can involve a lot of indirect function calls (more\nattributes to deal with means more impact).  The effects of a dispatch\nat this level would become more visible when improving the per-row code\nexecution of COPY TO, impacting future potential performance\nimprovements.",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "FDW API COPY callback"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:5282",
+      "kind": "cf",
+      "title": "Enhance file_fdw to report processed and skipped tuples in COPY progress",
+      "status": "Withdrawn",
+      "date": "2025-03-09",
+      "first_date": "2024-10-03",
+      "url": "https://commitfest.postgresql.org/patch/5282/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2ffa9bfa-41f6-4180-a32a-2c693ec1eeed@oss.nttdata.com"
+      ],
+      "authors": "Fujii Masao (masaofujii)",
+      "objectors": "",
+      "summary": "Enhance file_fdw to report processed and skipped tuples in COPY progress\nThreads: Enhance file_fdw to report processed and skipped tuples in COPY\nprogress",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "FDW API COPY callback"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:2504",
+      "kind": "cf",
+      "title": "Allow COPY \"text\" to output a header and add header matching mode to COPY FROM",
+      "status": "Returned with feedback",
+      "date": "2020-09-29",
+      "first_date": "2018-05-13",
+      "url": "https://commitfest.postgresql.org/patch/2504/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAF1-J-0PtCWMeLtswwGV2M70U26n4g33gpe1rcKQqe6wVQDrFA@mail.gmail.com"
+      ],
+      "authors": "Rémi Lapeyre (remilapeyre)",
+      "objectors": "",
+      "summary": "Allow COPY \"text\" to output a header and add header matching mode to COPY FROM\nThreads: Allow COPY's 'text' format to output a header",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "ExecForeignBatchInsert COPY"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:869",
+      "kind": "cf",
+      "title": "copy_srf (was COPY as a set returning function)",
+      "status": "Returned with feedback",
+      "date": "2017-01-31",
+      "first_date": "2016-09-30",
+      "url": "https://commitfest.postgresql.org/patch/869/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CADkLM=eC8RG-LjKwk-PDY8V39bewWY0RA++eem5i6A8U3D44kA@mail.gmail.com"
+      ],
+      "authors": "Corey Huinker (coreyh)",
+      "objectors": "",
+      "summary": "copy_srf (was COPY as a set returning function)\nThreads: COPY as a set returning function",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "ExecForeignBatchInsert COPY"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:1252",
+      "kind": "cf",
+      "title": "Foreign Key Arrays",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2017-08-23",
+      "url": "https://commitfest.postgresql.org/patch/1252/",
+      "thread_urls": [],
+      "authors": "Mark Rofail (markmoheb)",
+      "objectors": "",
+      "summary": "Foreign Key Arrays",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "BeginForeignCopy ExecForeignCopy"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:2966",
+      "kind": "cf",
+      "title": "Foreign Key Arrays",
+      "status": "Returned with feedback",
+      "date": "2021-09-14",
+      "first_date": "2021-02-03",
+      "url": "https://commitfest.postgresql.org/patch/2966/",
+      "thread_urls": [],
+      "authors": "Mark Rofail (markmoheb)",
+      "objectors": "",
+      "summary": "Foreign Key Arrays",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "BeginForeignCopy ExecForeignCopy"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:167",
+      "kind": "cf",
+      "title": "Join pushdown support for foreign tables",
+      "status": "Returned with feedback",
+      "date": "2015-12-22",
+      "first_date": "2015-02-16",
+      "url": "https://commitfest.postgresql.org/patch/167/",
+      "thread_urls": [],
+      "authors": "Shigeru Hanada (hanada)",
+      "objectors": "",
+      "summary": "Join pushdown support for foreign tables",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "foreign table COPY FROM performance"
+      ],
+      "from_hint": false,
+      "score": 0.098,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:2330",
+      "kind": "cf",
+      "title": "Reducing memory usage of creating foreign key between partitioned tables",
+      "status": "Rejected",
+      "date": "2020-09-12",
+      "first_date": "2019-10-23",
+      "url": "https://commitfest.postgresql.org/patch/2330/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/OSAPR01MB374809E8DE169C8BF2B82CBD9F6B0@OSAPR01MB3748.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "sho kato (kato-sho)",
+      "objectors": "",
+      "summary": "Reducing memory usage of creating foreign key between partitioned tables\nThreads: Creating foreign key on partitioned table is too slow",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "foreign table COPY FROM performance"
+      ],
+      "from_hint": false,
+      "score": 0.095,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:223",
+      "kind": "cf",
+      "title": "COPY RAW",
+      "status": "Returned with feedback",
+      "date": "2016-04-08",
+      "first_date": "2015-04-24",
+      "url": "https://commitfest.postgresql.org/patch/223/",
+      "thread_urls": [],
+      "authors": "Pavel Stehule (okbobcz)",
+      "objectors": "",
+      "summary": "COPY RAW",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "ExecForeignBatchInsert COPY"
+      ],
+      "from_hint": false,
+      "score": 0.091,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 4,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 2
+  },
+  "precedent_cutoff": "2025-10-15",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found. [P9] and [P10] add an FDW callback for TRUNCATE, a different idea, and their reasons (unfinished docs and tests, a stalled rebase) do not apply to this design. Inside the thread, message #35 reports that a dropped BeginForeignCopy/EndForeignCopy design failed on connection sharing. Kirill's results in message #36 point back toward that design, and the performance and design angles should weigh this."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 1,
+      "note": "Other contract points looked acceptable from this angle. No new SQL syntax, GUC, catalog object or pg_dump state is added, and the batch cap of 1000 rows already exists for COPY into foreign tables."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 2,
+      "note": "There is no on-disk, WAL or catalog state; v16 drops the new options. The new FdwRoutine member is optional and only matters for extensions on new major versions."
+    },
+    {
+      "angle": "security",
+      "objections": 2,
+      "note": "Default privileges do not change: COPY FROM STDIN on the remote side needs the same INSERT privilege that remote INSERT needs. The two objections cover cancellation and remote RLS."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "Masahiko Sawada, a committer, reviewed most versions, so who maintains this is less of a concern. The CopyEscapeText refactor in 0001 removes duplicated code and can stand on its own."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "Postgres has no existing way to make COPY FROM into a postgres_fdw table use remote COPY. Running COPY directly on the remote server does not cover tuple routing into foreign partitions. So the need itself is not already met."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "Demand for faster bulk loads into postgres_fdw tables is shown: the idea comes from an earlier blog post, and several independent reviewers tested it. The open question is whether v16 delivers the benefit."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 9,
+      "new_survived": 5,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 95,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 15,
+    "wall_ms": 158764,
+    "cost_usd": 4.0163344,
+    "dry_run": false
+  }
+}

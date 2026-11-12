@@ -1,0 +1,1705 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:49:11.086Z",
+  "input": {
+    "arg": "6341",
+    "cf": {
+      "id": 6341,
+      "url": "https://commitfest.postgresql.org/patch/6341/",
+      "title": "Cleaning up PREPARE query strings?",
+      "status": "Needs review",
+      "authors": "Julien Rouhaud (rjuju)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/aUwKEWGge5jWtaRX%40jrouhaud",
+    "subject": "Cleaning up PREPARE query strings?",
+    "thread_start": "2025-12-24T15:43:13Z",
+    "messages_read": 19,
+    "messages_total": 19,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v3-0001-Cleanup-explicit-PREPARE-query-strings.patch",
+      "v1-0001-Cleanup-explicit-PREPARE-query-strings.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "Level 1b fails on demand-1 and already-exists-1. The thread shows one workload and no memory numbers, and it does not say why separate PREPAREs or pipelined Parse messages cannot serve it. Tom Lane raised this in message #2 and the demand side has no answer. The level 2 objections survive but are not evaluated here. Only 3 of 19 messages were read in full.",
+  "failing_level": "1b",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "failed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "not_evaluated"
+    }
+  ],
+  "brief": {
+    "title": "Store only the relevant part of a multi-statement string for PREPARE",
+    "problem": "An explicit PREPARE inside a multi-statement query string stores the whole string, once per prepared statement. Applications that send all their PREPARE statements in one string at connection start waste memory this way. pg_prepared_statements also shows the whole string, so users must parse it again to find each query.",
+    "proposed_design": "PREPARE uses CleanQuerytext(), as pg_stat_statements does, to cut the stored query string down to the statement's own text, based on the locations saved during parsing. Only explicit PREPARE changes, because doing it in CreateCachedPlan for all callers, including the extended protocol, caused too many issues. Sami Imseih's v4 keeps passing the original string to parse analysis so parse-time error cursors stay correct.",
+    "user_visible_surface": [
+      "pg_prepared_statements.statement shows only the PREPARE statement's own text, without the other statements, leading and trailing whitespace, or the final semicolon.",
+      "A comment placed before the PREPARE keyword is dropped from the stored query text.",
+      "Extensions that read the cached plan's query string, such as pg_stat_statements and auto_explain, get the shorter text."
+    ],
+    "author_claims": [
+      "Memory use drops for multi-statement strings that hold PREPARE, and the saving grows with the number of prepared statements.",
+      "Overhead is minimal because the patch reuses parse locations and works only when space can be saved.",
+      "An executor-level query offset could fix execution-time error positions without updating every location field in the parse tree.",
+      "Comments for tools such as pg_hint_plan still work if placed after PREPARE ... AS."
+    ],
+    "thread_state": "Tom Lane doubted it is worth it, since the change breaks error position fields, and he has not replied since; Sami Imseih reviewed and posted v4. Shinya Kato hit an assertion failure in queryjumblefuncs.c with v4 and pg_stat_statements after alter table and EXECUTE, which is still open, and CFbot reports a needed rebase.",
+    "unclear": [
+      "Nobody shows a test case that reaches executor_errposition(), so the effect on execution-time error positions is untested.",
+      "Neither author answered Shinya Kato's assertion failure on replan after alter table, nor said which version fixes it.",
+      "The thread gives no memory numbers for a realistic workload.",
+      "No reply from Tom Lane says whether the query offset idea or the v4 approach would be acceptable.",
+      "The documentation for pg_prepared_statements is not shown to change, so users would get no note on the new text."
+    ],
+    "search_queries": [
+      "PREPARE query string multi-statement",
+      "pg_prepared_statements statement text",
+      "CleanQuerytext prepared statement",
+      "cached plan query string memory",
+      "multi-statement query string location",
+      "error cursor position query offset",
+      "prepared statement source text truncate"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P13",
+      "source_id": "revert:f85f6ab051b7cf6950247e5fa6072c4130613555",
+      "title": "Revert support for improved tracking of nested queries",
+      "kind": "revert",
+      "status": "Reverted",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f85f6ab051b7cf6950247e5fa6072c4130613555",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/18947-cdd2668beffe02bf@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/CAO6_XqqM6S9bQ2qd=75W+yKATwoazxSNhv5sjW06fjGAtHbTUA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/844a3b38-bbf1-4fb2-9fd6-f58c35c09917@pgbackrest.org"
+      ],
+      "date": "2025-06-12",
+      "first_date": "2024-10-22",
+      "who_objected": "",
+      "quote": "Incorrect location and lengths are causing pg_stat_statements to become confused, failing its job in query normalization with potential out-of-bound writes because the location and the length may not match with what can be handled.",
+      "quote_url": null,
+      "enriched": false,
+      "reason": "This commit reverts the two following commits:\n- 499edb09741b, track more precisely query locations for nested\nstatements.\n- 06450c7b8c70, a follow-up fix of 499edb09741b with query locations.\nThe test introduced in this commit is not reverted.  This is proving\nuseful to track a problem that only pgaudit was able to detect.\n\nThese prove to have issues with the tracking of SELECT statements, when\nthese use multiple parenthesis which is something supported by the\ngrammar.  Incorrect location and lengths are causing pg_stat_statements\nto become confused, failing its job in query normalization with\npotential out-of-bound writes because the location and the length may\nnot match with what can be handled.  A lot of the query patterns\ndiscussed when this issue was reported have no test coverage in the main\nregression test suite, or the recovery test 027_stream_regress.pl would\nhave caught the problems as pg_stat_statements is loaded by the node\nrunning the regression tests.  A first step would be to improve the test\ncoverage to stress more the query normalization logic.\n\nA different portion of this work was done in 45e0ba30fc40, with the\naddition of tests for nested queries.  These can be left in the tree.\nThey are useful to track the way inner queries are currently tracked by\nPGSS with non-top-level entries, and will be useful when reconsidering\nin the future the work reverted here.",
+      "relation": "related_only",
+      "what_is_different": "P13 changed how the parser records locations for nested statements. This proposal keeps parser locations and shortens the stored string in PREPARE, which can produce the same kind of mismatch between locations and text."
+    }
+  ],
+  "objections": [
+    {
+      "title": "No measured memory saving and no users beyond one workload",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer takes on a change that makes stored query text differ from the text that parse locations refer to. A few releases later an extension or a new executor error cursor reads the shorter string with offsets from the original one, and points at the wrong place or trips an assertion. The memory saving that justified the change was never measured.",
+      "argument": "The only use case is the author's own application, which sends all its PREPAREs in one string at connection start (message #1). The thread gives no memory numbers, and the cached plan and query trees are likely much larger than the duplicated text. Tom Lane's reply, \"if that bothers you, don't do it that way\" (message #2), was not answered on the demand side. Separate PREPAREs, or protocol-level Parse messages in a pipeline, avoid the duplication with no extra round trips.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        3,
+        19
+      ],
+      "author_must_show": "How much memory per session does this save for a realistic set of prepared statements, and which other users or tools report the problem that pipelined Parse messages do not already solve?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Julien Rouhaud",
+          "date": "2025-12-24T15:43:13Z",
+          "url": "https://www.postgresql.org/message-id/aUwKEWGge5jWtaRX%40jrouhaud"
+        },
+        {
+          "index": 2,
+          "from": "Tom Lane",
+          "date": "2025-12-24T16:21:00Z",
+          "url": "https://www.postgresql.org/message-id/928501.1766593260%40sss.pgh.pa.us"
+        },
+        {
+          "index": 3,
+          "from": "Sami Imseih",
+          "date": "2025-12-24T20:16:38Z",
+          "url": "https://www.postgresql.org/message-id/CAA5RZ0uco6Xxsgo6p8FakgRJjY3PhnjePWWmZWxJO2Sz6Xf%3DCA%40mail.gmail.com"
+        },
+        {
+          "index": 19,
+          "from": "solai v",
+          "date": "2026-08-06T09:40:08Z",
+          "url": "https://www.postgresql.org/message-id/CAF0whucxZ_BzeHROewBa%3DfhFpx53_Eveb5Tnzk0k3ns5n95xXw%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The thread has no memory numbers and one reported workload, and message #2 questions whether the gain is worth the cost. Sami Imseih's support and the readability gain in pg_prepared_statements help, but they do not show how common the need is.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Pipelined protocol-level Parse already avoids round trips with per-statement text",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "does_not_fit",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An application prepares its fixed set of statements at connection start. It can send one Parse message per statement in a single pipeline, for example with libpq pipeline mode and PQsendPrepare. Each statement then stores only its own text, so the patch saves memory only for clients that pack SQL-level PREPARE into one simple-query string.",
+      "argument": "Message #1 gives one reason for the multi-statement string: avoiding extra round trips. Protocol pipelining already does that, and a Parse message accepts only one statement, so pg_prepared_statements shows clean text on that path. Message #2 gives the same advice in short form: \"don't do it that way\". The thread does not explain why pipelining or separate statements cannot serve this application, while the patch adds parse-location handling that has already crashed with pg_stat_statements in messages #5 and #18.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        5,
+        18
+      ],
+      "author_must_show": "Which applications or drivers cannot use pipelined Parse messages or separate PREPARE statements, and how much memory does the current behaviour cost them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Julien Rouhaud",
+          "date": "2025-12-24T15:43:13Z",
+          "url": "https://www.postgresql.org/message-id/aUwKEWGge5jWtaRX%40jrouhaud"
+        },
+        {
+          "index": 2,
+          "from": "Tom Lane",
+          "date": "2025-12-24T16:21:00Z",
+          "url": "https://www.postgresql.org/message-id/928501.1766593260%40sss.pgh.pa.us"
+        },
+        {
+          "index": 5,
+          "from": "Sami Imseih",
+          "date": "2026-01-13T20:24:51Z",
+          "url": "https://www.postgresql.org/message-id/CAA5RZ0sswD2h2w8FkVjToA%3D3oNYUb1mW-zuCD%3DJ6DDK2zuLuZg%40mail.gmail.com"
+        },
+        {
+          "index": 18,
+          "from": "Shinya Kato",
+          "date": "2026-07-15T05:48:01Z",
+          "url": "https://www.postgresql.org/message-id/CAOzEurTYoinojY7a7GfJut3XsuR%3D26ZuF87SYzKV7RFcKMbvWA%40mail.gmail.com"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The thread gives round trips as the only reason for the multi-statement string, and it does not say why pipelined Parse messages or separate PREPAREs cannot serve. Tom Lane's remark in message #2 points the same way and has no answer.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "Leading comments on PREPARE disappear from stored text without opt-in",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An application tags each statement with a leading comment such as /* app=billing */ and sends PREPARE strings at connect. After upgrade, auto_explain logs, pg_stat_statements text and pg_prepared_statements no longer carry the tag. The team finds out when its log-based attribution or hint injection stops matching.",
+      "argument": "Message #1 says comments before PREPARE are dropped and that users can move them after AS. That fix requires every affected application to change its SQL, while the gain goes to a narrower group sending many PREPAREs in one string. Tom Lane in message #2 suggested that group can change how it sends statements instead. The patch prose shows no documentation or release-note change warning about the dropped comments.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "Can the stored text keep a comment that comes before PREPARE, or why is a required SQL rewrite acceptable for applications that tag statements this way?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Julien Rouhaud",
+          "date": "2025-12-24T15:43:13Z",
+          "url": "https://www.postgresql.org/message-id/aUwKEWGge5jWtaRX%40jrouhaud"
+        },
+        {
+          "index": 2,
+          "from": "Tom Lane",
+          "date": "2025-12-24T16:21:00Z",
+          "url": "https://www.postgresql.org/message-id/928501.1766593260%40sss.pgh.pa.us"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #1 confirms the comment is dropped, and the only answer is that applications move it. The pg_stat_statements part of the scenario is weak, since that module already cleans its text, but auto_explain and pg_prepared_statements do change.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "Cached query string and saved statement locations can disagree on replan",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user runs a multi-statement string holding a PREPARE, then alters a table it uses, then runs EXECUTE. The plan cache re-analyzes the statement against the shorter stored text, but with locations taken from the full string. pg_stat_statements then trips an assertion on an assert-enabled build, and on a production build its normalization may read or write past the stored text.",
+      "argument": "Message #18 reports this case with v4: the assertion `query_len <= strlen(query)` in queryjumblefuncs.c fails. Messages #5 and #7 found an earlier crash of the same kind, and message #15 changes locations only on the first Query list, so revalidation still builds Queries from the raw tree with offsets into the original string. [P13] was reverted because mismatched locations and lengths led pg_stat_statements to possible out-of-bound writes, which is the same failure mode. Every extension that uses post_parse_analyze_hook or the planner hooks depends on locations matching the query string it receives, and the thread has no reply on message #18.",
+      "precedent_ids": [
+        "P13"
+      ],
+      "thread_message_refs": [
+        5,
+        7,
+        15,
+        18
+      ],
+      "author_must_show": "How does the design keep stmt_location and stmt_len consistent with the stored query string on every re-analysis path, and which test covers replan after DDL?",
+      "precedents": [
+        {
+          "id": "P13",
+          "title": "Revert support for improved tracking of nested queries",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f85f6ab051b7cf6950247e5fa6072c4130613555",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/18947-cdd2668beffe02bf@postgresql.org",
+            "https://www.postgresql.org/message-id/flat/CAO6_XqqM6S9bQ2qd=75W+yKATwoazxSNhv5sjW06fjGAtHbTUA@mail.gmail.com",
+            "https://www.postgresql.org/message-id/flat/844a3b38-bbf1-4fb2-9fd6-f58c35c09917@pgbackrest.org"
+          ],
+          "date": "2025-06-12",
+          "status": "Reverted"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Sami Imseih",
+          "date": "2026-01-13T20:24:51Z",
+          "url": "https://www.postgresql.org/message-id/CAA5RZ0sswD2h2w8FkVjToA%3D3oNYUb1mW-zuCD%3DJ6DDK2zuLuZg%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Sami Imseih",
+          "date": "2026-01-14T15:56:21Z",
+          "url": "https://www.postgresql.org/message-id/CAA5RZ0s4UPJ5uHzcfDqOLOskOFTPFZnUZwZS7e93LTmG8nHVnA%40mail.gmail.com"
+        },
+        {
+          "index": 15,
+          "from": "Sami Imseih",
+          "date": "2026-01-26T22:48:59Z",
+          "url": "https://www.postgresql.org/message-id/CAA5RZ0vgcfJHVdGkjeeG%3DFt_Tf5GCNECE2FLkPCWp3E-EppP2g%40mail.gmail.com"
+        },
+        {
+          "index": 18,
+          "from": "Shinya Kato",
+          "date": "2026-07-15T05:48:01Z",
+          "url": "https://www.postgresql.org/message-id/CAOzEurTYoinojY7a7GfJut3XsuR%3D26ZuF87SYzKV7RFcKMbvWA%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #18 reproduces the assertion failure on v4 and nobody has answered it. [P13] records the same kind of location and length mismatch in pg_stat_statements, so it applies as support.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "Planned execution-time error positions would need a second coordinate system",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch makes function errors at execution time point at the call site, which Tom Lane describes as a goal in message #2. For explicit PREPARE in a multi-statement string, the cursor then lands on the wrong text or past its end. Users see this first in error messages from EXECUTE.",
+      "argument": "Message #17 says executor_errposition() is hard to reach today, and no test exercises it (messages #4, #16). So the patch's correctness rests on a code path that is rare now but that a committer wants to extend. The fix in message #14 adds a query offset to executor state for one caller. That widens the cost for every future error-position feature.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        4,
+        14,
+        16,
+        17
+      ],
+      "author_must_show": "How would an execution-time error cursor stay correct for a cleaned PREPARE string, and is there a test that reaches it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Tom Lane",
+          "date": "2025-12-24T16:21:00Z",
+          "url": "https://www.postgresql.org/message-id/928501.1766593260%40sss.pgh.pa.us"
+        },
+        {
+          "index": 4,
+          "from": "Julien Rouhaud",
+          "date": "2026-01-11T07:50:19Z",
+          "url": "https://www.postgresql.org/message-id/aWNWO8wEvu6YQaKN%40jrouhaud"
+        },
+        {
+          "index": 14,
+          "from": "Julien Rouhaud",
+          "date": "2026-01-25T12:57:31Z",
+          "url": "https://www.postgresql.org/message-id/aXYTOw_1GXq0oMaq%40jrouhaud"
+        },
+        {
+          "index": 16,
+          "from": "Julien Rouhaud",
+          "date": "2026-03-01T00:10:27Z",
+          "url": "https://www.postgresql.org/message-id/aaOD8_Q7qp3OwFJn%40jrouhaud"
+        },
+        {
+          "index": 17,
+          "from": "Sami Imseih",
+          "date": "2026-03-04T21:33:13Z",
+          "url": "https://www.postgresql.org/message-id/CAA5RZ0saD%3D0w7K6HubXRBDfqKO4wBG%3DN%3D_n5kNLN0fFMs-BjOg%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Tom Lane raised execution-time error positions in message #2 and nobody has shown a test that reaches executor_errposition(). Message #17 argues the cursor does not matter under EXECUTE, but no one has confirmed that, and the query offset idea has no reply.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Rewriting statement locations repeats the failure that caused a revert",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "prior_rejection",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site runs pg_stat_statements and sends `select 1; prepare p as select a from t where a > 1; select 2;`, then runs `alter table t add column b int` and `execute p`. The replan jumbles the query with a location and length that do not match the stored cleaned text. Assert builds crash, and release builds may read past the string.",
+      "argument": "[P13] was reverted because location and length values that did not match the query text made pg_stat_statements read out of bounds, and 027_stream_regress.pl did not catch it. This proposal edits stmt_location and stmt_len in the same way. v1 crashed in pg_stat_statements while the regression tests passed (messages #5-#7), and v4 fails `Assert(\"query_len <= strlen(query)\")` on replan (message #18). Nobody in the thread has answered that report.",
+      "precedent_ids": [
+        "P13"
+      ],
+      "thread_message_refs": [
+        5,
+        6,
+        7,
+        15,
+        17,
+        18
+      ],
+      "author_must_show": "After replan, invalidation and nested use, which invariant ties every stored Query's stmt_location and stmt_len to the cleaned text, and which tests cover each case?",
+      "precedents": [
+        {
+          "id": "P13",
+          "title": "Revert support for improved tracking of nested queries",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f85f6ab051b7cf6950247e5fa6072c4130613555",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/18947-cdd2668beffe02bf@postgresql.org",
+            "https://www.postgresql.org/message-id/flat/CAO6_XqqM6S9bQ2qd=75W+yKATwoazxSNhv5sjW06fjGAtHbTUA@mail.gmail.com",
+            "https://www.postgresql.org/message-id/flat/844a3b38-bbf1-4fb2-9fd6-f58c35c09917@pgbackrest.org"
+          ],
+          "date": "2025-06-12",
+          "status": "Reverted"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Sami Imseih",
+          "date": "2026-01-13T20:24:51Z",
+          "url": "https://www.postgresql.org/message-id/CAA5RZ0sswD2h2w8FkVjToA%3D3oNYUb1mW-zuCD%3DJ6DDK2zuLuZg%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Julien Rouhaud",
+          "date": "2026-01-13T22:50:59Z",
+          "url": "https://www.postgresql.org/message-id/aWbMU6wKpYkJHPP5%40jrouhaud"
+        },
+        {
+          "index": 7,
+          "from": "Sami Imseih",
+          "date": "2026-01-14T15:56:21Z",
+          "url": "https://www.postgresql.org/message-id/CAA5RZ0s4UPJ5uHzcfDqOLOskOFTPFZnUZwZS7e93LTmG8nHVnA%40mail.gmail.com"
+        },
+        {
+          "index": 15,
+          "from": "Sami Imseih",
+          "date": "2026-01-26T22:48:59Z",
+          "url": "https://www.postgresql.org/message-id/CAA5RZ0vgcfJHVdGkjeeG%3DFt_Tf5GCNECE2FLkPCWp3E-EppP2g%40mail.gmail.com"
+        },
+        {
+          "index": 17,
+          "from": "Sami Imseih",
+          "date": "2026-03-04T21:33:13Z",
+          "url": "https://www.postgresql.org/message-id/CAA5RZ0saD%3D0w7K6HubXRBDfqKO4wBG%3DN%3D_n5kNLN0fFMs-BjOg%40mail.gmail.com"
+        },
+        {
+          "index": 18,
+          "from": "Shinya Kato",
+          "date": "2026-07-15T05:48:01Z",
+          "url": "https://www.postgresql.org/message-id/CAOzEurTYoinojY7a7GfJut3XsuR%3D26ZuF87SYzKV7RFcKMbvWA%40mail.gmail.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1, which states the same replan mismatch with more detail on why v4 still fails.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Statement text also changes for single-statement PREPARE",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "design",
+      "touch_points": [],
+      "severity": "fixable",
+      "failure_scenario": "A monitoring tool or test suite compares pg_prepared_statements.statement against the exact text it sent, including the trailing semicolon. After upgrade the semicolon and surrounding whitespace are gone even when only one statement was sent, so the match fails or the tool shows duplicates across versions.",
+      "argument": "The brief and the test output in message #19 show that CleanQuerytext() also strips whitespace and the final semicolon from ordinary single-statement PREPARE. So the visible change reaches every explicit PREPARE user, not only those sending multi-statement strings. The proposal does not change the pg_prepared_statements documentation or give a compatibility note. A committer would likely ask that only multi-statement strings be trimmed, or that the text contract be documented.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        19
+      ],
+      "author_must_show": "Why should a single-statement PREPARE get different text in pg_prepared_statements, and where will users learn about the new contract?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Julien Rouhaud",
+          "date": "2025-12-24T15:43:13Z",
+          "url": "https://www.postgresql.org/message-id/aUwKEWGge5jWtaRX%40jrouhaud"
+        },
+        {
+          "index": 19,
+          "from": "solai v",
+          "date": "2026-08-06T09:40:08Z",
+          "url": "https://www.postgresql.org/message-id/CAF0whucxZ_BzeHROewBa%3DfhFpx53_Eveb5Tnzk0k3ns5n95xXw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "wrong_facts",
+        "reasoning": "Message #19 used psql, which removes the final semicolon before sending, so it does not show the server stripping it. For a single statement CleanQuerytext() trims only leading and trailing whitespace, which leaves no concrete failure.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Stored query text no longer matches parse locations, crash reachable by any user",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An unprivileged user on a server with pg_stat_statements loaded sends a multi-statement string with PREPARE, runs alter table on their own table, then EXECUTE. Replanning hands pg_stat_statements a short query string with location and length that do not fit it. Assert builds crash; release builds may read or write past the string.",
+      "argument": "v4 stores the cleaned text in the CachedPlanSource but runs parse analysis on the original string, so the stored text and the Query location fields refer to different strings. Message #18 shows the crash on replan, and message #5 showed an earlier crash from the same kind of mismatch; neither path needs special privileges. [P13] was reverted because wrong locations and lengths led pg_stat_statements to possible out-of-bounds writes. The proposal does not yet state which invariant ties stored text to locations, or how replan and extensions keep it.",
+      "precedent_ids": [
+        "P13"
+      ],
+      "thread_message_refs": [
+        5,
+        15,
+        17,
+        18
+      ],
+      "author_must_show": "After the change, which string do Query location fields index on first plan and on replan, and how does every consumer of query_string stay within its bounds?",
+      "precedents": [
+        {
+          "id": "P13",
+          "title": "Revert support for improved tracking of nested queries",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f85f6ab051b7cf6950247e5fa6072c4130613555",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/18947-cdd2668beffe02bf@postgresql.org",
+            "https://www.postgresql.org/message-id/flat/CAO6_XqqM6S9bQ2qd=75W+yKATwoazxSNhv5sjW06fjGAtHbTUA@mail.gmail.com",
+            "https://www.postgresql.org/message-id/flat/844a3b38-bbf1-4fb2-9fd6-f58c35c09917@pgbackrest.org"
+          ],
+          "date": "2025-06-12",
+          "status": "Reverted"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Sami Imseih",
+          "date": "2026-01-13T20:24:51Z",
+          "url": "https://www.postgresql.org/message-id/CAA5RZ0sswD2h2w8FkVjToA%3D3oNYUb1mW-zuCD%3DJ6DDK2zuLuZg%40mail.gmail.com"
+        },
+        {
+          "index": 15,
+          "from": "Sami Imseih",
+          "date": "2026-01-26T22:48:59Z",
+          "url": "https://www.postgresql.org/message-id/CAA5RZ0vgcfJHVdGkjeeG%3DFt_Tf5GCNECE2FLkPCWp3E-EppP2g%40mail.gmail.com"
+        },
+        {
+          "index": 17,
+          "from": "Sami Imseih",
+          "date": "2026-03-04T21:33:13Z",
+          "url": "https://www.postgresql.org/message-id/CAA5RZ0saD%3D0w7K6HubXRBDfqKO4wBG%3DN%3D_n5kNLN0fFMs-BjOg%40mail.gmail.com"
+        },
+        {
+          "index": 18,
+          "from": "Shinya Kato",
+          "date": "2026-07-15T05:48:01Z",
+          "url": "https://www.postgresql.org/message-id/CAOzEurTYoinojY7a7GfJut3XsuR%3D26ZuF87SYzKV7RFcKMbvWA%40mail.gmail.com"
+        }
+      ],
+      "id": "security-1",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1. The point that no special privilege is needed adds no separate defect beyond the same replan crash.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Cached query string and parse-tree locations stop matching after replan",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user prepares a statement inside a multi-statement string with pg_stat_statements loaded, then runs alter table and EXECUTE. Revalidation pairs the shortened cached string with offsets taken from the original string, and pg_stat_statements trips an assertion, as reported in message #18. A production build without assertions could read past the end of the string.",
+      "argument": "In v4 the plan source stores the cleaned text while the raw tree keeps offsets into the original string (messages #15, #17). Every later consumer of plansource->query_string plus a location must know about this split, and nothing fails loudly if one does not. [P13] was reverted because wrong locations and lengths broke pg_stat_statements normalization, with possible out-of-bound writes. Tom Lane (message #2) raised the location problem and has not replied to the query offset idea in message #14.",
+      "precedent_ids": [
+        "P13"
+      ],
+      "thread_message_refs": [
+        2,
+        14,
+        15,
+        17,
+        18
+      ],
+      "author_must_show": "What invariant keeps every stored location valid against the stored query string after replan, and which test proves it with pg_stat_statements loaded?",
+      "precedents": [
+        {
+          "id": "P13",
+          "title": "Revert support for improved tracking of nested queries",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f85f6ab051b7cf6950247e5fa6072c4130613555",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/18947-cdd2668beffe02bf@postgresql.org",
+            "https://www.postgresql.org/message-id/flat/CAO6_XqqM6S9bQ2qd=75W+yKATwoazxSNhv5sjW06fjGAtHbTUA@mail.gmail.com",
+            "https://www.postgresql.org/message-id/flat/844a3b38-bbf1-4fb2-9fd6-f58c35c09917@pgbackrest.org"
+          ],
+          "date": "2025-06-12",
+          "status": "Reverted"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Tom Lane",
+          "date": "2025-12-24T16:21:00Z",
+          "url": "https://www.postgresql.org/message-id/928501.1766593260%40sss.pgh.pa.us"
+        },
+        {
+          "index": 14,
+          "from": "Julien Rouhaud",
+          "date": "2026-01-25T12:57:31Z",
+          "url": "https://www.postgresql.org/message-id/aXYTOw_1GXq0oMaq%40jrouhaud"
+        },
+        {
+          "index": 15,
+          "from": "Sami Imseih",
+          "date": "2026-01-26T22:48:59Z",
+          "url": "https://www.postgresql.org/message-id/CAA5RZ0vgcfJHVdGkjeeG%3DFt_Tf5GCNECE2FLkPCWp3E-EppP2g%40mail.gmail.com"
+        },
+        {
+          "index": 17,
+          "from": "Sami Imseih",
+          "date": "2026-03-04T21:33:13Z",
+          "url": "https://www.postgresql.org/message-id/CAA5RZ0saD%3D0w7K6HubXRBDfqKO4wBG%3DN%3D_n5kNLN0fFMs-BjOg%40mail.gmail.com"
+        },
+        {
+          "index": 18,
+          "from": "Shinya Kato",
+          "date": "2026-07-15T05:48:01Z",
+          "url": "https://www.postgresql.org/message-id/CAOzEurTYoinojY7a7GfJut3XsuR%3D26ZuF87SYzKV7RFcKMbvWA%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1. The claim that nothing fails loudly is also weak, because the assertion in queryjumblefuncs.c did fire.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Only explicit PREPARE changes, so query_string meaning depends on caller",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension author reads the cached plan's query string in auto_explain or pg_stat_statements hooks. For explicit PREPARE it is now one statement, but for every other CreateCachedPlan caller it stays the full submitted string with original offsets. Code written against one case gives wrong offsets for the other.",
+      "argument": "Message #1 says moving the cleanup into CreateCachedPlan for all callers caused too many issues, so the change is a special case in prepare.c. The touched files already include auto_explain and pg_stat_statements tests, which shows that extensions see the change. The proposal does not document the new convention for extension code or in the pg_prepared_statements docs.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "What rule can extension code use to know whether a plan source's query string is the full submitted text or one statement?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Julien Rouhaud",
+          "date": "2025-12-24T15:43:13Z",
+          "url": "https://www.postgresql.org/message-id/aUwKEWGge5jWtaRX%40jrouhaud"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "Callers already differ today: SPI and the extended protocol store single-statement text, and consumers use stmt_location and stmt_len against whatever string they get. The only failure is a mismatch between those fields and the text, which replication-ondisk-1 covers.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Memory saving is shown for one pattern only, with no numbers",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The project takes on the location-handling risk above for a saving that most users never see. Applications that send one PREPARE per round trip gain nothing. Applications that batch can send separate statements, as Tom Lane suggests in message #2.",
+      "argument": "The only use case is the author's own application (message #1), and the thread has no memory figures for a realistic workload. Message #19 tests output but not memory. Without numbers a committer would likely weigh the cost as Tom Lane did in message #2.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        19
+      ],
+      "author_must_show": "How much session memory does this save for a real batched-PREPARE workload, and how many users send PREPARE that way?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Julien Rouhaud",
+          "date": "2025-12-24T15:43:13Z",
+          "url": "https://www.postgresql.org/message-id/aUwKEWGge5jWtaRX%40jrouhaud"
+        },
+        {
+          "index": 2,
+          "from": "Tom Lane",
+          "date": "2025-12-24T16:21:00Z",
+          "url": "https://www.postgresql.org/message-id/928501.1766593260%40sss.pgh.pa.us"
+        },
+        {
+          "index": 19,
+          "from": "solai v",
+          "date": "2026-08-06T09:40:08Z",
+          "url": "https://www.postgresql.org/message-id/CAF0whucxZ_BzeHROewBa%3DfhFpx53_Eveb5Tnzk0k3ns5n95xXw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-4",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of demand-1, which makes the same point about missing memory numbers and a single reported workload.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "Extensions that read the cached plan's query string, such as pg_stat_statements and auto_explain, get shorter text with changed locations."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "The assertion failure in message #18 needs no special privilege when pg_stat_statements is loaded."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Stored text and parse locations must stay consistent on every re-analysis path and for future error-position work."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "Separate PREPAREs or pipelined Parse messages on the client side already store per-statement text."
+    }
+  ],
+  "questions": [
+    "How much session memory does the patch save for a realistic set of prepared statements sent in one string?",
+    "Which applications or drivers cannot use pipelined Parse messages or separate PREPARE statements to avoid the extra round trips?",
+    "How do stmt_location and stmt_len stay consistent with the stored query string on replan after DDL, the case that fails in message #18?",
+    "How does an execution-time error cursor stay correct for a cleaned PREPARE string, and which test reaches executor_errposition()?",
+    "Can the stored text keep a comment placed before PREPARE, so that applications that tag statements need not change their SQL?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "Tom Lane replied once in message #2 with doubt and has not returned. The owner would need to know the plan cache, parse locations and query jumbling.",
+    "liability": "The owner signs for the match between stored query text and location fields on every replan path, for all extensions that read them, with no end date.",
+    "author_follow_up": "The author moved the entry across CommitFests up to 2026-10-01, but the assertion failure in message #18 has no reply and the patch needs a rebase."
+  },
+  "not_now": {
+    "applies": true,
+    "evidence_that_would_change_it": "Memory numbers per session for a realistic batched-PREPARE workload, reports from other users or drivers that send PREPARE this way, and a reason why pipelined Parse messages or separate PREPAREs do not serve them."
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "needs design rethink",
+    "reason": "The gain goes to clients that pack many SQL-level PREPAREs into one string, and the thread shows one such workload. The patch is small, but v4 still fails an assertion on replan and the error-position question from message #2 is open."
+  },
+  "self_advice": [],
+  "provisional_note": "Level 2 was not evaluated. Without the code, I could not judge whether v4's split between stored text and parse locations can be made consistent on replan, or whether the query offset idea works.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:1667",
+      "kind": "cf",
+      "title": "cursors with prepared statements",
+      "status": "Returned with feedback",
+      "date": "2018-12-01",
+      "first_date": "2018-06-07",
+      "url": "https://commitfest.postgresql.org/patch/1667/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/762cc764-74f0-13fb-77ed-16f91c90f40d@2ndquadrant.com"
+      ],
+      "authors": "Peter Eisentraut (petere)",
+      "objectors": "Heikki Linnakangas",
+      "summary": "The patch adds `DECLARE cursor_name CURSOR FOR prepared_statement_name [ USING param, ... ]` so a cursor can be declared over a prepared statement. It attaches USING to DECLARE because direct SQL has no OPEN command, and it changes the ECPG parser to override the new main-parser rules.",
+      "objection": "Heikki Linnakangas objected to the USING clause on DECLARE as a non-standard extension and proposed `DECLARE c CURSOR FOR EXECUTE p (foo, bar)` instead. Robert Haas supported the author's syntax, and the discussion stopped in July 2018 with no agreement. After months without activity and no reply to a status inquiry, Dmitry Dolgov marked the entry returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "PREPARE query string multi-statement",
+        "pg_prepared_statements statement text",
+        "CleanQuerytext prepared statement",
+        "error cursor position query offset",
+        "prepared statement source text truncate"
+      ],
+      "from_hint": false,
+      "score": 0.525,
+      "enriched": true,
+      "key_quote": "I hope it's not another abandoned patch, but due to lack of response I'm\nmarking it as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2Bq6zcWJifdjoXiqPqiRAqw%3DEE%3DDVLksr4kFz%3DVevwyrU_iqTA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:2002",
+      "kind": "cf",
+      "title": "query logging of prepared statements",
+      "status": "Withdrawn",
+      "date": "2019-04-22",
+      "first_date": "2019-02-08",
+      "url": "https://commitfest.postgresql.org/patch/2002/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20190208132953.GF29720@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "Andres Freund",
+      "summary": "The patch stops repeating the prepared statement text in the log on every bind and execute, for both SQL EXECUTE and protocol-level PQexecPrepared, to cut log volume. Later versions log the text at Parse instead and, following a suggestion from Alvaro Herrera, use a flag in the portal so the statement is logged once.",
+      "objection": "Alvaro Herrera found that v2 dropped the statement text for unnamed statements under log_statement=all, so the patch needed more work. Andres Freund then objected to logging the statement only once: with long-running connections and many executions of one prepared statement, the query text would be far back in the log file or in an earlier rotated file. The author said he would tentatively withdraw the patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "PREPARE query string multi-statement",
+        "pg_prepared_statements statement text",
+        "CleanQuerytext prepared statement",
+        "multi-statement query string location",
+        "prepared statement source text truncate"
+      ],
+      "from_hint": false,
+      "score": 0.524,
+      "enriched": true,
+      "key_quote": "I'm sympathetic to the desire to reduce log volume, but I'm fearful this would make log analysis much harder.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20190406011638.pgb7uxjz2hnhavsu%40alap3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:2241",
+      "kind": "cf",
+      "title": "New GUC prepared_statement_limit to limit memory used by prepared statements",
+      "status": "Returned with feedback",
+      "date": "2019-11-28",
+      "first_date": "2019-08-17",
+      "url": "https://commitfest.postgresql.org/patch/2241/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ed51c14c-b3ff-5e2e-962c-69ac3ccb2c07@ikoffice.de"
+      ],
+      "authors": "Daniel Migowski (dmigowski)",
+      "objectors": "Tom Lane, Kyotaro Horiguchi",
+      "summary": "The patch adds a GUC, prepared_statement_limit, that caps the memory each session uses for saved CachedPlanSources, keeping them in an LRU list and invalidating query lists and generic plans when the limit is exceeded. It also changes the plan cache invalidation callbacks to free invalidated query lists at once instead of only marking them invalid.",
+      "objection": "The patch was returned with feedback because the author did not update it in the months after review. Reviewers had found it crashed in the regression tests: Tom Lane traced this to freeing data inside PlanCacheRelCallback and similar callbacks while outer call levels may still be using it. Tom Lane also doubted the design. A cache size limit risks sudden performance drops, only the regeneratable parts of an entry are freed, the limit applies to total rather than freeable usage, and CachedExpressions are not covered. Kyotaro Horiguchi noted that measuring memory through context stats is too expensive and that there was no consensus on how to prune caches in general.",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "PREPARE query string multi-statement",
+        "pg_prepared_statements statement text",
+        "CleanQuerytext prepared statement",
+        "prepared statement source text truncate"
+      ],
+      "from_hint": false,
+      "score": 0.495,
+      "enriched": true,
+      "key_quote": "It's hard to tell where performance is going to fall off a cliff if you limit the cache size.",
+      "quote_message_url": "https://www.postgresql.org/message-id/6391.1567546041%40sss.pgh.pa.us",
+      "relevant": true
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:4518",
+      "kind": "cf",
+      "title": "Support prepared statement invalidation when result or argument types change",
+      "status": "Withdrawn",
+      "date": "2024-07-25",
+      "first_date": "2023-08-25",
+      "url": "https://commitfest.postgresql.org/patch/4518/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGECzQQ3nPt5joW50FygoM_7YU9QjKO06say4c-sCceqh8vnsg@mail.gmail.com"
+      ],
+      "authors": "Jelte Fennema-Nio (jeltef)",
+      "objectors": "Tom Lane, Shay Rojansky",
+      "summary": "The patch lets a prepared statement keep working after DDL or a search_path change alters its result types, so the server replans it and sends the new RowDescription instead of raising \"cached plan must not change result type\". A third patch did the same for changed argument types and was later dropped.",
+      "objection": "Tom Lane called the change a wire protocol break: a client that already ran Describe Statement has no way to learn that the result description is now wrong, and the error exists to prevent that. Shay Rojansky noted that the Npgsql driver caches RowDescriptions. The author agreed and withdrew the patch until the protocol has a way to signal a new RowDescription, for which he needs the separate protocol-version work.",
+      "touch_points": [],
+      "matched_queries": [
+        "PREPARE query string multi-statement",
+        "pg_prepared_statements statement text",
+        "CleanQuerytext prepared statement",
+        "prepared statement source text truncate"
+      ],
+      "from_hint": false,
+      "score": 0.431,
+      "enriched": true,
+      "key_quote": "What if the client has\npreviously done a Describe Statement on the prepared statement?\nWe have no mechanism for notifying it that that information is\nnow falsified.",
+      "quote_message_url": "https://www.postgresql.org/message-id/1238027.1721835596%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:1150",
+      "kind": "cf",
+      "title": "Implicit prepare of statements: replace literals with parameters and store cached plans",
+      "status": "Returned with feedback",
+      "date": "2018-03-06",
+      "first_date": "2017-04-24",
+      "url": "https://commitfest.postgresql.org/patch/1150/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/8e76d8fc-8b8c-14bd-d4d1-e9cf193a74f5@postgrespro.ru"
+      ],
+      "authors": "Konstantin Knizhnik (knizhnik)",
+      "objectors": "David Steele",
+      "summary": "When a query with different literal values repeats many times in one backend, replace the literals with parameters and run it as an implicitly prepared statement with a cached plan. The cache is per backend and is controlled by an autoprepare_threshold setting, for clients that cannot use prepared statements, such as connections through pgbouncer.",
+      "objection": "The patch moved through several commitfests without review, and the shown messages are about rebases and build fixes only. David Steele returned it with feedback in the final PG11 commitfest because it had no review or comments since May 2017 and he judged it too complex and invasive for that commitfest.",
+      "touch_points": [],
+      "matched_queries": [
+        "PREPARE query string multi-statement",
+        "pg_prepared_statements statement text",
+        "CleanQuerytext prepared statement",
+        "cached plan query string memory",
+        "prepared statement source text truncate"
+      ],
+      "from_hint": false,
+      "score": 0.419,
+      "enriched": true,
+      "key_quote": "This patch has received no review or comments since last May and appears\ntoo complex and invasive for the final CF of PG11.",
+      "quote_message_url": "https://www.postgresql.org/message-id/be239334-8570-fc17-d32d-ffcb39923b58%40pgmasters.net",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:2223",
+      "kind": "cf",
+      "title": "Adding column \"mem_usage\" to view pg_prepared_statements",
+      "status": "Returned with feedback",
+      "date": "2019-09-30",
+      "first_date": "2019-07-28",
+      "url": "https://commitfest.postgresql.org/patch/2223/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/41ED3F5450C90F4D8381BC4D8DF6BBDCF02E10B4@EXCHANGESERVER.ikoffice.de"
+      ],
+      "authors": "Daniel Migowski (dmigowski)",
+      "objectors": "Andres Freund, Alvaro Herrera",
+      "summary": "The patch adds a column mem_usage to the view pg_prepared_statements that reports the memory used by each prepared statement's CachedPlanSource contexts, including the generic plan. It did not recurse into child memory contexts.",
+      "objection": "Andres Freund argued against separate memory reporting for each object type and proposed a general function that walks memory contexts from TopMemoryContext and reports owning objects such as prepared statements, cursors and caches. He also objected that a new column would make pg_prepared_statements more expensive for clients that query it automatically. The author agreed to rewrite the patch around a general memory view, but no new version was posted, and Alvaro Herrera noted the patch no longer applied and the discussion had not produced a code revision.",
+      "touch_points": [],
+      "matched_queries": [
+        "PREPARE query string multi-statement",
+        "pg_prepared_statements statement text",
+        "CleanQuerytext prepared statement",
+        "prepared statement source text truncate"
+      ],
+      "from_hint": false,
+      "score": 0.413,
+      "enriched": true,
+      "key_quote": "I'm just not sure that adding separate\ninfrastructure for various objects is a sutainable approach.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20190805171608.g22gxwmfr2r7uf6t%40alap3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:4156",
+      "kind": "cf",
+      "title": "Report the query string that caused a memory error under Valgrind",
+      "status": "Withdrawn",
+      "date": "2023-01-31",
+      "first_date": "2023-01-31",
+      "url": "https://commitfest.postgresql.org/patch/4156/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/AM9PR83MB0498531E804DC8DF8CFF0E8FE9D09@AM9PR83MB0498.EURPRD83.prod.outlook.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "The patch makes a backend running under Valgrind print the current query string right after each memory error report in the Valgrind log. The author wants this so testers, such as Citus with its regression tests under Valgrind, can tell which query caused an error.",
+      "objection": "The visible messages do not show why. Only the author's first message is shown, with no replies, and the entry was withdrawn on the day the thread started.",
+      "touch_points": [],
+      "matched_queries": [
+        "cached plan query string memory",
+        "multi-statement query string location",
+        "error cursor position query offset"
+      ],
+      "from_hint": false,
+      "score": 0.398,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:4839",
+      "kind": "cf",
+      "title": "The Prepare statement with the skewed parameter uses the custom plan",
+      "status": "Withdrawn",
+      "date": "2024-09-22",
+      "first_date": "2023-11-03",
+      "url": "https://commitfest.postgresql.org/patch/4839/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/9365b39d-a748-4e61-9396-466689ea0aa5@yeah.net"
+      ],
+      "authors": "Zongliang Quan (quanzl)",
+      "objectors": "",
+      "summary": "The patch marks a Const as coming from a Param, and var_eq_const checks whether the column compared to that parameter has skewed statistics. If it does, choose_custom_plan always returns true, so the prepared statement keeps using a custom plan; a later version adds a GUC to control this.",
+      "objection": "Only the author posted in the thread, and no reviewer replied to the idea or the patches. The entry was withdrawn, and the visible messages do not show a technical objection.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "PREPARE query string multi-statement",
+        "pg_prepared_statements statement text",
+        "CleanQuerytext prepared statement",
+        "prepared statement source text truncate"
+      ],
+      "from_hint": false,
+      "score": 0.365,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "wiki:Functions:1",
+      "kind": "do_not_want",
+      "title": "Enforce typmod for function inputs, function results and parameters for spi_prepare'd statements called from PLs",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Functions",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Enforce typmod for function inputs, function results and parameters for spi_prepare'd statements called from PLs\nSection: Functions\nLinked: Re: BUG #2917: spi_prepare doesn't accept typename aliases; RFC for adding typmods to functions",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "PREPARE query string multi-statement",
+        "pg_prepared_statements statement text",
+        "CleanQuerytext prepared statement",
+        "prepared statement source text truncate"
+      ],
+      "from_hint": false,
+      "score": 0.235,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "revert:83efce7a1ebc5bae79617ddba12a64790141725c",
+      "kind": "revert",
+      "title": "Revert \"Cope with NULL query string in ExecInitParallelPlan().\"",
+      "status": "Reverted",
+      "date": "2021-04-15",
+      "first_date": "2021-04-08",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=83efce7a1ebc5bae79617ddba12a64790141725c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2197698.1617984583@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20210407225806.majgznh4lk34hjvu@alap3.anarazel.de"
+      ],
+      "authors": "Andres Freund",
+      "objectors": "",
+      "summary": "Revert \"Cope with NULL query string in ExecInitParallelPlan().\"\nReverted commit(s): Cope with NULL query string in ExecInitParallelPlan().",
+      "objection": "This reverts commit b3ee4c503872f3d0a5d6a7cbde48815f555af15b.\nWe don't need it in the wake of the preceding commit, which\nadded an upstream check that the querystring isn't null.",
+      "touch_points": [],
+      "matched_queries": [
+        "cached plan query string memory",
+        "multi-statement query string location"
+      ],
+      "from_hint": false,
+      "score": 0.207,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "revert:1c175cd76a9db7d6114139a28f838697e88306ba",
+      "kind": "revert",
+      "title": "Revert current_query() change to use debug_query_string  again;  add comment.",
+      "status": "Reverted",
+      "date": "2009-01-08",
+      "first_date": "2009-01-08",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1c175cd76a9db7d6114139a28f838697e88306ba",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert current_query() change to use debug_query_string  again;  add comment.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "cached plan query string memory",
+        "multi-statement query string location"
+      ],
+      "from_hint": false,
+      "score": 0.174,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "revert:1591fcbec77f6544a0f665758bae912c68e6fa42",
+      "kind": "revert",
+      "title": "Revert my bad decision of about a year ago to make PortalDefineQuery responsible for copying the query string into the new Portal.",
+      "status": "Reverted",
+      "date": "2008-04-02",
+      "first_date": "2008-04-02",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1591fcbec77f6544a0f665758bae912c68e6fa42",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert my bad decision of about a year ago to make PortalDefineQuery responsible for copying the query string into the new Portal.  Such copying is unnecessary in the common code path through exec_simple_query, and in this case it can be enormously expensive because the string might contain a large number of individual commands; we were copying the entire, long string for each command, resulting in O(N^2) behavior for N commands. (This is the cause of bug #4079.)  A second problem with it is that PortalDefineQuery really can't risk error, because if it elog's before having set up the Portal, we will leak the plancache refcount that the caller is trying to hand off to the portal.  So go back to the design in which the caller is responsible for making sure everything is copied into the portal if necessary.",
+      "objection": "Revert my bad decision of about a year ago to make PortalDefineQuery\nresponsible for copying the query string into the new Portal.  Such copying\nis unnecessary in the common code path through exec_simple_query, and in\nthis case it can be enormously expensive because the string might contain\na large number of individual commands; we were copying the entire, long\nstring for each command, resulting in O(N^2) behavior for N commands.\n(This is the cause of bug #4079.)  A second problem with it is that\nPortalDefineQuery really can't risk error, because if it elog's before\nhaving set up the Portal, we will leak the plancache refcount that the\ncaller is trying to hand off to the portal.  So go back to the design in\nwhich the caller is responsible for making sure everything is copied into\nthe portal if necessary.",
+      "touch_points": [],
+      "matched_queries": [
+        "cached plan query string memory",
+        "multi-statement query string location"
+      ],
+      "from_hint": false,
+      "score": 0.162,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:f85f6ab051b7cf6950247e5fa6072c4130613555",
+      "kind": "revert",
+      "title": "Revert support for improved tracking of nested queries",
+      "status": "Reverted",
+      "date": "2025-06-12",
+      "first_date": "2024-10-22",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f85f6ab051b7cf6950247e5fa6072c4130613555",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/18947-cdd2668beffe02bf@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/CAO6_XqqM6S9bQ2qd=75W+yKATwoazxSNhv5sjW06fjGAtHbTUA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/844a3b38-bbf1-4fb2-9fd6-f58c35c09917@pgbackrest.org"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert support for improved tracking of nested queries\nReverted commit(s): Track more precisely query locations for nested statements; Fix regression with location calculation of nested statements; pg_stat_statements: Add tests for nested queries with level tracking",
+      "objection": "This commit reverts the two following commits:\n- 499edb09741b, track more precisely query locations for nested\nstatements.\n- 06450c7b8c70, a follow-up fix of 499edb09741b with query locations.\nThe test introduced in this commit is not reverted.  This is proving\nuseful to track a problem that only pgaudit was able to detect.\n\nThese prove to have issues with the tracking of SELECT statements, when\nthese use multiple parenthesis which is something supported by the\ngrammar.  Incorrect location and lengths are causing pg_stat_statements\nto become confused, failing its job in query normalization with\npotential out-of-bound writes because the location and the length may\nnot match with what can be handled.  A lot of the query patterns\ndiscussed when this issue was reported have no test coverage in the main\nregression test suite, or the recovery test 027_stream_regress.pl would\nhave caught the problems as pg_stat_statements is loaded by the node\nrunning the regression tests.  A first step would be to improve the test\ncoverage to stress more the query normalization logic.\n\nA different portion of this work was done in 45e0ba30fc40, with the\naddition of tests for nested queries.  These can be left in the tree.\nThey are useful to track the way inner queries are currently tracked by\nPGSS with non-top-level entries, and will be useful when reconsidering\nin the future the work reverted here.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "SQL syntax / standard"
+      ],
+      "matched_queries": [
+        "multi-statement query string location"
+      ],
+      "from_hint": false,
+      "score": 0.148,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3531",
+      "kind": "cf",
+      "title": "[PATCH] Add UPDATE WHERE OFFSET IN clause",
+      "status": "Returned with feedback",
+      "date": "2022-04-08",
+      "first_date": "2022-02-07",
+      "url": "https://commitfest.postgresql.org/patch/3531/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2818f875-0eda-7040-637d-801806fdaf60@pr.hu"
+      ],
+      "authors": "Zoltan Boszormenyi (zoltanb)",
+      "objectors": "",
+      "summary": "[PATCH] Add UPDATE WHERE OFFSET IN clause\nThreads: [PATCH] Add UPDATE WHERE OFFSET IN clause",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "error cursor position query offset"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:1513",
+      "kind": "cf",
+      "title": "OFFSET optimisation for IndexScan using visibility map",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2018-01-31",
+      "url": "https://commitfest.postgresql.org/patch/1513/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANtu0oi3a1Rf1PVsBufQbm+g9ytSv75+kp7kJYvK5C1qF_0Siw@mail.gmail.com"
+      ],
+      "authors": "Michail Nikolaev (nkey)",
+      "objectors": "",
+      "summary": "OFFSET optimisation for IndexScan using visibility map\nThreads: [WIP PATCH] Index scan offset optimisation using visibility map",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "error cursor position query offset"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:5486",
+      "kind": "cf",
+      "title": "Optionally record Plan IDs to track plan changes for a query",
+      "status": "Returned with feedback",
+      "date": "2025-03-24",
+      "first_date": "2025-01-02",
+      "url": "https://commitfest.postgresql.org/patch/5486/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAP53Pkyow59ajFMHGpmb1BK9WHDypaWtUsS_5DoYUEfsa_Hktg@mail.gmail.com"
+      ],
+      "authors": "Lukas Fittl (lfittl)",
+      "objectors": "",
+      "summary": "Optionally record Plan IDs to track plan changes for a query\nThreads: [PATCH] Optionally record Plan IDs to track plan changes for a query",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "cached plan query string memory"
+      ],
+      "from_hint": false,
+      "score": 0.092,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "revert:6719b238e8f0ea83c39d2b1728c7670cdaa34e06",
+      "kind": "revert",
+      "title": "Rearrange execution of PARAM_EXTERN Params for plpgsql's benefit.",
+      "status": "Partially reverted",
+      "date": "2017-12-21",
+      "first_date": "2015-07-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6719b238e8f0ea83c39d2b1728c7670cdaa34e06",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/32589.1513706441@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Rearrange execution of PARAM_EXTERN Params for plpgsql's benefit.\nReverted commit(s): Further reduce overhead for passing plpgsql variables to the executor.",
+      "objection": "This patch does three interrelated things:\n\n* Create a new expression execution step type EEOP_PARAM_CALLBACK\nand add the infrastructure needed for add-on modules to generate that.\nAs discussed, the best control mechanism for that seems to be to add\nanother hook function to ParamListInfo, which will be called by\nExecInitExpr if it's supplied and a PARAM_EXTERN Param is found.\nFor stand-alone expressions, we add a new entry point to allow the\nParamListInfo to be specified directly, since it can't be retrieved\nfrom the parent plan node's EState.\n\n* Redesign the API for the ParamListInfo paramFetch hook so that the\nParamExternData array can be entirely virtual.  This also lets us get rid\nof ParamListInfo.paramMask, instead leaving it to the paramFetch hook to\ndecide which param IDs should be accessible or not.  plpgsql_param_fetch\nwas already doing the identical masking check, so having callers do it too\nseemed redundant.  While I was at it, I added a \"speculative\" flag to\nparamFetch that the planner can specify as TRUE to avoid unwanted failures.\nThis solves an ancient problem for plpgsql that it couldn't provide values\nof non-DTYPE_VAR variables to the planner for fear of triggering premature\n\"record not assigned yet\" or \"field not found\" errors during planning.\n\n* Rework plpgsql to get rid of the need for \"unshared\" parameter lists,\nby dint of turning the single ParamListInfo per estate into a nearly\nread-only data structure that doesn't instantiate any per-variable data.\nInstead, the paramFetch hook controls access to per-variable data and can\nmake the right decisions on the fly, replacing the cases that we used to\nneed multiple ParamListInfos for.  This might perhaps have been a\nperformance loss on its own, but by using a paramCompile hook we can\nbypass plpgsql_param_fetch entirely during normal query execution.\n(It's now only called when, eg, we copy the ParamListInfo into a cursor\nportal.  copyParamList() or SerializeParamList() effectively instantiate\nthe virtual parameter array as a simple physical array without a\nparamFetch hook, which is what we want in those cases.)  This allows\nreverting most of commit 6c82d8d1f, though I kept the cosmetic\ncode-consolidation aspects of that (eg the assign_simple_var function).\n\nPerformance testing shows this to be at worst a break-even change,\nand it can provide wins ranging up to 20% in test cases involving\naccesses to fields of \"record\" variables.  The fact that values of\nsuch variables can now be exposed to the planner might produce wins\nin some situations, too, but I've not pursued that angle.\n\nIn passing, remove the \"parent\" pointer from the arguments to\nExecInitExprRec and related functions, instead storing that pointer in a\ntransient field in ExprState.  The ParamListInfo pointer for a stand-alone\nexpression is handled the same way; we'd otherwise have had to add\nyet another recursively-passed-down argument in expression compilation.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "error cursor position query offset"
+      ],
+      "from_hint": false,
+      "score": 0.088,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:4825",
+      "kind": "cf",
+      "title": "Optimize planner memory consumption for huge arrays",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-09-04",
+      "url": "https://commitfest.postgresql.org/patch/4825/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/em9939439a-441a-4b27-a977-ebdf5987dc49@7d14f008.com"
+      ],
+      "authors": "Andrei Lepikhov (lepikhov)",
+      "objectors": "",
+      "summary": "Optimize planner memory consumption for huge arrays\nThreads: Optimize planner memory consumption for huge arrays",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "cached plan query string memory"
+      ],
+      "from_hint": false,
+      "score": 0.086,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:2648",
+      "kind": "cf",
+      "title": "Allow queries in WHEN expression of FOR EACH STATEMENT triggers",
+      "status": "Withdrawn",
+      "date": "2021-01-13",
+      "first_date": "2020-07-16",
+      "url": "https://commitfest.postgresql.org/patch/2648/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/C47C490A-BAEC-4879-BC96-737BB4BF3DC1@lateraljoin.com"
+      ],
+      "authors": "Joe Wildish (joewildish)",
+      "objectors": "",
+      "summary": "Allow queries in WHEN expression of FOR EACH STATEMENT triggers\nThreads: [PATCH] Allow queries in WHEN expression of FOR EACH STATEMENT\ntriggers",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "multi-statement query string location"
+      ],
+      "from_hint": false,
+      "score": 0.083,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:2558",
+      "kind": "cf",
+      "title": "loop over unbound cursor",
+      "status": "Withdrawn",
+      "date": "2020-08-10",
+      "first_date": "2020-05-18",
+      "url": "https://commitfest.postgresql.org/patch/2558/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFj8pRDQKG-9C4R2yCpthrgFje9aiocahASJJCu6wb-jnuEWkQ@mail.gmail.com"
+      ],
+      "authors": "Pavel Stehule (okbobcz)",
+      "objectors": "",
+      "summary": "loop over unbound cursor\nThreads: proposal - plpgsql - FOR over unbound cursor",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "error cursor position query offset"
+      ],
+      "from_hint": false,
+      "score": 0.083,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:3148",
+      "kind": "cf",
+      "title": "Allow queries in WHEN expression of FOR EACH STATEMENT triggers",
+      "status": "Withdrawn",
+      "date": "2021-10-03",
+      "first_date": "2020-07-16",
+      "url": "https://commitfest.postgresql.org/patch/3148/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/C47C490A-BAEC-4879-BC96-737BB4BF3DC1@lateraljoin.com"
+      ],
+      "authors": "Joe Wildish (joewildish)",
+      "objectors": "",
+      "summary": "Allow queries in WHEN expression of FOR EACH STATEMENT triggers\nThreads: [PATCH] Allow queries in WHEN expression of FOR EACH STATEMENT\ntriggers",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "multi-statement query string location"
+      ],
+      "from_hint": false,
+      "score": 0.08,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "wiki:Dates_and_Times:1",
+      "kind": "do_not_want",
+      "title": "Allow TIMESTAMP WITH TIME ZONE to store the original timezone information, either zone name or offset from UTC",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Dates_and_Times",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/Pine.LNX.4.44.0410211300430.2015-100000@zigo.dhs.org"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "Allow TIMESTAMP WITH TIME ZONE to store the original timezone information, either zone name or offset from UTC\nSection: Data Types / Dates and Times\nLinked: timestamp with time zone a la sql99",
+      "objection": "If the TIMESTAMP value is stored with a time zone name, interval computations should adjust based on the time zone rules.",
+      "touch_points": [],
+      "matched_queries": [
+        "error cursor position query offset"
+      ],
+      "from_hint": false,
+      "score": 0.077,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:1362",
+      "kind": "cf",
+      "title": "PARALLEL flag for cursors",
+      "status": "Returned with feedback",
+      "date": "2018-02-07",
+      "first_date": "2017-10-14",
+      "url": "https://commitfest.postgresql.org/patch/1362/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/98760523-a0d2-8705-38e3-c4602ecf2448@2ndquadrant.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "PARALLEL flag for cursors\nThreads: PATCH: enabling parallel execution for cursors explicitly\n(experimental)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "error cursor position query offset"
+      ],
+      "from_hint": false,
+      "score": 0.073,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "wiki:Optimizer_.2F_Executor:3",
+      "kind": "do_not_want",
+      "title": "Modify the planner to better estimate caching effects",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Optimizer_.2F_Executor",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Modify the planner to better estimate caching effects\nSection: Optimizer / Executor",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "cached plan query string memory"
+      ],
+      "from_hint": false,
+      "score": 0.067,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 3,
+    "new_calls": 5,
+    "failed": 0,
+    "quotes_verified": 3,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 3
+  },
+  "precedent_cutoff": "2025-12-24",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "[P12] and [P3] cover nearby areas: per-command copying of the whole query string into portals, and a memory limit GUC. Their recorded reasons do not apply here, and [P12] if anything supports the problem statement."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "Error-cursor correctness and the open assertion failure belong to other angles. From a compatibility view, only the two text-contract changes above apply."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "The proposal changes only backend-local, in-memory prepared statement text. It adds no on-disk format, WAL, catalog, replication or wire protocol change, so those parts of this angle have nothing to object to."
+    },
+    {
+      "angle": "security",
+      "objections": 1,
+      "note": "The text shown in pg_prepared_statements gets shorter and stays visible only to the owning session, so it adds no new data exposure. It may even hide unrelated statements, such as ones with passwords, that the old full string exposed."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 4,
+      "note": "Objections found. No visible committer supports the patch; Tom Lane doubted it in message #2 and has been silent since."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "One objection from this angle. No extension or contrib module trims the stored PREPARE text, so the only existing alternative is a change on the client side."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "The objection is \"not now, show demand\". It is not a claim that the problem does not exist."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 12,
+      "new_objections": 11,
+      "new_survived": 5,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 104,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 20,
+    "wall_ms": 191921,
+    "cost_usd": 2.9156700000000004,
+    "dry_run": false
+  }
+}

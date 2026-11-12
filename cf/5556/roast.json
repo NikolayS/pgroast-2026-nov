@@ -1,0 +1,1601 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:32:36.447Z",
+  "input": {
+    "arg": "5556",
+    "cf": {
+      "id": 5556,
+      "url": "https://commitfest.postgresql.org/patch/5556/",
+      "title": "Expanding HOT updates for expression and partial indexes",
+      "status": "Needs review",
+      "authors": "Greg Burd (gregburd)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/78574B24-BE0A-42C5-8075-3FA9FA63B8FC%40amazon.com",
+    "subject": "Expanding HOT updates for expression and partial indexes",
+    "thread_start": "2025-02-06T22:24:34Z",
+    "messages_read": 88,
+    "messages_total": 88,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v15-0001-Expand-HOT-update-path-to-include-expression-and.patch",
+      "v3-0001-Expand-HOT-update-path-to-include-expression-and-.patch",
+      "v4-0001-Expand-HOT-update-path-to-include-expression-and-.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection questions the goal, and demand is shown. Three fixable points remain. demand-1: updates that change an expensive index expression get slower, and the v46 messages name no opt-out. replication-ondisk-1: HOT safety now depends on extension answers that nothing checks. prior-attempts-1: the thread does not state the root cause of the 2018 revert. None of these stops review, but a committer who knows heapam and the index AMs must judge them.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Allow HOT updates when expression and partial index values do not change",
+    "problem": "Any update to a column used in an index expression or partial-index predicate blocks HOT today, even when the indexed value stays the same. The author names JSONB users with expression indexes on document fields, plus ORMs and logical replication apply that write back unchanged values. Extensions such as DocumentDB with RUM indexes over whole documents never get HOT updates.",
+    "proposed_design": "The executor, instead of heap_update() under the buffer lock, finds which indexed attributes an UPDATE really changed and passes that set to table_tuple_update(). A column used only through expressions or predicates no longer blocks HOT when each index's datums are unchanged and the row stays on the same side of the predicate. An optional index AM callback, a function support request and image comparison of toasted values narrow the set further.",
+    "user_visible_surface": [
+      "New optional index AM callback amcomparedatums, implemented for GIN and hash; never asked about a column the index can return.",
+      "New function support request SupportRequestSubattr, with support for jsonb, arrays, records and extension types.",
+      "table_tuple_update() and heap_update() take the set of modified indexed attributes; ExecInsertIndexTuples() gets a new argument for the indexUnchanged hint.",
+      "New relcache bitmap INDEX_ATTR_BITMAP_INDEXED, the union of HOT_BLOCKING and SUMMARIZED.",
+      "Early versions had a GUC enable_expression_checks, later a reloption expression_checks; the material does not say whether either is still in v46."
+    ],
+    "author_claims": [
+      "A jsonb update with two expression indexes went from 3600 ms to 788 ms, and from 0% to 78% HOT.",
+      "Write-back of an unchanged compressed value under btree is about 92% faster; controls and pgbench stay within 3%.",
+      "When an expensive index expression's value does change, UPDATEs run 33-44% slower because the old row's expression is evaluated again.",
+      "The executor-side attribute check (0002) leaves HOT, lock mode and replica identity decisions identical to master, checked across all regression tests.",
+      "DocumentDB updates of unindexed fields went from 0% to 100% HOT with an amcomparedatums for its RUM fork."
+    ],
+    "thread_state": "Matthias van de Meent, Jeff Davis and Nathan Bossart reviewed; the v19 attempt was deferred in March 2026 because only the refactoring was ready. v46 (nine patches) has had no visible review; Matthias's last review was of v39, and Peter Geoghegan's view on a per-row indexUnchanged hint is not shown.",
+    "unclear": [
+      "Whether any GUC or reloption to turn off expression evaluation remains in the current version.",
+      "How the design avoids the bug that caused the 2018 revert of surjective functional indexes.",
+      "Whether the SupportRequestSubattr proof is checked beyond in-tree types, and what happens when an extension answers wrongly.",
+      "The current status of exclusion constraint handling, which 0009 of v41 covered and v42 dropped.",
+      "Whether simple_heap_update() callers in extensions see any change in behaviour."
+    ],
+    "search_queries": [
+      "surjective functional indexes HOT",
+      "HOT update expression index",
+      "recheck_on_update index option",
+      "HOT partial index predicate",
+      "jsonb expression index HOT",
+      "index AM compare datums HOT",
+      "modified indexed columns executor heap_update",
+      "WARM PHOT update indexes"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Users of costly expression indexes pay with no opt-out shown",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site keeps a to_tsvector() expression index on a text column that changes on most updates. After upgrade, each UPDATE evaluates the expression an extra time for the old row and gets no HOT update in return. The site sees the slowdown in production and finds no reloption to turn the check off.",
+      "argument": "Demand is real: JSONB expression indexes, ORM and logical replication write-back, a reverted earlier attempt, and reviewer support (messages #2, #45). The cost lands elsewhere. Message #81 reports +33-44% for changing expensive expressions, and that figure assumed 0010 removed one evaluation. Messages #83-84 dropped 0010, so v46 may be back to the 55% of message #79. Laurenz Albe asked for a per-table switch (message #2), the early versions had one, and the v46 messages do not mention it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        79,
+        81,
+        83,
+        84,
+        88
+      ],
+      "author_must_show": "What does v46 cost for an UPDATE that changes an expensive index expression, and can a table with such indexes opt out of the extra evaluation?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Laurenz Albe",
+          "date": "2025-02-09T06:14:49Z",
+          "url": "https://www.postgresql.org/message-id/0a47ce53fa635787d36325b5ad7bac94cdca4246.camel%40cybertec.at"
+        },
+        {
+          "index": 79,
+          "from": "Greg Burd",
+          "date": "2026-10-17T18:30:54Z",
+          "url": "https://www.postgresql.org/message-id/-ugooulGn7M5X4DFIzWHSgYRngUmXChD_a-JvcMaklnDNcHMGnQhcM82SpYY76Je5ss4TOrsQB5sv2USLRSlDcpwDX-6CgCCbGKlJuA0SOs%3D%40protonmail.com"
+        },
+        {
+          "index": 81,
+          "from": "Greg Burd",
+          "date": "2026-10-19T20:18:51Z",
+          "url": "https://www.postgresql.org/message-id/j-s6ilS5lyXpV_6l6Q10JTSiumDI5TBUf2zsOfUZAsB3-TjQCJgxWWVIuoCvDZrhD5ljcouHg1s_S_FfjjBS-97Min2Wwyvm5vFSIcdsz_o%3D%40burd.me"
+        },
+        {
+          "index": 83,
+          "from": "Greg Burd",
+          "date": "2026-10-21T15:25:06Z",
+          "url": "https://www.postgresql.org/message-id/XtuZX8xWYFYMwfJ0BFIwteRjtst6uj1MVjGxiXNb8PuUJwkAUhvdQqeE1wbZPiYvmZ9G92o6CORDsp1vb3S8ci-lublEhHrFTil4GIYQBvU%3D%40burd.me"
+        },
+        {
+          "index": 84,
+          "from": "Greg Burd",
+          "date": "2026-10-22T18:52:50Z",
+          "url": "https://www.postgresql.org/message-id/atpXQaH1UBS3LY-6%40floki"
+        },
+        {
+          "index": 88,
+          "from": "Greg Burd",
+          "date": "2026-11-11T13:43:41Z",
+          "url": "https://www.postgresql.org/message-id/179434258467.3460405.2730116922465377144%40burd.me"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #81 reports the regression for expensive expressions whose value changes, and v42 dropped the datum reuse that had lowered it from about 55%. No message from v39 onward says whether the expression_checks reloption remains, so these users have no stated opt-out.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "HOT chain correctness now depends on extension answers, with no check",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "on_disk_pg_upgrade",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension's SupportRequestSubattr handler or amcomparedatums (for example the RUM fork in message #79) wrongly reports an index's entries as unchanged. The UPDATE goes HOT and no new index entry is written. The primary and every physical standby then hold an index that misses the new key, and queries silently skip the row until someone runs REINDEX.",
+      "argument": "Today HOT safety rests on a byte comparison inside core. With 0005 and 0006 it also rests on proofs and comparisons written in extension code, and a wrong answer is stored on disk and replicated, not just a bad plan for one query. Message #81 checks proofs only for in-tree types (\"misc_functions also checks HOT counts\"). The brief lists what happens when an extension answers wrongly as unclear. Wrong answers from planner support functions affect one query, while this one persists in the index.",
+      "precedent_ids": [
+        "P1"
+      ],
+      "thread_message_refs": [
+        79,
+        81,
+        88
+      ],
+      "author_must_show": "What stops, or detects, an index left without entries when an extension's SupportRequestSubattr or amcomparedatums answer is wrong, for example a debug check or an amcheck test?",
+      "precedents": [
+        {
+          "id": "P1",
+          "title": "Revert changes in HOT handling of BRIN indexes",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e3fcca0d0d2414f3a50d6fd40eddf48b7df81475",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/05ebcb44-f383-86e3-4f31-0a97a55634cf@enterprisedb.com",
+            "https://www.postgresql.org/message-id/flat/CAFp7QwpMRGcDAQumN7onN9HjrJ3u4X3ZRXdGFT0K5G2JWvnbWg@mail.gmail.com"
+          ],
+          "date": "2022-06-16",
+          "status": "Reverted"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 79,
+          "from": "Greg Burd",
+          "date": "2026-10-17T18:30:54Z",
+          "url": "https://www.postgresql.org/message-id/-ugooulGn7M5X4DFIzWHSgYRngUmXChD_a-JvcMaklnDNcHMGnQhcM82SpYY76Je5ss4TOrsQB5sv2USLRSlDcpwDX-6CgCCbGKlJuA0SOs%3D%40protonmail.com"
+        },
+        {
+          "index": 81,
+          "from": "Greg Burd",
+          "date": "2026-10-19T20:18:51Z",
+          "url": "https://www.postgresql.org/message-id/j-s6ilS5lyXpV_6l6Q10JTSiumDI5TBUf2zsOfUZAsB3-TjQCJgxWWVIuoCvDZrhD5ljcouHg1s_S_FfjjBS-97Min2Wwyvm5vFSIcdsz_o%3D%40burd.me"
+        },
+        {
+          "index": 88,
+          "from": "Greg Burd",
+          "date": "2026-11-11T13:43:41Z",
+          "url": "https://www.postgresql.org/message-id/179434258467.3460405.2730116922465377144%40burd.me"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Extension opclass code can already corrupt an index, but a proof about which parts of a value a function reads is a new contract, and the thread shows checks only for in-tree types. P1 concerned a wrong assumption in core and must not be used as support.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Design does not say why the 2018 surjective-index revert cannot recur",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "prior_rejection",
+      "touch_points": [
+        "hot_path_performance",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer pushes the series, and a user with an expression or GiST index hits a bug of the same family that forced the 2018 revert. Users see it as a crash or a wrong index result after release, and the only fix in reach is a revert of the series.",
+      "argument": "Message #1 says this grew out of surjective functional indexes, which were committed and then reverted for a bug and other quality issues. The only later trace of that bug is message #79 adding \"Tom's 2018 gist point->box crash case\" as a test. No message says which invariant that commit broke or why the executor-side check keeps it. Message #76 notes that a problem found after commit could only be met with a revert, which is how the earlier attempt ended.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        76,
+        79
+      ],
+      "author_must_show": "What was the root cause of the 2018 revert, and which part of the v46 design rules it out, beyond one regression test?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "\"Burd, Greg\"",
+          "date": "2025-02-06T22:24:34Z",
+          "url": "https://www.postgresql.org/message-id/78574B24-BE0A-42C5-8075-3FA9FA63B8FC%40amazon.com"
+        },
+        {
+          "index": 76,
+          "from": "Nathan Bossart",
+          "date": "2026-03-25T17:16:05Z",
+          "url": "https://www.postgresql.org/message-id/acQYVfzHoL4lVTUE%40nathan"
+        },
+        {
+          "index": 79,
+          "from": "Greg Burd",
+          "date": "2026-10-17T18:30:54Z",
+          "url": "https://www.postgresql.org/message-id/-ugooulGn7M5X4DFIzWHSgYRngUmXChD_a-JvcMaklnDNcHMGnQhcM82SpYY76Je5ss4TOrsQB5sv2USLRSlDcpwDX-6CgCCbGKlJuA0SOs%3D%40protonmail.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The visible thread names the 2018 revert and adds Tom's gist point->box case as a test, but no message states the root cause or which part of the design rules it out. A test for one known case does not answer the invariant question.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Expression cost question from the earlier attempt has no answer yet",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site with a to_tsvector or md5 expression index, where most updates change the indexed value, upgrades. Those updates run 33-44% slower, because the old row's expression is evaluated again. The DBA finds this in production, and v46 may offer no setting to turn the check off.",
+      "argument": "Message #1 says the surjective thread discussed expression cost \"without resolution\" and answered it with a GUC, later a reloption (messages #2, #3, v15 docs). Message #81 still reports +33-44% for changing expensive expressions and 3-4% for whole-table updates that cannot go HOT. The v46 mail does not say whether any switch remains. Message #43 withdrew v29 for a 2-6% regression, so the author has judged a cost of this size unacceptable before.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        3,
+        43,
+        81
+      ],
+      "author_must_show": "Does v46 keep a per-table way to skip expression evaluation, and if not, what should users with expensive changing index expressions do?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "\"Burd, Greg\"",
+          "date": "2025-02-06T22:24:34Z",
+          "url": "https://www.postgresql.org/message-id/78574B24-BE0A-42C5-8075-3FA9FA63B8FC%40amazon.com"
+        },
+        {
+          "index": 2,
+          "from": "Laurenz Albe",
+          "date": "2025-02-09T06:14:49Z",
+          "url": "https://www.postgresql.org/message-id/0a47ce53fa635787d36325b5ad7bac94cdca4246.camel%40cybertec.at"
+        },
+        {
+          "index": 3,
+          "from": "\"Burd, Greg\"",
+          "date": "2025-02-10T12:02:27Z",
+          "url": "https://www.postgresql.org/message-id/C6C63FAF-10EA-4E58-81C3-BA4F609541CC%40amazon.com"
+        },
+        {
+          "index": 43,
+          "from": "\"Greg Burd\"",
+          "date": "2026-02-10T15:09:36Z",
+          "url": "https://www.postgresql.org/message-id/97769442-2ed7-4fe0-a393-7e2b5ff7ff58%40app.fastmail.com"
+        },
+        {
+          "index": 81,
+          "from": "Greg Burd",
+          "date": "2026-10-19T20:18:51Z",
+          "url": "https://www.postgresql.org/message-id/j-s6ilS5lyXpV_6l6Q10JTSiumDI5TBUf2zsOfUZAsB3-TjQCJgxWWVIuoCvDZrhD5ljcouHg1s_S_FfjjBS-97Min2Wwyvm5vFSIcdsz_o%3D%40burd.me"
+        }
+      ],
+      "id": "prior-attempts-2",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of demand-1, which states the same cost and the same missing switch. demand-1 also notes that the 33-44% figure assumed v41's 0010, which v42 dropped.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No documented way to opt out of the extra index-expression evaluation",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "new_guc",
+      "touch_points": [
+        "new_guc",
+        "hot_path_performance",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site has a table with a to_tsvector or md5 expression index whose value changes on most UPDATEs. After pg_upgrade, those UPDATEs run 33-44% slower because the old row's expression is now evaluated too. The DBA sees the regression in production and finds no setting or reloption that restores the old behaviour.",
+      "argument": "Message #81 reports the 33-44% regression for expensive expressions whose value changes, and 3-4% for whole-table UPDATEs the series cannot make HOT. Message #2 asked for a per-table switch, and v15 added the expression_checks reloption for this purpose. No mail from v39 onward mentions that reloption or the earlier GUC. A cost borne by existing workloads that gain nothing would likely need an opt-out, or a statement of why none is needed.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        3,
+        43,
+        81
+      ],
+      "author_must_show": "Does v46 keep a reloption such as expression_checks, and if not, how does a user with an expensive changing index expression get back master's UPDATE cost?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Laurenz Albe",
+          "date": "2025-02-09T06:14:49Z",
+          "url": "https://www.postgresql.org/message-id/0a47ce53fa635787d36325b5ad7bac94cdca4246.camel%40cybertec.at"
+        },
+        {
+          "index": 3,
+          "from": "\"Burd, Greg\"",
+          "date": "2025-02-10T12:02:27Z",
+          "url": "https://www.postgresql.org/message-id/C6C63FAF-10EA-4E58-81C3-BA4F609541CC%40amazon.com"
+        },
+        {
+          "index": 43,
+          "from": "\"Greg Burd\"",
+          "date": "2026-02-10T15:09:36Z",
+          "url": "https://www.postgresql.org/message-id/97769442-2ed7-4fe0-a393-7e2b5ff7ff58%40app.fastmail.com"
+        },
+        {
+          "index": 81,
+          "from": "Greg Burd",
+          "date": "2026-10-19T20:18:51Z",
+          "url": "https://www.postgresql.org/message-id/j-s6ilS5lyXpV_6l6Q10JTSiumDI5TBUf2zsOfUZAsB3-TjQCJgxWWVIuoCvDZrhD5ljcouHg1s_S_FfjjBS-97Min2Wwyvm5vFSIcdsz_o%3D%40burd.me"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of demand-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Existing HOT chains outlive the amcanreturn condition that made them safe",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension index AM accepts HOT updates through amcomparedatums for values that differ but give equal entries. A later release of the extension adds amcanreturn for that column, and the user upgrades without REINDEX. Index-only scans then return the root version's value for rows whose live heap value is different.",
+      "argument": "Message #84 makes amcomparedatums safe by skipping columns for which index_can_return() is true. It says an AM that later learns to return a column \"loses the shortcut rather than giving a wrong answer\". That holds for new updates. HOT chains already on disk were built under the old rule, and nothing in the proposal makes a reindex required when an AM's return ability changes. The rule therefore depends on state that can change after the chains exist.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        84
+      ],
+      "author_must_show": "What happens to HOT chains created through amcomparedatums when an AM or opclass later starts returning that column, and is a REINDEX required and documented?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 84,
+          "from": "Greg Burd",
+          "date": "2026-10-22T18:52:50Z",
+          "url": "https://www.postgresql.org/message-id/atpXQaH1UBS3LY-6%40floki"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The callback's contract is that old and new values give exactly the same index entries. Whatever an AM later returns from such an entry is the same as after a REINDEX, so the existing HOT chains add no wrong result.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Two new extension contracts can silently produce stale index entries",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension type's SupportRequestSubattr answer, or an out-of-tree AM's amcomparedatums, wrongly says an UPDATE cannot change what an index reads. The update goes HOT with no new index entry, and index scans then return wrong rows. Users find out from wrong query results, long after the update.",
+      "argument": "Message #79 calls 0005's support request \"purely an optimization\", but if it skips evaluation on a wrong proof, the HOT decision changes. Message #81 says only in-tree misc_functions tests catch a broken proof in non-assert builds. The proposal does not check extension answers at run time. [P1] shows that a relaxed HOT rule built on a wrong assumption about index upkeep led to corrupted indexes and a revert.",
+      "precedent_ids": [
+        "P1"
+      ],
+      "thread_message_refs": [
+        79,
+        81,
+        83
+      ],
+      "author_must_show": "What detects a wrong SupportRequestSubattr or amcomparedatums answer from an extension before it corrupts an index, and how would a user diagnose it?",
+      "precedents": [
+        {
+          "id": "P1",
+          "title": "Revert changes in HOT handling of BRIN indexes",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e3fcca0d0d2414f3a50d6fd40eddf48b7df81475",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/05ebcb44-f383-86e3-4f31-0a97a55634cf@enterprisedb.com",
+            "https://www.postgresql.org/message-id/flat/CAFp7QwpMRGcDAQumN7onN9HjrJ3u4X3ZRXdGFT0K5G2JWvnbWg@mail.gmail.com"
+          ],
+          "date": "2022-06-16",
+          "status": "Reverted"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 79,
+          "from": "Greg Burd",
+          "date": "2026-10-17T18:30:54Z",
+          "url": "https://www.postgresql.org/message-id/-ugooulGn7M5X4DFIzWHSgYRngUmXChD_a-JvcMaklnDNcHMGnQhcM82SpYY76Je5ss4TOrsQB5sv2USLRSlDcpwDX-6CgCCbGKlJuA0SOs%3D%40protonmail.com"
+        },
+        {
+          "index": 81,
+          "from": "Greg Burd",
+          "date": "2026-10-19T20:18:51Z",
+          "url": "https://www.postgresql.org/message-id/j-s6ilS5lyXpV_6l6Q10JTSiumDI5TBUf2zsOfUZAsB3-TjQCJgxWWVIuoCvDZrhD5ljcouHg1s_S_FfjjBS-97Min2Wwyvm5vFSIcdsz_o%3D%40burd.me"
+        },
+        {
+          "index": 83,
+          "from": "Greg Burd",
+          "date": "2026-10-21T15:25:06Z",
+          "url": "https://www.postgresql.org/message-id/XtuZX8xWYFYMwfJ0BFIwteRjtst6uj1MVjGxiXNb8PuUJwkAUhvdQqeE1wbZPiYvmZ9G92o6CORDsp1vb3S8ci-lublEhHrFTil4GIYQBvU%3D%40burd.me"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1, which gives the more concrete scenario. The P1 revert was about a core assumption on BRIN summaries, so it does not support this point either.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Users of expensive expression indexes pay up to 44% with no switch",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site with a to_tsvector expression index upgrades, and every UPDATE that changes the document now runs 33-44% slower. Whole-table UPDATEs that cannot become HOT also run 3-4% slower. The site sees it in latency after upgrade and has no documented setting to turn the checks off.",
+      "argument": "Message #81 reports both regressions. They fall on workloads that gain nothing, which is the rubric item 4 pattern. Message #2 asked for a per-table switch, and message #3 agreed. The v15 reloption expression_checks exists, but the material does not show it in v46.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        3,
+        81,
+        88
+      ],
+      "author_must_show": "Does v46 keep a per-table way to skip expression evaluation, and if not, what should a user with expensive changing expressions do?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Laurenz Albe",
+          "date": "2025-02-09T06:14:49Z",
+          "url": "https://www.postgresql.org/message-id/0a47ce53fa635787d36325b5ad7bac94cdca4246.camel%40cybertec.at"
+        },
+        {
+          "index": 3,
+          "from": "\"Burd, Greg\"",
+          "date": "2025-02-10T12:02:27Z",
+          "url": "https://www.postgresql.org/message-id/C6C63FAF-10EA-4E58-81C3-BA4F609541CC%40amazon.com"
+        },
+        {
+          "index": 81,
+          "from": "Greg Burd",
+          "date": "2026-10-19T20:18:51Z",
+          "url": "https://www.postgresql.org/message-id/j-s6ilS5lyXpV_6l6Q10JTSiumDI5TBUf2zsOfUZAsB3-TjQCJgxWWVIuoCvDZrhD5ljcouHg1s_S_FfjjBS-97Min2Wwyvm5vFSIcdsz_o%3D%40burd.me"
+        },
+        {
+          "index": 88,
+          "from": "Greg Burd",
+          "date": "2026-11-11T13:43:41Z",
+          "url": "https://www.postgresql.org/message-id/179434258467.3460405.2730116922465377144%40burd.me"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of demand-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Nine-patch series on the heap update path has no current reviewer",
+      "level": "2",
+      "rubric_item": 16,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A HOT or index-consistency bug appears after commit in the executor-side attribute check or the per-row indexUnchanged hint. Few people know the new code, and no qualified reviewer has looked at v46. Message #76 already notes that the likely fix would be a revert.",
+      "argument": "Nathan Bossart removed himself as reviewer in August 2026, per the CommitFest history. Matthias van de Meent last reviewed v39 and did not cover 0003-0005 (message #82). Peter Geoghegan has not answered the indexUnchanged question (messages #86, #88). Jeff Davis supported the direction (message #78) but has not reviewed the expression or AM patches.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        76,
+        78,
+        82,
+        86,
+        88
+      ],
+      "author_must_show": "Which committer familiar with heapam, nbtree and the executor update path has agreed to review v46 and own the aftermath?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 76,
+          "from": "Nathan Bossart",
+          "date": "2026-03-25T17:16:05Z",
+          "url": "https://www.postgresql.org/message-id/acQYVfzHoL4lVTUE%40nathan"
+        },
+        {
+          "index": 78,
+          "from": "Jeff Davis",
+          "date": "2026-03-27T17:01:48Z",
+          "url": "https://www.postgresql.org/message-id/6609db3402d0d2994144abc2081d1b790e644c0d.camel%40j-davis.com"
+        },
+        {
+          "index": 82,
+          "from": "Matthias van de Meent",
+          "date": "2026-10-19T21:10:13Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WiCn74vqoqfeuK_9mhwFABRf7tTNdMUuMzoU%3DVRcQKkEQ%40mail.gmail.com"
+        },
+        {
+          "index": 86,
+          "from": "Greg Burd",
+          "date": "2026-10-29T20:46:03Z",
+          "url": "https://www.postgresql.org/message-id/auOvC2XUJ-pNmayW%40floki"
+        },
+        {
+          "index": 88,
+          "from": "Greg Burd",
+          "date": "2026-11-11T13:43:41Z",
+          "url": "https://www.postgresql.org/message-id/179434258467.3460405.2730116922465377144%40burd.me"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "The facts are accurate, but they describe review status and names no flaw in the design. Under the rubric this belongs in the committability field, and v46 was posted one day before this review, three weeks after Matthias reviewed v39.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Stored generated columns already give HOT for the jsonb expression case",
+      "level": "1b",
+      "rubric_item": 12,
+      "category": "desirability",
+      "touch_points": [
+        "does_not_fit",
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user indexes `doc->>'status'` through a stored generated column with a plain btree index instead of an expression index. Today an update to another field of `doc` is HOT when the generated value is unchanged. Under the patch, every expression-index user also pays the old-row evaluation, which is 33-44% slower when an expensive expression's value changes.",
+      "argument": "For the main motivating case (message #1, #79), Postgres already allows HOT when the index is on a stored generated column: `doc` is not indexed, and the recomputed column compares equal byte for byte. The cost is extra row storage and a schema change, which is less convenient but still works. The proposal does not compare itself with this idiom. The parts the idiom cannot cover are partial-index predicates, GIN or RUM over a whole document such as DocumentDB, and the write-back of compressed values.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        79,
+        81
+      ],
+      "author_must_show": "For jsonb expression indexes, what does the patch give that a stored generated column with a plain index cannot, and does that justify the per-row cost?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "\"Burd, Greg\"",
+          "date": "2025-02-06T22:24:34Z",
+          "url": "https://www.postgresql.org/message-id/78574B24-BE0A-42C5-8075-3FA9FA63B8FC%40amazon.com"
+        },
+        {
+          "index": 79,
+          "from": "Greg Burd",
+          "date": "2026-10-17T18:30:54Z",
+          "url": "https://www.postgresql.org/message-id/-ugooulGn7M5X4DFIzWHSgYRngUmXChD_a-JvcMaklnDNcHMGnQhcM82SpYY76Je5ss4TOrsQB5sv2USLRSlDcpwDX-6CgCCbGKlJuA0SOs%3D%40protonmail.com"
+        },
+        {
+          "index": 81,
+          "from": "Greg Burd",
+          "date": "2026-10-19T20:18:51Z",
+          "url": "https://www.postgresql.org/message-id/j-s6ilS5lyXpV_6l6Q10JTSiumDI5TBUf2zsOfUZAsB3-TjQCJgxWWVIuoCvDZrhD5ljcouHg1s_S_FfjjBS-97Min2Wwyvm5vFSIcdsz_o%3D%40burd.me"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "The objection itself lists what a stored generated column cannot do: partial-index predicates, GIN or RUM over a whole document, and write-back of compressed values. The proposal targets all three, and the cost half of the objection is covered by demand-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "see objection replication-ondisk-1: HOT chain correctness now depends on extension answers, with no check"
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "see objection replication-ondisk-1: HOT chain correctness now depends on extension answers, with no check"
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The series adds the amcomparedatums index AM callback and SupportRequestSubattr, and changes the table_tuple_update(), heap_update() and ExecInsertIndexTuples() signatures."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": true,
+      "reason": "Early versions added the GUC enable_expression_checks, then the reloption expression_checks; the v46 messages do not say whether either remains."
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": true,
+      "reason": "v15 touches psql tab completion for the expression_checks reloption."
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Nine patches change how the executor and heapam decide HOT, and add two contracts that extensions must answer correctly."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Every UPDATE on a table with expression or partial indexes may evaluate the expression on the old row; message #81 reports 33-44% slower updates."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "What does v46 cost for an UPDATE that changes an expensive index expression, now that v42 dropped the patch that removed one evaluation?",
+    "Does v46 keep a per-table way, such as the expression_checks reloption, to skip the extra expression evaluation?",
+    "What was the root cause of the 2018 revert of surjective functional indexes, and which part of the v46 design rules it out?",
+    "What detects a wrong SupportRequestSubattr or amcomparedatums answer from an extension before the index is left without an entry?",
+    "How does v46 handle exclusion constraints, which 0009 of v41 covered and v42 dropped?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "It needs a committer who knows heapam HOT rules, the executor update path and the index AM interface. Committers reviewed earlier versions, but the CommitFest entry has no reviewer now and v46 has no visible review.",
+    "liability": "The owner signs for index correctness under the new HOT rule, including answers from extension AMs and support functions, for as long as the two contracts exist. Message #76 notes that a problem found after commit would likely mean a revert.",
+    "author_follow_up": "Strong sign that the author stays: 46 versions since February 2025, replies to each review, and the author withdrew v29 over a 2-6% regression."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "high",
+    "review_cost": "high",
+    "recommended_action": "needs champion",
+    "reason": "JSONB expression-index users, ORM write-back and extensions such as DocumentDB gain, and the author's numbers show large wins. The nine-patch series touches heapam, the executor and the index AM interface, and no qualified reviewer has looked at v46."
+  },
+  "self_advice": [],
+  "provisional_note": "No code and no v46 patch prose were read. Whether the executor-side check keeps HOT, lock mode and replica identity decisions identical to master, and how toasted values are compared, could not be judged.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "revert:e3fcca0d0d2414f3a50d6fd40eddf48b7df81475",
+      "kind": "revert",
+      "title": "Revert changes in HOT handling of BRIN indexes",
+      "status": "Reverted",
+      "date": "2022-06-16",
+      "first_date": "2021-11-30",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e3fcca0d0d2414f3a50d6fd40eddf48b7df81475",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/05ebcb44-f383-86e3-4f31-0a97a55634cf@enterprisedb.com",
+        "https://www.postgresql.org/message-id/flat/CAFp7QwpMRGcDAQumN7onN9HjrJ3u4X3ZRXdGFT0K5G2JWvnbWg@mail.gmail.com"
+      ],
+      "authors": "Tomas Vondra",
+      "objectors": "",
+      "summary": "Revert changes in HOT handling of BRIN indexes\nReverted commit(s): Ignore BRIN indexes when checking for HOT udpates; Move test for BRIN HOT behavior to stats.sql",
+      "objection": "This reverts commits 5753d4ee32 and fe60b67250 that modified HOT to\nignore BRIN indexes. The commit message for 5753d4ee32 claims that:\n\n    When determining whether an index update may be skipped by using\n    HOT, we can ignore attributes indexed only by BRIN indexes. There\n    are no index pointers to individual tuples in BRIN, and the page\n    range summary will be updated anyway as it relies on visibility\n    info.\n\nThis is partially incorrect - it's true BRIN indexes don't point to\nindividual tuples, so HOT chains are not an issue, but the visibitlity\ninfo is not sufficient to keep the index up to date. This can easily\nresult in corrupted indexes, as demonstrated in the hackers thread.\n\nThis does not mean relaxing the HOT restrictions for BRIN is a lost\ncause, but it needs to handle the two aspects (allowing HOT chains and\nupdating the page range summaries) as separate. But that requires a\nmajor changes, and it's too late for that in the current dev cycle.",
+      "touch_points": [],
+      "matched_queries": [
+        "surjective functional indexes HOT",
+        "HOT update expression index",
+        "recheck_on_update index option",
+        "HOT partial index predicate",
+        "jsonb expression index HOT",
+        "index AM compare datums HOT",
+        "modified indexed columns executor heap_update",
+        "WARM PHOT update indexes"
+      ],
+      "from_hint": false,
+      "score": 1.009,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "revert:c096d19b74a637443109e528000342e896b150f3",
+      "kind": "revert",
+      "title": "Revert \"Prevent incorrect updates of pg_index while reindexing pg_index itself.\"",
+      "status": "Reverted",
+      "date": "2011-04-19",
+      "first_date": "2011-04-16",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=c096d19b74a637443109e528000342e896b150f3",
+      "thread_urls": [],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Prevent incorrect updates of pg_index while reindexing pg_index itself.\"\nReverted commit(s): Prevent incorrect updates of pg_index while reindexing pg_index itself.",
+      "objection": "This reverts commit 4b6106ccfea21e86943f881edcf3cfc03661a415 of 2011-04-15.\nThere's a better way to do it, which will follow shortly.",
+      "touch_points": [],
+      "matched_queries": [
+        "HOT update expression index",
+        "recheck_on_update index option",
+        "modified indexed columns executor heap_update",
+        "WARM PHOT update indexes"
+      ],
+      "from_hint": false,
+      "score": 0.334,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "revert:099ca50bd41c1a72fe5a086bb095858ea74c88de",
+      "kind": "revert",
+      "title": "Revert \"Fix parallel-safety check of expressions and predicate for index builds\"",
+      "status": "Reverted",
+      "date": "2024-03-06",
+      "first_date": "2024-03-06",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=099ca50bd41c1a72fe5a086bb095858ea74c88de",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/162802.1709746091@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CAHewXN=UaAaNn9ruHDH3Os8kxLVmtWqbssnf=dZN_s9=evHUFA@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Fix parallel-safety check of expressions and predicate for index builds\"\nReverted commit(s): Fix parallel-safety check of expressions and predicate for index builds",
+      "objection": "This reverts commit eae7be600be7, following a discussion with Tom Lane,\ndue to concerns that this impacts the decisions made by the planner for\nthe number of workers spawned based on the inlining and const-folding of\nindex expressions and predicate for cases that would have worked until\nthis commit.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "HOT update expression index",
+        "HOT partial index predicate",
+        "jsonb expression index HOT"
+      ],
+      "from_hint": false,
+      "score": 0.331,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "revert:810f64a01567610af7b92b0de930f16f3e20064e",
+      "kind": "revert",
+      "title": "Revert indexed and enlargable binary heap implementation.",
+      "status": "Reverted",
+      "date": "2024-04-11",
+      "first_date": "2024-04-03",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=810f64a01567610af7b92b0de930f16f3e20064e",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/12747c15811d94efcc5cda72d6b35c80d7bf3443.camel@j-davis.com",
+        "https://www.postgresql.org/message-id/flat/CAD21AoDffo37RC-eUuyHJKVEr017V2YYDLyn1xF_00ofptWbkg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAD21AoAfKTgrBrLq96GcTv9d6k97zaQcDM-rxfKEt4GSe0qnaQ@mail.gmail.com"
+      ],
+      "authors": "Masahiko Sawada",
+      "objectors": "",
+      "summary": "Revert indexed and enlargable binary heap implementation.\nReverted commit(s): Add functions to binaryheap for efficient key removal and update.; Make binaryheap enlargeable.; Improve eviction algorithm in ReorderBuffer using max-heap for many subtransactions.; Replace binaryheap + index with pairingheap in reorderbuffer.c",
+      "objection": "This reverts commit b840508644 and bcb14f4abc. These commits were made\nfor commit 5bec1d6bc5 (Improve eviction algorithm in ReorderBuffer\nusing max-heap for many subtransactions). However, per discussion,\ncommit efb8acc0d0 replaced binary heap + index with pairing heap, and\nmade these commits unnecessary.",
+      "touch_points": [],
+      "matched_queries": [
+        "recheck_on_update index option",
+        "modified indexed columns executor heap_update",
+        "WARM PHOT update indexes"
+      ],
+      "from_hint": false,
+      "score": 0.318,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "kind": "revert",
+      "title": "Fix index-only scan plans, take 2.",
+      "status": "Partially reverted",
+      "date": "2022-01-03",
+      "first_date": "2022-01-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3179992.1641150853@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/17350-b5bdcf476e5badbb@postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Fix index-only scan plans, take 2.\nReverted commit(s): Fix index-only scan plans when not all index columns can be returned.",
+      "objection": "Commit 4ace45677 failed to fix the problem fully, because the\nsame issue of attempting to fetch a non-returnable index column\ncan occur when rechecking the indexqual after using a lossy index\noperator.  Moreover, it broke EXPLAIN for such indexquals (which\nindicates a gap in our test cases :-().\n\nRevert the code changes of 4ace45677 in favor of adding a new field\nto struct IndexOnlyScan, containing a version of the indexqual that\ncan be executed against the index-returned tuple without using any\nnon-returnable columns.  (The restrictions imposed by check_index_only\nguarantee this is possible, although we may have to recompute indexed\nexpressions.)  Support construction of that during setrefs.c\nprocessing by marking IndexOnlyScan.indextlist entries as resjunk\nif they can't be returned, rather than removing them entirely.\n(We could alternatively require setrefs.c to look up the IndexOptInfo\nagain, but abusing resjunk this way seems like a reasonably safe way\nto avoid needing to do that.)\n\nThis solution isn't great from an API-stability standpoint: if there\nare any extensions out there that build IndexOnlyScan structs directly,\nthey'll be broken in the next minor releases.  However, only a very\ninvasive extension would be likely to do such a thing.  There's no\nchange in the Path representation, so typical planner extensions\nshouldn't have a problem.\n\nAs before, back-patch to all supported branches.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "HOT update expression index",
+        "recheck_on_update index option",
+        "jsonb expression index HOT"
+      ],
+      "from_hint": false,
+      "score": 0.291,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "wiki:Optimizer_.2F_Executor:2",
+      "kind": "do_not_want",
+      "title": "Improve use of expression indexes for ORDER BY",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Optimizer_.2F_Executor",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Improve use of expression indexes for ORDER BY\nSection: Optimizer / Executor\nLinked: Resjunk sort columns, Heikki's index-only quals patch, and bug #5000",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "HOT update expression index",
+        "jsonb expression index HOT",
+        "modified indexed columns executor heap_update"
+      ],
+      "from_hint": false,
+      "score": 0.238,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:738",
+      "kind": "cf",
+      "title": "Index Only Scan for index expressions",
+      "status": "Returned with feedback",
+      "date": "2016-09-28",
+      "first_date": "2016-08-15",
+      "url": "https://commitfest.postgresql.org/patch/738/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/57B23C4F.7000304@postgrespro.ru"
+      ],
+      "authors": "Ildar Musin (i.musin)",
+      "objectors": "Vladimir Sitnikov, Robert Haas",
+      "summary": "The patch extends the planner so that index-only scans can be used when a query's target list or restriction clauses contain expressions that exactly match index expression columns, not only plain attribute columns. Matching requires the expression tree (or a subtree) to be identical to the index expression; no normalization of commutative or associative operators is attempted.",
+      "objection": "Testing of the sixth patch version by Vladimir Sitnikov found an error (\"variable not found in subplan target list\") when queries access non-indexed columns alongside an expression index. Robert Haas marked the entry Returned with Feedback because these bugs precluded committing it before the CommitFest ended, while inviting resubmission and saying the effort was good.",
+      "touch_points": [],
+      "matched_queries": [
+        "HOT update expression index",
+        "jsonb expression index HOT"
+      ],
+      "from_hint": false,
+      "score": 0.222,
+      "enriched": true,
+      "key_quote": "Based on this report, this patch appears to have bugs that would\npreclude committing it, so I'm marking it \"Returned with Feedback\" for\nthis CommitFest, which is due to end shortly.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoaiYuarPYv2BWrXG-7XZ1EX75guirx2kTXQY0HxtD%3DWuw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "revert:2d2841a56c8fa37a5dd5c6d33488ba6ca37116ff",
+      "kind": "revert",
+      "title": "Continue to allow VACUUM to mark last block of index dirty even when there is no work to do.",
+      "status": "Partially reverted",
+      "date": "2011-11-22",
+      "first_date": "2011-11-18",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=2d2841a56c8fa37a5dd5c6d33488ba6ca37116ff",
+      "thread_urls": [],
+      "authors": "Simon Riggs",
+      "objectors": "",
+      "summary": "Continue to allow VACUUM to mark last block of index dirty even when there is no work to do. Further analysis required. Revert of patch c1458cc495ff800cd176a1c2e56d8b62680d9b71\nReverted commit(s): Avoid marking buffer dirty when VACUUM has no work to do. When wal_level = 'hot_standby' we touched the last page of the relation during a VACUUM, even if nothing else had happened. That would alter the LSN of the last block and set the mtime of the relation file unnecessarily. Noted by Thom Brown.",
+      "objection": "Continue to allow VACUUM to mark last block of index dirty\neven when there is no work to do. Further analysis required.\nRevert of patch c1458cc495ff800cd176a1c2e56d8b62680d9b71",
+      "touch_points": [],
+      "matched_queries": [
+        "surjective functional indexes HOT",
+        "HOT partial index predicate",
+        "index AM compare datums HOT"
+      ],
+      "from_hint": false,
+      "score": 0.208,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "revert:8ec8760fc87ecde0516e511f1c55aec627b01ea7",
+      "kind": "revert",
+      "title": "Revert misguided change to postgres_fdw FOR UPDATE/SHARE code.",
+      "status": "Reverted",
+      "date": "2014-12-12",
+      "first_date": "2014-12-12",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=8ec8760fc87ecde0516e511f1c55aec627b01ea7",
+      "thread_urls": [],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert misguided change to postgres_fdw FOR UPDATE/SHARE code.\nReverted commit(s): Fix planning of SELECT FOR UPDATE on child table with partial index.",
+      "objection": "In commit 462bd95705a0c23ba0b0ba60a78d32566a0384c1, I changed postgres_fdw\nto rely on get_plan_rowmark() instead of get_parse_rowmark().  I still\nthink that's a good idea in the long run, but as Etsuro Fujita pointed out,\nit doesn't work today because planner.c forces PlanRowMarks to have\nmarkType = ROW_MARK_COPY for all foreign tables.  There's no urgent reason\nto change this in the back branches, so let's just revert that part of\nyesterday's commit rather than trying to design a better solution under\ntime pressure.\n\nAlso, add a regression test case showing what postgres_fdw does with FOR\nUPDATE/SHARE.  I'd blithely assumed there was one already, else I'd have\nrealized yesterday that this code didn't work.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "recheck_on_update index option",
+        "WARM PHOT update indexes"
+      ],
+      "from_hint": false,
+      "score": 0.179,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:4099",
+      "kind": "cf",
+      "title": "Lock updated tuples in tuple_update() and tuple_delete()",
+      "status": "Returned with feedback",
+      "date": "2024-10-08",
+      "first_date": "2022-07-01",
+      "url": "https://commitfest.postgresql.org/patch/4099/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAPpHfdua-YFw3XTprfutzGp28xXLigFtzNbuFY8yPhqeq6X5kg@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov (smagen)",
+      "objectors": "Andres Freund",
+      "summary": "When tuple_update() or tuple_delete() finds a concurrently updated tuple in read committed mode, the table AM locks the updated version itself instead of returning TM_Updated for a separate tuple_lock() call. Later versions also had update and delete return the old tuple through a slot passed by the executor, which avoids refetching it and helps table AMs with costly TID lookups.",
+      "objection": "Version 15 was committed in March 2023, then reverted after Andres Freund's post-commit review. He showed that RETURNING could use the wrong tuple, with an isolation test that fails. He also criticised the new API: the ignored wait parameter, tmfd turned into an input, and the LazyTupleTableSlot code. The redesigned old-tuple API came days before the version 16 feature freeze, and he said it was not ready for 16. In March 2024 the author planned to push a revised version, and the visible messages do not show why the entry was finally returned with feedback in October 2024.",
+      "touch_points": [],
+      "matched_queries": [
+        "recheck_on_update index option",
+        "WARM PHOT update indexes"
+      ],
+      "from_hint": false,
+      "score": 0.175,
+      "enriched": true,
+      "key_quote": "I guess this really is part of my issue with this change - it optimizes the rare case, while not addressing the same inefficiency in the common case.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20230323003003.plgaxjqahjgkuxrk%40awork3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "wiki:Features_We_Do_Not_Want:6",
+      "kind": "do_not_want",
+      "title": "On-disk bitmap indexes",
+      "status": "Not wanted",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Features_We_Do_Not_Want",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20130914181424.GA24448@toroid.org"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "On-disk bitmap indexes\nSection: Features We Do Not Want\nLinked: Re: Bitmap index AM; Bitmap index thoughts; Stream bitmaps; Re: Bitmapscan changes - Requesting further feedback; Updated bitmap index patch; Reviewing new index types (was Re: [PATCHES] Updated bitmap indexpatch); Bitmap Indexes: request for feedback; bitmap indexes - performance; [PATCH] bitmap indexes",
+      "objection": "The rigidity of on-disk bitmap indexes, and the existence of GIN and in-memory bitmaps make this undesirable.",
+      "touch_points": [
+        "on-disk format / pg_upgrade"
+      ],
+      "matched_queries": [
+        "recheck_on_update index option",
+        "WARM PHOT update indexes"
+      ],
+      "from_hint": false,
+      "score": 0.167,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:502",
+      "kind": "cf",
+      "title": "Support ALTER INDEX ... WHERE ... clause",
+      "status": "Returned with feedback",
+      "date": "2016-04-08",
+      "first_date": "2016-01-20",
+      "url": "https://commitfest.postgresql.org/patch/502/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/569F5346.1010005@postgrespro.ru"
+      ],
+      "authors": "Konstantin Knizhnik (knizhnik)",
+      "objectors": "Tom Lane",
+      "summary": "The patch adds `alter index ... where ...` so that the predicate of a partial index can be added, changed or removed without rebuilding the index from scratch. The goal is faster inserts: indexes skip recent rows, and a background job later widens the predicate to take them in.",
+      "objection": "Tom Lane objected that Postgres code assumes index properties do not change after creation. Changing a predicate to cover a previously unindexed column could break existing HOT chains, and the patch does not handle that. He also saw no use case that would justify removing those assumptions, and he disliked the patch's use of SPI. The author agreed and called the patch a proof of concept, and David Steele marked it returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "recheck_on_update index option",
+        "WARM PHOT update indexes"
+      ],
+      "from_hint": false,
+      "score": 0.166,
+      "enriched": true,
+      "key_quote": "One area that this almost certainly breaks is HOT updates: adding a previously-unindexed column to an index predicate might break existing HOT chains, and I see nothing in this patch that could deal with that.",
+      "quote_message_url": "https://www.postgresql.org/message-id/26214.1459623441%40sss.pgh.pa.us",
+      "relevant": true
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:c6764eb3aea63f3f95582bd660785e2b0d4439f9",
+      "kind": "revert",
+      "title": "Revert bogus fixes of HOT-freezing bug",
+      "status": "Reverted",
+      "date": "2017-11-02",
+      "first_date": "2017-11-02",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=c6764eb3aea63f3f95582bd660785e2b0d4439f9",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20171102112019.33wb7g5wp4zpjelu@alap3.anarazel.de"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert bogus fixes of HOT-freezing bug",
+      "objection": "It turns out we misdiagnosed what the real problem was.  Revert the\nprevious changes, because they may have worse consequences going\nforward.  A better fix is forthcoming.\n\nThe simplistic test case is kept, though disabled.",
+      "touch_points": [],
+      "matched_queries": [
+        "surjective functional indexes HOT",
+        "index AM compare datums HOT"
+      ],
+      "from_hint": false,
+      "score": 0.148,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:4860",
+      "kind": "cf",
+      "title": "create index failed. PARALLEL UNSAFE function does not prevent parallel index build",
+      "status": "Rejected",
+      "date": "2024-03-13",
+      "first_date": "2024-01-29",
+      "url": "https://commitfest.postgresql.org/patch/4860/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/18314-5f44050ce33a5492@postgresql.org"
+      ],
+      "authors": "Tender Wang (tndrwang)",
+      "objectors": "Tom Lane",
+      "summary": "The patch made plan_create_index_workers() check parallel safety on the raw index expressions and predicate, read from the pg_index syscache, so that a PARALLEL UNSAFE function folded to a constant still prevents a parallel index build. The bug report showed CREATE INDEX failing in a parallel worker because a plpgsql function with an EXCEPTION block was const-folded before the check.",
+      "objection": "The patch was committed and then reverted after Tom Lane objected. He said it does not fix the failure, which returns when the function is marked PARALLEL SAFE, and that it breaks the planner rule that original markings stop mattering once a function is inlined or const-folded. He also said that passing raw parse-analysis output to is_parallel_safe() misses parallel-unsafe default arguments, and he preferred making exception-using functions parallel safe through a separate commitfest patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "surjective functional indexes HOT"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": true,
+      "key_quote": "It's a band-aid\nthat doesn't really solve the problem: if I simply declare the\nfunction as PARALLEL SAFE, the failure comes right back.",
+      "quote_message_url": "https://www.postgresql.org/message-id/162802.1709746091%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:1830",
+      "kind": "cf",
+      "title": "heap_insert() and heap_update() optimization",
+      "status": "Rejected",
+      "date": "2018-10-17",
+      "first_date": "2018-10-16",
+      "url": "https://commitfest.postgresql.org/patch/1830/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1539678497.898777998@f532.i.mail.ru"
+      ],
+      "authors": "Andrew Klychkov (andreiklychkov)",
+      "objectors": "",
+      "summary": "The patch reduced repeated BufferGetPage(buffer) calls inside heap_insert() and heap_update() to make these functions faster. The author reported speedups of about 5.6% for heap_insert() and 11.4% for heap_update() in an optimized build.",
+      "objection": "The author repeated the timing tests and found no real gain: the patched build averaged 1303 against 1272 for the original. He suggested that autovacuum, analyze or a checkpoint may have affected the first run. Andres Freund had said the first numbers looked large and suggested checking the generated code. The thread ends there, and the entry was rejected.",
+      "touch_points": [],
+      "matched_queries": [
+        "modified indexed columns executor heap_update"
+      ],
+      "from_hint": false,
+      "score": 0.129,
+      "enriched": true,
+      "key_quote": "However I've just done some extra time tests and didn't notice so significant difference as early.",
+      "quote_message_url": "https://www.postgresql.org/message-id/1539758899.916745586%40f518.i.mail.ru",
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:775",
+      "kind": "cf",
+      "title": "Write Amplification Reduction Method (WARM)",
+      "status": "Returned with feedback",
+      "date": "2017-10-02",
+      "first_date": "2016-08-31",
+      "url": "https://commitfest.postgresql.org/patch/775/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABOikdMNy6yowA+wTGK9RVd8iw+CzqHeQSGpW7Yka_4RSZ_LOQ@mail.gmail.com"
+      ],
+      "authors": "Pavan Deolasee (pavan)",
+      "objectors": "Robert Haas, Peter Geoghegan",
+      "summary": "WARM (Write Amplification Reduction Method) lets an UPDATE that changes an indexed column insert new index entries only into the indexes whose keys changed. Other indexes keep pointing to the existing HOT-like chain, and index scans recheck heap tuples against index keys. To keep this tractable, the first version allowed only one WARM update per chain, stored the root line pointer offset in t_ctid of the latest tuple, and required an amrecheck routine from each index AM.",
+      "objection": "In April 2017 the patch was moved out of the release cycle. Reviewers, as quoted in the author's replies, were concerned about on-disk format changes, the risk of data-corrupting bugs, and performance regressions found in testing (for example, recheck overhead) that they considered not fully addressed. In July 2017 the author said he no longer had time to pursue it, and Peter Geoghegan questioned whether WARM helps the worst case, such as long-running transactions. The CF manager returned it with feedback because more work was needed and the patch had not moved in the current commitfest.",
+      "touch_points": [],
+      "matched_queries": [
+        "WARM PHOT update indexes"
+      ],
+      "from_hint": false,
+      "score": 0.126,
+      "enriched": true,
+      "key_quote": "Looks like I'll be short on bandwidth to pursue this further, given other work commitments including upcoming Postgres-XL 10 release.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CABOikdOm_R1NzYUqQQ85p04VxDJpvdp_V3feaKBY8ATMWTE%2BHw%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:5165",
+      "kind": "cf",
+      "title": "format_datum debugging function",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2024-08-09",
+      "url": "https://commitfest.postgresql.org/patch/5165/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/286814e4-46d4-44d6-be45-c2ee979021e1@illuminatedcomputing.com"
+      ],
+      "authors": "Paul Jungwirth (pjungwir)",
+      "objectors": "Peter Eisentraut, Tom Lane",
+      "summary": "Add a debugging function, format_datum, that takes a Datum and its type's output function and returns the text form as a char *. Developers could then print non-trivial values such as ranges from gdb, where the inline functions and macros are not available.",
+      "objection": "Peter Eisentraut said calling output functions at arbitrary points from a debugger is unsafe, and that OidOutputFunctionCall with the function's OID already works. Tom Lane accepted the idea but asked for the function to be renamed DirectOutputFunctionCall, moved into fmgr.c and written like the existing DirectFunctionCall functions. The visible messages show no revised patch after that review.",
+      "touch_points": [],
+      "matched_queries": [
+        "index AM compare datums HOT"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": true,
+      "key_quote": "However, I would\ncall the result DirectOutputFunctionCall and put it near\nOidOutputFunctionCall in fmgr.c.",
+      "quote_message_url": "https://www.postgresql.org/message-id/451803.1723730707%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:1199",
+      "kind": "cf",
+      "title": "Predicate locking in Gin index",
+      "status": "Returned with feedback",
+      "date": "2017-11-29",
+      "first_date": "2017-07-11",
+      "url": "https://commitfest.postgresql.org/patch/1199/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALxAEPt5sWW+EwTaKUGFL5_XFcZ0MuGBcyJ70oqbWqr42YKR8Q@mail.gmail.com"
+      ],
+      "authors": "Shubham Barai (shubham)",
+      "objectors": "Alexander Korotkov",
+      "summary": "A GSoC 2017 patch adding explicit predicate locking to the GIN index access method for serializable isolation, placing page-level predicate locks on entry tree and posting tree leaf pages and copying locks on page splits. It also handled conflict detection when fast update is enabled.",
+      "objection": "Reviewer Alexander Korotkov found the locking scheme redundant and asked for changes: lock posting tree leaves instead of entry tree leaves, apply page-level locks only when fast update is off, add in-code comments, and improve the isolation tests so they actually create posting trees. After his last review the thread had no updates for almost two months, and Michael Paquier marked the entry returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "HOT partial index predicate"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": true,
+      "key_quote": "This thread had no updates for almost two months, so I am marking it\nas returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB7nPqQo8mCVnnRFG%3DV1w2zqLdnbsGw7kcL8jwf1Or7Q9qxXXQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:2274",
+      "kind": "cf",
+      "title": "Invalid permission check in pg_stats for functional indexes",
+      "status": "Returned with feedback",
+      "date": "2020-07-05",
+      "first_date": "2019-04-06",
+      "url": "https://commitfest.postgresql.org/patch/2274/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6369212.CF36pTLAQO@peanuts2"
+      ],
+      "authors": "Pierre Ducroquet (pinaraf)",
+      "objectors": "",
+      "summary": "Invalid permission check in pg_stats for functional indexes\nThreads: [Patch] Invalid permission check in pg_stats for functional indexes",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "surjective functional indexes HOT"
+      ],
+      "from_hint": false,
+      "score": 0.112,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "revert:e8d78581bb864369035c736a82ecfb57482a1a09",
+      "kind": "revert",
+      "title": "Revert \"Convert *GetDatum() and DatumGet*() macros to inline functions\"",
+      "status": "Reverted",
+      "date": "2022-09-12",
+      "first_date": "2022-09-12",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e8d78581bb864369035c736a82ecfb57482a1a09",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/8528fb7e-0aa2-6b54-85fb-0c0886dbd6ed@enterprisedb.com"
+      ],
+      "authors": "Peter Eisentraut",
+      "objectors": "",
+      "summary": "Revert \"Convert *GetDatum() and DatumGet*() macros to inline functions\"\nReverted commit(s): Convert *GetDatum() and DatumGet*() macros to inline functions",
+      "objection": "This reverts commit 595836e99bf1ee6d43405b885fb69bb8c6d3ee23.\n\nIt has problems when USE_FLOAT8_BYVAL is off.",
+      "touch_points": [],
+      "matched_queries": [
+        "index AM compare datums HOT"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:312",
+      "kind": "cf",
+      "title": "Eliminating CREATE INDEX comparator TID tie-breaker overhead",
+      "status": "Rejected",
+      "date": "2015-07-30",
+      "first_date": "2015-07-21",
+      "url": "https://commitfest.postgresql.org/patch/312/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAM3SWZQpZygWdVUC6H_rctP5_FS7g7_EKz7fqeOa6hYiULU6pA@mail.gmail.com"
+      ],
+      "authors": "Peter Geoghegan (pgeoghegan)",
+      "objectors": "",
+      "summary": "Eliminating CREATE INDEX comparator TID tie-breaker overhead\nThreads: Eliminating CREATE INDEX comparator TID tie-breaker overhead",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "index AM compare datums HOT"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:1581",
+      "kind": "cf",
+      "title": "Predicate locking in gin index",
+      "status": "Rejected",
+      "date": "2018-03-02",
+      "first_date": "2017-07-11",
+      "url": "https://commitfest.postgresql.org/patch/1581/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALxAEPt5sWW+EwTaKUGFL5_XFcZ0MuGBcyJ70oqbWqr42YKR8Q@mail.gmail.com"
+      ],
+      "authors": "Shubham Barai (shubham)",
+      "objectors": "",
+      "summary": "Predicate locking in gin index\nThreads: GSoC 2017: weekly progress reports (week 6)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "HOT partial index predicate"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:3906",
+      "kind": "cf",
+      "title": "introduce optimized linear search functions that return index of matching element",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-09-17",
+      "url": "https://commitfest.postgresql.org/patch/3906/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20220917052903.GA3172400@nathanxps13"
+      ],
+      "authors": "Masahiko Sawada (masahikosawada), Nathan Bossart (bossartn)",
+      "objectors": "",
+      "summary": "introduce optimized linear search functions that return index of matching element\nThreads: introduce optimized linear search functions that return index of\nmatching element",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "surjective functional indexes HOT"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:1207",
+      "kind": "cf",
+      "title": "Pageinspect - add functions on GIN and GiST indexes from gevel",
+      "status": "Returned with feedback",
+      "date": "2017-11-27",
+      "first_date": "2017-07-21",
+      "url": "https://commitfest.postgresql.org/patch/1207/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/accae316-5e4d-8963-0c3d-277ef13c396c@postgrespro.ru"
+      ],
+      "authors": "Alexey Chernyshov (alexey-chernyshov)",
+      "objectors": "",
+      "summary": "Pageinspect - add functions on GIN and GiST indexes from gevel\nThreads: [PATCH] Pageinspect - add functions on GIN and GiST indexes from\ngevel",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "surjective functional indexes HOT"
+      ],
+      "from_hint": false,
+      "score": 0.097,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 4,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 3
+  },
+  "precedent_cutoff": "2025-02-06",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 2,
+      "note": "No listed precedent matches this proposal's reason for failing. WARM [P16] and the BRIN revert [P1] are in the same area, but their recorded reasons do not apply to a HOT-only, all-or-none design. [P12] is the same: the rule that a row must not enter or leave the predicate addresses its HOT-chain concern. The earlier surjective attempt appears only in the thread (messages #1, #79), not in the precedent list."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 1,
+      "note": "The standards and compatibility surface is mostly internal: a table AM signature change, an index AM callback and a support request. There is no SQL syntax, no new catalog object and nothing for pg_dump to handle. The safety of wrong SupportRequestSubattr answers belongs to another angle."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 2,
+      "note": "The series adds no WAL record, no on-disk format change and no catalog column. HOT records replay as before, so pg_upgrade and standbys need nothing new. Replica identity and candidate-key columns are still compared as stored (message #84)."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal has no privilege or exposure aspect that this angle can object to. Index expressions and partial-index predicates already run as the updating role, or as the apply worker's role, when the index entry is inserted. The patch adds one evaluation of the same immutable expression on the old row, under that same role, and adds no new privilege, view, log output or user-reachable setting. The material does not show how an extension's wrong SupportRequestSubattr or amcomparedatums answer is caught. That gap matters for index correctness and is not an escalation path, so it belongs to the safety angle. Exclusion constraint handling (0009) is out of v46, and v46 does not change uniqueness checks on candidate keys."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "Objections are given above. The proposal states the problem and shows demand (JSONB, ORM write-back, DocumentDB), so level 1 passes from this angle."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "Only the expression-index part has an existing alternative. Partial-index predicates, whole-document GIN or RUM, and compressed write-back have no in-core workaround I can name."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "Demand itself is shown: JSONB expression-index users, ORM and replication write-back, an extension with zero HOT today, and support from several reviewers. The only demand-side concern is who pays for it."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 10,
+      "new_survived": 3,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "25 long messages in the middle of the thread were left out of the prompts",
+    "synthesis said NEEDS-COMMITTER-EYES but listed a level 1b objection (demand-1); changed to NEEDS-DESIGN-DISCUSSION"
+  ],
+  "tone_lint": {
+    "fields_checked": 98,
+    "hits_found": 2,
+    "sentences_rewritten": 2,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 16,
+    "wall_ms": 219537,
+    "cost_usd": 7.269107399999999,
+    "dry_run": false
+  }
+}

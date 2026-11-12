@@ -1,0 +1,1376 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:44:21.165Z",
+  "input": {
+    "arg": "6178",
+    "cf": {
+      "id": 6178,
+      "url": "https://commitfest.postgresql.org/patch/6178/",
+      "title": "COPY FROM with RLS",
+      "status": "Needs review",
+      "authors": "Jian He (stayreal)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CACJufxFbmnoa5O-vL43DPTCGt6oagY4dXgKxy%3DrcD9-e9g0zEg%40mail.gmail.com",
+    "subject": "COPY FROM with RLS",
+    "thread_start": "2025-10-28T12:12:30Z",
+    "messages_read": 13,
+    "messages_total": 13,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v16-0001-COPY-FROM-with-RLS.patch",
+      "v1-0001-COPY-FROM-with-RLS.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection questions the goal, and levels 1a and 1b pass. The open points are at level 2 and are fixable. maintenance-fit-1 is decisive: COPY borrows executor state from a planned but never executed INSERT, the author calls it a hack in message #2, and no committer has commented. standards-compat-1, standards-compat-2 and standards-compat-3 are contract details that follow from that mechanism.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Enforce row-level security INSERT policies in COPY FROM",
+    "problem": "COPY FROM fails with \"COPY FROM not supported with row-level security\" on any table where RLS applies to the current user. Non-owner roles must use INSERT instead, which one tester measured at about 2.7 times slower than COPY on 1M rows.",
+    "proposed_design": "CopyFrom() builds a dummy \"INSERT INTO rel DEFAULT VALUES\", runs it through parse analysis, the rewriter and the planner, and calls ExecutorStart() without ever running the plan. The executor state supplies the WITH CHECK OPTIONs from the table's policies, and COPY checks each row with ExecWithCheckOptions(). Because the rewriter is needed, COPY FROM errors on an RLS table that has rules, and v16 falls back to single-row inserts when a policy qual is volatile or has a subquery.",
+    "user_visible_surface": [
+      "COPY FROM now succeeds on tables with RLS enabled and applies INSERT policies to each row.",
+      "New error \"cannot copy to table\" with DETAIL \"COPY FROM is not supported on tables with rules when row-level security is enabled.\"",
+      "Errors raised during policy checks show \"CONTEXT: COPY t\" without the line number.",
+      "pg_stat_statements (track = 'all') and auto_explain show an extra nested \"INSERT INTO schema.rel DEFAULT VALUES\" entry.",
+      "Docs: copy.sgml and the create_policy.sgml table list COPY ... FROM next to INSERT."
+    ],
+    "author_claims": [
+      "INSERT policies are enforced on each copied row, the same as for INSERT.",
+      "The rewriter cannot be skipped, so rejecting rules on RLS tables is the only option.",
+      "The line number is dropped on purpose, because ExecWithCheckOptions does not show row data for RLS violations.",
+      "A volatile or subquery policy qual forcing single-row insert fixes the batching bug."
+    ],
+    "thread_state": "Bryan Green, Yilin Zhang, solai v, Kirill Reshke and Joao Rito reviewed, and Green found a crash and a rule redirect that v15 fixed. Open on v16: the missing line number, the rule check rejecting ON DELETE rules, and the nested INSERT showing up in monitoring extensions.",
+    "unclear": [
+      "Whether v16 checks rd_rules for any rule or only INSERT rules; Reshke shows an ON DELETE rule blocks COPY.",
+      "Whether the fix for conditional DO INSTEAD NOTHING is in v16 and tested.",
+      "How many CPU cycles parse, rewrite and plan add for small or frequent COPY calls.",
+      "Whether the dummy query should get a queryId or call executor hooks at all.",
+      "Whether any committer agrees with running a planned-but-unexecuted query inside COPY."
+    ],
+    "search_queries": [
+      "COPY FROM row level security",
+      "COPY FROM RLS policies",
+      "COPY not supported row-level security",
+      "WITH CHECK OPTION COPY",
+      "ExecWithCheckOptions CopyFrom",
+      "COPY insert policies enforcement",
+      "COPY FROM rules rewriter",
+      "row security bulk load"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "COPY depends on a planned but never executed dummy INSERT",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch changes what ExecutorStart or ModifyTable initialization sets up, or how the rewriter applies policies. Plain INSERT keeps working and its tests pass. COPY FROM on RLS tables silently checks the wrong quals, or fails, and the break shows up only in a COPY-specific test, if one exists.",
+      "argument": "The author calls this \"a hack\" and is \"not sure how valid it is\" (message #2), and v1 calls the partitioned-table ModifyTable node one too (message #1). No other utility command plans a query only to borrow its executor state. Reviewers have already found a crash, a rule redirect, a batching bug and missing line numbers (messages #8, #10, #12), which shows how many paths this coupling touches. No committer in the thread has said this mechanism is acceptable.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        8,
+        10,
+        12
+      ],
+      "author_must_show": "Why can COPY not build the WITH CHECK OPTIONs by calling the RLS code directly, as v1 did, without parsing, rewriting, planning and starting a dummy query?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "jian he",
+          "date": "2025-10-28T12:12:30Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxFbmnoa5O-vL43DPTCGt6oagY4dXgKxy%3DrcD9-e9g0zEg%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "jian he",
+          "date": "2026-05-10T14:23:26Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxFdt0%2BR6C5ZByAK3DpMEXbb%3D3Hc0XyRTPvbjpc9sPt%3DgQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "dbryan(dot)green(at)gmail(dot)com",
+          "date": "2026-08-27T01:04:15Z",
+          "url": "https://www.postgresql.org/message-id/2e3ed175-8618-46a9-847b-b7e54597aa83%40gmail.com"
+        },
+        {
+          "index": 10,
+          "from": "Bryan Green",
+          "date": "2026-09-10T17:21:12Z",
+          "url": "https://www.postgresql.org/message-id/ab913841-b458-4931-bb89-cee7fba9eb24%40gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "Kirill Reshke",
+          "date": "2026-11-02T04:11:57Z",
+          "url": "https://www.postgresql.org/message-id/CALdSSPhkL%2BQofGqaN9S%2B4m3rwYHrS_POU%2Bo43gEvbzmuxqhqxA%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The author calls the mechanism a hack in message #2 and no committer has commented on it. Messages #1 and #2 do answer the v1 question (v1 could not handle subquery policies), but the coupling to INSERT's executor setup remains.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Rule handling of COPY FROM depends on whether RLS applies to the role",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "sql_standard_syntax",
+      "touch_points": [
+        "sql_standard_syntax",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A table has an ON DELETE rule and RLS enabled. The owner loads it with COPY and it works, because RLS does not apply to the owner. A non-owner ETL role runs the same COPY and gets \"cannot copy to table\", and finds out only in production.",
+      "argument": "COPY FROM is documented to ignore rules, and v16 makes this depend on whether RLS applies to the current role. In message #12, an ON DELETE rule blocks COPY. The v16 commit message still says \"any rule that would apply to an INSERT\", but message #11 proposes checking rd_rules for any rule. The author says the rewriter cannot be skipped (message #9). That explains the restriction for INSERT rules, but no message gives a reason to reject rules for other events.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        9,
+        10,
+        11,
+        12
+      ],
+      "author_must_show": "Can the check reject only rules that would change an INSERT, and can the docs state the exact contract for COPY FROM with RLS?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 9,
+          "from": "jian he",
+          "date": "2026-09-01T07:13:14Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxEPnQ_wx%3D-6P6h%3DhaxCO3CHeAijV7eeq3keUZ_Tve-1yw%40mail.gmail.com"
+        },
+        {
+          "index": 10,
+          "from": "Bryan Green",
+          "date": "2026-09-10T17:21:12Z",
+          "url": "https://www.postgresql.org/message-id/ab913841-b458-4931-bb89-cee7fba9eb24%40gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "jian he",
+          "date": "2026-09-23T19:05:37Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxEX3GD9XaG63M76fr-_QTt9ezVeSS3XvW%3DZGhgr7K9LDg%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "Kirill Reshke",
+          "date": "2026-11-02T04:11:57Z",
+          "url": "https://www.postgresql.org/message-id/CALdSSPhkL%2BQofGqaN9S%2B4m3rwYHrS_POU%2Bo43gEvbzmuxqhqxA%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #12 shows an ON DELETE rule blocking COPY FROM on an RLS table, and no later message answers it. The author's rewriter argument in message #9 covers only rules that affect an INSERT.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Executor hooks and monitoring report an INSERT that never runs",
+      "level": "2",
+      "rubric_item": 13,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An audit or monitoring extension using ExecutorStart or ExecutorEnd hooks logs \"INSERT INTO public.t DEFAULT VALUES\" for every RLS COPY. A DBA or auditor reads it as an application statement and looks for an INSERT that did not happen.",
+      "argument": "Message #13 shows a second pg_stat_statements entry with rows = 0 and an auto_explain plan for the nested INSERT. Extensions that hook the executor now see a statement that is planned and started but never run, and nothing in the proposal tells them so. No message settles whether the dummy query should get a queryId or call the hooks at all.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        13
+      ],
+      "author_must_show": "Can WITH CHECK OPTIONs be set up without passing a visible query through executor hooks, or how do extensions tell this internal query from a real one?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "jian he",
+          "date": "2026-05-10T14:23:26Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxFdt0%2BR6C5ZByAK3DpMEXbb%3D3Hc0XyRTPvbjpc9sPt%3DgQ%40mail.gmail.com"
+        },
+        {
+          "index": 13,
+          "from": "Joao Rito",
+          "date": "2026-11-10T13:30:16Z",
+          "url": "https://www.postgresql.org/message-id/20261110133016.61814-1-joaovictor.rito%40gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #13 shows the nested INSERT in pg_stat_statements and auto_explain, and leaves open whether it should get a queryId or call the hooks. No later message or v16 prose settles it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "RLS errors in COPY drop the line number that COPY errors show",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "psql_ux"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user loads a large file into an RLS table, and one row fails the policy or hits an error inside a policy function. The error shows only \"CONTEXT: COPY t\", so the user cannot find the row and has to bisect the file by hand.",
+      "argument": "Every other COPY FROM error reports the line number, and so do check constraint violations. The author's reason (message #6) is that ExecWithCheckOptions does not show row data for RLS violations. A line number is not row data, because the user supplied the file. Messages #10, #12 and #13 raise the point again, and v16 still drops the line number even for errors that are not policy violations.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        6,
+        10,
+        11,
+        12,
+        13
+      ],
+      "author_must_show": "What does reporting the input line number reveal that the user does not already have, given they supplied the file?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 6,
+          "from": "jian he",
+          "date": "2026-07-13T08:13:58Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxHU3tetCM%2BQymxpj7-OLP8b6x3HJAnARadSrEAt64MHkg%40mail.gmail.com"
+        },
+        {
+          "index": 10,
+          "from": "Bryan Green",
+          "date": "2026-09-10T17:21:12Z",
+          "url": "https://www.postgresql.org/message-id/ab913841-b458-4931-bb89-cee7fba9eb24%40gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "jian he",
+          "date": "2026-09-23T19:05:37Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxEX3GD9XaG63M76fr-_QTt9ezVeSS3XvW%3DZGhgr7K9LDg%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "Kirill Reshke",
+          "date": "2026-11-02T04:11:57Z",
+          "url": "https://www.postgresql.org/message-id/CALdSSPhkL%2BQofGqaN9S%2B4m3rwYHrS_POU%2Bo43gEvbzmuxqhqxA%40mail.gmail.com"
+        },
+        {
+          "index": 13,
+          "from": "Joao Rito",
+          "date": "2026-11-10T13:30:16Z",
+          "url": "https://www.postgresql.org/message-id/20261110133016.61814-1-joaovictor.rito%40gmail.com"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #10, #12 and #13 each report the missing line number, and message #12 reproduces it on v16. The reason in message #6 is about row data, and a line number of the user's own file is not row data.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Dummy INSERT exposes COPY to planner and executor hooks of extensions",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "security_privileges"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension with a planner_hook or ExecutorStart_hook, such as a sharding or plan-hinting extension, sees \"INSERT INTO rel DEFAULT VALUES\" and replaces or acts on its plan. COPY then reads its WITH CHECK OPTIONs from executor state the extension changed, or the extension sets up work for a run that never comes. The DBA finds out from wrong policy checks or extension errors.",
+      "argument": "Message #13 shows the dummy query reaching pg_stat_statements and auto_explain, so all executor hooks fire on it, and planner_hook fires too because the query is planned. The hook contract assumes Start, Run, Finish and End in order, but this path skips ExecutorRun. The thread treats this as a monitoring question, not an extension contract question. The open question in the brief, whether the dummy query should call executor hooks at all, has no answer yet.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        9,
+        13
+      ],
+      "author_must_show": "How does COPY make sure that a planner_hook or ExecutorStart_hook cannot change or drop the WITH CHECK OPTIONs that RLS enforcement relies on?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "jian he",
+          "date": "2026-05-10T14:23:26Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxFdt0%2BR6C5ZByAK3DpMEXbb%3D3Hc0XyRTPvbjpc9sPt%3DgQ%40mail.gmail.com"
+        },
+        {
+          "index": 9,
+          "from": "jian he",
+          "date": "2026-09-01T07:13:14Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxEPnQ_wx%3D-6P6h%3DhaxCO3CHeAijV7eeq3keUZ_Tve-1yw%40mail.gmail.com"
+        },
+        {
+          "index": 13,
+          "from": "Joao Rito",
+          "date": "2026-11-10T13:30:16Z",
+          "url": "https://www.postgresql.org/message-id/20261110133016.61814-1-joaovictor.rito%40gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "A planner_hook that changes WITH CHECK OPTIONs would break a plain INSERT the same way, and EXPLAIN without ANALYZE already calls ExecutorStart and ExecutorEnd without ExecutorRun. The rest duplicates standards-compat-2.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Unexecuted dummy INSERT reaches executor hooks used by audit extensions",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site runs an audit extension built on the ExecutorStart or ExecutorCheckPerms hooks. A non-owner COPY into an RLS table makes it record an extra \"INSERT INTO public.t DEFAULT VALUES\" that never ran. An auditor reviewing the log later cannot match it to any application statement.",
+      "argument": "The design runs the parse, rewrite, plan and ExecutorStart path on a query the user never sent, and message #13 shows pg_stat_statements and auto_explain recording it as a real nested INSERT. Hooks that make security decisions or write audit records see the same event, with the same permission-check and object-access callbacks as a real INSERT. Message #13 treats this as a monitoring question only. Nothing in the thread says which hooks must see the dummy query, or whether they should see it at all.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        13
+      ],
+      "author_must_show": "Which executor and permission-check hooks fire for the dummy INSERT, and why is it correct for audit or label-based security extensions to see a statement that never runs?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "jian he",
+          "date": "2026-05-10T14:23:26Z",
+          "url": "https://www.postgresql.org/message-id/CACJufxFdt0%2BR6C5ZByAK3DpMEXbb%3D3Hc0XyRTPvbjpc9sPt%3DgQ%40mail.gmail.com"
+        },
+        {
+          "index": 13,
+          "from": "Joao Rito",
+          "date": "2026-11-10T13:30:16Z",
+          "url": "https://www.postgresql.org/message-id/20261110133016.61814-1-joaovictor.rito%40gmail.com"
+        }
+      ],
+      "id": "security-1",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-2. COPY FROM already runs the INSERT permission check on the target table, so the only new effect named is the extra recorded statement.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Executor hooks see an INSERT that never runs",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site runs an audit or monitoring extension that hooks ExecutorStart. Each COPY FROM on an RLS table records an extra \"INSERT INTO schema.rel DEFAULT VALUES\". An auditor or DBA follows up on an INSERT that no application issued.",
+      "argument": "Message #13 shows pg_stat_statements with track = 'all' storing the nested INSERT with rows = 0, and auto_explain logging its plan. Any extension on ExecutorStart, ExecutorFinish or ExecutorEnd gets the same call, and hook authors have never had to expect a query that is started but not run. Message #13 leaves open whether the query should get a queryId or call hooks at all, and v16 does not settle it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        13
+      ],
+      "author_must_show": "Will the dummy query bypass executor hooks and queryId assignment, and if not, what should hook-based extensions do with it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 13,
+          "from": "Joao Rito",
+          "date": "2026-11-10T13:30:16Z",
+          "url": "https://www.postgresql.org/message-id/20261110133016.61814-1-joaovictor.rito%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-2. Its added claim that hooks never see a query started but not run is inaccurate, because EXPLAIN without ANALYZE does that today.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The dummy INSERT passes through planner and executor hooks, so extensions see a query that is started but never run."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": true,
+      "reason": "see objection standards-compat-1: Rule handling of COPY FROM depends on whether RLS applies to the role"
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": true,
+      "reason": "Errors during policy checks show \"CONTEXT: COPY t\" without the line number, which \\copy users also see."
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "COPY FROM now enforces RLS INSERT policies, and reviewers found a rule redirect bypass and a batching bypass in earlier versions."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "see objection standards-compat-1: Rule handling of COPY FROM depends on whether RLS applies to the role"
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "COPY on RLS tables depends on what INSERT's rewriter, planner and ExecutorStart set up, so later changes there can break it."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Each COPY FROM into an RLS table adds parse, rewrite and plan, and volatile or subquery policies force single-row inserts."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Is there a way to build the WITH CHECK OPTIONs, including subquery policies and per-partition ones, without planning and starting a dummy INSERT?",
+    "Does v16 reject any rule on the table or only rules that would change an INSERT, and which of the two will the docs promise?",
+    "Should the dummy INSERT get a queryId and call executor hooks, and if so, how do pg_stat_statements and audit extensions tell it from a user statement?",
+    "What does the input line number reveal that the user does not already have, given that the user supplied the file?",
+    "How much time do parse, rewrite and plan add to a small COPY FROM that runs often on an RLS table?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "Needs a committer who knows the RLS rewriter code and the COPY FROM executor path; none of the visible messages or the CommitFest reviewer list shows one.",
+    "liability": "The owner signs for RLS enforcement in COPY FROM matching INSERT in every case, and for a coupling to INSERT's executor setup that later executor or rewriter patches can break. A miss here is a security bug, with no time limit.",
+    "author_follow_up": "The author moved the entry through six CommitFests, rebased it, and fixed the crash and the rule redirect that reviewers reported, up to v16."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "needs champion",
+    "reason": "The patch removes a documented limit for roles that load data into RLS tables, and one tester measured the INSERT workaround at about 2.7 times slower. It touches only copy.c and copyfrom.c, but the mechanism is new and no committer has yet said it is acceptable."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read, and only 3 of 13 messages were shown in full. Not checked: the v16 rule check, the test for conditional DO INSTEAD NOTHING, the single-row fallback, and cleanup of the started query on error.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:5397",
+      "kind": "cf",
+      "title": "revamp row-security tracking",
+      "status": "Withdrawn",
+      "date": "2025-10-23",
+      "first_date": "2024-11-21",
+      "url": "https://commitfest.postgresql.org/patch/5397/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/Zz91RagtQg2s9497@nathan"
+      ],
+      "authors": "Nathan Bossart (bossartn)",
+      "objectors": "Dean Rasheed",
+      "summary": "The patch replaces the per-query tracking of whether row security applies with a global queue of row-security nest levels. get_row_security_policies() marks the levels, and higher-level callers such as fireRIRrules() read them, with cleanup after an ERROR.",
+      "objection": "Dean Rasheed objected to the global variables, the hooks into transaction management, and setting the flag far from where RLS policies are applied. He proposed adding a hasRowSecurity output parameter to fireRIRrules() instead. The author wrote that design as v2 but worried it did not go far enough, and later planned to withdraw for lack of interest. Tom Lane replied that the topic needs more thought and suggested other designs, and the visible messages show no work after that.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "COPY FROM row level security",
+        "COPY not supported row-level security",
+        "row security bulk load"
+      ],
+      "from_hint": false,
+      "score": 0.4,
+      "enriched": true,
+      "key_quote": "I'm also not a fan of using global variables in this way, or the\nresulting need to hook into the transaction management system to tidy\nup. The end result is that the places where the flag is set are moved\nfurther away from where RLS policies are applied, which IMO makes the\ncode much harder to follow.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAEZATCUDuzvQ8THEHNRRkg7Nia7OzZBA5PzwCm_c70M82pCnPg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:2027",
+      "kind": "cf",
+      "title": "Document the limitations of row-level security",
+      "status": "Returned with feedback",
+      "date": "2019-04-04",
+      "first_date": "2019-02-19",
+      "url": "https://commitfest.postgresql.org/patch/2027/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2811772.0XtDgEdalL@peanuts2"
+      ],
+      "authors": "Pierre Ducroquet (pinaraf)",
+      "objectors": "Peter Eisentraut",
+      "summary": "Pierre Ducroquet proposed a documentation patch, placed on the CREATE POLICY reference page, that lists performance-affecting restrictions of row-level security caused by built-in operator functions not being marked leakproof. The thread began with a patch that marks functions such as enum_eq/enum_ne and textin/textout leakproof and raised wider questions about leakproofness for array operators and functional indexes.",
+      "objection": "Peter Eisentraut agreed that the leakproofness of built-in operators should be documented better, but said the CREATE POLICY reference page was the wrong place for it. He also said that such a list would be expected to be complete and maintained, while the patch covered only a few cases the author had found. He judged that the patch needed significant additional work and set it to returned with feedback.",
+      "touch_points": [
+        "security / privileges",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "COPY FROM row level security",
+        "COPY not supported row-level security",
+        "row security bulk load"
+      ],
+      "from_hint": false,
+      "score": 0.373,
+      "enriched": true,
+      "key_quote": "Also, once you start such a list, there will be an expectation that it's\ncomplete.  So that would need to be ensured.",
+      "quote_message_url": "https://www.postgresql.org/message-id/89224f4d-e94c-804e-0f04-12005fd1fdfd%402ndquadrant.com",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:2038",
+      "kind": "cf",
+      "title": "Row Level Security, leakproof-ness, and performance implications",
+      "status": "Rejected",
+      "date": "2019-03-19",
+      "first_date": "2019-02-19",
+      "url": "https://commitfest.postgresql.org/patch/2038/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2811772.0XtDgEdalL@peanuts2"
+      ],
+      "authors": "Joe Conway (jconway)",
+      "objectors": "Peter Eisentraut, Robert Haas",
+      "summary": "The thread started from slow queries under row-level security, caused by many built-in operator functions not being marked leakproof, and a patch marked enum_eq, enum_ne, textin and textout leakproof. Later proposals were a documentation patch listing RLS restrictions on the CREATE POLICY page, and Joe Conway's idea to redact error messages sent to clients plus a GUC to treat all functions as leakproof.",
+      "objection": "Peter Eisentraut wrote that redacting error messages had been found not to satisfy the leakproofness criteria, and Joe Conway accepted that the consensus was against him. Robert Haas suggested doing it outside core, with a logging hook and functions marked leakproof by hand, and doubted that customers could be supported with redacted messages. Peter also found the CREATE POLICY page the wrong place for the documentation patch and asked how a list of non-leakproof operators would be kept complete. The visible messages do not show which of these two patches this entry is.",
+      "touch_points": [
+        "security / privileges",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "COPY FROM row level security",
+        "COPY not supported row-level security",
+        "row security bulk load"
+      ],
+      "from_hint": false,
+      "score": 0.339,
+      "enriched": true,
+      "key_quote": "I think that approach has been found not to actually satisfy the leakproofness criteria.",
+      "quote_message_url": "https://www.postgresql.org/message-id/a5f0f8ec-bcdb-154b-be27-4109ee18edfa%402ndquadrant.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "revert:06bd311bce24083c76d9741ae89c98750aaf4b41",
+      "kind": "revert",
+      "title": "Revert \"Refactor CopyReadAttributes{CSV,Text}() to use a callback in COPY FROM\"",
+      "status": "Reverted",
+      "date": "2024-02-14",
+      "first_date": "2024-02-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=06bd311bce24083c76d9741ae89c98750aaf4b41",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20240206014125.qofww7ew3dx3v3uk@awork3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/20231204.153548.2126325458835528809.kou@clear-code.com"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Refactor CopyReadAttributes{CSV,Text}() to use a callback in COPY FROM\"\nReverted commit(s): Refactor CopyReadAttributes{CSV,Text}() to use a callback in COPY FROM; Revert \"Refactor CopyAttributeOut{CSV,Text}() to use a callback in COPY TO\"",
+      "objection": "This reverts commit 95fb5b49024, for reasons similar to what led to\n1aa8324b81fa.  In this case, the callback was called once per row, which\nis less worse than the previous callback introduced for COPY TO called\nonce per argument for each row, still the patch set discussed to plug in\ncustom routines to the COPY paths would be able to know which subroutine\nto use depending on its CopyFromState, so this led to a suboptimal\napproach at the end.\n\nFor now, this part is reverted to consider better which approach to use.",
+      "touch_points": [],
+      "matched_queries": [
+        "COPY FROM row level security",
+        "COPY not supported row-level security",
+        "ExecWithCheckOptions CopyFrom"
+      ],
+      "from_hint": false,
+      "score": 0.312,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:4121",
+      "kind": "cf",
+      "title": "GUC to improve SECURITY INVOKER safety",
+      "status": "Withdrawn",
+      "date": "2023-02-02",
+      "first_date": "2023-01-12",
+      "url": "https://commitfest.postgresql.org/patch/4121/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/75b0dbb55e9febea54c441efff8012a6d2cb5bd7.camel@j-davis.com"
+      ],
+      "authors": "Jeff Davis (jdavis)",
+      "objectors": "Andres Freund",
+      "summary": "Add a boolean GUC, check_function_owner_trust, that raises an error when the session would execute a SECURITY INVOKER function owned by a role other than the current user or a role that can SET ROLE to the current user. SECURITY DEFINER functions would still run, so table owners could write triggers and similar code as SECURITY DEFINER for untrusted callers.",
+      "objection": "Andres Freund showed that SECURITY DEFINER does not protect a privileged user who runs code controlled by a less privileged user. Column default expressions and the default arguments of a SECURITY DEFINER function are evaluated with the invoker's privileges and can call functions in pg_catalog, so blocking only SECURITY INVOKER functions closes little. He proposed instead a setting that blocks any expression not controlled by a trusted user, plus an easy way to run statements under SECURITY_RESTRICTED_OPERATION. Jeff Davis accepted the examples, and the entry was withdrawn after that exchange.",
+      "touch_points": [
+        "new GUC",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "COPY FROM row level security",
+        "COPY not supported row-level security",
+        "row security bulk load"
+      ],
+      "from_hint": false,
+      "score": 0.254,
+      "enriched": true,
+      "key_quote": "And I think my examples pretty conclusively show that security definer isn't a useful boundary to *reduce* privileges. So the whole idea of preventing only security invoker functions just seems non-viable.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20230113183043.sblktsrci3s4besr%40awork3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:1266",
+      "kind": "cf",
+      "title": "Parallel COPY FROM",
+      "status": "Returned with feedback",
+      "date": "2017-10-02",
+      "first_date": "2017-06-30",
+      "url": "https://commitfest.postgresql.org/patch/1266/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CADfU8Wz28_Xaj3fsHT3tTWiXST5sdQ3Myte9Jjx4hZgwvbwhzw@mail.gmail.com"
+      ],
+      "authors": "Alexey Kondratov (ololobus)",
+      "objectors": "",
+      "summary": "Parallelize COPY FROM by having the main backend read raw lines with CopyReadLine and send them round-robin over shm_mq to a pool of background workers, which form and insert the tuples. A simpler variant that only handled COPY FROM file, with each worker given the same file and an offset, was also considered.",
+      "objection": "No new version of the patch was posted during the commitfest, so Daniel Gustafsson marked it Returned with Feedback. The last code posted was work in progress: workers only logged the lines they received, and the author still had to decide how workers get the CopyState parameters. No reviewer objected to the design.",
+      "touch_points": [],
+      "matched_queries": [
+        "COPY FROM RLS policies",
+        "WITH CHECK OPTION COPY",
+        "ExecWithCheckOptions CopyFrom"
+      ],
+      "from_hint": false,
+      "score": 0.24,
+      "enriched": true,
+      "key_quote": "Based on the discussion in this thread, and that a new version of the patch\nhasn’t been submitted during the commitfest, I’m marking this Returned with\nFeedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/251EC7D5-E547-4268-A96E-DF54A3766947%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:2660",
+      "kind": "cf",
+      "title": "Adding Support for Copy callback functionality on COPY TO api",
+      "status": "Returned with feedback",
+      "date": "2020-09-30",
+      "first_date": "2020-07-01",
+      "url": "https://commitfest.postgresql.org/patch/2660/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/253C21D1-FCEB-41D9-A2AF-E6517015B7D7@amazon.com"
+      ],
+      "authors": "Bilva Sanaba (bilvas)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch adds a data destination callback to the COPY TO API, matching the data source callback that COPY FROM already has. Extensions could then use COPY TO to send rows to their own destinations, for example for storage, backup or analytics.",
+      "objection": "The author did not answer review feedback for two weeks, so the patch was returned with feedback. The open review points were to run pgindent, to add an in-tree user of the callback, and to have the callback return the number of bytes written and report failure.",
+      "touch_points": [],
+      "matched_queries": [
+        "COPY FROM RLS policies",
+        "WITH CHECK OPTION COPY"
+      ],
+      "from_hint": false,
+      "score": 0.235,
+      "enriched": true,
+      "key_quote": "This feedback has not been answered after two weeks, so I have marked\nthe patch as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20200930074151.GR1996%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "revert:ca70c3cfda609d3b817c16b48f25c086c11b9e4c",
+      "kind": "revert",
+      "title": "Revert my ill-considered change that made formrdesc not insert the correct relation rowtype OID into the relcache entries it builds.",
+      "status": "Reverted",
+      "date": "2009-09-26",
+      "first_date": "2009-09-26",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ca70c3cfda609d3b817c16b48f25c086c11b9e4c",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert my ill-considered change that made formrdesc not insert the correct relation rowtype OID into the relcache entries it builds.  This ensures that catcache copies of the relation tupdescs will be fully correct. While the deficiency doesn't seem to have any effect in the current sources, we have been bitten by not-quite-right catcache tupdescs before, so it seems like a good idea to maintain the rule that they should be right.",
+      "objection": "Revert my ill-considered change that made formrdesc not insert the correct\nrelation rowtype OID into the relcache entries it builds.  This ensures\nthat catcache copies of the relation tupdescs will be fully correct.\nWhile the deficiency doesn't seem to have any effect in the current\nsources, we have been bitten by not-quite-right catcache tupdescs before,\nso it seems like a good idea to maintain the rule that they should be right.",
+      "touch_points": [],
+      "matched_queries": [
+        "COPY FROM row level security",
+        "COPY not supported row-level security",
+        "COPY insert policies enforcement"
+      ],
+      "from_hint": false,
+      "score": 0.224,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "revert:1aa8324b81fa4979ffdc6ccf81d560eac9446948",
+      "kind": "revert",
+      "title": "Revert \"Refactor CopyAttributeOut{CSV,Text}() to use a callback in COPY TO\"",
+      "status": "Reverted",
+      "date": "2024-02-06",
+      "first_date": "2024-02-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1aa8324b81fa4979ffdc6ccf81d560eac9446948",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20240206014125.qofww7ew3dx3v3uk@awork3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/20231204.153548.2126325458835528809.kou@clear-code.com"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Refactor CopyAttributeOut{CSV,Text}() to use a callback in COPY TO\"\nReverted commit(s): Refactor CopyAttributeOut{CSV,Text}() to use a callback in COPY TO",
+      "objection": "This reverts commit 2889fd23be56, following a discussion with Andres\nFreund as this callback, being called once per attribute when sending a\nrelation's row, can involve a lot of indirect function calls (more\nattributes to deal with means more impact).  The effects of a dispatch\nat this level would become more visible when improving the per-row code\nexecution of COPY TO, impacting future potential performance\nimprovements.",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "COPY FROM row level security",
+        "COPY not supported row-level security"
+      ],
+      "from_hint": false,
+      "score": 0.222,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "revert:f5db56fc4d6e95c582b61c99328ea0702b869fa0",
+      "kind": "revert",
+      "title": "Revert fix missing call to table_finish_bulk_insert during COPY",
+      "status": "Reverted",
+      "date": "2019-07-01",
+      "first_date": "2019-07-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f5db56fc4d6e95c582b61c99328ea0702b869fa0",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+TgmoYK=6BpxiJ0tN-p9wtH0BTAfbdxzHhwou0mdud4+BkYuQ@mail.gmail.com"
+      ],
+      "authors": "David Rowley",
+      "objectors": "",
+      "summary": "Revert fix missing call to table_finish_bulk_insert during COPY\nReverted commit(s): Fix missing call to table_finish_bulk_insert during COPY; Remove surplus call to table_finish_bulk_insert",
+      "objection": "This reverts commits 4de60244e and b2d69806d. Further thought is\nrequired to make this work properly.",
+      "touch_points": [],
+      "matched_queries": [
+        "COPY insert policies enforcement",
+        "row security bulk load"
+      ],
+      "from_hint": false,
+      "score": 0.215,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:4999",
+      "kind": "cf",
+      "title": "Restrict EXPLAIN (ANALYZE) for RLS and security_barrier views",
+      "status": "Rejected",
+      "date": "2024-09-19",
+      "first_date": "2024-05-06",
+      "url": "https://commitfest.postgresql.org/patch/4999/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3a60be45e7a89f50d166dba49553950d6b8a97f5.camel@cybertec.at"
+      ],
+      "authors": "Laurenz Albe (laurenz)",
+      "objectors": "Dean Rasheed",
+      "summary": "The patch forbids EXPLAIN (ANALYZE) for statements that use row-level security or security_barrier views, so ordinary users cannot see how many rows the policy or view condition filtered out. Only members of a predefined role, proposed as pg_read_all_stats, could still run it in those cases.",
+      "objection": "Dean Rasheed noted that the issue is not a security bug and that row counts can also be seen through pg_stat_get_tuples_returned(), pg_class.reltuples and plain EXPLAIN estimates, so EXPLAIN should stay as it is. After a discussion on pgsql-security, the author marked the patch rejected. The reason was that a determined attacker who can run arbitrary SQL can subvert row-level security anyway, so the restriction makes performance analysis harder without a real security gain.",
+      "touch_points": [
+        "planner",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "COPY FROM RLS policies",
+        "row security bulk load"
+      ],
+      "from_hint": false,
+      "score": 0.208,
+      "enriched": true,
+      "key_quote": "Therefore, restricting EXPLAIN (ANALYZE) will do more harm than good, since it will make analyzing query performance harder without a real security gain.",
+      "quote_message_url": "https://www.postgresql.org/message-id/ba677c20e02f554afb5a9aef8307cf4012eb4e63.camel%40cybertec.at",
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:2504",
+      "kind": "cf",
+      "title": "Allow COPY \"text\" to output a header and add header matching mode to COPY FROM",
+      "status": "Returned with feedback",
+      "date": "2020-09-29",
+      "first_date": "2018-05-13",
+      "url": "https://commitfest.postgresql.org/patch/2504/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAF1-J-0PtCWMeLtswwGV2M70U26n4g33gpe1rcKQqe6wVQDrFA@mail.gmail.com"
+      ],
+      "authors": "Rémi Lapeyre (remilapeyre)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch lets COPY write and read a HEADER line in the text format, which before was allowed only in CSV mode. A later version also adds HEADER match to COPY FROM, which requires the header line to match the target column names in both text and CSV format.",
+      "objection": "Michael Paquier returned the patch with feedback after the v5 revision. He judged it wrong to treat HEADER as a boolean-like option with one extra \"match\" value, and suggested a separate option for clear semantics. He also asked that repeated HEADER options be detected as redundant, as COPY does for \"format\". The first 2018 version was returned earlier because his review, which also raised header matching, was not addressed.",
+      "touch_points": [],
+      "matched_queries": [
+        "COPY FROM RLS policies",
+        "WITH CHECK OPTION COPY"
+      ],
+      "from_hint": false,
+      "score": 0.2,
+      "enriched": true,
+      "key_quote": "It seems to me that we may\nactually be looking at having this stuff as an option different than\n\"header\" at the end to have clear semantics.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20200929063624.GC29096%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:ec62cb0aac5ba31a82339606009ddbd7eb00e2ac",
+      "kind": "revert",
+      "title": "Revert applying column aliases to the output of whole-row Vars.",
+      "status": "Reverted",
+      "date": "2022-03-17",
+      "first_date": "2014-11-10",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ec62cb0aac5ba31a82339606009ddbd7eb00e2ac",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2950001.1638729947@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert applying column aliases to the output of whole-row Vars.\nReverted commit(s): Ensure that RowExprs and whole-row Vars produce the expected column names.",
+      "objection": "In commit bf7ca1587, I had the bright idea that we could make the\nresult of a whole-row Var (that is, foo.*) track any column aliases\nthat had been applied to the FROM entry the Var refers to.  However,\nthat's not terribly logically consistent, because now the output of\nthe Var is no longer of the named composite type that the Var claims\nto emit.  bf7ca1587 tried to handle that by changing the output\ntuple values to be labeled with a blessed RECORD type, but that's\nreally pretty disastrous: we can wind up storing such tuples onto\ndisk, whereupon they're not readable by other sessions.\n\nThe only practical fix I can see is to give up on what bf7ca1587\ntried to do, and say that the column names of tuples produced by\na whole-row Var are always those of the underlying named composite\ntype, query aliases or no.  While this introduces some inconsistencies,\nit removes others, so it's not that awful in the abstract.  What *is*\nkind of awful is to make such a behavioral change in a back-patched\nbug fix.  But corrupt data is worse, so back-patched it will be.\n\n(A workaround available to anyone who's unhappy about this is to\nintroduce an extra level of sub-SELECT, so that the whole-row Var is\nreferring to the sub-SELECT's output and not to a named table type.\nThen the Var is of type RECORD to begin with and there's no issue.)\n\nPer report from Miles Delahunty.  The faulty commit dates to 9.5,\nso back-patch to all supported branches.",
+      "touch_points": [],
+      "matched_queries": [
+        "COPY FROM row level security",
+        "COPY not supported row-level security"
+      ],
+      "from_hint": false,
+      "score": 0.197,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:869",
+      "kind": "cf",
+      "title": "copy_srf (was COPY as a set returning function)",
+      "status": "Returned with feedback",
+      "date": "2017-01-31",
+      "first_date": "2016-09-30",
+      "url": "https://commitfest.postgresql.org/patch/869/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CADkLM=eC8RG-LjKwk-PDY8V39bewWY0RA++eem5i6A8U3D44kA@mail.gmail.com"
+      ],
+      "authors": "Corey Huinker (coreyh)",
+      "objectors": "",
+      "summary": "copy_srf (was COPY as a set returning function)\nThreads: COPY as a set returning function",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "COPY FROM RLS policies",
+        "WITH CHECK OPTION COPY"
+      ],
+      "from_hint": false,
+      "score": 0.196,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:2553",
+      "kind": "cf",
+      "title": "INSERT SELECT: BulkInsertState and table_multi_insert",
+      "status": "Returned with feedback",
+      "date": "2021-11-24",
+      "first_date": "2020-05-08",
+      "url": "https://commitfest.postgresql.org/patch/2553/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200508072545.GA9701@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "",
+      "summary": "INSERT SELECT: BulkInsertState and table_multi_insert\nThreads: should INSERT SELECT use a BulkInsertState?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "COPY insert policies enforcement",
+        "row security bulk load"
+      ],
+      "from_hint": false,
+      "score": 0.189,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:2642",
+      "kind": "cf",
+      "title": "Improvements in Copy From",
+      "status": "Withdrawn",
+      "date": "2020-09-27",
+      "first_date": "2020-07-01",
+      "url": "https://commitfest.postgresql.org/patch/2642/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALDaNm0H2Nrc04utvJjMF_T73pbRAVUE3FPcqLeC=_kp8kmGtw@mail.gmail.com"
+      ],
+      "authors": "vigneshwaran C (vignesh.postgres)",
+      "objectors": "",
+      "summary": "Improvements in Copy From\nThreads: Improvements in Copy From",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "COPY FROM RLS policies",
+        "WITH CHECK OPTION COPY"
+      ],
+      "from_hint": false,
+      "score": 0.166,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "revert:e1458f2f1b56cfe07b3e8fc99b223ea8c852d7ce",
+      "kind": "revert",
+      "title": "Revert a few small patches that were intended for version 19.",
+      "status": "Reverted",
+      "date": "2025-06-11",
+      "first_date": "2025-06-10",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e1458f2f1b56cfe07b3e8fc99b223ea8c852d7ce",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+TgmoZ=J=PVNZUNKaxULu+KUVSt3Y-aJ1DZ9Y3Co6mu0z62jA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/60e8c6d0a6c08e67f15dbbe9e53df0119c710065.camel@j-davis.com",
+        "https://www.postgresql.org/message-id/flat/9875f7f9-50f1-4b5d-86fc-ee8b03e8c162@eisentraut.org"
+      ],
+      "authors": "Jeff Davis",
+      "objectors": "",
+      "summary": "Revert a few small patches that were intended for version 19.\nReverted commit(s): copyfromparse.c: use pg_ascii_tolower() rather than tolower().; contrib/spi/refint.c: use pg_ascii_tolower() instead.; isn.c: use pg_ascii_toupper() instead of toupper().; inet_net_pton.c: use pg_ascii_tolower() rather than tolower().",
+      "objection": "- 4c787a24e7e220a60022e47c1776f22f72902899\n- 78bd364ee39ca70a8f9cb8719282389866a08e14\n- 7a6880fadc177873d5663961ec3a02d67e34dcbe\n- 8898082a5d3e94eef073f0e08124137e096e78ef",
+      "touch_points": [],
+      "matched_queries": [
+        "ExecWithCheckOptions CopyFrom"
+      ],
+      "from_hint": false,
+      "score": 0.149,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "revert:d1d2979852538d7021cc809a40ef127d59747697",
+      "kind": "revert",
+      "title": "Revert \"Propagate CTE property flags when copying a CTE list into a rule.\"",
+      "status": "Reverted",
+      "date": "2021-02-07",
+      "first_date": "2021-02-07",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=d1d2979852538d7021cc809a40ef127d59747697",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJcOf-fAdj=nDKMsRhQzndm-O13NY4dL6xGcEvdX5Xvbbi0V7g@mail.gmail.com"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Propagate CTE property flags when copying a CTE list into a rule.\"\nReverted commit(s): Propagate CTE property flags when copying a CTE list into a rule.",
+      "objection": "This reverts commit ed290896335414c6c069b9ccae1f3dcdd2fac6ba and\nequivalent back-branch commits.  The issue is subtler than I thought,\nand it's far from new, so just before a release deadline is no time\nto be fooling with it.  We'll consider what to do at a bit more\nleisure.",
+      "touch_points": [],
+      "matched_queries": [
+        "COPY FROM rules rewriter"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:722",
+      "kind": "cf",
+      "title": "Multi-tenancy with RLS",
+      "status": "Rejected",
+      "date": "2017-01-31",
+      "first_date": "2015-08-14",
+      "url": "https://commitfest.postgresql.org/patch/722/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJrrPGdCZEVxQTs49CqxjjyffHKPFtff+sa6c6f5Z5grXztodw@mail.gmail.com"
+      ],
+      "authors": "Haribabu Kommi (haribabu)",
+      "objectors": "",
+      "summary": "Multi-tenancy with RLS\nThreads: Multi-tenancy with RLS",
+      "objection": "",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "COPY FROM RLS policies"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:2229",
+      "kind": "cf",
+      "title": "Patch to clean Query after rewrite-and-analyze",
+      "status": "Withdrawn",
+      "date": "2019-08-05",
+      "first_date": "2019-08-03",
+      "url": "https://commitfest.postgresql.org/patch/2229/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/7cf530b8-05c8-7e89-bab7-5ac7392d9972@ikoffice.de"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "Patch to clean Query after rewrite-and-analyze\nThreads: Patch to clean Query after rewrite-and-analyze - reduces memusage up\nto 50% - increases TPS by up to 50%",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "COPY FROM rules rewriter"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:3134",
+      "kind": "cf",
+      "title": "Bug in query rewriter - hasModifyingCTE not getting set",
+      "status": "Returned with feedback",
+      "date": "2021-09-08",
+      "first_date": "2021-02-06",
+      "url": "https://commitfest.postgresql.org/patch/3134/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJcOf-fAdj=nDKMsRhQzndm-O13NY4dL6xGcEvdX5Xvbbi0V7g@mail.gmail.com"
+      ],
+      "authors": "Takayuki Tsunakawa (maumau)",
+      "objectors": "",
+      "summary": "Bug in query rewriter - hasModifyingCTE not getting set\nThreads: Bug in query rewriter - hasModifyingCTE not getting set",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "COPY FROM rules rewriter"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:4891",
+      "kind": "cf",
+      "title": "Vectored I/O in bulk_write.c",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2024-03-10",
+      "url": "https://commitfest.postgresql.org/patch/4891/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGLx5bLwezZKAYB2O_qHj=ov10RpgRVY7e8TSJVE74oVjg@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Vectored I/O in bulk_write.c\nThreads: Vectored I/O in bulk_write.c",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "row security bulk load"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:2842",
+      "kind": "cf",
+      "title": "A few new options for CHECKPOINT",
+      "status": "Withdrawn",
+      "date": "2021-01-20",
+      "first_date": "2020-11-24",
+      "url": "https://commitfest.postgresql.org/patch/2842/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/17A03557-CF5C-4D4B-B719-A1D98DD75E75@amazon.com"
+      ],
+      "authors": "Nathan Bossart (bossartn)",
+      "objectors": "",
+      "summary": "A few new options for CHECKPOINT\nThreads: A few new options for CHECKPOINT",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "ExecWithCheckOptions CopyFrom"
+      ],
+      "from_hint": false,
+      "score": 0.112,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:4451",
+      "kind": "cf",
+      "title": "Fix warnings under ENFORCE_REGRESSION_TEST_NAME_RESTRICTIONS",
+      "status": "Rejected",
+      "date": "2023-07-19",
+      "first_date": "2023-07-19",
+      "url": "https://commitfest.postgresql.org/patch/4451/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/A87D4FFB-ACBC-4F96-AE12-E252997A0140@yesql.se"
+      ],
+      "authors": "Daniel Gustafsson (dege)",
+      "objectors": "",
+      "summary": "Fix warnings under ENFORCE_REGRESSION_TEST_NAME_RESTRICTIONS\nThreads: Remove backend warnings from SSL tests",
+      "objection": "",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "COPY insert policies enforcement"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 5,
+    "new_calls": 3,
+    "failed": 0,
+    "quotes_verified": 3,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 0
+  },
+  "precedent_cutoff": "2025-10-28",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found: the precedent list has no earlier attempt at enforcing RLS in COPY FROM, and no thread message points to one. With no recorded earlier rejection or revert reason to apply, this angle has no objection."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "Three fixable contract issues; no standards or syntax conflict, since the proposal adds no new syntax or GUC."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "The patch adds no catalog, WAL, on-disk or wire-protocol change, so pg_upgrade and physical replication are unaffected. The material does not say whether logical replication tablesync, which also uses COPY FROM, changes behaviour under this patch."
+    },
+    {
+      "angle": "security",
+      "objections": 1,
+      "note": "Thread messages #8 and #10 found an RLS bypass through a rule redirect, a quota policy bypass through batching and a crash any INSERT grantee could trigger. v15 and v16 address all three. Message #13 confirms that FORCE RLS, BYPASSRLS, column privileges and per-leaf partition policies match INSERT. Dropping the line number is a usability question, since the rows come from the user."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "Hot-path cost falls only on COPY into RLS tables, and message #13 shows that COPY stays much faster than the INSERT workaround."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "The existing route is COPY into a temporary table followed by INSERT ... SELECT, which is the idiom the current docs point to. Message #13 measures it at about 2.7 times slower than the patched COPY, and no contrib module or extension enforces INSERT policies during COPY, so I have no already-exists objection to raise."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "No demand objection. The patch removes a limitation that copy.sgml documents, and message #13 measures COPY at 440 ms against 1170 ms for the INSERT workaround on 1M rows; its cost falls only on COPY into RLS tables. The thread cites no -general or -bugs reports, so the demand evidence is in-thread testing only."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 7,
+      "new_survived": 4,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 82,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 14,
+    "wall_ms": 125302,
+    "cost_usd": 1.9534506,
+    "dry_run": false
+  }
+}

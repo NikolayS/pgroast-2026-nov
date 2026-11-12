@@ -1,0 +1,1061 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:47:44.783Z",
+  "input": {
+    "arg": "6304",
+    "cf": {
+      "id": 6304,
+      "url": "https://commitfest.postgresql.org/patch/6304/",
+      "title": "Incorrect historic snapshot may be serialized to disk during fast-forwarding",
+      "status": "Needs review",
+      "authors": "ChangAo Chen (chenchangao), haiyang li (ocean-li)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/tencent_3A071B760AA1A38540B57F297332B7781C08%40qq.com",
+    "subject": "[BUG] Incorrect historic snapshot may be serialized to disk during fast-forwarding",
+    "thread_start": "2025-11-22T08:55:05Z",
+    "messages_read": 10,
+    "messages_total": 10,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v4-0001-Handle-XLOG_HEAP2_NEW_CID-in-heap2_decode-even-if.patch",
+      "v1-0001-Handle-XLOG_HEAP2_NEW_CID-in-heap2_decode-even-if.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "No objection survived at levels 1a or 1b: the problem is stated with a reproducer in message #1, and message #10 reports an output plugin failure that v4 fixes. The one surviving objection, replication-ondisk-1, is a fixable level 2 point about snapshot files written before the fix and about back branches. A committer who knows the snapshot builder has to decide those two points.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Mark NEW_CID transactions as catalog-changing during fast-forward decoding",
+    "problem": "During fast-forward decoding, heap2_decode() skips XLOG_HEAP2_NEW_CID, so a transaction that writes only NEW_CID records is not marked as catalog-changing. The serialized historic snapshot then lacks that XID, and a later decoding run at the same LSN builds a different snapshot. The case the thread shows is a write to a user_catalog_table, which matters for output plugins and extensions that scan such tables.",
+    "proposed_design": "heap2_decode() handles XLOG_HEAP2_NEW_CID also when fast-forwarding and marks the transaction as containing catalog changes. The other NEW_CID processing still runs only outside fast-forward. In fast-forward, the record no longer falls through to the XLOG_HEAP2_REWRITE case.",
+    "user_visible_surface": [],
+    "author_claims": [
+      "Two decoding runs at the same LSN produce different historic snapshots, and the incorrect one from the fast-forward run is serialized to disk.",
+      "The bug breaks the snapshot builder design, which tracks all catalogs, even if it may be harmless in practice today.",
+      "An extension that scans a user_catalog_table with the incorrect snapshot gets wrong results.",
+      "The reviewer reproduced an output plugin catalog lookup failure without the patch and confirmed v4 fixes it.",
+      "Common DDL always writes XLOG_XACT_INVALIDATIONS too, so plain DDL does not hit the bug in the reviewer's tests."
+    ],
+    "thread_state": "Masahiko Sawada agreed with the analysis but asked for a real-world problem, ideally reproduced with DDL. Yuya Shinde reproduced a plugin failure with a user_catalog_table, found no DDL reproducer, and posted a test patch on top of v4; no committer has replied since.",
+    "unclear": [
+      "Whether any core path or supported extension writes NEW_CID without invalidations, outside user_catalog_table writes.",
+      "What the snapbuild.c change in v4 does; the commit message covers only decode.c.",
+      "Whether the fix is meant for back branches, and which ones.",
+      "Whether already serialized wrong snapshots in pg_logical/snapshots need any cleanup after upgrade.",
+      "What the output plugin failure in the reviewer's reproduction looked like."
+    ],
+    "search_queries": [
+      "fast forward logical decoding snapshot",
+      "XLOG_HEAP2_NEW_CID fast_forward",
+      "historic snapshot serialized incorrect",
+      "user_catalog_table logical decoding",
+      "snapbuild catalog changes transaction",
+      "pg_replication_slot_advance snapshot bug",
+      "SnapBuildSerialize wrong snapshot",
+      "logical decoding skip records fast forward"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Wrong snapshot files already on disk keep being reused after the fix",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "wal_replication",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user installs a minor release with the fix on a server where an earlier fast-forward run, such as pg_replication_slot_advance, wrote a snapshot file to pg_logical/snapshots without the NEW_CID transaction. A slot created or restarted at that LSN restores the file instead of rebuilding the snapshot. An output plugin that scans a user_catalog_table then reads the wrong rows, with no error to show it.",
+      "argument": "The patch changes how snapshots are built from now on, but message #1 shows the defect persists as a serialized file that a later run at the same LSN can read. CheckPointSnapBuild removes such files only once no slot needs them. The proposal does not say whether it targets back branches, or whether files written before the fix stay valid, need removal, or need a SNAPBUILD_VERSION bump. The commit message also does not say what the snapbuild.c change does, so a reviewer cannot tell whether the on-disk snapshot format changes.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        5,
+        10
+      ],
+      "author_must_show": "After a minor upgrade, can a snapshot file written by an unpatched fast-forward run still be restored, and if so, what removes or rejects it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "cca5507",
+          "date": "2025-11-22T08:55:05Z",
+          "url": "https://www.postgresql.org/message-id/tencent_3A071B760AA1A38540B57F297332B7781C08%40qq.com"
+        },
+        {
+          "index": 5,
+          "from": "cca5507",
+          "date": "2025-12-10T05:01:18Z",
+          "url": "https://www.postgresql.org/message-id/tencent_4B8339BBC550D1C29B5AA1142A1918BCC207%40qq.com"
+        },
+        {
+          "index": 10,
+          "from": "Yuya Shinde",
+          "date": "2026-09-03T04:05:58Z",
+          "url": "https://www.postgresql.org/message-id/CAPgNnN0s7B6jdWT8QBjVA5pkdiPa_zS%2BDO4DgXdXuAp9tWV7fA%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "A slot that restarts decoding restores the serialized snapshot at its restart point, and the thread does not discuss files written before the fix or back branches. The exposure ends once slots advance and a checkpoint removes the files, so `fixable` is the right severity.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "Serialized snapshot files in pg_logical/snapshots written before the fix may be restored after a minor upgrade; v4 also touches snapbuild.c."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "The patch changes how fast-forward logical decoding in decode.c treats XLOG_HEAP2_NEW_CID records."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The entry is tagged Bugfix, but the thread does not say which back branches the fix targets."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "After a minor upgrade, can a snapshot file written by an unpatched fast-forward run still be restored, and if so, what removes or rejects it?",
+    "Is the fix meant for back branches, and which ones?",
+    "What does the snapbuild.c change in v4 do, and does it change the serialized snapshot file format?",
+    "Does any core path or supported extension write NEW_CID without invalidation messages, other than a write to a user_catalog_table?",
+    "What error or wrong result did the output plugin show in the reproduction in message #10?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "Needs a committer who knows the snapshot builder and logical decoding. Masahiko Sawada asked for a real-world problem earlier in the thread, and no committer has replied since the reproduction in message #10.",
+    "liability": "The owner signs for historic snapshot correctness on the fast-forward path, in every branch that gets the fix, and for the decision on snapshot files written before it.",
+    "author_follow_up": "The authors posted revisions up to v4 and moved the entry across CommitFests through 2026-08, so they appear to stay with it."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "low",
+    "review_cost": "low",
+    "recommended_action": "needs champion",
+    "reason": "The fix is under 3 KiB in decode.c and snapbuild.c, adds no user-visible surface, and affects only output plugins and extensions that scan a user_catalog_table. It has been in 5 CommitFests, and no committer has answered the reproduction in message #10."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read, so the snapbuild.c change in v4 and its effect on the serialized snapshot format could not be judged. Only 3 of 10 messages were shown in full; the rest is known from the brief.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "revert:50f770c3d92cfb2d62724d8c810d37c1f6249a11",
+      "kind": "revert",
+      "title": "Revert GetTransactionSnapshot() to return historic snapshot during LR",
+      "status": "Reverted",
+      "date": "2025-08-22",
+      "first_date": "2024-12-23",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=50f770c3d92cfb2d62724d8c810d37c1f6249a11",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20250809222338.cc.nmisch@google.com",
+        "https://www.postgresql.org/message-id/flat/a868fe78-ddb4-4b0a-9b96-873d91d93cfd@iki.fi"
+      ],
+      "authors": "Heikki Linnakangas",
+      "objectors": "",
+      "summary": "Revert GetTransactionSnapshot() to return historic snapshot during LR\nReverted commit(s): Don't allow GetTransactionSnapshot() in logical decoding",
+      "objection": "Commit 1585ff7387 changed GetTransactionSnapshot() to throw an error\nif it's called during logical decoding, instead of returning the\nhistoric snapshot. I made that change for extra protection, because a\nhistoric snapshot can only be used to access catalog tables while\nGetTransactionSnapshot() is usually called when you're executing\narbitrary queries. You might get very subtle visibility problems if\nyou tried to use the historic snapshot for arbitrary queries.\n\nThere's no built-in code in PostgreSQL that calls\nGetTransactionSnapshot() during logical decoding, but it turns out\nthat the pglogical extension does just that, to evaluate row filter\nexpressions. You would get weird results if the row filter runs\narbitrary queries, but it is sane as long as you don't access any\nnon-catalog tables. Even though there are no checks to enforce that in\npglogical, a typical row filter expression does not access any tables\nand works fine. Accessing tables marked with the user_catalog_table =\ntrue option is also OK.\n\nTo fix pglogical with row filters, and any other extensions that might\ndo similar things, revert GetTransactionSnapshot() to return a\nhistoric snapshot during logical decoding.\n\nTo try to still catch the unsafe usage of historic snapshots, add\nchecks in heap_beginscan() and index_beginscan() to complain if you\ntry to use a historic snapshot to scan a non-catalog table. We're very\nclose to the version 18 release however, so add those new checks only\nin master.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "catalog changes",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "fast forward logical decoding snapshot",
+        "historic snapshot serialized incorrect",
+        "user_catalog_table logical decoding"
+      ],
+      "from_hint": false,
+      "score": 0.447,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "revert:2c7ea57e56ca5f668c32d4266e0a3e45b455bef5",
+      "kind": "revert",
+      "title": "Revert \"Logical decoding of sequences\"",
+      "status": "Reverted",
+      "date": "2022-04-07",
+      "first_date": "2022-02-10",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=2c7ea57e56ca5f668c32d4266e0a3e45b455bef5",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/95345a19-d508-63d1-860a-f5c2f41e8d40@enterprisedb.com",
+        "https://www.postgresql.org/message-id/flat/d045f3c2-6cfb-06d3-5540-e63c320df8bc@enterprisedb.com",
+        "https://www.postgresql.org/message-id/flat/1710ed7e13b.cd7177461430746.3372264562543607781@highgo.ca",
+        "https://www.postgresql.org/message-id/flat/20220212220413.b25amklo7t4xb7ni@alap3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/CAA4eK1KGn6cQqJEsubOOENwQOANsExiV2sKL52r4U10J8NJEMQ@mail.gmail.com"
+      ],
+      "authors": "Tomas Vondra",
+      "objectors": "",
+      "summary": "Revert \"Logical decoding of sequences\"\nReverted commit(s): Logical decoding of sequences; Add decoding of sequences to test_decoding; Fix skip-empty-xacts with sequences in test_decoding; Call ReorderBufferProcessXid from sequence_decode; Stabilize test_decoding touching with sequences",
+      "objection": "This reverts a sequence of commits, implementing features related to\nlogical decoding and replication of sequences:\n\n - 0da92dc530c9251735fc70b20cd004d9630a1266\n - 80901b32913ffa59bf157a4d88284b2b3a7511d9\n - b779d7d8fdae088d70da5ed9fcd8205035676df3\n - d5ed9da41d96988d905b49bebb273a9b2d6e2915\n - a180c2b34de0989269fdb819bff241a249bf5380\n - 75b1521dae1ff1fde17fda2e30e591f2e5d64b6a\n - 2d2232933b02d9396113662e44dca5f120d6830e\n - 002c9dd97a0c874fd1693a570383e2dd38cd40d5\n - 05843b1aa49df2ecc9b97c693b755bd1b6f856a9\n\nThe implementation has issues, mostly due to combining transactional and\nnon-transactional behavior of sequences. It's not clear how this could\nbe fixed, but it'll require reworking significant part of the patch.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "fast forward logical decoding snapshot",
+        "user_catalog_table logical decoding",
+        "logical decoding skip records fast forward"
+      ],
+      "from_hint": false,
+      "score": 0.35,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:788",
+      "kind": "cf",
+      "title": "Logical decoding on standby",
+      "status": "Returned with feedback",
+      "date": "2017-11-24",
+      "first_date": "2016-09-05",
+      "url": "https://commitfest.postgresql.org/patch/788/",
+      "thread_urls": [],
+      "authors": "Craig Ringer (ringerc)",
+      "objectors": "",
+      "summary": "Logical decoding on standby",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "fast forward logical decoding snapshot",
+        "user_catalog_table logical decoding",
+        "logical decoding skip records fast forward"
+      ],
+      "from_hint": false,
+      "score": 0.318,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:3823",
+      "kind": "cf",
+      "title": "logical decoding and replication of sequences, take 2",
+      "status": "Withdrawn",
+      "date": "2024-06-21",
+      "first_date": "2021-06-07",
+      "url": "https://commitfest.postgresql.org/patch/3823/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/d045f3c2-6cfb-06d3-5540-e63c320df8bc@enterprisedb.com",
+        "https://www.postgresql.org/message-id/flat/76e5fcd8-8072-8ea2-d361-2e811941000c@enterprisedb.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "Extend logical decoding with a sequence callback, and extend built-in logical replication so publications can include sequences, so that a logical replica's sequences track the primary and do not produce duplicate values after failover. Sequence increments were decoded non-transactionally by default, and transactionally when the sequence's relfilenode was created or altered in an in-progress transaction.",
+      "objection": "The visible messages do not show why the 2024 'take 2' entry was withdrawn. They do show that an earlier committed version was reverted in April 2022. Review had found that non-transactional sequence changes could be discarded or hit an assertion before the decoding snapshot was consistent, and mixing transactional and non-transactional decoding caused snapshot, abort and streaming problems. The author judged that a fix would need an extensive redesign that was too late for that release cycle, and posted an alternative that WAL-logs sequence state at commit time.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "fast forward logical decoding snapshot",
+        "user_catalog_table logical decoding",
+        "logical decoding skip records fast forward"
+      ],
+      "from_hint": false,
+      "score": 0.298,
+      "enriched": true,
+      "key_quote": "The approach combining transactional and non-transactional behavior implemented by the patch clearly has issues, and it seems foolish to hope we'll find a simple fix.",
+      "quote_message_url": "https://www.postgresql.org/message-id/1882b44e-8abd-8f2f-29a3-21453801db15%40enterprisedb.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:47",
+      "kind": "cf",
+      "title": "Logical Decoding with timelines",
+      "status": "Returned with feedback",
+      "date": "2015-05-03",
+      "first_date": "2014-12-15",
+      "url": "https://commitfest.postgresql.org/patch/47/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+U5nMKHqQbNNOAMFJ6pmqkDJ5A6xCowsjG8eA468EAzs7yHUQ@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon)",
+      "objectors": "Andres Freund, Michael Paquier",
+      "summary": "The patch makes logical decoding in the walsender follow timeline changes, as physical replication does, so that logical replication can cascade from a standby. It moved the walsender's send-pointer and timeline logic into shared functions used by both physical and logical sending.",
+      "objection": "Simon Riggs, the author, withdrew it as Returned with Feedback and said he had a new approach for the next release. Andres Freund noted that it covers only the walsender, while logical decoding also runs through SQL functions. He also said it does not let decoding start on a standby, which also needs forced hot_standby_feedback and slot cleanup in dbase_redo. Michael Paquier reported that the patch no longer applied, the earlier review comments were unaddressed, and no tests were shown.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "fast forward logical decoding snapshot",
+        "user_catalog_table logical decoding",
+        "logical decoding skip records fast forward"
+      ],
+      "from_hint": false,
+      "score": 0.288,
+      "enriched": true,
+      "key_quote": "Afaics the patch as is won't allow to start logical decoding on a standby.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20150116230236.GA11664%40awork2.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:2283",
+      "kind": "cf",
+      "title": "Minimal logical decoding on standbys",
+      "status": "Withdrawn",
+      "date": "2020-06-11",
+      "first_date": "2018-12-12",
+      "url": "https://commitfest.postgresql.org/patch/2283/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20181212204154.nsxf3gzqv3gesl32@alap3.anarazel.de"
+      ],
+      "authors": "Amit Khandekar (amitdkhan)",
+      "objectors": "",
+      "summary": "The patch allows logical decoding on a hot standby. It adds a catalog-table flag to existing WAL records so the standby can detect snapshot conflicts with logical slots, and it drops conflicting slots, including when wal_level on the primary drops below logical.",
+      "objection": "The visible messages do not show why the entry was withdrawn. The last messages show the patch set needing repeated rebases and its TAP tests failing intermittently: Rahila Syed reported 018_standby_logical_decoding_xmins.pl failures, and Alvaro Herrera found 019_standby_logical_decoding_conflicts.pl timing out after a rebase in March 2020. No later reply from the author is shown.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "fast forward logical decoding snapshot",
+        "user_catalog_table logical decoding",
+        "logical decoding skip records fast forward"
+      ],
+      "from_hint": false,
+      "score": 0.27,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "revert:e9a31c0cc604b015363d0aa5b018e8cea9d1d9a7",
+      "kind": "revert",
+      "title": "Revert logical snapshot filename format change in SnapBuildSnapshotExists().",
+      "status": "Reverted",
+      "date": "2025-08-14",
+      "first_date": "2025-07-07",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e9a31c0cc604b015363d0aa5b018e8cea9d1d9a7",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHGQGwHuHPB-ucAk_Tq3uSs4Fdziu1Jp_AA_RD3m5Ycky7m48w@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/ME0P300MB0445CA53CA0E4B8C1879AF84B641A@ME0P300MB0445.AUSP300.PROD.OUTLOOK.COM"
+      ],
+      "authors": "Álvaro Herrera",
+      "objectors": "",
+      "summary": "Revert logical snapshot filename format change in SnapBuildSnapshotExists().\nReverted commit(s): Standardize LSN formatting by zero padding",
+      "objection": "Commit 2633dae2e48 standardized LSN formatting but mistakenly changed\nthe logical snapshot filename format in SnapBuildSnapshotExists() from\n\"%X-%X.snap\" to \"%08X-%08X.snap\". Other code still used the original\n\"%X-%X.snap\" format, causing the replication slot synchronization worker\nto fail to find existing snapshot files and produce excessive log messages.\n\nThis commit restores the original \"%X-%X.snap\" format\nin SnapBuildSnapshotExists() to resolve the issue.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "snapbuild catalog changes transaction",
+        "pg_replication_slot_advance snapshot bug"
+      ],
+      "from_hint": false,
+      "score": 0.264,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:4436",
+      "kind": "cf",
+      "title": "Skip collecting decoded changes of already-aborted transactions",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2023-06-09",
+      "url": "https://commitfest.postgresql.org/patch/4436/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAD21AoDht9Pz_DFv_R2LqBTBbO4eGrpa9Vojmt5z5sEx3XwD7A@mail.gmail.com"
+      ],
+      "authors": "Masahiko Sawada (masahikosawada)",
+      "objectors": "vignesh C",
+      "summary": "Logical decoding checks CLOG when it first decodes a transaction and stops collecting decoded changes for transactions already known to be aborted, so large aborted transactions are not decoded again after a restart or lag. After Andres Freund's review, the revised patch checks transaction status only for large transactions at eviction time.",
+      "objection": "The revised patch did not compile because `logical_replication_mode` was undeclared in `ReorderBufferCheckTXNAbort`. The author posted no new version after this report, so the CF manager returned the entry with feedback. Andres Freund's earlier concerns, misuse of TransactionIdDidAbort() and slow CLOG lookups, were addressed in the design but not decisive.",
+      "touch_points": [],
+      "matched_queries": [
+        "snapbuild catalog changes transaction",
+        "logical decoding skip records fast forward"
+      ],
+      "from_hint": false,
+      "score": 0.262,
+      "enriched": true,
+      "key_quote": "With no update to the thread and the compilation still failing I'm\nmarking this as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALDaNm00kAVenyr7sMCkgFo1dhfj-rGrg4EVXHZfoie5T%3DgZPg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:2683",
+      "kind": "cf",
+      "title": "Minimal logical decoding on standbys",
+      "status": "Returned with feedback",
+      "date": "2020-09-17",
+      "first_date": "2018-12-12",
+      "url": "https://commitfest.postgresql.org/patch/2683/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20181212204154.nsxf3gzqv3gesl32@alap3.anarazel.de"
+      ],
+      "authors": "Andres Freund (andresfreund), Craig Ringer (ringerc), Amit Khandekar (amitdkhan), Ibrar Ahmed (ibrar)",
+      "objectors": "",
+      "summary": "The patch allows logical decoding on a physical standby, with catalog-row conflicts on the standby detected from the existing snapshot-conflict WAL records, which gain a flag marking catalog tables. It replaces an earlier design that periodically logged the primary's catalog xmin horizon, and leaves hot_standby_feedback optional.",
+      "objection": "The entry died of inactivity. In March 2020 Alvaro Herrera rebased the patch, and its new conflict test then timed out and stopped the test run. No updated version followed, so after six months without updates Michael Paquier returned it with feedback, noting that the patch no longer applied.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "fast forward logical decoding snapshot",
+        "user_catalog_table logical decoding",
+        "logical decoding skip records fast forward"
+      ],
+      "from_hint": false,
+      "score": 0.254,
+      "enriched": true,
+      "key_quote": "No updates in the last six months, so I am marking it as returned with\nfeedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20200917055730.GW2873%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:944",
+      "kind": "cf",
+      "title": "Logical decoding of two-phase transactions",
+      "status": "Returned with feedback",
+      "date": "2019-09-30",
+      "first_date": "2016-12-31",
+      "url": "https://commitfest.postgresql.org/patch/944/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/02DA5F5E-CECE-4D9C-8B4B-418077E2C010@postgrespro.ru",
+        "https://www.postgresql.org/message-id/flat/CAMGcDxeqEpWj3fTXwqhSwBdXd2RS9jzwWscO-XbeCfso6ts3+Q@mail.gmail.com"
+      ],
+      "authors": "Nikhil Sontakke (nikkhils)",
+      "objectors": "Alvaro Herrera, Arseny Sher, Petr Jelinek",
+      "summary": "The patch lets logical decoding decode a two-phase transaction at PREPARE TRANSACTION time, with output plugin callbacks for prepare, commit prepared and abort prepared. To handle a concurrent ROLLBACK PREPARED during decoding, it first used decode groups that blocked the abort, then later versions stopped decoding when catalog access saw the transaction aborted.",
+      "objection": "The entry was closed as Returned with feedback because no new patch version was posted after the January 2019 reviews. Those reviews reported open problems, among them that calling SnapBuildCommitTxn at PREPARE makes the catalog changes visible too early. Earlier, in July 2018, Robert Haas questioned whether blocking transaction aborts could work at all, and Andres Freund objected to a planned commit in April 2018.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "fast forward logical decoding snapshot",
+        "user_catalog_table logical decoding",
+        "logical decoding skip records fast forward"
+      ],
+      "from_hint": false,
+      "score": 0.229,
+      "enriched": true,
+      "key_quote": "I don't understand why this patch record has been kept aliv for so long,\nsince no new version has been sent in ages.  If this patch is really\nwaiting on the author, let's see the author do something.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20190902221244.GA2253%40alvherre.pgsql",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:3445",
+      "kind": "cf",
+      "title": "Error \"initial slot snapshot too large\" in create replication slot",
+      "status": "Withdrawn",
+      "date": "2024-01-16",
+      "first_date": "2021-10-11",
+      "url": "https://commitfest.postgresql.org/patch/3445/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFiTN-tqopqpfS6HHug2nnOGieJJ_nm-Nvy0WBZ=Zpo-LqtSJA@mail.gmail.com"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti), Dilip Kumar (dilip.kumar)",
+      "objectors": "Robert Haas",
+      "summary": "The patch fixes the \"initial slot snapshot too large\" error in CREATE_REPLICATION_SLOT, which happens because SnapBuildInitialSnapshot puts top-level and subtransaction XIDs into the xip array and the count can exceed GetMaxSnapshotXidCount(). Versions tried excluding subtransactions, marking the snapshot takenDuringRecovery, asking the reorder buffer which XIDs are subtransactions, and finally using the subxip array as an extension of xip.",
+      "objection": "Robert Haas objected to the last version because it adds a third way of using the xip and subxip arrays, and he saw no consensus on an approach. Earlier approaches failed for other reasons: the reorder buffer cannot reliably tell subtransactions apart, using takenDuringRecovery was rejected, and resizing xip made procarray.c and snapmgr.c too complicated. The author withdrew the entry for lack of a simple fix.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_replication_slot_advance snapshot bug",
+        "SnapBuildSerialize wrong snapshot"
+      ],
+      "from_hint": false,
+      "score": 0.227,
+      "enriched": true,
+      "key_quote": "It's bad enough that we\nalready use the xip/subxip arrays in two different ways depending on\nthe situation. Increasing that to three different ways seems painful.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoYhQGK5v05qLsuZ2FG9ov%3D1jWDHxbK-gZPgsXJh5X-tVA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "revert:be022908cfe2959dbb17c10475deeb492b8e6944",
+      "kind": "revert",
+      "title": "Revert \"Improve error message on snapshot import in snapmgr.c\"",
+      "status": "Reverted",
+      "date": "2023-09-14",
+      "first_date": "2023-09-14",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=be022908cfe2959dbb17c10475deeb492b8e6944",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20230914020724.hlks7vunitvtbbz4@awork3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/CALj2ACWmr=3KdxDkm8h7Zn1XxBoF6hdzq8WQyMn2y1OL5RYFrg@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Improve error message on snapshot import in snapmgr.c\"\nReverted commit(s): Improve error message on snapshot import in snapmgr.c",
+      "objection": "This reverts commit a0d87bcd9b57, following a remark from Andres Frend\nthat the new error can be triggered with an incorrect SET TRANSACTION\nSNAPSHOT command without being really helpful for the user as it uses\nthe internal file name.",
+      "touch_points": [],
+      "matched_queries": [
+        "historic snapshot serialized incorrect",
+        "SnapBuildSerialize wrong snapshot"
+      ],
+      "from_hint": false,
+      "score": 0.214,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:5721e5453ebc59360b6756fe72d7499c4a02177c",
+      "kind": "revert",
+      "title": "Revert \"Add redo LSN to pgstats files\"",
+      "status": "Reverted",
+      "date": "2025-03-16",
+      "first_date": "2024-08-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=5721e5453ebc59360b6756fe72d7499c4a02177c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2563883.1741826489@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/Zp8o6_cl0KSgsnvS@paquier.xyz"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Add redo LSN to pgstats files\"\nReverted commit(s): Add redo LSN to pgstats files",
+      "objection": "This reverts commit b860848232aa, that was added as a prerequisite for\nthe support of pgstats data flush across checkpoints, linking a pgstats\nfile to a specific checkpoint redo LSN.\n\nAs reported, this is proving to be currently problematic when going\nthrough a pg_upgrade, that does direct manipulations of the control file\nin the new cluster.  The LSN stored in the pgstats file is not able to\ncope with any changes done in the control file by pg_upgrade yet,\ncausing the pgstats file to be discarded when starting the new cluster\nafter overriding its redo LSN (one is a `pg_resetwal -l` where the new\ncluster's start LSN is bumped by a hardcoded value of 8 segments, see\ncopy_xact_xlog_xid).\n\nThe least painful path going forward is likely going to be a refactor of\nthe pgstats code so as it is possible to read and write some of its data\nwith some routines in src/common/, so as pg_upgrade or pg_resetwal are\nable to update its data.  The main point is that we are going to need a\nLSN in the stats file should we make it written at checkpoint time and\nnot only as part of a shutdown sequence.  It is too late to dive into\nthese details for v18, so let's revert the change, and let's try to\nfigure out all the details in the next release cycle.  The pgstats file\nis currently only written as part of a shutdown sequence, and its\ncontents are still lost on crash, same as older releases.\n\nBump PGSTAT_FILE_FORMAT_ID.",
+      "touch_points": [
+        "on-disk format / pg_upgrade"
+      ],
+      "matched_queries": [
+        "XLOG_HEAP2_NEW_CID fast_forward"
+      ],
+      "from_hint": false,
+      "score": 0.148,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:4386",
+      "kind": "cf",
+      "title": "XLog size reductions: Reduced XLog record header size",
+      "status": "Returned with feedback",
+      "date": "2024-04-09",
+      "first_date": "2023-06-20",
+      "url": "https://commitfest.postgresql.org/patch/4386/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2WgcW5SkPO_TGTqirRcCS_FN0xEZqUsXDE6pPz2TYzXQBA@mail.gmail.com"
+      ],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "Michael Paquier, Pavel Borisov",
+      "summary": "The patchset makes the WAL record header variable-length, which shrinks it to 14-21 bytes, with about 4-5% less WAL estimated for pgbench. It varlength-encodes the record length, gives rmgrs their own info byte, includes the XID only when the record asks for it with XLOG_INCLUDE_XID, and adds an invalid rmgr ID 0 used to detect the end of WAL.",
+      "objection": "The author stopped responding after review. Michael Paquier objected to the opt-in XLOG_INCLUDE_XID interface and questioned the use of rmgr ID 0 as an end-of-WAL marker. Pavel Borisov then asked for benchmarks showing the gain was large enough, the benchmarking was still a todo, and a reminder from Andrey M. Borodin in April 2024 got no visible reply before the entry was returned.",
+      "touch_points": [],
+      "matched_queries": [
+        "XLOG_HEAP2_NEW_CID fast_forward"
+      ],
+      "from_hint": false,
+      "score": 0.131,
+      "enriched": true,
+      "key_quote": "But at the second round, some doubt arises on whether this long\npatchset indeed introduces enough performance gain?",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALT9ZEFx4jJ47t-Vmz-jAVRrG%2B9TSP9uThDssbDHmWdsSjz5Fw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:1662",
+      "kind": "cf",
+      "title": "Global snapshots",
+      "status": "Returned with feedback",
+      "date": "2019-01-31",
+      "first_date": "2018-05-01",
+      "url": "https://commitfest.postgresql.org/patch/1662/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/21BC916B-80A1-43BF-8650-3363CCDAE09C@postgrespro.ru"
+      ],
+      "authors": "Stas Kelvich (kelvich), Konstantin Knizhnik (knizhnik)",
+      "objectors": "",
+      "summary": "Global snapshots\nThreads: Global snapshots",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "SnapBuildSerialize wrong snapshot"
+      ],
+      "from_hint": false,
+      "score": 0.127,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:5585",
+      "kind": "cf",
+      "title": "Filter irrelevant change before reassemble transactions during logical decoding",
+      "status": "Withdrawn",
+      "date": "2025-08-22",
+      "first_date": "2023-11-30",
+      "url": "https://commitfest.postgresql.org/patch/5585/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGfChW51P944nM5h0HTV9HistvVfwBxNaMt_s-OZ9t=uXz+Zbg@mail.gmail.com"
+      ],
+      "authors": "Jie Li (adger), Ajin Cherian (ajinc), Zhijie Hou (houzj)",
+      "objectors": "",
+      "summary": "Filter irrelevant change before reassemble transactions during logical decoding\nThreads: Proposal: Filter irrelevant change before reassemble transactions\nduring logical decoding",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "snapbuild catalog changes transaction"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:1128",
+      "kind": "cf",
+      "title": "Add function pg_advance_replication_slot",
+      "status": "Returned with feedback",
+      "date": "2017-11-29",
+      "first_date": "2017-05-04",
+      "url": "https://commitfest.postgresql.org/patch/1128/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABUevEwBdWPDXTs_cFy93GESq5JHbmo1v+y-6KWvce0sajLkhw@mail.gmail.com"
+      ],
+      "authors": "Magnus Hagander (mha)",
+      "objectors": "",
+      "summary": "Add function pg_advance_replication_slot\nThreads: Function to move the position of a replication slot",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_replication_slot_advance snapshot bug"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:4324",
+      "kind": "cf",
+      "title": "XLog size reductions: smaller XLogRecordBlockHeader",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-05-18",
+      "url": "https://commitfest.postgresql.org/patch/4324/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2WjuJqVeB6EUZ1z75_ittk54H6Lk7WtwRskEeGtZubr4bQ@mail.gmail.com"
+      ],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "",
+      "summary": "XLog size reductions: smaller XLogRecordBlockHeader\nThreads: XLog size reductions: smaller XLRec block header for PG17",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "XLOG_HEAP2_NEW_CID fast_forward"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:4679",
+      "kind": "cf",
+      "title": "Extend pgbench partitioning to pgbench_history",
+      "status": "Returned with feedback",
+      "date": "2024-05-14",
+      "first_date": "2023-11-30",
+      "url": "https://commitfest.postgresql.org/patch/4679/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+VUV5q9=N64fduq660bvFGQeFQcfqU2xh+XR_1OaPj87io3sg@mail.gmail.com"
+      ],
+      "authors": "Gabriele Bartolini (gbartolini)",
+      "objectors": "",
+      "summary": "Extend pgbench partitioning to pgbench_history\nThreads: Extend pgbench partitioning to pgbench_history",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "historic snapshot serialized incorrect"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:3805",
+      "kind": "cf",
+      "title": "old_snapshot: add test for coverage",
+      "status": "Returned with feedback",
+      "date": "2022-11-25",
+      "first_date": "2022-08-08",
+      "url": "https://commitfest.postgresql.org/patch/3805/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAcByaKcSXr7or_y81PinyiLtw35m9jyimS23vp9OpnRT0udZQ@mail.gmail.com"
+      ],
+      "authors": "DongWook Lee (dongwooklee)",
+      "objectors": "",
+      "summary": "old_snapshot: add test for coverage\nThreads: old_snapshot: add test for coverage",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "SnapBuildSerialize wrong snapshot"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:5462",
+      "kind": "cf",
+      "title": "history of vacuum / checkpoint runs",
+      "status": "Withdrawn",
+      "date": "2025-11-14",
+      "first_date": "2024-12-21",
+      "url": "https://commitfest.postgresql.org/patch/5462/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/b68ab452-c41f-4d04-893f-eaab84f1855b@vondra.me"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "history of vacuum / checkpoint runs\nThreads: PoC: history of recent vacuum/checkpoint runs (using new hooks)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "historic snapshot serialized incorrect"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:3491",
+      "kind": "cf",
+      "title": "skip replication slot snapshot/map file removal during end-of-recovery checkpoint",
+      "status": "Withdrawn",
+      "date": "2022-01-10",
+      "first_date": "2021-12-23",
+      "url": "https://commitfest.postgresql.org/patch/3491/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACXkkSL8EBpR7m=Mt=yRGBhevcCs3x4fsp3Bc-D13yyHOg@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "",
+      "summary": "skip replication slot snapshot/map file removal during end-of-recovery checkpoint\nThreads: skip replication slot snapshot/map file removal during\nend-of-recovery checkpoint",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_replication_slot_advance snapshot bug"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:5592",
+      "kind": "cf",
+      "title": "Filter irrelevant change before reassemble transactions during logical decoding",
+      "status": "Withdrawn",
+      "date": "2025-02-21",
+      "first_date": "2023-11-30",
+      "url": "https://commitfest.postgresql.org/patch/5592/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGfChW51P944nM5h0HTV9HistvVfwBxNaMt_s-OZ9t=uXz+Zbg@mail.gmail.com"
+      ],
+      "authors": "Jie Li (adger), Ajin Cherian (ajinc), Zhijie Hou (houzj)",
+      "objectors": "",
+      "summary": "Filter irrelevant change before reassemble transactions during logical decoding\nThreads: Proposal: Filter irrelevant change before reassemble transactions\nduring logical decoding",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "snapbuild catalog changes transaction"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:348",
+      "kind": "cf",
+      "title": "snapshot too old, configured by time",
+      "status": "Returned with feedback",
+      "date": "2016-02-01",
+      "first_date": "2015-08-31",
+      "url": "https://commitfest.postgresql.org/patch/348/",
+      "thread_urls": [],
+      "authors": "Kevin Grittner (kgrittn)",
+      "objectors": "",
+      "summary": "snapshot too old, configured by time",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "SnapBuildSerialize wrong snapshot"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 7,
+    "new_calls": 1,
+    "failed": 0,
+    "quotes_verified": 1,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 0
+  },
+  "precedent_cutoff": "2025-11-22",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found: the retrieved candidates do not cover this idea. Message #1 points to a related historic snapshot bug thread, but the thread says nothing about how it ended, so no earlier rejection reason applies here."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 0,
+      "note": "The patch changes only how fast-forward decoding treats XLOG_HEAP2_NEW_CID. It adds no syntax, GUC, catalog object, psql feature or dump content, and it does not change what clients or output plugins are told to expect. Two points could not be checked without the code: whether the snapbuild.c change alters the serialized snapshot file format, and whether wrong snapshots already on disk survive a minor upgrade. The thread does not discuss either point."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "Only one objection from this angle. The fix adds no WAL record, catalog change or wire protocol change, and touches only snapshot building. The one persistent effect is the serialized snapshot files covered above."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The patch adds no privilege, default or new exposure. It changes when fast-forward decoding marks a NEW_CID transaction as catalog-changing, so a serialized historic snapshot includes more XIDs, and the users who can create and advance slots stay the same. The patch has no security or privilege aspect."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 0,
+      "note": "The fix is a small bugfix in decode.c that lets fast-forward decoding of NEW_CID mark catalog changes, as non-fast-forward decoding already does; it adds no new mechanism, setting or API. The extra cost falls only on fast-forward runs that meet NEW_CID records and matches normal decoding. Not checked without code: what the snapbuild.c hunk in v4 changes. Committability: no committer has engaged since message #6, so the patch has no owner yet."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "This is a bug fix inside heap2_decode() for fast-forward decoding. No existing feature, option, extension or external tool gives a correct serialized snapshot in this case, and the fix extends the existing NEW_CID handling without adding a second mechanism. Other angles may question demand and real-world impact (message #6)."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "This is a small correctness fix on the fast-forward path, and message #10 reproduces an output plugin catalog lookup failure through user_catalog_table, the case that option exists for. The thread has no field report, but that affects priority and backpatching rather than whether the fix is wanted, and non-users pay almost nothing."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 1,
+      "new_survived": 1,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 48,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 12,
+    "wall_ms": 81469,
+    "cost_usd": 0.9727669999999999,
+    "dry_run": false
+  }
+}

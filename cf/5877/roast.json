@@ -1,0 +1,1288 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:36:11.062Z",
+  "input": {
+    "arg": "5877",
+    "cf": {
+      "id": 5877,
+      "url": "https://commitfest.postgresql.org/patch/5877/",
+      "title": "Report bytes and transactions actually sent downtream",
+      "status": "Needs review",
+      "authors": "Ashutosh Sharma (ashu_coek), Ashutosh Bapat (ashutoshbapat)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAExHW5s6KntzUyUoMbKR5dgwRmdV2Ay_2%2BAnTgYGAzo%3DQv61wA%40mail.gmail.com",
+    "subject": "Report bytes and transactions actually sent downtream",
+    "thread_start": "2025-06-30T09:53:59Z",
+    "messages_read": 123,
+    "messages_total": 123,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v20260202-0001-Number-of-bytes-sent-downstream-by-logical.patch",
+      "v20260202-0002-Report-output-plugin-statistics-in-pg_stat.patch",
+      "0001-Report-data-sent-statistics-in-pg_stat_repl-20250630.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "No objection survived at levels 1a or 1b: the problem is stated, and the thread shows demand and committer support for one additive counter kept by core. Two fixable level 2 points remain. standards-compat-1 shows that output_bytes counts the WALData header for walsender consumers but drops the LSN and XID columns for SQL API consumers. standards-compat-2 shows that the documented definition does not cover non-transactional logical messages. Both need a committer's decision on the column's definition before commit.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Add output_bytes to pg_stat_replication_slots for logical decoding output",
+    "problem": "pg_stat_replication_slots reports total_txns and total_bytes, which count what enters the reorder buffer, so they look the same for slots with different publications. The author hit a lagging slot feeding Debezium and could not tell whether the walsender or the consumer was slow. Users need the amount of logical change data actually produced for the downstream.",
+    "proposed_design": "The current patch adds one counter, kept by core, incremented in OutputPluginWrite() for the output plugin payload plus output-writer framing (the WALData header in the walsender path). Earlier designs with plugin-maintained counters, then bool-returning callbacks for filtered_bytes and sent_txns, were split off and set aside after Andres Freund objected. A second patch refactors the shared slot stats counters into a common struct.",
+    "user_visible_surface": [
+      "New column output_bytes (bigint) in pg_stat_replication_slots, earlier named sent_bytes.",
+      "Changed DEBUG2 message from UpdateDecodingStats(), now with labelled fields.",
+      "New header src/include/replication/replslot_stats.h with PgStat_ReplSlotStats, used by pgstat.h and reorderbuffer.h (refactoring patch).",
+      "Set aside: filtered_bytes, sent_txns, plugin columns and bool return types for output plugin callbacks."
+    ],
+    "author_claims": [
+      "total_bytes cannot show the load on a downstream, because publication filtering and the output format change the volume.",
+      "Protocol messages such as keepalives are not logical change data and do not load the consumer pipeline, so output_bytes excludes them.",
+      "BEGIN/COMMIT and STREAM START/STOP messages belong to the logical output and are counted.",
+      "The walsender WALData header is part of the output message given to libpq, so output_bytes includes it.",
+      "The change only adds a column, so existing users and output plugins see no break."
+    ],
+    "thread_state": "Masahiko Sawada, Amit Kapila and Michael Paquier accepted the name output_bytes and its scope. Aditya Gollamudi's question about counting the 25-byte walsender header got a doc change and a new test in the 2026-08-24 version, with no reply since; the refactoring patch still needs a separate agreement.",
+    "unclear": [
+      "The SQL API path excludes the LSN and XID columns but the walsender path includes the WALData header, so one column counts different framing per consumer.",
+      "The material does not say whether non-transactional logical messages now update the slot stats; Amit Kapila called their omission a probable bug.",
+      "Kyotaro Horiguchi asked why output bytes beat wire bytes for this use case, and the reply stated a preference without measurements.",
+      "The material does not say how output_bytes alone locates the bottleneck from the original Debezium case.",
+      "The material has no cost numbers for the new counter in the decoding hot path."
+    ],
+    "search_queries": [
+      "pg_stat_replication_slots new columns",
+      "logical decoding bytes sent downstream",
+      "output plugin statistics",
+      "walsender sent bytes counter",
+      "logical replication filtered bytes",
+      "output plugin callback return value",
+      "replication slot statistics rename total_bytes",
+      "logical replication lag monitoring"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "One output_bytes column counts different framing per consumer path",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "sql_standard_syntax",
+        "wire_protocol"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator has two slots on the same publication. One is read by a walsender and the other by pg_logical_slot_get_changes(). The operator compares output_bytes and sees the walsender slot about 25 bytes higher per message for identical output, then reads that as more data produced.",
+      "argument": "Message #117 removed the SQL API's LSN and XID columns because they are not plugin output. Message #123 keeps the 25-byte WALData header in the walsender path as output-writer framing. Message #112 accepted the name because protocol-level bytes do not belong in slot stats, yet the WALData header is protocol framing. The column therefore has no single definition, and the documentation can only describe the difference.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        112,
+        114,
+        117,
+        121,
+        123
+      ],
+      "author_must_show": "Why should output_bytes include the WALData header for walsender consumers but exclude the LSN and XID columns for SQL API consumers, when both are framing added outside the plugin?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 112,
+          "from": "Masahiko Sawada",
+          "date": "2026-06-24T23:07:06Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoC%2BJoYKBAgTXR4fDWeL71cRDOvx-JmCOVQhWhCHG6r34w%40mail.gmail.com"
+        },
+        {
+          "index": 114,
+          "from": "Amit Kapila",
+          "date": "2026-06-28T06:56:06Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1KVQfQtdYKocfsxB1njEQGx4fhMX4N0bjmozG7Sx_V8Sw%40mail.gmail.com"
+        },
+        {
+          "index": 117,
+          "from": "Ashutosh Sharma",
+          "date": "2026-06-30T07:01:06Z",
+          "url": "https://www.postgresql.org/message-id/CAE9k0PnBLCA0ZrzanQVyQCRnfk3rRZqctejCC3Cp9ZnhjMiyvQ%40mail.gmail.com"
+        },
+        {
+          "index": 121,
+          "from": "Aditya Gollamudi",
+          "date": "2026-08-20T03:01:04Z",
+          "url": "https://www.postgresql.org/message-id/802ced07-1530-4cb3-9bf3-215fe61308ee%40gmail.com"
+        },
+        {
+          "index": 123,
+          "from": "Ashutosh Sharma",
+          "date": "2026-08-24T09:45:11Z",
+          "url": "https://www.postgresql.org/message-id/CAE9k0PmtTYcayY5i3oDFazbZy0QqVYYiYqxP9FF-EY8RZcsj_g%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #123 confirms the walsender path counts the WALData header while the SQL API path drops the LSN and XID columns. The doc change describes the difference but nobody has replied to it, and message #116 asked for plugin-produced data only.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Counting of non-transactional logical messages is not settled in the contract",
+      "level": "2",
+      "rubric_item": 13,
+      "category": "design",
+      "touch_points": [
+        "sql_standard_syntax"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user emits non-transactional messages with pg_logical_emit_message(false, ...) and watches output_bytes. The value does not move until a later transaction triggers a stats update. If a later fix changes this behaviour or total_bytes, dashboards built on the first release change meaning without notice.",
+      "argument": "Message #89 shows that UpdateDecodingStats() does not run for non-transactional messages, so their bytes are not reported when they are sent. Message #91 calls this probably a bug but defers it. Message #114 defines output_bytes as transaction changes plus their delimiting messages and does not cover non-transactional messages. The first release of the column would then document one rule and behave by another.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        89,
+        91,
+        95,
+        98,
+        114
+      ],
+      "author_must_show": "Are non-transactional logical messages counted in output_bytes, when do they show up in the view, and will a later fix to total_bytes change either column's meaning?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 89,
+          "from": "Ashutosh Sharma",
+          "date": "2026-03-16T13:48:05Z",
+          "url": "https://www.postgresql.org/message-id/CAE9k0PmNLURfRzdAXDWZ9-fG6kUjxaa0NCQ3kE8PkATFAKUq4A%40mail.gmail.com"
+        },
+        {
+          "index": 91,
+          "from": "Amit Kapila",
+          "date": "2026-03-17T04:45:23Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1LPf_CiBCH0wCv1OHMft1X0m2%3Dytih%2Bva65x3RvPgU7SA%40mail.gmail.com"
+        },
+        {
+          "index": 95,
+          "from": "Amit Kapila",
+          "date": "2026-03-17T06:42:27Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1KoOGfvbrX73z_wo8oGHx5Yb9KDJABr%3DJ4cRUay2Vdezw%40mail.gmail.com"
+        },
+        {
+          "index": 98,
+          "from": "Ashutosh Sharma",
+          "date": "2026-03-18T04:28:58Z",
+          "url": "https://www.postgresql.org/message-id/CAE9k0PnmyO62ZhP2yX_9GWeVtOYtXmjLH3oLzEvzec-rsWyVDw%40mail.gmail.com"
+        },
+        {
+          "index": 114,
+          "from": "Amit Kapila",
+          "date": "2026-06-28T06:56:06Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1KVQfQtdYKocfsxB1njEQGx4fhMX4N0bjmozG7Sx_V8Sw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #94 and #95 agreed that non-transactional messages should count, and message #98 promised a fix for the missing stats report, but no later message shows it. Late reporting alone is existing behaviour, so the open point is the documented definition.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Walsender framing makes output_bytes mean different things per consumer",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "wire_protocol",
+      "touch_points": [
+        "wire_protocol",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator runs two slots on the same publication, one read with pg_logical_slot_get_changes() and one streamed by a walsender, and compares output_bytes. The walsender slot reports 25 more bytes per message, which nearly doubles the count for small pgoutput change messages. The operator wrongly concludes that the two slots produce different amounts of change data.",
+      "argument": "In message #116 the agreed rule was to count only what the output plugin produces in OutputPluginWrite(), and the SQL path was changed to drop the LSN and XID columns. Message #123 instead counts the WALData header in the walsender path because it is \"part of the output message given to libpq\". Message #112 gave this as the reason to keep wire framing out of slot statistics, since physical replication has the same framing. No committer has replied to the 2026-08-24 version, and a change to the WALData header in a later protocol version would also change the counter.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        112,
+        116,
+        121,
+        122,
+        123
+      ],
+      "author_must_show": "Why should output_bytes count walsender framing but not SQL API columns, given the plugin-only rule agreed in message #116?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 112,
+          "from": "Masahiko Sawada",
+          "date": "2026-06-24T23:07:06Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoC%2BJoYKBAgTXR4fDWeL71cRDOvx-JmCOVQhWhCHG6r34w%40mail.gmail.com"
+        },
+        {
+          "index": 116,
+          "from": "Masahiko Sawada",
+          "date": "2026-06-29T23:01:30Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoBaP60vGeGoW5Twizf6NKsDD_G4JD2gUHFgX0CywiaM3g%40mail.gmail.com"
+        },
+        {
+          "index": 121,
+          "from": "Aditya Gollamudi",
+          "date": "2026-08-20T03:01:04Z",
+          "url": "https://www.postgresql.org/message-id/802ced07-1530-4cb3-9bf3-215fe61308ee%40gmail.com"
+        },
+        {
+          "index": 122,
+          "from": "Ashutosh Sharma",
+          "date": "2026-08-20T12:25:59Z",
+          "url": "https://www.postgresql.org/message-id/CAE9k0PkJ2kdZwW1042KuvctxvHd8mEOSO%2BD7_Q3uUAcwLUdHvA%40mail.gmail.com"
+        },
+        {
+          "index": 123,
+          "from": "Ashutosh Sharma",
+          "date": "2026-08-24T09:45:11Z",
+          "url": "https://www.postgresql.org/message-id/CAE9k0PmtTYcayY5i3oDFazbZy0QqVYYiYqxP9FF-EY8RZcsj_g%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1. The claim that the header nearly doubles the count for small messages has no measurement in the material.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "output_bytes counts walsender framing but not SQL API framing",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "psql_ux"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator compares output_bytes for a slot read through pg_logical_slot_get_changes() with one read by a walsender. The walsender slot shows 25 extra bytes per message that the plugin never produced. If a later release changes the WALData header or adds an output writer, the counter changes meaning, and no test or error reports it.",
+      "argument": "Message #116 asked to count only the data the output plugin produced, in OutputPluginWrite(). Messages #117 and #122-#123 then moved the SQL API path to plugin output only, but kept the walsender header because it sits in ctx->out after prepare_write. The number now depends on what each output writer puts in the buffer before the plugin writes. Sawada's reason for the name in message #112 was to keep protocol framing out of the slot statistics, so this choice works against the agreed scope.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        112,
+        116,
+        117,
+        121,
+        122,
+        123
+      ],
+      "author_must_show": "Why should output_bytes include the walsender WALData header but not the SQL API LSN and XID columns, given that both are framing added by the output writer?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 112,
+          "from": "Masahiko Sawada",
+          "date": "2026-06-24T23:07:06Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoC%2BJoYKBAgTXR4fDWeL71cRDOvx-JmCOVQhWhCHG6r34w%40mail.gmail.com"
+        },
+        {
+          "index": 116,
+          "from": "Masahiko Sawada",
+          "date": "2026-06-29T23:01:30Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoBaP60vGeGoW5Twizf6NKsDD_G4JD2gUHFgX0CywiaM3g%40mail.gmail.com"
+        },
+        {
+          "index": 117,
+          "from": "Ashutosh Sharma",
+          "date": "2026-06-30T07:01:06Z",
+          "url": "https://www.postgresql.org/message-id/CAE9k0PnBLCA0ZrzanQVyQCRnfk3rRZqctejCC3Cp9ZnhjMiyvQ%40mail.gmail.com"
+        },
+        {
+          "index": 121,
+          "from": "Aditya Gollamudi",
+          "date": "2026-08-20T03:01:04Z",
+          "url": "https://www.postgresql.org/message-id/802ced07-1530-4cb3-9bf3-215fe61308ee%40gmail.com"
+        },
+        {
+          "index": 122,
+          "from": "Ashutosh Sharma",
+          "date": "2026-08-20T12:25:59Z",
+          "url": "https://www.postgresql.org/message-id/CAE9k0PkJ2kdZwW1042KuvctxvHd8mEOSO%2BD7_Q3uUAcwLUdHvA%40mail.gmail.com"
+        },
+        {
+          "index": 123,
+          "from": "Ashutosh Sharma",
+          "date": "2026-08-24T09:45:11Z",
+          "url": "https://www.postgresql.org/message-id/CAE9k0PmtTYcayY5i3oDFazbZy0QqVYYiYqxP9FF-EY8RZcsj_g%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1. The added point about a future header change or a new output writer follows from the same undefined scope and has no concrete scenario of its own.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "The pgstat replication slot entry gains a counter, so the stats file format changes."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "The patch touches walsender.c, logical.c and reorderbuffer.c in the logical decoding output path."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": true,
+      "reason": "see objection standards-compat-1: One output_bytes column counts different framing per consumer path"
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "system_views.sql and pg_proc.dat change to add the output_bytes column to pg_stat_replication_slots."
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The refactoring patch adds replslot_stats.h and changes structs in pgstat.h and reorderbuffer.h that extensions include."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": true,
+      "reason": "see objection standards-compat-1: One output_bytes column counts different framing per consumer path"
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "The counter's meaning depends on what each output writer puts in the buffer before the plugin writes."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "OutputPluginWrite() increments the counter for every logical decoding output message, and the thread has no cost numbers."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Why does output_bytes include the WALData header for walsender consumers but exclude the LSN and XID columns for SQL API consumers, when the output writer adds both?",
+    "Are non-transactional logical messages counted in output_bytes, and when do they appear in the view?",
+    "Will a later fix to the stats update for non-transactional messages change the meaning of output_bytes or total_bytes?",
+    "How does an operator use output_bytes alone to tell a slow walsender from a slow consumer in the Debezium case from message #1?",
+    "What is the measured cost of the new counter in OutputPluginWrite() for a workload with many small changes?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Masahiko Sawada, Amit Kapila and Michael Paquier accepted the name and scope in the thread; none has replied to the 2026-08-24 version. The owner needs to know logical decoding and the cumulative statistics code.",
+    "liability": "The owner signs for the documented definition of output_bytes, which monitoring tools will depend on for as long as the column exists, and for one more counter in the slot stats path.",
+    "author_follow_up": "Good sign: the author revised the patch for over a year, posted a version on 2026-08-24 answering review, and a second author joined the entry on 2026-09-30."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "low",
+    "review_cost": "medium",
+    "recommended_action": "proceed",
+    "reason": "Users of logical replication with filtered publications or third-party consumers gain a counter that core maintains, and the thread already agreed on its name and scope. The patch touches walsender, logical decoding and pgstat code, and two definition points still need an answer."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read, so the cost of the increment in OutputPluginWrite() and the exact bytes counted in each output writer are not checked. The refactoring patch that adds replslot_stats.h was not shown and is not judged here.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:3784",
+      "kind": "cf",
+      "title": "Reuse Workers and Replication Slots during Logical Replication",
+      "status": "Returned with feedback",
+      "date": "2024-01-10",
+      "first_date": "2022-07-05",
+      "url": "https://commitfest.postgresql.org/patch/3784/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGPVpCTq=rUDd4JUdaRc1XUWf4BrH2gdSNf3rtOMUGj9rPpfzQ@mail.gmail.com"
+      ],
+      "authors": "Melih Mutlu (melihmutlu)",
+      "objectors": "Amit Kapila, Peter Smith",
+      "summary": "The patch lets a tablesync worker, after it finishes one table, pick up the next table in init state and sync it, keeping its replication slot. This removes the cost of starting a new worker and creating and dropping a slot for each table, which matters most for many empty or small tables.",
+      "objection": "Benchmarks by reviewers showed regressions in some settings, and the v28 design #2 results were up to about twice as slow as HEAD and varied widely between runs. The patch also no longer applied to HEAD. Amit Kapila proposed Returned with feedback because the regressions still needed analysis, and vignesh C asked for a new entry with a fix for the regression.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_stat_replication_slots new columns",
+        "logical replication filtered bytes",
+        "replication slot statistics rename total_bytes",
+        "logical replication lag monitoring"
+      ],
+      "from_hint": false,
+      "score": 0.502,
+      "enriched": true,
+      "key_quote": "IIRC, there were some regressions observed with this patch. So, one\nneeds to analyze those as well.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAA4eK1L3XfQzpWfzS-5PFwncEduiWz9PGgwYZtuQYOod7PEY7w%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:3823",
+      "kind": "cf",
+      "title": "logical decoding and replication of sequences, take 2",
+      "status": "Withdrawn",
+      "date": "2024-06-21",
+      "first_date": "2021-06-07",
+      "url": "https://commitfest.postgresql.org/patch/3823/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/d045f3c2-6cfb-06d3-5540-e63c320df8bc@enterprisedb.com",
+        "https://www.postgresql.org/message-id/flat/76e5fcd8-8072-8ea2-d361-2e811941000c@enterprisedb.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "Extend logical decoding with a sequence callback, and extend built-in logical replication so publications can include sequences, so that a logical replica's sequences track the primary and do not produce duplicate values after failover. Sequence increments were decoded non-transactionally by default, and transactionally when the sequence's relfilenode was created or altered in an in-progress transaction.",
+      "objection": "The visible messages do not show why the 2024 'take 2' entry was withdrawn. They do show that an earlier committed version was reverted in April 2022. Review had found that non-transactional sequence changes could be discarded or hit an assertion before the decoding snapshot was consistent, and mixing transactional and non-transactional decoding caused snapshot, abort and streaming problems. The author judged that a fix would need an extensive redesign that was too late for that release cycle, and posted an alternative that WAL-logs sequence state at commit time.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical decoding bytes sent downstream",
+        "logical replication filtered bytes",
+        "logical replication lag monitoring"
+      ],
+      "from_hint": false,
+      "score": 0.285,
+      "enriched": true,
+      "key_quote": "The approach combining transactional and non-transactional behavior implemented by the patch clearly has issues, and it seems foolish to hope we'll find a simple fix.",
+      "quote_message_url": "https://www.postgresql.org/message-id/1882b44e-8abd-8f2f-29a3-21453801db15%40enterprisedb.com",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "revert:6ae701b4378db2284c77314560e95a93d0ba9484",
+      "kind": "revert",
+      "title": "Track invalidation_reason in pg_replication_slots.",
+      "status": "Partially reverted",
+      "date": "2024-03-22",
+      "first_date": "2024-01-04",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6ae701b4378db2284c77314560e95a93d0ba9484",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ZfR7HuzFEswakt%2Fa@ip-10-97-1-34.eu-west-3.compute.internal",
+        "https://www.postgresql.org/message-id/flat/CALj2ACW4aUe-_uFQOjdWCEN-xXoLGhmvRFnL8SNw_TZ5nJe+aw@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/ZYOE8IguqTbp-seF@paquier.xyz"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Track invalidation_reason in pg_replication_slots.\nReverted commit(s): Track conflict_reason in pg_replication_slots.",
+      "objection": "Till now, the reason for replication slot invalidation is not tracked\ndirectly in pg_replication_slots. A recent commit 007693f2a3 added\n'conflict_reason' to show the reasons for slot conflict/invalidation, but\nonly for logical slots.\n\nThis commit adds a new column 'invalidation_reason' to show invalidation\nreasons for both physical and logical slots. And, this commit also turns\n'conflict_reason' text column to 'conflicting' boolean column (effectively\nreverting commit 007693f2a3). The 'conflicting' column is true for\ninvalidation reasons 'rows_removed' and 'wal_level_insufficient' because\nthose make the slot conflict with recovery. When 'conflicting' is true,\none can now look at the new 'invalidation_reason' column for the reason\nfor the logical slot's conflict with recovery.\n\nThe new 'invalidation_reason' column will also be useful to track other\ninvalidation reasons in the future commit.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "pg_stat_replication_slots new columns",
+        "replication slot statistics rename total_bytes"
+      ],
+      "from_hint": false,
+      "score": 0.258,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:3445",
+      "kind": "cf",
+      "title": "Error \"initial slot snapshot too large\" in create replication slot",
+      "status": "Withdrawn",
+      "date": "2024-01-16",
+      "first_date": "2021-10-11",
+      "url": "https://commitfest.postgresql.org/patch/3445/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFiTN-tqopqpfS6HHug2nnOGieJJ_nm-Nvy0WBZ=Zpo-LqtSJA@mail.gmail.com"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti), Dilip Kumar (dilip.kumar)",
+      "objectors": "Robert Haas",
+      "summary": "The patch fixes the \"initial slot snapshot too large\" error in CREATE_REPLICATION_SLOT, which happens because SnapBuildInitialSnapshot puts top-level and subtransaction XIDs into the xip array and the count can exceed GetMaxSnapshotXidCount(). Versions tried excluding subtransactions, marking the snapshot takenDuringRecovery, asking the reorder buffer which XIDs are subtransactions, and finally using the subxip array as an extension of xip.",
+      "objection": "Robert Haas objected to the last version because it adds a third way of using the xip and subxip arrays, and he saw no consensus on an approach. Earlier approaches failed for other reasons: the reorder buffer cannot reliably tell subtransactions apart, using takenDuringRecovery was rejected, and resizing xip made procarray.c and snapmgr.c too complicated. The author withdrew the entry for lack of a simple fix.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_stat_replication_slots new columns",
+        "replication slot statistics rename total_bytes"
+      ],
+      "from_hint": false,
+      "score": 0.253,
+      "enriched": true,
+      "key_quote": "It's bad enough that we\nalready use the xip/subxip arrays in two different ways depending on\nthe situation. Increasing that to three different ways seems painful.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoYhQGK5v05qLsuZ2FG9ov%3D1jWDHxbK-gZPgsXJh5X-tVA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:418",
+      "kind": "cf",
+      "title": "pglogical_output - a general purpose logical decoding output plugin",
+      "status": "Returned with feedback",
+      "date": "2016-02-03",
+      "first_date": "2015-11-02",
+      "url": "https://commitfest.postgresql.org/patch/418/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMsr+YGc6AYKjsCj0Zfz=X4Aczonq1SfQx9C=hUYUN4j2pKwHA@mail.gmail.com"
+      ],
+      "authors": "Petr Jelínek (pjmodos), Craig Ringer (ringerc)",
+      "objectors": "Andres Freund, Michael Paquier",
+      "summary": "Craig Ringer proposed pglogical_output as a contrib module for 9.6: a general-purpose logical decoding output plugin that streams changes in a documented binary or JSON protocol. It adds client-negotiated startup parameters, a relation metadata cache, and C and PL/pgSQL hooks for filtering rows and origins.",
+      "objection": "Andres Freund's late review found design problems. He objected to the PL/pgSQL hooks, because output plugins may not access normal tables, and to having two output formats in one plugin. He also argued that the relation metadata cache is not safe against cache invalidations and that api_private leaks memory. Craig Ringer agreed to rework several of these points, but the SGML documentation was still unfinished, and Michael Paquier questioned whether the module belongs in core.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "output plugin statistics",
+        "output plugin callback return value"
+      ],
+      "from_hint": false,
+      "score": 0.237,
+      "enriched": true,
+      "key_quote": "Considering that this module could have a happier life if managed independently.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB7nPqQb4xN3REAb7%2BEwj_A62RuCG1KMkc2BV4kKyduHe2oVMg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:1710",
+      "kind": "cf",
+      "title": "Row filtering for logical replication",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2018-02-28",
+      "url": "https://commitfest.postgresql.org/patch/1710/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHE3wggb715X+mK_DitLXF25B=jE6xyNCH4YOwM860JR7HarGQ@mail.gmail.com"
+      ],
+      "authors": "Euler Taveira (eulerto)",
+      "objectors": "Michael Paquier",
+      "summary": "Add an optional WHERE clause to tables in CREATE PUBLICATION so that the logical replication output plugin sends only rows matching the filter to subscribers. Initial table synchronization was not covered by the filter in this version.",
+      "objection": "The patch was waiting on the author for several months after reviewers reported bugs and open issues (restricting the filter expression to the current tuple and immutable functions, a reproducible bug in cascaded replication), and it no longer applied. It was returned with feedback for that reason, with an invitation to rebase and resubmit.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical replication filtered bytes",
+        "logical replication lag monitoring"
+      ],
+      "from_hint": false,
+      "score": 0.219,
+      "enriched": true,
+      "key_quote": "This patch has been waiting on author for a couple of months and does\nnot apply anymore, so I am marking as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20181002050315.GV11712%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:1862",
+      "kind": "cf",
+      "title": "Row filtering for logical replication",
+      "status": "Returned with feedback",
+      "date": "2019-02-03",
+      "first_date": "2018-02-28",
+      "url": "https://commitfest.postgresql.org/patch/1862/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHE3wggb715X+mK_DitLXF25B=jE6xyNCH4YOwM860JR7HarGQ@mail.gmail.com"
+      ],
+      "authors": "Euler Taveira (eulerto)",
+      "objectors": "Andres Freund",
+      "summary": "The patch adds an optional WHERE clause per table in CREATE PUBLICATION, for example `FOR TABLE departments WHERE (id > 2000 AND id <= 3000)`. The output plugin on the publisher then skips rows that do not match, but the initial table synchronization is not filtered.",
+      "objection": "Andres Freund returned the patch with feedback because the author had not posted a new version after November 2018. In that month the author said he was fixing the bug Hironobu SUZUKI reported, where ALTER PUBLICATION ... SET TABLE ... WHERE kept the old filter. Design questions were still open at the close: which functions a filter may call, and what happens to the slot and subscription when a filter fails during decoding.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical replication filtered bytes",
+        "logical replication lag monitoring"
+      ],
+      "from_hint": false,
+      "score": 0.203,
+      "enriched": true,
+      "key_quote": "As far as I can tell, the patch has not been refreshed since. So I'm marking this as returned with feedback for now.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20190203101439.26xgw5sv7vhgdcz2%40alap3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:1128",
+      "kind": "cf",
+      "title": "Add function pg_advance_replication_slot",
+      "status": "Returned with feedback",
+      "date": "2017-11-29",
+      "first_date": "2017-05-04",
+      "url": "https://commitfest.postgresql.org/patch/1128/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABUevEwBdWPDXTs_cFy93GESq5JHbmo1v+y-6KWvce0sajLkhw@mail.gmail.com"
+      ],
+      "authors": "Magnus Hagander (mha)",
+      "objectors": "Michael Paquier, Andres Freund",
+      "summary": "Add a SQL function that moves a physical replication slot forward to a given WAL position without consuming the WAL, for example to keep slots in sync across servers. Later versions named it pg_advance_replication_slot, allowed forward moves only, and raised an error on logical slots.",
+      "objection": "Michael Paquier asked that moving the slot backwards raise an error with the current slot position instead of a warning, and that the logical-slot error use ERRCODE_FEATURE_NOT_SUPPORTED. Andres Freund added that neither message followed the message style guidelines. The patch got no update in the following two months, so it was returned with feedback.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_stat_replication_slots new columns",
+        "replication slot statistics rename total_bytes"
+      ],
+      "from_hint": false,
+      "score": 0.2,
+      "enriched": true,
+      "key_quote": "True as well, and the patch did not get an update in two months to\nreflect that. So I am marking it as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB7nPqRykF03uk-3PxDBYQ75awn5Eki%3DsVdhOayxBqQ74LcCSw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:2270",
+      "kind": "cf",
+      "title": "Row filtering for logical replication",
+      "status": "Returned with feedback",
+      "date": "2020-03-16",
+      "first_date": "2018-02-28",
+      "url": "https://commitfest.postgresql.org/patch/2270/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHE3wggb715X+mK_DitLXF25B=jE6xyNCH4YOwM860JR7HarGQ@mail.gmail.com"
+      ],
+      "authors": "Euler Taveira (eulerto)",
+      "objectors": "",
+      "summary": "The patch adds an optional WHERE clause per table to CREATE PUBLICATION, so the publisher's output plugin sends only rows that match the filter to subscribers. Initial table synchronization did not apply the filter in the first version.",
+      "objection": "Amit Langote's November 2019 review left the patch waiting on author, and no new version was posted before the last PG13 commitfest. David Steele marked it Returned with Feedback for that reason. Open points included restricting filters to catalog access, handling unlogged TOASTed attributes, recovering from filter errors under a historic snapshot, and wrong results with inheritance and updates.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical replication filtered bytes",
+        "logical replication lag monitoring"
+      ],
+      "from_hint": false,
+      "score": 0.193,
+      "enriched": true,
+      "key_quote": "I have marked this patch Returned with Feedback since no new patch has\nbeen posted.",
+      "quote_message_url": "https://www.postgresql.org/message-id/8cf1ea71-b609-00e8-b8f0-c85ba61b7312%40pgmasters.net",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:3425",
+      "kind": "cf",
+      "title": "pg_replslotdata - a tool for displaying replication slot information",
+      "status": "Rejected",
+      "date": "2022-01-17",
+      "first_date": "2021-11-23",
+      "url": "https://commitfest.postgresql.org/patch/3425/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACW0rV5gWK8A3m6_X62qH+Vfaq5hznC=i0R5Wojt5+yhyw@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "",
+      "summary": "pg_replslotdata - a tool for displaying replication slot information\nThreads: pg_replslotdata - a tool for displaying replication slot information",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_stat_replication_slots new columns",
+        "replication slot statistics rename total_bytes"
+      ],
+      "from_hint": false,
+      "score": 0.185,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:4686",
+      "kind": "cf",
+      "title": "Forbid the use of invalidated physical slots in streaming replication.",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2023-12-06",
+      "url": "https://commitfest.postgresql.org/patch/4686/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/OS0PR01MB5716A626A4AF5814E057CEE39484A@OS0PR01MB5716.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "Zhijie Hou (houzj)",
+      "objectors": "",
+      "summary": "Forbid the use of invalidated physical slots in streaming replication.\nThreads: Forbid the use of invalidated physical slots in streaming\nreplication.",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_stat_replication_slots new columns",
+        "replication slot statistics rename total_bytes"
+      ],
+      "from_hint": false,
+      "score": 0.182,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:701",
+      "kind": "cf",
+      "title": "Logical Replication",
+      "status": "Returned with feedback",
+      "date": "2016-10-03",
+      "first_date": "2016-08-05",
+      "url": "https://commitfest.postgresql.org/patch/701/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/37e19ad5-f667-2fe2-b95b-bba69c5b6c68@2ndquadrant.com"
+      ],
+      "authors": "Petr Jelínek (pjmodos)",
+      "objectors": "",
+      "summary": "Logical Replication\nThreads: Logical Replication WIP",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical replication filtered bytes",
+        "logical replication lag monitoring"
+      ],
+      "from_hint": false,
+      "score": 0.174,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:295",
+      "kind": "cf",
+      "title": "expose confirmed_flush for replication slots",
+      "status": "Rejected",
+      "date": "2015-07-08",
+      "first_date": "2015-07-08",
+      "url": "https://commitfest.postgresql.org/patch/295/",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "expose confirmed_flush for replication slots",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_stat_replication_slots new columns",
+        "replication slot statistics rename total_bytes"
+      ],
+      "from_hint": false,
+      "score": 0.167,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3393",
+      "kind": "cf",
+      "title": "Synchronize logical replication slots from primary to standby",
+      "status": "Returned with feedback",
+      "date": "2022-02-18",
+      "first_date": "2021-10-31",
+      "url": "https://commitfest.postgresql.org/patch/3393/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/514f6f2f-6833-4539-39f1-96cd1e011f23@enterprisedb.com"
+      ],
+      "authors": "Peter Eisentraut (petere)",
+      "objectors": "",
+      "summary": "Synchronize logical replication slots from primary to standby\nThreads: Synchronizing slots from primary to standby",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_stat_replication_slots new columns",
+        "replication slot statistics rename total_bytes"
+      ],
+      "from_hint": false,
+      "score": 0.163,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:788",
+      "kind": "cf",
+      "title": "Logical decoding on standby",
+      "status": "Returned with feedback",
+      "date": "2017-11-24",
+      "first_date": "2016-09-05",
+      "url": "https://commitfest.postgresql.org/patch/788/",
+      "thread_urls": [],
+      "authors": "Craig Ringer (ringerc)",
+      "objectors": "",
+      "summary": "Logical decoding on standby",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical decoding bytes sent downstream"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:2676",
+      "kind": "cf",
+      "title": "Start WAL streaming as early as possible, without waiting for startup process to finish replaying existing WAL. This helps synchronous replication to resume quickly when significant replay lag has been built up.",
+      "status": "Returned with feedback",
+      "date": "2020-12-01",
+      "first_date": "2020-01-17",
+      "url": "https://commitfest.postgresql.org/patch/2676/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANXE4Tc3FNvZ_xAimempJWv_RH9pCvsZH7Yq93o1VuNLjUT-mQ@mail.gmail.com"
+      ],
+      "authors": "Asim Rama Praveen (apraveen), Hao Wu (hwu)",
+      "objectors": "",
+      "summary": "Start WAL streaming as early as possible, without waiting for startup process to finish replaying existing WAL. This helps synchronous replication to resume quickly when significant replay lag has been built up.\nThreads: Unnecessary delay in streaming replication due to replay lag",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical replication lag monitoring"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:920",
+      "kind": "cf",
+      "title": "Track replay lag in pg_stat_replication",
+      "status": "Returned with feedback",
+      "date": "2017-02-01",
+      "first_date": "2016-10-26",
+      "url": "https://commitfest.postgresql.org/patch/920/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEepm=37=p6AUYtm7v+qsyerqbDMQsmnP2-CJpT42j-rOqNBbQ@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Track replay lag in pg_stat_replication\nThreads: Measuring replay lag",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical replication lag monitoring"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:4120",
+      "kind": "cf",
+      "title": "Flush SLRU counters in checkpointer process",
+      "status": "Returned with feedback",
+      "date": "2023-09-04",
+      "first_date": "2023-01-11",
+      "url": "https://commitfest.postgresql.org/patch/4120/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAO6_XqrR5S4w6nWsrtpQw37quOK=aRvbKVsUT3wS=gB93yokXQ@mail.gmail.com"
+      ],
+      "authors": "Anthonin Bonnefoy (bonnefoa)",
+      "objectors": "",
+      "summary": "Flush SLRU counters in checkpointer process\nThreads: Flush SLRU counters in checkpointer process",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "walsender sent bytes counter"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "revert:2c7ea57e56ca5f668c32d4266e0a3e45b455bef5",
+      "kind": "revert",
+      "title": "Revert \"Logical decoding of sequences\"",
+      "status": "Reverted",
+      "date": "2022-04-07",
+      "first_date": "2022-02-10",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=2c7ea57e56ca5f668c32d4266e0a3e45b455bef5",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/95345a19-d508-63d1-860a-f5c2f41e8d40@enterprisedb.com",
+        "https://www.postgresql.org/message-id/flat/d045f3c2-6cfb-06d3-5540-e63c320df8bc@enterprisedb.com",
+        "https://www.postgresql.org/message-id/flat/1710ed7e13b.cd7177461430746.3372264562543607781@highgo.ca",
+        "https://www.postgresql.org/message-id/flat/20220212220413.b25amklo7t4xb7ni@alap3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/CAA4eK1KGn6cQqJEsubOOENwQOANsExiV2sKL52r4U10J8NJEMQ@mail.gmail.com"
+      ],
+      "authors": "Tomas Vondra",
+      "objectors": "",
+      "summary": "Revert \"Logical decoding of sequences\"\nReverted commit(s): Logical decoding of sequences; Add decoding of sequences to test_decoding; Fix skip-empty-xacts with sequences in test_decoding; Call ReorderBufferProcessXid from sequence_decode; Stabilize test_decoding touching with sequences",
+      "objection": "This reverts a sequence of commits, implementing features related to\nlogical decoding and replication of sequences:\n\n - 0da92dc530c9251735fc70b20cd004d9630a1266\n - 80901b32913ffa59bf157a4d88284b2b3a7511d9\n - b779d7d8fdae088d70da5ed9fcd8205035676df3\n - d5ed9da41d96988d905b49bebb273a9b2d6e2915\n - a180c2b34de0989269fdb819bff241a249bf5380\n - 75b1521dae1ff1fde17fda2e30e591f2e5d64b6a\n - 2d2232933b02d9396113662e44dca5f120d6830e\n - 002c9dd97a0c874fd1693a570383e2dd38cd40d5\n - 05843b1aa49df2ecc9b97c693b755bd1b6f856a9\n\nThe implementation has issues, mostly due to combining transactional and\nnon-transactional behavior of sequences. It's not clear how this could\nbe fixed, but it'll require reworking significant part of the patch.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical decoding bytes sent downstream"
+      ],
+      "from_hint": false,
+      "score": 0.116,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:5592",
+      "kind": "cf",
+      "title": "Filter irrelevant change before reassemble transactions during logical decoding",
+      "status": "Withdrawn",
+      "date": "2025-02-21",
+      "first_date": "2023-11-30",
+      "url": "https://commitfest.postgresql.org/patch/5592/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGfChW51P944nM5h0HTV9HistvVfwBxNaMt_s-OZ9t=uXz+Zbg@mail.gmail.com"
+      ],
+      "authors": "Jie Li (adger), Ajin Cherian (ajinc), Zhijie Hou (houzj)",
+      "objectors": "",
+      "summary": "Filter irrelevant change before reassemble transactions during logical decoding\nThreads: Proposal: Filter irrelevant change before reassemble transactions\nduring logical decoding",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical replication filtered bytes"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:1373",
+      "kind": "cf",
+      "title": "Planning counters in pg_stat_statements",
+      "status": "Returned with feedback",
+      "date": "2018-01-25",
+      "first_date": "2017-11-07",
+      "url": "https://commitfest.postgresql.org/patch/1373/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEepm=0e59Y_6Q_YXYCTHZkqOc6H2pJ54C_Xe=VFu50Aqqp_sA@mail.gmail.com"
+      ],
+      "authors": "Fujii Masao (masaofujii), Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Planning counters in pg_stat_statements\nThreads: Planning counters in pg_stat_statements",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "walsender sent bytes counter"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:3787",
+      "kind": "cf",
+      "title": "Add parallel counters to pg_stat_statements",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-07-21",
+      "url": "https://commitfest.postgresql.org/patch/3787/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6acbe570-068e-bd8e-95d5-00c737b865e8@gmail.com"
+      ],
+      "authors": "Daymel Bonne (bonne), Anthony Sotolongo León (asotolongo)",
+      "objectors": "",
+      "summary": "Add parallel counters to pg_stat_statements\nThreads: Expose Parallelism counters planned/execute in pg_stat_statements",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "walsender sent bytes counter"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:120",
+      "kind": "cf",
+      "title": "multivariate statistics",
+      "status": "Returned with feedback",
+      "date": "2015-08-25",
+      "first_date": "2014-10-12",
+      "url": "https://commitfest.postgresql.org/patch/120/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/543AFA15.4080608@fuzzy.cz"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "multivariate statistics\nThreads: WIP: multivariate statistics / proof of concept",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "output plugin statistics"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "revert:1f2a378de41bf3e516b8d2c4d65790aeefbfb89d",
+      "kind": "revert",
+      "title": "Revert \"Detect setlocale(LC_CTYPE, NULL) clobbering previous return values.\"",
+      "status": "Reverted",
+      "date": "2015-06-20",
+      "first_date": "2015-06-17",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1f2a378de41bf3e516b8d2c4d65790aeefbfb89d",
+      "thread_urls": [],
+      "authors": "Noah Misch",
+      "objectors": "",
+      "summary": "Revert \"Detect setlocale(LC_CTYPE, NULL) clobbering previous return values.\"\nReverted commit(s): Detect setlocale(LC_CTYPE, NULL) clobbering previous return values.",
+      "objection": "This reverts commit b76e76be460a240e99c33f6fb470dd1d5fe01a2a.  The\nbuildfarm yielded no related failures.",
+      "touch_points": [],
+      "matched_queries": [
+        "output plugin callback return value"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 3,
+    "new_calls": 5,
+    "failed": 0,
+    "quotes_verified": 5,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 0
+  },
+  "precedent_cutoff": "2025-06-30",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found, and the earlier designs inside this thread do not leave an open reason. Andres Freund objected to plugin-side tracking and bool callbacks (messages #54, #72), and the current core counter in OutputPluginWrite() follows his advice in message #72 to track sent bytes only. The rename to total_wal_bytes was dropped in messages #79 to #83."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "The new column is additive. Dropping the total_bytes rename removed the compatibility break for existing monitoring queries, and the name output_bytes was agreed in the thread."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "The rest of the persistent state is routine: one counter in the pgstat replication slot entry with a stats file format bump, a view column, and a struct change that is new in a major release. Stats are per node, so standbys and synced slots are not affected."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "From the security angle there is nothing to object to. The current patch adds one cumulative bigint counter, output_bytes, to pg_stat_replication_slots and keeps it in core inside OutputPluginWrite(). Users who can read that view today already see the related volume counters (total_bytes, spill_bytes, stream_bytes), so the new column shows no new kind of data. It adds no new privilege, function, callback, GUC or memory that a user can grow. One counter could add a little to what the view reveals: with a row-filtered publication, output_bytes next to total_bytes hints at how much decoded data passed the filter. That is a coarse aggregate. The downstream consumer receives the data anyway, and no realistic attack follows from it. A committer might still check that the view keeps its current access rules. The plugin callback API changes that would have touched extension-facing behaviour were set aside in message #73."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 1,
+      "note": "The current design adds one counter that core maintains, with a cheap increment per output write. Three committers who know the area agreed on the scope, and the plugin API change was dropped. The remaining point is fixable."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "Postgres has no per-slot count of logical decoding output bytes today. pg_stat_replication reports WAL positions, and total_bytes counts reorder buffer input. Network monitoring, suggested in message #104, gives wire bytes per connection, not per slot and not only output data, as message #107 notes. I know of no contrib module or extension that does this, and a hook would cost more than one core counter."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "The thread shows enough demand for a single additive column. A production Debezium incident motivated it (message #1), Andres Freund called sent bytes \"by *far* the most useful statistic\" (message #72), and Michael Paquier, Amit Kapila and Masahiko Sawada support it (messages #76, #114, #116). Kyotaro Horiguchi's question about wire bytes got an answer in message #107; deciding whether that answer is enough is a design matter for the other angles."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 4,
+      "new_survived": 2,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "5 long messages in the middle of the thread were left out of the prompts"
+  ],
+  "tone_lint": {
+    "fields_checked": 67,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 16,
+    "wall_ms": 119741,
+    "cost_usd": 7.1768582,
+    "dry_run": false
+  }
+}

@@ -1,0 +1,1266 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:29:08.597Z",
+  "input": {
+    "arg": "5129",
+    "cf": {
+      "id": 5129,
+      "url": "https://commitfest.postgresql.org/patch/5129/",
+      "title": "Asynchronous MergeAppend Execution",
+      "status": "Needs review",
+      "authors": "Alexander Pyhalov (a.pyhalov)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/59be194c5a409fb9fc9f2031581b8a44%40postgrespro.ru",
+    "subject": "Asynchronous MergeAppend",
+    "thread_start": "2024-07-17T13:24:28Z",
+    "messages_read": 64,
+    "messages_total": 64,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "0001-Make-Append-subplans-async-capable-in-more-cases.patch",
+      "v1-0001-mark_async_capable-subpath-should-match-subplan.patch",
+      "v1-0002-MergeAppend-should-support-Async-Foreign-Scan-subpla.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection questions the goal, and message #4 reports demand from production. Two fixable design points remain at level 2. maintenance-fit-1: an FDW that casts the ForeignAsyncConfigureWait requestor to AppendState compiles unchanged and fails only at run time. standards-compat-2: v25 does not say which setting turns off async MergeAppend. A committer who knows the async executor code is engaged and can settle both.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Asynchronous execution of MergeAppend over async-capable foreign scans",
+    "problem": "When the planner picks MergeAppend instead of Append, async foreign scans become synchronous, so remote partitions run one after another. The author reports large slowdowns on partitioned, distributed tables with 20 or more postgres_fdw partitions when plans switch from async Append to sync MergeAppend.",
+    "proposed_design": "MergeAppend gains async support for Foreign Scan children, but only for the initial heap filling, where it fetches one tuple from each child. After that, children are read synchronously. The current version (v25, by Etsuro Fujita) keeps MergeAppend separate from Append, shares only the event-wait code, drops the earlier AppendBase refactoring, and changes postgres_fdw's wait configuration.",
+    "user_visible_surface": [
+      "New GUC enable_async_merge_append (boolean, default on), shown in early versions; the material does not say if v25 keeps it.",
+      "EXPLAIN shows \"Async Foreign Scan\" under Merge Append.",
+      "New wait event WAIT_EVENT_MERGE_APPEND_READY, visible in pg_stat_activity (added in v17).",
+      "FDW C API change: ForeignAsyncConfigureWait may now get a MergeAppendState as requestor; documented in fdwhandler.sgml.",
+      "postgres-fdw.sgml documentation updated for async MergeAppend."
+    ],
+    "author_claims": [
+      "Up to two times faster with remote servers in the author's tests.",
+      "Single-client pgbench: about 202 tps versus 149 tps with async_capable on versus off.",
+      "Later version: +78% single-client and +4% with 16 clients; the older version lost 5% with 16 clients.",
+      "A reviewer measured about 4302 tps patched versus 3847 tps on master.",
+      "Async after the initial heap filling gave no benefit and cost some speed, so the patch now drops it."
+    ],
+    "thread_state": "Etsuro Fujita rewrote the patch as v25 and plans to push it after about a week if nobody objects; Pyhalov agrees and Korotkov's opinion is pending. A side patch to make ordered Append async-capable was withdrawn after Kirill Reshke showed it returns wrong results.",
+    "unclear": [
+      "The material does not say if v25 keeps the enable_async_merge_append GUC or removes it.",
+      "No benchmark was posted for v25 itself; all numbers come from earlier designs.",
+      "The material does not say how out-of-tree FDWs that assume an AppendState requestor behave without changes.",
+      "No cost model change is described; the material does not say when the planner prefers async MergeAppend.",
+      "No test with many partitions or slow remotes, the case that motivated the patch, appears in the thread."
+    ],
+    "search_queries": [
+      "asynchronous MergeAppend",
+      "async merge append postgres_fdw",
+      "async foreign scan merge append",
+      "enable_async_merge_append",
+      "async append ordered partitions",
+      "asynchronous execution foreign scan",
+      "append mergeappend common infrastructure",
+      "async capable subplans planner"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Async FDWs now receive MergeAppendState with no opt-in or loud failure",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An out-of-tree FDW that is async-capable casts the ForeignAsyncConfigureWait requestor to AppendState, as the API has allowed until now. After upgrading, a query plans Merge Append over its scans and the FDW reads MergeAppendState fields as Append fields. The result can be wrong waits, a hang, or a crash, and nothing fails at compile time or at load time.",
+      "argument": "Message #54 states that the patch changes the current semantics of ForeignAsyncConfigureWait for out-of-tree FDWs. The answer in message #55 was to update fdwhandler.sgml. Documentation does not stop an existing binary from receiving a node type it never expected, and the default GUC is on, so the new path is taken without any action by the FDW author. A committer would likely ask whether async MergeAppend should apply only to FDWs that say they support it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        54,
+        55
+      ],
+      "author_must_show": "How does an existing async-capable FDW that assumes an AppendState requestor avoid being used under Merge Append until its author updates it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 54,
+          "from": "Alexander Pyhalov",
+          "date": "2026-10-28T11:37:35Z",
+          "url": "https://www.postgresql.org/message-id/a44e9ead6205f575da3df01b8c964e73%40postgrespro.ru"
+        },
+        {
+          "index": 55,
+          "from": "Etsuro Fujita",
+          "date": "2026-11-01T17:44:52Z",
+          "url": "https://www.postgresql.org/message-id/CAPmGK15bYO_A-fTcBQnmjicAn%3DNPyOUVygDqjByXS%3Dga16p4Qw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Extensions are rebuilt for a major version, so the \"existing binary\" part does not hold. But an FDW that casts the requestor to AppendState still compiles unchanged and fails only at run time, and message #55 answers this with documentation only.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "The GUC that controls async MergeAppend is not settled in v25",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "new_guc",
+      "touch_points": [
+        "new_guc",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site runs with enable_async_append = off to avoid async foreign scans. After upgrade, ordered queries switch to async MergeAppend because that path is gated by a separate enable_async_merge_append GUC that defaults to on, or by no GUC at all. The admin finds out from new wait events or a regression in production.",
+      "argument": "The early patches add enable_async_merge_append next to the existing enable_async_append (v1 config.sgml hunk). Message #36 still mentions it, but the v25 rewrite in messages #53 and #57 does not say whether it stays. A second enable_* setting for one feature departs from how enable_async_append is used today. If the GUC is dropped, the patch also does not say whether enable_async_append covers MergeAppend.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        36,
+        53,
+        57
+      ],
+      "author_must_show": "In v25, which setting turns off async MergeAppend, and does enable_async_append = off still disable all async foreign scans?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Alexander Pyhalov",
+          "date": "2024-07-17T13:24:28Z",
+          "url": "https://www.postgresql.org/message-id/59be194c5a409fb9fc9f2031581b8a44%40postgrespro.ru"
+        },
+        {
+          "index": 36,
+          "from": "Alexander Pyhalov",
+          "date": "2026-04-14T09:48:45Z",
+          "url": "https://www.postgresql.org/message-id/fa7ae004ec282fde84c29f36e0c85979%40postgrespro.ru"
+        },
+        {
+          "index": 53,
+          "from": "Etsuro Fujita",
+          "date": "2026-10-27T11:34:50Z",
+          "url": "https://www.postgresql.org/message-id/CAPmGK15%3DKctsePnvKMNoYm3JOpuiZRWfWEfMs1GaBk9Rj45c5w%40mail.gmail.com"
+        },
+        {
+          "index": 57,
+          "from": "Etsuro Fujita",
+          "date": "2026-11-03T02:20:01Z",
+          "url": "https://www.postgresql.org/message-id/CAPmGK14YATtpoUk6X54u1sW97mj-tccf4oc0hMX%3DmzG5mz02VQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #53 to #57 do not say which setting turns off async MergeAppend in v25, or whether enable_async_append covers it. A separate enable_* setting per plan type follows existing practice, so only the open question stands.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "ForeignAsyncConfigureWait gets a new requestor type without any opt-in",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An out-of-tree FDW that is async-capable casts the requestor in ForeignAsyncConfigureWait to AppendState. After upgrade, the planner uses async MergeAppend over its scans by default, and the FDW reads the wrong struct. The user finds out from a crash or wrong waits on an ordered query that worked before.",
+      "argument": "Message #54 notes that the callback's semantics change for out-of-tree FDWs. Message #55 settles this with a fdwhandler.sgml update only. A doc note does not stop an existing binary from getting a MergeAppendState, and IsForeignPathAsyncCapable gives the FDW no way to say it supports Append only. A committer would likely ask for a capability flag, or for a note in the release notes, as the minimum.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        54,
+        55
+      ],
+      "author_must_show": "How does an existing async-capable FDW that only expects an AppendState requestor keep working, or refuse async MergeAppend, without being rebuilt?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 54,
+          "from": "Alexander Pyhalov",
+          "date": "2026-10-28T11:37:35Z",
+          "url": "https://www.postgresql.org/message-id/a44e9ead6205f575da3df01b8c964e73%40postgrespro.ru"
+        },
+        {
+          "index": 55,
+          "from": "Etsuro Fujita",
+          "date": "2026-11-01T17:44:52Z",
+          "url": "https://www.postgresql.org/message-id/CAPmGK15bYO_A-fTcBQnmjicAn%3DNPyOUVygDqjByXS%3Dga16p4Qw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1. Its request that an FDW keep working \"without being rebuilt\" does not apply, because extensions are recompiled for each major version.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Existing async-capable FDWs get a MergeAppendState requestor without opting in",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An out-of-tree FDW that already returns true from IsForeignPathAsyncCapable casts the requestor in ForeignAsyncConfigureWait to AppendState, as postgres_fdw did before this patch. After upgrade, an ordered query over its partitions picks async Merge Append, and the FDW reads AppendState fields from a MergeAppendState. Users find out through a crash or wrong waits in production.",
+      "argument": "Message #1 says postgres_fdw had to stop reading Append fields directly, so the old contract allowed that pattern. Message #9 shows at least one out-of-tree async FDW exists. Message #54 raised the semantic change, and message #55 answered it with fdwhandler.sgml text only. Documentation does not protect FDW binaries already built against the old assumption, and the material shows no opt-in flag or other way for an FDW to decline the new requestor type.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        9,
+        54,
+        55
+      ],
+      "author_must_show": "How does an existing async-capable FDW that assumes an AppendState requestor avoid being handed a MergeAppendState after upgrade, other than by reading the new documentation?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Alexander Pyhalov",
+          "date": "2024-07-17T13:24:28Z",
+          "url": "https://www.postgresql.org/message-id/59be194c5a409fb9fc9f2031581b8a44%40postgrespro.ru"
+        },
+        {
+          "index": 9,
+          "from": "Alexander Pyhalov",
+          "date": "2025-11-15T10:57:04Z",
+          "url": "https://www.postgresql.org/message-id/efbfbcf00b6b790e8f80c13a83417a23%40postgrespro.ru"
+        },
+        {
+          "index": 54,
+          "from": "Alexander Pyhalov",
+          "date": "2026-10-28T11:37:35Z",
+          "url": "https://www.postgresql.org/message-id/a44e9ead6205f575da3df01b8c964e73%40postgrespro.ru"
+        },
+        {
+          "index": 55,
+          "from": "Etsuro Fujita",
+          "date": "2026-11-01T17:44:52Z",
+          "url": "https://www.postgresql.org/message-id/CAPmGK15bYO_A-fTcBQnmjicAn%3DNPyOUVygDqjByXS%3Dga16p4Qw%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1. The concern about already built binaries does not apply, because extensions are recompiled for each major version.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "A second planner GUC next to enable_async_append",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "new_guc",
+      "touch_points": [
+        "new_guc",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA sets enable_async_append = off to work around an async foreign scan problem. MergeAppend plans keep running async foreign scans because a separate enable_async_merge_append controls them. The DBA learns this only when the problem persists on ordered queries.",
+      "argument": "Core already has enable_async_append, and postgres_fdw has the per-server and per-table async_capable option, which already lets users turn async execution off. The v1 patch adds enable_async_merge_append to config.sgml and guc_tables.c, so there are two planner switches for the same mechanism. The material does not say whether v25 keeps it, and no message explains why the existing switch cannot also cover MergeAppend.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        36
+      ],
+      "author_must_show": "If v25 keeps enable_async_merge_append, why can't enable_async_append and async_capable control MergeAppend children too?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Alexander Pyhalov",
+          "date": "2024-07-17T13:24:28Z",
+          "url": "https://www.postgresql.org/message-id/59be194c5a409fb9fc9f2031581b8a44%40postgrespro.ru"
+        },
+        {
+          "index": 36,
+          "from": "Alexander Pyhalov",
+          "date": "2026-04-14T09:48:45Z",
+          "url": "https://www.postgresql.org/message-id/fa7ae004ec282fde84c29f36e0c85979%40postgrespro.ru"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-2, which asks the same question about v25 more directly. The per-server async_capable option still turns off async execution for both node types.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "ForeignAsyncConfigureWait may now get a MergeAppendState as requestor, and execnodes.h changes."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": true,
+      "reason": "Early versions add enable_async_merge_append; the material does not say if v25 keeps it."
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": true,
+      "reason": "createplan.c and costsize.c change, and Foreign Scan children of MergeAppend become async by default."
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "MergeAppend gets its own async code path next to Append's, plus a new wait event and FDW API text."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "nodeMergeAppend.c changes, and no v25 benchmark shows the cost for MergeAppend plans without async children."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "In v25, which setting turns off async MergeAppend, and does enable_async_append = off still disable all async foreign scans?",
+    "How does an async-capable FDW that casts the ForeignAsyncConfigureWait requestor to AppendState fail loudly, or decline use under Merge Append, until its author updates it?",
+    "What does v25 itself gain on the motivating case, with 20 or more postgres_fdw partitions and slow remote servers?",
+    "What does v25 cost a MergeAppend plan that has no async-capable children, compared with master?",
+    "Does v25 change the cost model, and if so, when does the planner now prefer MergeAppend over async Append?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Etsuro Fujita reviews the entry, wrote v25, and plans to push it; the owner must know the async Append executor code and postgres_fdw.",
+    "liability": "The owner signs for a second async code path in the executor, the changed ForeignAsyncConfigureWait contract for out-of-tree FDWs, and postgres_fdw's wait configuration, with no end date.",
+    "author_follow_up": "Pyhalov has kept the entry moving through 11 CommitFests, moved it forward himself in 2026-08 and 2026-10, and agrees with v25."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "proceed",
+    "reason": "The gain goes to users of ordered queries over postgres_fdw partitions, and message #4 reports a production slowdown there. v25 dropped the AppendBase refactoring and a committer is engaged; the v25 patch was not read, so review cost is an estimate."
+  },
+  "self_advice": [],
+  "provisional_note": "The v25 code and its benchmarks were not seen. Without it, nobody can judge whether async heap filling keeps the merge order and cleans up pending requests on error; the withdrawn ordered Append side patch returned wrong results.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:751",
+      "kind": "cf",
+      "title": "Asynchronous execution of ForeignScans",
+      "status": "Returned with feedback",
+      "date": "2016-12-02",
+      "first_date": "2016-08-29",
+      "url": "https://commitfest.postgresql.org/patch/751/",
+      "thread_urls": [],
+      "authors": "Kyotaro Horiguchi (horiguti)",
+      "objectors": "",
+      "summary": "Asynchronous execution of ForeignScans",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "asynchronous MergeAppend",
+        "async foreign scan merge append",
+        "enable_async_merge_append",
+        "async append ordered partitions",
+        "asynchronous execution foreign scan",
+        "async capable subplans planner"
+      ],
+      "from_hint": false,
+      "score": 0.619,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:856",
+      "kind": "cf",
+      "title": "Asynchronous execution for postgres_fdw",
+      "status": "Returned with feedback",
+      "date": "2017-03-16",
+      "first_date": "2016-09-24",
+      "url": "https://commitfest.postgresql.org/patch/856/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+TgmoaXQEt4tZ03FtQhnzeDEMzBck+Lrni0UWHVVgOTnA6C1w@mail.gmail.com"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti)",
+      "objectors": "Corey Huinker, Tom Lane",
+      "summary": "The patch set adds an executor framework for asynchronous execution, where Append and ForeignScan cooperate through a separate request/response interface and an event loop held in the EState. postgres_fdw is made async-capable, so Append can run foreign scans on several remote servers at the same time.",
+      "objection": "The reviewer saw no speedup when foreign tables were combined with UNION ALL; async execution happened only when the foreign tables were inheritance children of one parent. Tom Lane said this points to a broken or wrong implementation, because the planner treats inheritance the same as simple UNION ALL. The reviewer then marked the entry Returned with Feedback. Earlier tests by another reviewer had also found a hang and a crash during error cleanup.",
+      "touch_points": [],
+      "matched_queries": [
+        "asynchronous MergeAppend",
+        "async merge append postgres_fdw",
+        "async foreign scan merge append",
+        "enable_async_merge_append",
+        "asynchronous execution foreign scan",
+        "async capable subplans planner"
+      ],
+      "from_hint": false,
+      "score": 0.559,
+      "enriched": true,
+      "key_quote": "Whether it was a goal or not, I'd say there is something either broken\nor incorrectly implemented if you don't see that.  The planner (and\ntherefore also the executor) generally treats inheritance the same as\nsimple UNION ALL.",
+      "quote_message_url": "https://www.postgresql.org/message-id/22644.1489695423%40sss.pgh.pa.us",
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:2102",
+      "kind": "cf",
+      "title": "Improve Append/MergeAppend EXPLAIN output when all subplans are pruned.",
+      "status": "Returned with feedback",
+      "date": "2019-12-01",
+      "first_date": "2019-04-16",
+      "url": "https://commitfest.postgresql.org/patch/2102/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/001001d4f44b$2a2cca50$7e865ef0$@lab.ntt.co.jp"
+      ],
+      "authors": "David Rowley (davidrowley)",
+      "objectors": "",
+      "summary": "When runtime pruning removes every subplan of an Append or MergeAppend, EXPLAIN still shows the first subplan, which suggests that partition matches the WHERE clause. The proposal was to show an Append with no subplans instead, which needs explain.c and ruleutils.c to deparse Vars above the Append without using a child subplan.",
+      "objection": "The thread agreed on an approach, in which Vars above the Append refer to the parent rel, but no finished patch for it was posted. Tom Lane said the work was on his to-do list with no date, so Michael Paquier marked the entry returned with feedback. Tom Lane then linked to newer work in another thread.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "async foreign scan merge append",
+        "enable_async_merge_append",
+        "async append ordered partitions",
+        "append mergeappend common infrastructure",
+        "async capable subplans planner"
+      ],
+      "from_hint": false,
+      "score": 0.471,
+      "enriched": true,
+      "key_quote": "It's on my to-do list, but I'm not sure how soon I'll get to it.",
+      "quote_message_url": "https://www.postgresql.org/message-id/18820.1568298253%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:2829",
+      "kind": "cf",
+      "title": "Make Append Cost aware of some run time partition prune case",
+      "status": "Returned with feedback",
+      "date": "2021-11-04",
+      "first_date": "2020-11-10",
+      "url": "https://commitfest.postgresql.org/patch/2829/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKU4AWp6Z087YCQj4uN69Ct61arCtcABYNgU_7Mv1Gu-grVjHw@mail.gmail.com"
+      ],
+      "authors": "Andy Fan (andyf)",
+      "objectors": "",
+      "summary": "The patch makes the planner reduce the cost and row estimates of an Append path by estimating how many partitions survive run-time or init partition pruning, mainly for quals like partkey = $1. The goal is to make generic plans and join plans over partitioned tables be costed more accurately.",
+      "objection": "The entry stalled after the March 2021 patch no longer applied to master. vignesh C asked for a rebase in July 2021, the author did not post one, and Daniel Gustafsson returned it with feedback in November 2021. No design objection decided it, but the author's last patch left Parallel Append costing, MergeAppend and multiple partition keys unhandled.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "async foreign scan merge append",
+        "enable_async_merge_append",
+        "async append ordered partitions",
+        "append mergeappend common infrastructure"
+      ],
+      "from_hint": false,
+      "score": 0.453,
+      "enriched": true,
+      "key_quote": "As the thread has stalled, this patch still doesn't apply (judging by the log\nit's likely not too hard to resolve).",
+      "quote_message_url": "https://www.postgresql.org/message-id/926C9476-CEEA-4230-8F83-0ECD489206BE%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:929",
+      "kind": "cf",
+      "title": "Parallel Append implementation",
+      "status": "Returned with feedback",
+      "date": "2017-02-01",
+      "first_date": "2016-12-23",
+      "url": "https://commitfest.postgresql.org/patch/929/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJ3gD9dy0K_E8r727heqXoBmWZ83HwLFwdcaSSmBQ1+S+vRuUQ@mail.gmail.com"
+      ],
+      "authors": "Amit Khandekar (amitdkhan)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch makes Append parallel-aware, so workers spread across its subplans through a shared array under a spinlock. It also lets a partial Append include parallel-safe non-partial child paths, each run by at most one worker.",
+      "objection": "Reviewers raised design points, including whether worker distribution is worth its complexity next to allowing non-partial subpaths, keeping the partial-subplan bitmap out of the path, and costing when one worker scans a whole non-partial child. The author agreed to rework the patch but posted no new version, and the commitfest manager returned it because it had not been updated in two weeks.",
+      "touch_points": [],
+      "matched_queries": [
+        "async foreign scan merge append",
+        "enable_async_merge_append",
+        "async append ordered partitions",
+        "append mergeappend common infrastructure"
+      ],
+      "from_hint": false,
+      "score": 0.451,
+      "enriched": true,
+      "key_quote": "There have been some reviews, but the patch has not been updated in\ntwo weeks.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB7nPqREsbHRKK40QDWwPdhUHOaFNg4ii77kJ-_4xNkLW5ubQQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:1752",
+      "kind": "cf",
+      "title": "libpq should append error messages, not overwrite",
+      "status": "Returned with feedback",
+      "date": "2018-10-01",
+      "first_date": "2018-08-09",
+      "url": "https://commitfest.postgresql.org/patch/1752/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6700.1533829467@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane (tgl)",
+      "objectors": "Robert Haas, Michael Paquier",
+      "summary": "Tom Lane proposed that libpq always append to conn->errorMessage during connection setup and query execution, instead of overwriting it, with only a few defined points that clear it. A second patch labeled each part of the error with the server and port being tried when several hosts are listed.",
+      "objection": "Michael Paquier returned the patch with feedback because the thread had no activity after August and the patch set no longer applied cleanly. Before that, Robert Haas objected that reporting failures from every host adds noise: when the first host is down and the second rejects a password, the user only needs the password error. Tom Lane did not accept this, and the disagreement was not resolved.",
+      "touch_points": [
+        "wire protocol / libpq",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "async foreign scan merge append",
+        "enable_async_merge_append",
+        "async append ordered partitions",
+        "append mergeappend common infrastructure"
+      ],
+      "from_hint": false,
+      "score": 0.431,
+      "enriched": true,
+      "key_quote": "The last status of this patch comes from August, which has been\nunanswered.  So I am marking the patch as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20181001061917.GL5982%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:291",
+      "kind": "cf",
+      "title": "Asynchronous execution on postgres-fdw",
+      "status": "Rejected",
+      "date": "2015-08-10",
+      "first_date": "2015-07-02",
+      "url": "https://commitfest.postgresql.org/patch/291/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20150702.144824.266400086.horiguchi.kyotaro@lab.ntt.co.jp"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti)",
+      "objectors": "Heikki Linnakangas",
+      "summary": "The patch set adds a core pre-execution callback mechanism, so that nodes can register callbacks that run just before the ExecProc phase, and uses it to start postgres_fdw remote queries asynchronously, with one running query per foreign server. It also offers three experimental ways to set the fetch size: duration-based adaptation, a byte-limited FETCH, and a fetch_size foreign table option.",
+      "objection": "Heikki Linnakangas marked the entry rejected because a more general solution based on parallel workers was in progress and would largely make this patch obsolete, with the option to revisit it later in the release cycle. Earlier he had objected that the pre-execution callback has the same problems as starting execution in ExecInit, and that queries should start in the first IterateForeignScan() call. Robert Haas and Stephen Frost replied that the design questions were still open, and Stephen Frost did not like that the mechanism was specific to FDWs.",
+      "touch_points": [],
+      "matched_queries": [
+        "asynchronous MergeAppend",
+        "async merge append postgres_fdw",
+        "asynchronous execution foreign scan",
+        "async capable subplans planner"
+      ],
+      "from_hint": false,
+      "score": 0.384,
+      "enriched": true,
+      "key_quote": "I've marked this as rejected in the commitfest, because others are\nworking on a more general solution with parallel workers.",
+      "quote_message_url": "https://www.postgresql.org/message-id/55C8516B.10509%40iki.fi",
+      "relevant": true
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:3813",
+      "kind": "cf",
+      "title": "asynchronous execution support for Custom Scan",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2022-08-13",
+      "url": "https://commitfest.postgresql.org/patch/3813/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJuF6cOMdvHSe+_7eHxzHGB3CVC9a890gBLLbpZTvi2pGgnB2g@mail.gmail.com"
+      ],
+      "authors": "KaiGai Kohei (kaigai), kazutaka onishi (onishi)",
+      "objectors": "",
+      "summary": "The patch adds asynchronous execution to the Custom Scan API by reusing the approach that Foreign Scan has used since v14. A custom scan provider would start work in CustomScanAsyncRequest, wait on a file descriptor set up in CustomScanAsyncConfigureWait, and receive results in CustomScanAsyncNotify.",
+      "objection": "The entry died of inactivity: no one reviewed the patch in depth, and the author did not move it forward. Etsuro Fujita said he would review it once an example extension existed, but the visible messages show no review after that. Vignesh C returned it with feedback after more than a year with no activity.",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "asynchronous MergeAppend",
+        "async foreign scan merge append",
+        "asynchronous execution foreign scan"
+      ],
+      "from_hint": false,
+      "score": 0.376,
+      "enriched": true,
+      "key_quote": "Since the author or no one else showed interest in taking it forward\nand the patch had no activity for more than 1 year, I have changed the\nstatus to RWF.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALDaNm1Jek2D2ZELmL4dVjoHV%3DfUR750mPJYN1wZKmpyXiwp9w%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:4320",
+      "kind": "cf",
+      "title": "doc: Add some OID/TOAST-related limitations to the limits appendix.",
+      "status": "Withdrawn",
+      "date": "2023-06-13",
+      "first_date": "2023-04-21",
+      "url": "https://commitfest.postgresql.org/patch/4320/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKZiRmwWhp2yxjqJLwbBjHdfbJBcUmmKMNAZyBjjtpgM9AMatQ@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "John Naylor",
+      "summary": "The patch adds a note to the limits appendix that a table can hold at most 4,294,967,296 out-of-line TOAST values, and that OID searches slow down inserts as the OID space fills. It also adds rows on the size and number of large objects in pg_largeobject.",
+      "objection": "The visible messages do not show why it was withdrawn. The last message is a second review from John Naylor that asks for more edits, and no author reply follows. He found the large object rows wrong (OIDs limit the number of large objects, not table size) and wanted the vacuum and partitioning advice removed.",
+      "touch_points": [],
+      "matched_queries": [
+        "async foreign scan merge append",
+        "enable_async_merge_append",
+        "async append ordered partitions"
+      ],
+      "from_hint": false,
+      "score": 0.287,
+      "enriched": true,
+      "key_quote": "We don't need to tell people to vacuum, and we don't need to tell them about partitioning as a workaround -- it's a workaround for the table size limit, too, but we are just documenting the limits here.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAFBsxsEACdLoxS72TVfwd239ePymMTBmdJ3J%2BSO706fU9YqbZg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:32",
+      "kind": "cf",
+      "title": "Async execution of postgres_fdw.",
+      "status": "Rejected",
+      "date": "2015-05-09",
+      "first_date": "2014-12-15",
+      "url": "https://commitfest.postgresql.org/patch/32/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20141215.180944.242184148.horiguchi.kyotaro@lab.ntt.co.jp"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti)",
+      "objectors": "",
+      "summary": "Async execution of postgres_fdw.\nThreads: Async execution of postgres_fdw.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "async merge append postgres_fdw",
+        "enable_async_merge_append",
+        "async capable subplans planner"
+      ],
+      "from_hint": false,
+      "score": 0.253,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:3316",
+      "kind": "cf",
+      "title": "Asynchronous and \"direct\" IO support for PostgreSQL",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2021-02-23",
+      "url": "https://commitfest.postgresql.org/patch/3316/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210223100344.llw5an2aklengrmn@alap3.anarazel.de"
+      ],
+      "authors": "Andres Freund (andresfreund), David Rowley (davidrowley), Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Asynchronous and \"direct\" IO support for PostgreSQL\nThreads: Asynchronous and \"direct\" IO support for PostgreSQL.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "asynchronous MergeAppend",
+        "asynchronous execution foreign scan"
+      ],
+      "from_hint": false,
+      "score": 0.207,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:1218",
+      "kind": "cf",
+      "title": "Pattern based listeners for asynchronous messaging (LISTEN/NOTIFY)",
+      "status": "Returned with feedback",
+      "date": "2017-11-30",
+      "first_date": "2017-07-31",
+      "url": "https://commitfest.postgresql.org/patch/1218/",
+      "thread_urls": [],
+      "authors": "Markus Sintonen (markuss)",
+      "objectors": "",
+      "summary": "Pattern based listeners for asynchronous messaging (LISTEN/NOTIFY)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "asynchronous MergeAppend",
+        "asynchronous execution foreign scan"
+      ],
+      "from_hint": false,
+      "score": 0.165,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:2582",
+      "kind": "cf",
+      "title": "Improve planner cost estimations for alternative subplans",
+      "status": "Withdrawn",
+      "date": "2020-11-13",
+      "first_date": "2020-06-05",
+      "url": "https://commitfest.postgresql.org/patch/2582/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/07b3fa88-aa4e-2e13-423d-8389eb1712cf@imap.cc"
+      ],
+      "authors": "Alexey Bashtanov (bashtanov)",
+      "objectors": "",
+      "summary": "Improve planner cost estimations for alternative subplans\nThreads: Improve planner cost estimations for alternative subplans",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "async capable subplans planner"
+      ],
+      "from_hint": false,
+      "score": 0.138,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:4198",
+      "kind": "cf",
+      "title": "Allow ordered partition scans in more cases",
+      "status": "Withdrawn",
+      "date": "2023-06-24",
+      "first_date": "2023-02-21",
+      "url": "https://commitfest.postgresql.org/patch/4198/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAApHDvojKdBR3MR59JXmaCYbyHB6Q_5qPRU+dy93En8wm+XiDA@mail.gmail.com"
+      ],
+      "authors": "David Rowley (davidrowley)",
+      "objectors": "",
+      "summary": "Allow ordered partition scans in more cases\nThreads: Allow ordered partition scans in more cases",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "async append ordered partitions"
+      ],
+      "from_hint": false,
+      "score": 0.133,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:3894",
+      "kind": "cf",
+      "title": "Remove dead macro exec_subplan_get_plan",
+      "status": "Rejected",
+      "date": "2023-04-04",
+      "first_date": "2022-09-05",
+      "url": "https://commitfest.postgresql.org/patch/3894/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/85a0be98-a6d3-4760-952b-9cebdc51adfb@Spark"
+      ],
+      "authors": "Mingli Zhang (zml)",
+      "objectors": "",
+      "summary": "Remove dead macro exec_subplan_get_plan\nThreads: Remove dead macro exec_subplan_get_plan",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "async capable subplans planner"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:1646",
+      "kind": "cf",
+      "title": "Subplan result cache",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2018-05-23",
+      "url": "https://commitfest.postgresql.org/patch/1646/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/daceb327-9a20-51f4-fe6c-60b898692305@iki.fi"
+      ],
+      "authors": "Heikki Linnakangas (heikki)",
+      "objectors": "",
+      "summary": "Subplan result cache\nThreads: Subplan result caching",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "async capable subplans planner"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "revert:1460fc5942591fdb6bee0bc8342019ede31ff3b6",
+      "kind": "revert",
+      "title": "Revert \"Common SQL/JSON clauses\"",
+      "status": "Reverted",
+      "date": "2022-03-22",
+      "first_date": "2022-03-22",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1460fc5942591fdb6bee0bc8342019ede31ff3b6",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/cd0bb935-0158-78a7-08b5-904886deac4b@postgrespro.ru"
+      ],
+      "authors": "Andrew Dunstan",
+      "objectors": "",
+      "summary": "Revert \"Common SQL/JSON clauses\"\nReverted commit(s): Common SQL/JSON clauses",
+      "objection": "This reverts commit 865fe4d5df560a6f5353da652018ff876978ad2d.\n\nThis has caused issues with a significant number of buildfarm members",
+      "touch_points": [],
+      "matched_queries": [
+        "append mergeappend common infrastructure"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:2685",
+      "kind": "cf",
+      "title": "Fix collation handling in postgres_fdw",
+      "status": "Returned with feedback",
+      "date": "2021-09-25",
+      "first_date": "2020-08-17",
+      "url": "https://commitfest.postgresql.org/patch/2685/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/16583-4dc8f6c3b8ed24fa@postgresql.org"
+      ],
+      "authors": "Tom Lane (tgl)",
+      "objectors": "",
+      "summary": "Fix collation handling in postgres_fdw\nThreads: BUG #16583: merge join on tables with different DB collation behind postgres_fdw fails",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "async merge append postgres_fdw"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:1093",
+      "kind": "cf",
+      "title": "Make the optimiser aware of partitions ordering",
+      "status": "Returned with feedback",
+      "date": "2017-11-29",
+      "first_date": "2017-03-20",
+      "url": "https://commitfest.postgresql.org/patch/1093/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2401607.SfZhPQhbS4@ronan_laptop"
+      ],
+      "authors": "Julien Rouhaud (rjuju), Ronan Dunklau (rdunklau)",
+      "objectors": "",
+      "summary": "Make the optimiser aware of partitions ordering\nThreads: [Proposal] Make the optimiser aware of partitions ordering",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "async append ordered partitions"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:4524",
+      "kind": "cf",
+      "title": "Improving the heapgetpage function improves performance in common scenarios",
+      "status": "Withdrawn",
+      "date": "2023-09-06",
+      "first_date": "2023-08-24",
+      "url": "https://commitfest.postgresql.org/patch/4524/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/a9f40066-3d25-a240-4229-ec2fbe94e7a5@yeah.net"
+      ],
+      "authors": "Zongliang Quan (quanzl)",
+      "objectors": "",
+      "summary": "Improving the heapgetpage function improves performance in common scenarios\nThreads: Improving the heapgetpage function improves performance in common\nscenarios",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "append mergeappend common infrastructure"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "revert:9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "kind": "revert",
+      "title": "Fix index-only scan plans, take 2.",
+      "status": "Partially reverted",
+      "date": "2022-01-03",
+      "first_date": "2022-01-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3179992.1641150853@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/17350-b5bdcf476e5badbb@postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Fix index-only scan plans, take 2.\nReverted commit(s): Fix index-only scan plans when not all index columns can be returned.",
+      "objection": "Commit 4ace45677 failed to fix the problem fully, because the\nsame issue of attempting to fetch a non-returnable index column\ncan occur when rechecking the indexqual after using a lossy index\noperator.  Moreover, it broke EXPLAIN for such indexquals (which\nindicates a gap in our test cases :-().\n\nRevert the code changes of 4ace45677 in favor of adding a new field\nto struct IndexOnlyScan, containing a version of the indexqual that\ncan be executed against the index-returned tuple without using any\nnon-returnable columns.  (The restrictions imposed by check_index_only\nguarantee this is possible, although we may have to recompute indexed\nexpressions.)  Support construction of that during setrefs.c\nprocessing by marking IndexOnlyScan.indextlist entries as resjunk\nif they can't be returned, rather than removing them entirely.\n(We could alternatively require setrefs.c to look up the IndexOptInfo\nagain, but abusing resjunk this way seems like a reasonably safe way\nto avoid needing to do that.)\n\nThis solution isn't great from an API-stability standpoint: if there\nare any extensions out there that build IndexOnlyScan structs directly,\nthey'll be broken in the next minor releases.  However, only a very\ninvasive extension would be likely to do such a thing.  There's no\nchange in the Path representation, so typical planner extensions\nshouldn't have a problem.\n\nAs before, back-patch to all supported branches.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "asynchronous execution foreign scan"
+      ],
+      "from_hint": false,
+      "score": 0.101,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:258",
+      "kind": "cf",
+      "title": "calculate and use most common type for polymorphic arguments",
+      "status": "Rejected",
+      "date": "2015-07-22",
+      "first_date": "2014-11-24",
+      "url": "https://commitfest.postgresql.org/patch/258/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFj8pRBaebtOTgMDUTQshGTd5+U+4qLmkyYO=r=X1bVcifOsfA@mail.gmail.com"
+      ],
+      "authors": "Pavel Stehule (okbobcz)",
+      "objectors": "",
+      "summary": "calculate and use most common type for polymorphic arguments\nThreads: polymorphic types - enforce casting to most common type automatically",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "append mergeappend common infrastructure"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:3265",
+      "kind": "cf",
+      "title": "Kerberos delegation support in libpq and postgres_fdw",
+      "status": "Returned with feedback",
+      "date": "2021-11-26",
+      "first_date": "2021-07-20",
+      "url": "https://commitfest.postgresql.org/patch/3265/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CO1PR05MB8023CC2CB575E0FAAD7DF4F8A8E29@CO1PR05MB8023.namprd05.prod.outlook.com"
+      ],
+      "authors": "Peifeng Qiu (pqiu)",
+      "objectors": "",
+      "summary": "Kerberos delegation support in libpq and postgres_fdw\nThreads: Kerberos delegation support in libpq and postgres_fdw",
+      "objection": "",
+      "touch_points": [
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "async merge append postgres_fdw"
+      ],
+      "from_hint": false,
+      "score": 0.094,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:791",
+      "kind": "cf",
+      "title": "Push down more UPDATEs/DELETEs in postgres_fdw",
+      "status": "Returned with feedback",
+      "date": "2017-11-29",
+      "first_date": "2016-09-06",
+      "url": "https://commitfest.postgresql.org/patch/791/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/b9cee735-62f8-6c07-7528-6364ce9347d0@lab.ntt.co.jp"
+      ],
+      "authors": "Etsuro Fujita (efujita)",
+      "objectors": "",
+      "summary": "Push down more UPDATEs/DELETEs in postgres_fdw\nThreads: Push down more UPDATEs/DELETEs in postgres_fdw",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "async merge append postgres_fdw"
+      ],
+      "from_hint": false,
+      "score": 0.091,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 4,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 5
+  },
+  "precedent_cutoff": "2024-07-17",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found. The listed rows cover async Append and ForeignScan, postgres_fdw async and Custom Scan async, and none of their recorded reasons apply here. The [P2] concern about UNION ALL is answered by message #51, which shows async scans under a UNION ALL Merge Append. The ordered-Append side patch in message #59 was withdrawn in message #64 after the wrong result in message #63."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "The SQL surface, pg_dump and psql are not touched. EXPLAIN reuses the existing \"Async Foreign Scan\" label. The new wait event follows existing practice."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "The proposal is executor and planner only. It has no on-disk format, WAL, catalog, replication or wire protocol change. The only cross-boundary surface is the FDW async API."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal has no privilege or exposure aspect. Async MergeAppend changes only how the executor waits on foreign scans that a user can already run, under the same user mapping and permissions. It adds no new access path to data, files, other sessions or credentials. The new wait event appears in pg_stat_activity under the usual visibility rules. One unbounded resource is possible: an async scan holds one pending remote request per partition. But plain async Append already does this for the same users and servers, so the risk is not new."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 1,
+      "note": "Other maintenance concerns are weak. The async Append author is now the committer and owns the code. v25 dropped the invasive AppendBase refactoring. Any GUC follows the existing enable_async_append practice."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "Postgres has no existing feature, extension or documented method that runs MergeAppend children asynchronously. The executor change cannot be made outside core, so the only point from this angle is the possible duplicate GUC."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "The material shows real demand. Message #4 reports a production slowdown when plans over distributed tables with 20+ postgres_fdw partitions switched from async Append to sync MergeAppend. Independent reviewers measured gains (message #6) or called it important (message #33), and the cost falls mainly on async foreign scan users. The missing v25 benchmark is a measurement question for another angle."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 9,
+      "new_objections": 5,
+      "new_survived": 2,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 73,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 16,
+    "wall_ms": 173595,
+    "cost_usd": 4.4416968,
+    "dry_run": false
+  }
+}

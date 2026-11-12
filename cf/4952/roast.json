@@ -1,0 +1,1139 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:28:29.557Z",
+  "input": {
+    "arg": "4952",
+    "cf": {
+      "id": 4952,
+      "url": "https://commitfest.postgresql.org/patch/4952/",
+      "title": "Use WALReadFromBuffers in more places",
+      "status": "Needs review",
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CALj2ACVfF2Uj9NoFy-5m98HNtjHpuD17EDE9twVeJng-jTAe7A%40mail.gmail.com",
+    "subject": "Use WALReadFromBuffers in more places",
+    "thread_start": "2024-04-24T16:08:57Z",
+    "messages_read": 31,
+    "messages_total": 31,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v10-0001-Use-WALReadFromBuffers-for-logical-walsenders.patch",
+      "v10-0002-Use-WALReadFromBuffers-for-local-WAL-reads.patch",
+      "v10-0003-Use-WALReadFromBuffers-for-WAL-summarizer.patch",
+      "v1-0001-Use-WALReadFromBuffers-in-more-places.patch",
+      "v1-0002-Add-test-module-to-demonstrate-reading-from-WAL-b.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "No objection survived at level 1: the problem is stated, and several people tested or reproduced the gains. Two fixable design points remain at level 2. replication-ondisk-1 asks what ties a page read from WAL buffers to the requested timeline, and the seg.ws_tli fix is not yet posted. maintenance-fit-1 asks for one shared helper instead of four copies of the buffer-then-file logic. A committer who knows the WAL reader code can settle both.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Use WALReadFromBuffers() for logical walsenders, local WAL reads and WAL summarizer",
+    "problem": "Commit 91f2cae7a4 added WALReadFromBuffers() but only physical walsenders use it. Logical walsenders, read_local_xlog_page() callers and the WAL summarizer always read WAL from files, even when the WAL is still in WAL buffers. With WAL direct IO each such file read is a physical disk read, which competes with WAL writes.",
+    "proposed_design": "Each WAL reader first tries WALReadFromBuffers() and falls back to WALRead() for the rest. After a read served fully from buffers, the reader closes the open segment when the page is on a new segment, so a later file read does not reuse a stale descriptor. The set is three patches: logical walsenders, read_local_xlog_page() callers (logical decoding SQL functions, 2PC, repack workers, pg_walinspect), and the WAL summarizer.",
+    "user_visible_surface": [
+      "pg_stat_io: hits on object wal now also count reads from WAL buffers by logical walsenders, local WAL readers and the WAL summarizer.",
+      "pg_stat_io: the checkpointer now reports hits on object wal, because 2PC reads WAL there."
+    ],
+    "author_claims": [
+      "With WAL direct IO on, logical walsender file reads drop by about 99.9% and publisher TPS rises by about 10 to 17%.",
+      "With WAL direct IO on, file reads drop by about 53% for local WAL reads and 64% for the WAL summarizer.",
+      "With WAL direct IO off, file reads still drop and throughput does not change, so the patches do not regress.",
+      "make check-world passes with opportunistic WAL buffer initialization disabled and 2 GiB WAL buffers, except one test that also fails on HEAD."
+    ],
+    "thread_state": "Michael Paquier committed the pg_stat_io page-hit counting (old v10-0001); three patches remain, and Kirill Reshke reproduced the gains. Hayato Kuroda found that a read served fully from buffers leaves seg.ws_tli unset, which breaks the page_read callback rule, and the author plans a fix not yet posted.",
+    "unclear": [
+      "The patches do not yet set seg.ws_tli for reads served fully from buffers; no revised version is posted.",
+      "No benchmark shows cost when walsenders lag and mostly miss WAL buffers, as Kuroda asked.",
+      "The material does not say whether a timeline switch can make a buffer read return WAL from the wrong timeline.",
+      "No measurement covers small wal_buffers, such as the 4MB default, with direct IO off.",
+      "Behavior when the WAL writer zeroes pages during a read is described only as opportunistic, with no test."
+    ],
+    "search_queries": [
+      "read WAL from WAL buffers",
+      "WALReadFromBuffers logical walsender",
+      "walsender read unflushed WAL buffers",
+      "WAL buffers read cache replication",
+      "direct IO for WAL",
+      "logical decoding read WAL buffers",
+      "pg_stat_io WAL buffer hits",
+      "stream WAL before flush synchronous replication"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Buffer-only reads leave seg.ws_tli unset, and the timeline invariant is not stated",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A logical slot is synced to a standby, the standby is promoted, and decoding crosses the timeline switch. Pages served from WAL buffers leave seg.ws_tli at 0 or stale, so a later file read or a page check uses the wrong timeline. The user sees a wrong error or bad decoding only after failover.",
+      "argument": "Message #30 shows that the page_read contract in xlogreader.h requires the callback to set seg.ws_tli. Message #31 agrees the contract is broken and says it only affects error reporting and validation, but no fixed version is posted. For read_local_xlog_page() callers, XLogReadDetermineTimeline() picks the timeline per page, yet the proposal does not say why a buffer read cannot return pages from a timeline other than the one the reader asked for. That gap matters now that logical decoding runs across promotion.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        30,
+        31
+      ],
+      "author_must_show": "With seg.ws_tli fixed, what guarantees that a buffer-served page belongs to the timeline the reader requested, including reads that straddle a promotion?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 30,
+          "from": "\"Hayato Kuroda (Fujitsu)\"",
+          "date": "2026-10-27T11:40:25Z",
+          "url": "https://www.postgresql.org/message-id/OS7PR01MB183178A50F430AC19E5CEDC60F5602%40OS7PR01MB18317.jpnprd01.prod.outlook.com"
+        },
+        {
+          "index": 31,
+          "from": "Bharath Rupireddy",
+          "date": "2026-11-04T21:09:44Z",
+          "url": "https://www.postgresql.org/message-id/CALj2ACV3mL9BP0VPP%2BqA%3DU_y%3DD8vhZ_1%3DDgxr%3DYvQwvf%3DdmUAQ%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #31 confirms that ws_tli stays 0 after a read served fully from buffers, and no fixed version is posted. The thread does not say how a buffer read is tied to the requested timeline, so the question stands as fixable.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Buffer-then-file read logic copied into four page_read callbacks",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch changes how WALRead() tracks segments or sets seg.ws_tli, and updates only some of the physical walsender, logical walsender, read_local_xlog_page_guts() and summarizer copies. A copy that was missed then reuses a stale descriptor or reports a wrong TLI. Users find out through an \"unexpected pageaddr\" error during decoding, or a wrong error message, once tests stop reaching the file-read fallback.",
+      "argument": "Each caller gets its own WALReadFromBuffers() plus WALRead() sequence, its own segment-close rule and its own ws_tli handling, and the author declined a shared helper (message #5, #20). The thread has already shown misses of exactly this kind: an unconditional close that Michael flagged (message #21), the dropped retry in the physical path (message #20), and the unset ws_tli (message #30, #31). Message #25 shows that tests stop exercising the file path once buffers serve every read, so a missed update would not fail loudly.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        5,
+        20,
+        21,
+        25,
+        30,
+        31
+      ],
+      "author_must_show": "Can the buffer read, the segment close and the ws_tli rule live in one xlogreader-level helper, so that future WALRead() changes need one edit and fail loudly if missed?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Bharath Rupireddy",
+          "date": "2024-06-12T16:40:03Z",
+          "url": "https://www.postgresql.org/message-id/CALj2ACXa-2eEHHaNRwjcF1k9rtH%3DEJrWvbGJkucdSOD3zP-OUw%40mail.gmail.com"
+        },
+        {
+          "index": 20,
+          "from": "Bharath Rupireddy",
+          "date": "2026-09-04T00:23:00Z",
+          "url": "https://www.postgresql.org/message-id/CALj2ACUo2Kqy8ovFwSr1Cr7hkTLGQo4U8QFDQF9nW4d9ADGfXg%40mail.gmail.com"
+        },
+        {
+          "index": 21,
+          "from": "Michael Paquier",
+          "date": "2026-09-04T05:40:58Z",
+          "url": "https://www.postgresql.org/message-id/appZ6saaV5wV5UA4%40paquier.xyz"
+        },
+        {
+          "index": 25,
+          "from": "Bharath Rupireddy",
+          "date": "2026-09-14T20:07:00Z",
+          "url": "https://www.postgresql.org/message-id/CALj2ACUMtx%2B3hd7mO8Gb5kewpvwQ9OLEPPSC1fC2r500k5_CaQ%40mail.gmail.com"
+        },
+        {
+          "index": 30,
+          "from": "\"Hayato Kuroda (Fujitsu)\"",
+          "date": "2026-10-27T11:40:25Z",
+          "url": "https://www.postgresql.org/message-id/OS7PR01MB183178A50F430AC19E5CEDC60F5602%40OS7PR01MB18317.jpnprd01.prod.outlook.com"
+        },
+        {
+          "index": 31,
+          "from": "Bharath Rupireddy",
+          "date": "2026-11-04T21:09:44Z",
+          "url": "https://www.postgresql.org/message-id/CALj2ACV3mL9BP0VPP%2BqA%3DU_y%3DD8vhZ_1%3DDgxr%3DYvQwvf%3DdmUAQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The author's reason against a helper in message #20 is that the physical walsender cannot share it, which does not cover the three new callers. The thread shows three misses of this kind (messages #20, #21, #30), so the scenario is concrete.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "Logical walsenders, read_local_xlog_page() callers and the WAL summarizer change how they read WAL, including across timeline switches."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "read_local_xlog_page() is a page_read callback that extensions such as pg_walinspect use, and its seg.ws_tli behaviour changes."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Four page_read callbacks each carry their own buffer read, segment-close rule and seg.ws_tli handling."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Every WAL page read by walsenders and local readers now tries WAL buffers first, including when a lagging reader mostly misses."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "With seg.ws_tli set, what guarantees that a page read from WAL buffers belongs to the timeline the reader requested, including reads that straddle a promotion?",
+    "Can the buffer read, the segment close and the seg.ws_tli rule live in one helper shared by the logical walsender, read_local_xlog_page() and the WAL summarizer?",
+    "What does the extra WALReadFromBuffers() attempt cost when a walsender lags and almost every read misses WAL buffers, as Hayato Kuroda asked?",
+    "Is there a measurement with the default wal_buffers and WAL direct IO off that shows no regression?",
+    "Which test still reaches the WALRead() file fallback and the segment-close path once WAL buffers serve most reads?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Michael Paquier committed the pg_stat_io part and reviewed the rest; the owner must know xlogreader page_read callbacks and timeline handling in walsenders.",
+    "liability": "The owner signs for correct WAL reads in logical decoding, 2PC, pg_walinspect and the WAL summarizer, including after promotion, for as long as these four read paths exist.",
+    "author_follow_up": "The author has kept the entry alive since 2024, posted ten versions, and in message #31 said a fix for seg.ws_tli is planned."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "proceed",
+    "reason": "The patches are small and a qualified committer is engaged, but the throughput gain is measured only with WAL direct IO, a developer setting today. The duplicated read logic and the timeline question need care in the WAL reader code, which sets the burden and review cost at medium."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read, so the segment-close rule, the planned seg.ws_tli fix and the behaviour when the WAL writer reuses pages during a read could not be checked. The timeline question rests on the thread, not on the patch.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:3181",
+      "kind": "cf",
+      "title": "Map WAL segment files on PMEM as WAL buffers",
+      "status": "Returned with feedback",
+      "date": "2022-08-01",
+      "first_date": "2021-05-19",
+      "url": "https://commitfest.postgresql.org/patch/3181/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOwnP3PHDOW=-BqutjJPN0qEdF8ocqBuOiE9bpe-_c-1bnQ1yA@mail.gmail.com"
+      ],
+      "authors": "Takashi Menjo (tmenjo)",
+      "objectors": "",
+      "summary": "The patchset maps WAL segment files that live on persistent memory (PMEM) directly into memory with libpmem and uses them as the WAL buffers, so WAL is written in place without a separate copy and write. It adds a --with-libpmem build option and a wal_pmem_map setting, and sizes the mapped buffers to min_wal_size with pre-allocation by walwriter.",
+      "objection": "No reviewer took it up. Jacob Champion returned it in a batch of patchsets that did not get enough reviewer interest, and he wrote that this was not a rejection and that there was little actionable feedback. Earlier messages only asked for build fixes, CI support and rebases, and the author did each of them.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "read WAL from WAL buffers",
+        "walsender read unflushed WAL buffers",
+        "WAL buffers read cache replication",
+        "pg_stat_io WAL buffer hits"
+      ],
+      "from_hint": false,
+      "score": 0.468,
+      "enriched": true,
+      "key_quote": "As discussed in [1], we're taking this opportunity to return some\npatchsets that don't appear to be getting enough reviewer interest.",
+      "quote_message_url": "https://www.postgresql.org/message-id/bdf08089-eb79-e96d-b8ce-4779000bba5a%40timescale.com",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:4085",
+      "kind": "cf",
+      "title": "Exit walsender before confirming remote flush in logical replication",
+      "status": "Returned with feedback",
+      "date": "2023-03-17",
+      "first_date": "2022-12-22",
+      "url": "https://commitfest.postgresql.org/patch/4085/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/TYAPR01MB586668E50FC2447AD7F92491F5E89@TYAPR01MB5866.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "Hayato Kuroda (ha-kun)",
+      "objectors": "",
+      "summary": "The patch lets a logical replication walsender exit at shutdown without waiting for the subscriber to confirm flush of all sent WAL, so that a publisher with a large time-delayed apply can still stop. Later versions add an optional SHUTDOWN_MODE clause ('wait_flush' or 'immediate') to START_REPLICATION for logical replication.",
+      "objection": "The visible messages do not show why. The last shown messages, about a month before the decision, still discuss whether the option should be a boolean or a mode with an explicit default, and they contain minor review comments on v7-0002.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "WALReadFromBuffers logical walsender",
+        "walsender read unflushed WAL buffers",
+        "stream WAL before flush synchronous replication"
+      ],
+      "from_hint": false,
+      "score": 0.426,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:2615",
+      "kind": "cf",
+      "title": "Non-volatile WAL buffer",
+      "status": "Withdrawn",
+      "date": "2021-06-18",
+      "first_date": "2020-01-24",
+      "url": "https://commitfest.postgresql.org/patch/2615/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/002f01d5d28d$23c01430$6b403c90$@hco.ntt.co.jp_1"
+      ],
+      "authors": "Takashi Menjo (tmenjo)",
+      "objectors": "",
+      "summary": "The patch replaced the DRAM WAL buffers with one large buffer file on persistent memory (PMEM), sized by nvwal_size, so WAL records became durable there without writes to WAL segment files. Segment files were written only in archiving mode or when the buffer was full.",
+      "objection": "The visible messages do not include a withdrawal reason. In the last messages the author moves to the separate \"NTT / segments\" patchset, which mmaps regular WAL segment files. Tomas Vondra had measured it as fast as \"NTT / buffer\", with the speedup almost gone when full_page_writes=off. Earlier, the author called the hard nvwal_size limit, which blocks all WAL inserts when the buffer is full, a major weak point.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "read WAL from WAL buffers",
+        "walsender read unflushed WAL buffers",
+        "WAL buffers read cache replication",
+        "pg_stat_io WAL buffer hits"
+      ],
+      "from_hint": false,
+      "score": 0.421,
+      "enriched": true,
+      "key_quote": "In addition, \"NTT / segments\"\npatchset is more compatible to the current PG and more friendly to\nDBAs because that patchset uses WAL segment files and does not\nintroduce any other new WAL-related file.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAOwnP3OfT%3D9FDgpP%3DsyHwkMq3%2BGrGO-0kkiam2zjTeDpFaJd8g%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:4210",
+      "kind": "cf",
+      "title": "Track Oldest Initialized WAL Buffer Page",
+      "status": "Returned with feedback",
+      "date": "2023-08-03",
+      "first_date": "2023-02-07",
+      "url": "https://commitfest.postgresql.org/patch/4210/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACVgi6LirgLDZh=FdfdvGvKAD==WTOSWcQy=AtNgPDVnKw@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "Heikki Linnakangas",
+      "summary": "The patch adds an OldestInitializedPage field to XLogCtl that tracks the start address of the oldest initialized WAL buffer page, updated under WALBufMappingLock. Its purpose is to let callers check quickly, without a lock, whether a WAL record is still in the WAL buffers, and to walk the buffers from oldest to newest.",
+      "objection": "Heikki Linnakangas showed that a caller can already check whether a record is in WAL buffers by comparing xlblocks[idx] with the expected page end pointer, with an atomic read if stale results are fine. He saw no need to track OldestInitializedPage. The author did not reply, and the entry was returned with feedback after the thread stalled.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "read WAL from WAL buffers",
+        "walsender read unflushed WAL buffers",
+        "WAL buffers read cache replication",
+        "pg_stat_io WAL buffer hits"
+      ],
+      "from_hint": false,
+      "score": 0.412,
+      "enriched": true,
+      "key_quote": "But I don't see the point of tracking OldestInitializedPage. It\nseems cheap enough that we could, if there's a need for it, but I don't\nsee the need.",
+      "quote_message_url": "https://www.postgresql.org/message-id/82dad3ca-035c-c5f3-d230-ff7d11b6e573%40iki.fi",
+      "relevant": true
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:4416",
+      "kind": "cf",
+      "title": "Show WAL stats on pg_stat_io",
+      "status": "Returned with feedback",
+      "date": "2024-01-18",
+      "first_date": "2023-06-28",
+      "url": "https://commitfest.postgresql.org/patch/4416/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAN55FZ3AiQ+ZMxUuXnBpd0Rrh1YhwJ5FudkHg=JU0P+-W8T4Vg@mail.gmail.com"
+      ],
+      "authors": "Nazir Bilal Yavuz (nbyavuz)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch adds WAL I/O (writes, fsyncs, reads during recovery, and WAL segment initialization in a new IOCONTEXT_INIT) to the pg_stat_io view as IOOBJECT_WAL. Timings use track_wal_io_timing, and pg_stat_wal timings would come from pg_stat_io.",
+      "objection": "pg_stat_io ties op_bytes to a fixed block size per object and context, but some WAL reads, such as those by the WAL receiver, have a variable size. Reviewers did not agree whether to set op_bytes to 1, to NULL, or to add per-operation byte columns. Michael Paquier proposed to set the patch aside until WAL reads and writes, async I/O and cached reads are settled, so that the meaning of pg_stat_io does not change between releases. The author agreed, and the patch was marked Returned with feedback.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "direct IO for WAL",
+        "pg_stat_io WAL buffer hits"
+      ],
+      "from_hint": false,
+      "score": 0.285,
+      "enriched": true,
+      "key_quote": "IMHO, perhaps we'd better put this patch aside until we are absolutely\n*sure* of what we want to achieve when it comes to WAL, and I am\nafraid that this cannot happen until we're happy with the way we\nhandle WAL reads *and* writes, including WAL receiver or anything that\nhas the idea of pulling its own page callback with\nXLogReaderAllocate() in the backend.",
+      "quote_message_url": "https://www.postgresql.org/message-id/ZaTQSOVpwekhOXx-%40paquier.xyz",
+      "relevant": true
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:4393",
+      "kind": "cf",
+      "title": "Optimize walsender handling invalid messages of 'drop publication'",
+      "status": "Withdrawn",
+      "date": "2023-10-20",
+      "first_date": "2023-02-27",
+      "url": "https://commitfest.postgresql.org/patch/4393/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAM_vCudj3_HdJ2G5erwq_Jj+-bwfr67yxmS8oh=-cjPXY4pihg@mail.gmail.com"
+      ],
+      "authors": "Bowen Shi (zxwsbg)",
+      "objectors": "Andres Freund",
+      "summary": "The patch changes how walsender handles invalidation messages from 'drop publication' on releases before PG 14, which lack the XLOG_XACT_INVALIDATIONS record type. pgoutput stops doing needless cache invalidation, and a relid-to-relfilenode hash map replaces a hash sequential search; the patch targets REL_13_STABLE and back branches only.",
+      "objection": "No one reviewed the patch for four months. Andres Freund then objected that users hitting the issue should upgrade, and that performance improvements are rarely backpatched, and not when they would go only into back branches without first maturing in the development branch. The author later withdrew the entry.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "WALReadFromBuffers logical walsender",
+        "walsender read unflushed WAL buffers"
+      ],
+      "from_hint": false,
+      "score": 0.27,
+      "enriched": true,
+      "key_quote": "It's one thing to decide to backpatch an\noptimization if it had time to \"mature\" in the development branch, but from\nwhat I undestand you're proposing to apply this just to the back branches.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20230626211301.mj2p2zl3jpxmpfrw%40awork3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "revert:96795176810b979a2bf1f4563bdcb161679d5b95",
+      "kind": "revert",
+      "title": "Revert \"Add test case for obsoleting slot with active walsender\"",
+      "status": "Reverted",
+      "date": "2021-06-20",
+      "first_date": "2021-06-18",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=96795176810b979a2bf1f4563bdcb161679d5b95",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/202106102202.mjw4huiix7lo@alvherre.pgsql"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert \"Add test case for obsoleting slot with active walsender\"\nReverted commit(s): Add test case for obsoleting slot with active walsender",
+      "objection": "This reverts commit 09126984a263; the test case added there failed once\nin circumstances that remain mysterious.  It seems better to remove the\ntest for now so that 14beta2 doesn't have random failures built in.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "WALReadFromBuffers logical walsender",
+        "walsender read unflushed WAL buffers"
+      ],
+      "from_hint": false,
+      "score": 0.234,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:4698",
+      "kind": "cf",
+      "title": "Move walreceiver state assignment (to WALRCV_STREAMING) in WalReceiverMain()",
+      "status": "Withdrawn",
+      "date": "2024-01-22",
+      "first_date": "2023-12-12",
+      "url": "https://commitfest.postgresql.org/patch/4698/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/11ff040c-2eca-421a-b74a-0e99937c2d93@gmail.com"
+      ],
+      "authors": "Bertrand Drouvot (bertranddrouvot.pg)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch moves the assignment of walrcv->walRcvState to WALRCV_STREAMING from the start of WalReceiverMain() to the point after walrcv_startstreaming() returns true. The author said the current placement causes no known issue but is less accurate, since connecting to the primary can still fail after it.",
+      "objection": "Euler Taveira was concerned that keeping the state at WALRCV_STARTING longer could let WalRcvStreaming() hit the hardcoded WALRCV_STARTUP_TIMEOUT and stop a walreceiver that is slow to connect. Michael Paquier agreed and noted that v1 skipped the restart case. The author fixed the restart case in v2, but CFbot then reported test failures, and he withdrew the patch because the current code causes no issues.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_stat_io WAL buffer hits",
+        "stream WAL before flush synchronous replication"
+      ],
+      "from_hint": false,
+      "score": 0.221,
+      "enriched": true,
+      "key_quote": "Couldn't it give up before starting if you apply your patch? My main concern is\ndue to a slow system, the walrcv_connect() took to long in WalReceiverMain()\nand the code above kills the walreceiver while in the process to start it.",
+      "quote_message_url": "https://www.postgresql.org/message-id/3abb8c54-11de-4220-ad65-c2785df01124%40app.fastmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "wiki:Statistics_Collector:1",
+      "kind": "do_not_want",
+      "title": "Track number of WAL files ready to be archived in pg_stat_archiver",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Statistics_Collector",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB7nPqSCrcZGGy_SmpT7ubSzVGNMtphYU1JJZYyapHuN46E-Tw@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/53F5AB0A.5060502@dalibo.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "The proposal adds the size of the archive queue, meaning the number of WAL files with a .ready status file in pg_xlog/archive_status, to the pg_stat_archiver view. Fujii Masao suggested two ways to get the value: count the .ready files, or keep a counter that goes up when a .ready file is created and down when it becomes .done.",
+      "objection": "The visible messages do not show why. The idea came up after pg_stat_archiver was committed. Michael Paquier added it to the TODO list under \"Statistics Collector\", and Gabriele Bartolini said he would try it later. No patch or objection appears in the shown messages.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "read WAL from WAL buffers",
+        "walsender read unflushed WAL buffers",
+        "pg_stat_io WAL buffer hits"
+      ],
+      "from_hint": false,
+      "score": 0.193,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "wiki:Standby_server_mode:2",
+      "kind": "do_not_want",
+      "title": "Change walsender so that it applies per-role settings",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Standby_server_mode",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Change walsender so that it applies per-role settings\nSection: Administration / Standby server mode",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "WALReadFromBuffers logical walsender",
+        "walsender read unflushed WAL buffers"
+      ],
+      "from_hint": false,
+      "score": 0.154,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:3316",
+      "kind": "cf",
+      "title": "Asynchronous and \"direct\" IO support for PostgreSQL",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2021-02-23",
+      "url": "https://commitfest.postgresql.org/patch/3316/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210223100344.llw5an2aklengrmn@alap3.anarazel.de"
+      ],
+      "authors": "Andres Freund (andresfreund), David Rowley (davidrowley), Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Asynchronous and \"direct\" IO support for PostgreSQL\nThreads: Asynchronous and \"direct\" IO support for PostgreSQL.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "direct IO for WAL"
+      ],
+      "from_hint": false,
+      "score": 0.145,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "revert:c2dc19342e05e081dc13b296787baa38352681ef",
+      "kind": "revert",
+      "title": "Revert recovery prefetching feature.",
+      "status": "Reverted",
+      "date": "2021-05-10",
+      "first_date": "2021-04-08",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=c2dc19342e05e081dc13b296787baa38352681ef",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOuzzgrn7iKnFRsB4MHp3UisEQAGgZMbk_ViTN4HV4-Ksq8zCg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20210409033703.GP6592@telsasoft.com",
+        "https://www.postgresql.org/message-id/flat/CA+hUKGJ4VJN8ttxScUFM8dOKX0BrBiboo5uz1cq=AovOddfHpA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20190418.210257.43726183.horiguchi.kyotaro@lab.ntt.co.jp",
+        "https://www.postgresql.org/message-id/flat/16997-ff16127f6e0d1390@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/20210413123139.GE6091@telsasoft.com"
+      ],
+      "authors": "Thomas Munro, Tom Lane",
+      "objectors": "",
+      "summary": "Revert recovery prefetching feature.\nReverted commit(s): Doc: Review for \"Optionally prefetch referenced data in recovery.\"; Optionally prefetch referenced data in recovery.; Add circular WAL decoding buffer.; Remove read_page callback from XLogReader.; Sync guc.c and postgresql.conf.sample with the SGML docs.",
+      "objection": "This set of commits has some bugs with known fixes, but at this late\nstage in the release cycle it seems best to revert and resubmit next\ntime, along with some new automated test coverage for this whole area.\n\nCommits reverted:\n\ndc88460c: Doc: Review for \"Optionally prefetch referenced data in recovery.\"\n1d257577: Optionally prefetch referenced data in recovery.\nf003d9f8: Add circular WAL decoding buffer.\n323cbe7c: Remove read_page callback from XLogReader.\n\nRemove the new GUC group WAL_RECOVERY recently added by a55a9847, as the\ncorresponding section of config.sgml is now reverted.",
+      "touch_points": [
+        "new GUC",
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "read WAL from WAL buffers"
+      ],
+      "from_hint": false,
+      "score": 0.14,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:2676",
+      "kind": "cf",
+      "title": "Start WAL streaming as early as possible, without waiting for startup process to finish replaying existing WAL. This helps synchronous replication to resume quickly when significant replay lag has been built up.",
+      "status": "Returned with feedback",
+      "date": "2020-12-01",
+      "first_date": "2020-01-17",
+      "url": "https://commitfest.postgresql.org/patch/2676/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANXE4Tc3FNvZ_xAimempJWv_RH9pCvsZH7Yq93o1VuNLjUT-mQ@mail.gmail.com"
+      ],
+      "authors": "Asim Rama Praveen (apraveen), Hao Wu (hwu)",
+      "objectors": "",
+      "summary": "Start WAL streaming as early as possible, without waiting for startup process to finish replaying existing WAL. This helps synchronous replication to resume quickly when significant replay lag has been built up.\nThreads: Unnecessary delay in streaming replication due to replay lag",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "stream WAL before flush synchronous replication"
+      ],
+      "from_hint": false,
+      "score": 0.139,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3503",
+      "kind": "cf",
+      "title": "pg_receivewal fail to streams when the partial file to write is not fully initialized present in the wal receiver directory",
+      "status": "Returned with feedback",
+      "date": "2024-01-22",
+      "first_date": "2022-01-03",
+      "url": "https://commitfest.postgresql.org/patch/3503/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHg+QDcVUss6ocOmbLbV5f4YeGLhOCt+1x2yLNfG2H_eDwU8tw@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy), SATYANARAYANA NARLAPURAM (satyanarayanan)",
+      "objectors": "",
+      "summary": "pg_receivewal fail to streams when the partial file to write is not fully initialized present in the wal receiver directory\nThreads: pg_receivewal fail to streams when the partial file to write is not\nfully initialized present in the wal receiver directory",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "direct IO for WAL"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:47",
+      "kind": "cf",
+      "title": "Logical Decoding with timelines",
+      "status": "Returned with feedback",
+      "date": "2015-05-03",
+      "first_date": "2014-12-15",
+      "url": "https://commitfest.postgresql.org/patch/47/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+U5nMKHqQbNNOAMFJ6pmqkDJ5A6xCowsjG8eA468EAzs7yHUQ@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon)",
+      "objectors": "",
+      "summary": "Logical Decoding with timelines\nThreads: Logical Decoding follows timelines",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical decoding read WAL buffers"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "revert:2c7ea57e56ca5f668c32d4266e0a3e45b455bef5",
+      "kind": "revert",
+      "title": "Revert \"Logical decoding of sequences\"",
+      "status": "Reverted",
+      "date": "2022-04-07",
+      "first_date": "2022-02-10",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=2c7ea57e56ca5f668c32d4266e0a3e45b455bef5",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/95345a19-d508-63d1-860a-f5c2f41e8d40@enterprisedb.com",
+        "https://www.postgresql.org/message-id/flat/d045f3c2-6cfb-06d3-5540-e63c320df8bc@enterprisedb.com",
+        "https://www.postgresql.org/message-id/flat/1710ed7e13b.cd7177461430746.3372264562543607781@highgo.ca",
+        "https://www.postgresql.org/message-id/flat/20220212220413.b25amklo7t4xb7ni@alap3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/CAA4eK1KGn6cQqJEsubOOENwQOANsExiV2sKL52r4U10J8NJEMQ@mail.gmail.com"
+      ],
+      "authors": "Tomas Vondra",
+      "objectors": "",
+      "summary": "Revert \"Logical decoding of sequences\"\nReverted commit(s): Logical decoding of sequences; Add decoding of sequences to test_decoding; Fix skip-empty-xacts with sequences in test_decoding; Call ReorderBufferProcessXid from sequence_decode; Stabilize test_decoding touching with sequences",
+      "objection": "This reverts a sequence of commits, implementing features related to\nlogical decoding and replication of sequences:\n\n - 0da92dc530c9251735fc70b20cd004d9630a1266\n - 80901b32913ffa59bf157a4d88284b2b3a7511d9\n - b779d7d8fdae088d70da5ed9fcd8205035676df3\n - d5ed9da41d96988d905b49bebb273a9b2d6e2915\n - a180c2b34de0989269fdb819bff241a249bf5380\n - 75b1521dae1ff1fde17fda2e30e591f2e5d64b6a\n - 2d2232933b02d9396113662e44dca5f120d6830e\n - 002c9dd97a0c874fd1693a570383e2dd38cd40d5\n - 05843b1aa49df2ecc9b97c693b755bd1b6f856a9\n\nThe implementation has issues, mostly due to combining transactional and\nnon-transactional behavior of sequences. It's not clear how this could\nbe fixed, but it'll require reworking significant part of the patch.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical decoding read WAL buffers"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:788",
+      "kind": "cf",
+      "title": "Logical decoding on standby",
+      "status": "Returned with feedback",
+      "date": "2017-11-24",
+      "first_date": "2016-09-05",
+      "url": "https://commitfest.postgresql.org/patch/788/",
+      "thread_urls": [],
+      "authors": "Craig Ringer (ringerc)",
+      "objectors": "",
+      "summary": "Logical decoding on standby",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical decoding read WAL buffers"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "revert:a16d421ca4fc639929bc964b2585e8382cf16e33",
+      "kind": "revert",
+      "title": "Revert \"Auto-tune effective_cache size to be 4x shared buffers\"",
+      "status": "Reverted",
+      "date": "2014-05-09",
+      "first_date": "2013-10-08",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=a16d421ca4fc639929bc964b2585e8382cf16e33",
+      "thread_urls": [],
+      "authors": "Bruce Momjian",
+      "objectors": "",
+      "summary": "Revert \"Auto-tune effective_cache size to be 4x shared buffers\"\nReverted commit(s): Auto-tune effective_cache size to be 4x shared buffers",
+      "objection": "This reverts commit ee1e5662d8d8330726eaef7d3110cb7add24d058, as well as\na remarkably large number of followup commits, which were mostly concerned\nwith the fact that the implementation didn't work terribly well.  It still\ndoesn't: we probably need some rather basic work in the GUC infrastructure\nif we want to fully support GUCs whose default varies depending on the\nvalue of another GUC.  Meanwhile, it also emerged that there wasn't really\nconsensus in favor of the definition the patch tried to implement (ie,\neffective_cache_size should default to 4 times shared_buffers).  So whack\nit all back to where it was.  In a followup commit, I'll do what was\nrecently agreed to, which is to simply change the default to a higher\nvalue.",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "WAL buffers read cache replication"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:4779",
+      "kind": "cf",
+      "title": "Adding linux cachestat in file Readv and Prefetch",
+      "status": "Rejected",
+      "date": "2024-03-14",
+      "first_date": "2024-01-18",
+      "url": "https://commitfest.postgresql.org/patch/4779/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/cbe67692-ad03-4c5a-a5bb-405a438e9cda@abcSQL.com"
+      ],
+      "authors": "Cédric Villemain (c2main)",
+      "objectors": "",
+      "summary": "Adding linux cachestat in file Readv and Prefetch\nThreads: linux cachestat in file Readv and Prefetch",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "WAL buffers read cache replication"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:3668",
+      "kind": "cf",
+      "title": "pg_receivewal fail to streams when the partial file to write is not fully initialized present in the wal receiver directory",
+      "status": "Withdrawn",
+      "date": "2022-07-20",
+      "first_date": "2022-01-03",
+      "url": "https://commitfest.postgresql.org/patch/3668/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHg+QDcVUss6ocOmbLbV5f4YeGLhOCt+1x2yLNfG2H_eDwU8tw@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy), SATYANARAYANA NARLAPURAM (satyanarayanan)",
+      "objectors": "",
+      "summary": "pg_receivewal fail to streams when the partial file to write is not fully initialized present in the wal receiver directory\nThreads: pg_receivewal fail to streams when the partial file to write is not\nfully initialized present in the wal receiver directory",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "direct IO for WAL"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:2283",
+      "kind": "cf",
+      "title": "Minimal logical decoding on standbys",
+      "status": "Withdrawn",
+      "date": "2020-06-11",
+      "first_date": "2018-12-12",
+      "url": "https://commitfest.postgresql.org/patch/2283/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20181212204154.nsxf3gzqv3gesl32@alap3.anarazel.de"
+      ],
+      "authors": "Amit Khandekar (amitdkhan)",
+      "objectors": "",
+      "summary": "Minimal logical decoding on standbys\nThreads: Minimal logical decoding on standbys",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical decoding read WAL buffers"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:3665",
+      "kind": "cf",
+      "title": "An attempt to avoid locally-committed-but-not-replicated-to-standby-transactions in synchronous replication",
+      "status": "Returned with feedback",
+      "date": "2023-08-02",
+      "first_date": "2022-04-25",
+      "url": "https://commitfest.postgresql.org/patch/3665/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACUrOB59QaE6=jF2cFAyv1MR7fzD8tr4YM5+OwEYG1SNzA@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "",
+      "summary": "An attempt to avoid locally-committed-but-not-replicated-to-standby-transactions in synchronous replication\nThreads: An attempt to avoid locally-committed-but-not-replicated-to-standby-transactions\nin synchronous replication",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "stream WAL before flush synchronous replication"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:295",
+      "kind": "cf",
+      "title": "expose confirmed_flush for replication slots",
+      "status": "Rejected",
+      "date": "2015-07-08",
+      "first_date": "2015-07-08",
+      "url": "https://commitfest.postgresql.org/patch/295/",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "expose confirmed_flush for replication slots",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "stream WAL before flush synchronous replication"
+      ],
+      "from_hint": false,
+      "score": 0.101,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:2683",
+      "kind": "cf",
+      "title": "Minimal logical decoding on standbys",
+      "status": "Returned with feedback",
+      "date": "2020-09-17",
+      "first_date": "2018-12-12",
+      "url": "https://commitfest.postgresql.org/patch/2683/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20181212204154.nsxf3gzqv3gesl32@alap3.anarazel.de"
+      ],
+      "authors": "Andres Freund (andresfreund), Craig Ringer (ringerc), Amit Khandekar (amitdkhan), Ibrar Ahmed (ibrar)",
+      "objectors": "",
+      "summary": "Minimal logical decoding on standbys\nThreads: Minimal logical decoding on standbys",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical decoding read WAL buffers"
+      ],
+      "from_hint": false,
+      "score": 0.099,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 1,
+    "new_calls": 7,
+    "failed": 0,
+    "quotes_verified": 5,
+    "quotes_dropped": 0,
+    "objectors_dropped": 1,
+    "relevance_pass": "done",
+    "relevant": 2
+  },
+  "precedent_cutoff": "2024-04-24",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No listed precedent is the same idea, and no recorded reason applies. [P4] proposed tracking the oldest initialized WAL buffer page and was judged unneeded; this proposal adds no such field. [P5] concerned how WAL I/O appears in pg_stat_io, and the hit counting it touched is already committed here (message #28). Messages #12, #14 and #17 point to earlier direct IO and benchmark threads as motivation only, not as rejections."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 0,
+      "note": "The user-facing contract is new rows in pg_stat_io: wal hits from more backend types, including the checkpointer. The hit semantics were agreed and committed in message #28. No SQL syntax, GUC, catalog, pg_dump or psql change is involved, and the change targets a major release, so this angle finds nothing to object to. Not checked: whether the pg_stat_io docs list which backend types report wal hits."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "The patches add no on-disk format, WAL record, catalog or protocol change. The only state that crosses a boundary is the reader's segment and timeline bookkeeping."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The patches change only where existing WAL readers get bytes they could already read from files: logical walsenders, read_local_xlog_page() callers such as pg_walinspect, and the WAL summarizer. No reader gains access to WAL beyond its current limit. The privilege checks on pg_walinspect, logical decoding functions and replication connections stay as they are. The only new visible output is the WAL hit count in pg_stat_io, which reveals no data contents. I found no privilege, information-leak or unprivileged denial-of-service aspect to object to."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 1,
+      "note": "Fit is otherwise reasonable. A committer who knows the area (Michael Paquier) is engaged and committed the stats part, the cost falls on users of the WAL readers, and the series is split into separately revertable steps."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing feature or extension meets this need. The patch adds new callers to the existing WALReadFromBuffers() and keeps the fallback to WALRead(), so it adds no second mechanism. With buffered IO the OS page cache already serves most of these reads, but the thread shows fewer syscalls with no regression. The larger gain needs debug_io_direct='wal', a question of desirability for other angles."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "The material shows enough demand. Several people outside the author's company want this change: Jingtang Zhang tested it, Kirill Reshke reproduced the gains, Hayato Kuroda reached the same idea on his own, and Michael Paquier committed the pg_stat_io part. One caveat remains: the large gains are measured only with debug_io_direct = 'wal', which is a developer setting, and with buffered IO the patches only reduce syscalls, with no throughput change. Because the change is small and opportunistic and its users bear its cost, this caveat does not support a demand objection."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 2,
+      "new_survived": 2,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 54,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 18,
+    "wall_ms": 121168,
+    "cost_usd": 3.9422550000000007,
+    "dry_run": false
+  }
+}

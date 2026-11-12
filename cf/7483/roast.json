@@ -1,0 +1,1533 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T04:00:15.246Z",
+  "input": {
+    "arg": "7483",
+    "cf": {
+      "id": 7483,
+      "url": "https://commitfest.postgresql.org/patch/7483/",
+      "title": "Reducing relcache memory usage 2: shrink sizeof(RelationData)",
+      "status": "Needs review",
+      "authors": "David Geier (geidav)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/f97de758-b816-47db-96e0-0e6e2c2d3eef%40gmail.com",
+    "subject": "Reducing relcache memory usage 2: shrink sizeof(RelationData)",
+    "thread_start": "2026-09-10T09:43:04Z",
+    "messages_read": 18,
+    "messages_total": 18,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v6-0001-Assert-CacheMemoryContext-exists-in-relcache-call.patch",
+      "v6-0002-Allocate-RelationData-structs-in-a-dedicated-slab.patch",
+      "v6-0003-Move-RelationData-to-an-internal-header.patch",
+      "v6-0004-Overlay-relation-kind-specific-relcache-fields.patch",
+      "v6-0005-Allocate-partition-cache-data-lazily.patch",
+      "v6-0006-Pack-RelationData-to-eliminate-padding.patch",
+      "v6-0007-Compute-relation-lock-identifiers-on-demand.patch",
+      "v1-0001-Move-RelationData-to-new-include.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection questions the goal, and the reviewers in the thread treat it as worth doing. The surviving objections are all fixable design points. maintenance-fit-1 is the main one: nothing fails loudly when code reads the inactive union member. prior-attempts-1, maintenance-fit-2 and maintenance-fit-3 ask for v6 measurements of memory and of the relkind check cost.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Shrink RelationData to reduce relcache memory per backend",
+    "problem": "Each relcache entry costs 520 bytes because RelationData is 488 bytes and aset rounds it up to a 512-byte chunk. With many tables and indexes, CacheMemoryContext grows large in every backend. The patch targets installations with large schemas.",
+    "proposed_design": "RelationData moves to a dedicated slab context, so every byte saved counts. The patch then overlays table-only and index-only fields in an anonymous union, moves partition state into a lazily allocated RelationPartitionInfo, reorders members to remove padding, and computes the lock identifier on demand instead of caching rd_lockInfo. sizeof(RelationData) goes from 496 to 248 bytes on Linux x86-64.",
+    "user_visible_surface": [
+      "C API: RelationData layout changes; table-only and index-only fields share storage in an anonymous union.",
+      "C API: RelationData definition moves from utils/rel.h to new utils/rel_internal.h (under discussion).",
+      "C API: partition fields such as rd_partdesc move into a separate RelationPartitionInfo struct reached by a pointer.",
+      "C API: rd_lockInfo is removed; RelationGetLockRelId() computes it; new RelationIsIndex() macro and AllocRelationData() allocator.",
+      "File format: RELCACHE_INIT_FILEMAGIC is bumped, so old pg_internal.init files are rebuilt."
+    ],
+    "author_claims": [
+      "CacheMemoryContext drops from about 589 MiB to 536 MiB, about 10%, with 38,966 tables and 148,468 indexes in one backend.",
+      "A pgbench run with 1000 partitions showed no measurable TPS regression from the partition info change.",
+      "The extra indirection through rd_rel->relkind costs nothing relative to other work.",
+      "Computing the lock identifier on demand is more correct after loading a pg_internal.init copied by CREATE DATABASE.",
+      "The union, packing and header changes are mechanical."
+    ],
+    "thread_state": "Matthias van de Meent reviews in depth; he objects to extra indirection in RelationIsIndex() and wants a variant field in the struct, now a draft top commit. Haibo Yan and Yilin Zhang found union-related crashes, all fixed in v6; Álvaro Herrera's and the gen_node_support.pl approach to the header move is still open.",
+    "unclear": [
+      "The proposal does not say how existing extensions that read RelationData fields, such as rd_index or rd_rules, are found or warned.",
+      "No audit method is given beyond grep and tests for code that reads the inactive union member, though three crashes were found by reviewers.",
+      "The memory numbers come from v1 under aset; there are no numbers for v6 with the slab context.",
+      "The proposal does not say whether RelationPartitionInfo gets its own slab context or a smaller size."
+    ],
+    "search_queries": [
+      "relcache memory usage",
+      "shrink RelationData struct",
+      "relcache entry size reduction",
+      "slab context relcache",
+      "union index fields RelationData",
+      "rd_lockInfo remove",
+      "CacheMemoryContext memory per backend",
+      "catalog cache memory bloat"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P11",
+      "source_id": "cf:4844",
+      "title": "Change the bool member of the Query structure to bits",
+      "kind": "cf",
+      "status": "Withdrawn",
+      "url": "https://commitfest.postgresql.org/patch/4844/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/d05a1c87-82e9-49a3-a4e2-e0d2b38b2e8b@yeah.net"
+      ],
+      "date": "2024-02-20",
+      "first_date": "2024-02-20",
+      "who_objected": "Tomas Vondra, Tom Lane",
+      "quote": "The amount of space saved is quite negligible. If queries had many Query structs then it could matter, but they don't.",
+      "quote_url": "https://www.postgresql.org/message-id/184953.1708443951%40sss.pgh.pa.us",
+      "enriched": true,
+      "reason": "Tomas Vondra and Tom Lane found the memory saving negligible: Query shrinks from about 256B to about 232B, but allocation rounds up to a 256B chunk anyway, and a query has few Query structs. Tom Lane also objected that the code churn would make back-patching harder and that bit flags would make pprint output unreadable. The author withdrew the patch.",
+      "relation": "similar_idea",
+      "what_is_different": "P11 shrank Query, which exists in small numbers and still rounded up to the same chunk size. This proposal targets RelationData, which can exist hundreds of thousands of times per backend, and uses a slab context so every saved byte counts."
+    },
+    {
+      "precedent_id": "P1",
+      "source_id": "cf:4554",
+      "title": "Separate memory contexts for relcache and catcache",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/4554/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGPVpCTJWEQLt2eOSDGTDtRbQPUQ9b9JtZWro9osJubTyWAEMA@mail.gmail.com"
+      ],
+      "date": "2024-12-11",
+      "first_date": "2023-08-09",
+      "who_objected": "Jeff Davis, Rahila Syed",
+      "quote": "Andres's concern, IIUC, is that the additional memory contexts will cause additional fragmentation.",
+      "quote_url": "https://www.postgresql.org/message-id/4edadffe14ead8860f4d02141aaf154871fef0cb.camel%40j-davis.com",
+      "enriched": true,
+      "reason": "Andres Freund's messages are not shown, but Jeff Davis reports Andres's concern that the extra contexts add memory fragmentation in each backend. Jeff saw rough consensus only for CatCacheContext and RelCacheContext, and the thread was still looking for ways to reduce the fragmentation. Rahila Syed and Ashutosh Bapat found little value in PlanCacheContext and SPICacheContext, which hold no allocations of their own. Michael Paquier marked the entry returned with feedback, citing the open feedback and concerns.",
+      "relation": "related_only",
+      "what_is_different": "P1 split CacheMemoryContext into per-cache child contexts for accounting. This proposal adds one slab child context for RelationData to save memory, so the fragmentation concern applies only in part."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Union reads of the wrong member fail silently in future patches",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later core patch or an extension reads rel->rd_rules, rd_indexprs or rd_tableam without first checking the relation kind. It compiles and passes tests on plain tables, then crashes or returns a wrong-typed pointer when an index, or a table with rules, reaches that path in production.",
+      "argument": "Reviewers found three such crashes after the patch passed check-world: predicate locking (message #6), the NIL contract of RelationGetIndexExpressions() (message #11), and relation_is_updatable() (message #17). The only audit method stated is grep plus tests (message #3). The discriminant field that could back assertion-checked accessors exists only as a draft top commit (message #15). Today nothing fails loudly when a future reader of RelationData forgets the kind check.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        6,
+        11,
+        15,
+        17
+      ],
+      "author_must_show": "How will a cassert build catch any access to the inactive union member, in core and in extensions, without relying on a reviewer to spot it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "David Geier",
+          "date": "2026-09-18T15:06:27Z",
+          "url": "https://www.postgresql.org/message-id/d655cd02-ce3e-4e04-8035-c70d1464deb3%40gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Haibo Yan",
+          "date": "2026-10-14T16:24:30Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29GSHtWSoWpf71Mrv768tZN8d-5S5jsS5-r_Wn68dV51ww%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Haibo Yan",
+          "date": "2026-10-17T00:12:14Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29GTZkymnuJ6aLVeW36Ysma7j9%2BUuz05Eb3uTsV8G5MaHg%40mail.gmail.com"
+        },
+        {
+          "index": 15,
+          "from": "David Geier",
+          "date": "2026-10-19T11:18:13Z",
+          "url": "https://www.postgresql.org/message-id/d88fa093-a42b-444b-b640-6adb8c4508d2%40gmail.com"
+        },
+        {
+          "index": 17,
+          "from": "\"Yilin Zhang\"",
+          "date": "2026-10-20T06:56:52Z",
+          "url": "https://www.postgresql.org/message-id/632af30c.4d4c.1a1581940a9.Coremail.jiezhilove%40126.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Reviewers found three wrong-member reads after check-world passed, and the old idiom `rd_index != NULL` still compiles. The variant field that could back assert-checked accessors is only a draft top commit in message #15.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Slab context added without v6 measurements of net memory savings",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site with many backends and small schemas upgrades. Each backend now holds a slab context for RelationData, and maybe a second one for RelationPartitionInfo, with partly filled blocks after relcache invalidations. Per-backend memory may not drop, or may rise, and nobody sees it until after release.",
+      "argument": "In [P1], extra cache contexts were held back over the concern that \"the additional memory contexts will cause additional fragmentation.\" v6-0002 adds such a context, and message #14 suggests another for RelationPartitionInfo. The only memory numbers are from v1 under aset (message #1). Message #6 measured a slab setup only for the dropped 0007/0008. Matthias proposed the slab context in message #2, which lowers the concern but does not measure it.",
+      "precedent_ids": [
+        "P1"
+      ],
+      "thread_message_refs": [
+        1,
+        2,
+        6,
+        14
+      ],
+      "author_must_show": "What does CacheMemoryContext plus the new slab context use under v6, for both a small schema and the 187k-relation schema, including after invalidation churn?",
+      "precedents": [
+        {
+          "id": "P1",
+          "title": "Separate memory contexts for relcache and catcache",
+          "url": "https://commitfest.postgresql.org/patch/4554/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CAGPVpCTJWEQLt2eOSDGTDtRbQPUQ9b9JtZWro9osJubTyWAEMA@mail.gmail.com"
+          ],
+          "date": "2024-12-11",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "David Geier",
+          "date": "2026-09-10T09:43:04Z",
+          "url": "https://www.postgresql.org/message-id/f97de758-b816-47db-96e0-0e6e2c2d3eef%40gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "Matthias van de Meent",
+          "date": "2026-09-14T12:36:20Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2Wj3rq6V%2BkAoXS80oTPi4s1GpsH4Gx7h-jqBBLzA64CyPQ%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Haibo Yan",
+          "date": "2026-10-14T16:24:30Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29GSHtWSoWpf71Mrv768tZN8d-5S5jsS5-r_Wn68dV51ww%40mail.gmail.com"
+        },
+        {
+          "index": 14,
+          "from": "Matthias van de Meent",
+          "date": "2026-10-19T10:47:03Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WgkvPVqLd8ZPEY_THfsqZ7XaSTBvrstEKyRXdMOzrMuKg%40mail.gmail.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "No memory numbers exist for v6 with the slab context, and message #6 measured slab only on v3 with 8,731 relations. P1 is weak support, and the small-schema rise is bounded by about one partly filled slab block per backend.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Loading partition info on demand may cost partitioned schemas more memory",
+      "level": "2",
+      "rubric_item": 4,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user with tens of thousands of partitions loads them into the relcache. Each partition that caches its partition qual now allocates a separate RelationPartitionInfo, rounded up to a 128-byte aset chunk. That is more than the bytes the move saves in RelationData, so memory per backend can go up.",
+      "argument": "Matthias van de Meent notes in message #14 that RelationPartitionInfo is just over the 64-byte aset bucket and asks for a slab context or a smaller struct. The reply in message #16 offers options but no decision. Large partitioned schemas are a main target of this work. The only memory numbers come from v1, before this split, on a schema of plain tables and indexes (message #1).",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        14,
+        16
+      ],
+      "author_must_show": "What is the CacheMemoryContext size with v6 on a schema with many partitions, compared with master?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "David Geier",
+          "date": "2026-09-10T09:43:04Z",
+          "url": "https://www.postgresql.org/message-id/f97de758-b816-47db-96e0-0e6e2c2d3eef%40gmail.com"
+        },
+        {
+          "index": 14,
+          "from": "Matthias van de Meent",
+          "date": "2026-10-19T10:47:03Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WgkvPVqLd8ZPEY_THfsqZ7XaSTBvrstEKyRXdMOzrMuKg%40mail.gmail.com"
+        },
+        {
+          "index": 16,
+          "from": "David Geier",
+          "date": "2026-10-19T13:31:32Z",
+          "url": "https://www.postgresql.org/message-id/3c465219-a4fe-4ed4-b921-86b0cec2782c%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #14 raises that RelationPartitionInfo falls just past the 64-byte aset bucket, and message #16 lists options without choosing one. The thread has no memory numbers for a schema with many partitions.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Extra indirection on common relkind checks is not measured where it lands",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Every caller that used to test rd_index now follows rd_rel to read relkind, including PredicateLockTID() for non-index relations. A SERIALIZABLE or index-heavy workload pays an extra dependent load on each call, and nobody sees it until a later benchmark.",
+      "argument": "Matthias van de Meent disputes in message #14 that the cost is minimal, and points to the number of rd_index checks that became RelationIsIndex() as a sign of a common pattern. The only benchmark is a single-client pgbench -S run on partitioned tables (message #4), which does not use SERIALIZABLE predicate locking. The draft variant field in message #15 could remove the indirection, but it is not yet part of the series.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4,
+        7,
+        14,
+        15
+      ],
+      "author_must_show": "Can you show measurements of the paths that switched to RelationIsIndex(), such as SERIALIZABLE workloads, with and without an in-struct variant field?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "David Geier",
+          "date": "2026-10-05T11:48:10Z",
+          "url": "https://www.postgresql.org/message-id/e8c52d3a-b35b-4351-9896-12310323e465%40googlemail.com"
+        },
+        {
+          "index": 7,
+          "from": "David Geier",
+          "date": "2026-10-16T13:02:38Z",
+          "url": "https://www.postgresql.org/message-id/6d939520-6877-4aab-88b2-2d0b37c66419%40gmail.com"
+        },
+        {
+          "index": 14,
+          "from": "Matthias van de Meent",
+          "date": "2026-10-19T10:47:03Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WgkvPVqLd8ZPEY_THfsqZ7XaSTBvrstEKyRXdMOzrMuKg%40mail.gmail.com"
+        },
+        {
+          "index": 15,
+          "from": "David Geier",
+          "date": "2026-10-19T11:18:13Z",
+          "url": "https://www.postgresql.org/message-id/d88fa093-a42b-444b-b640-6adb8c4508d2%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The engaged reviewer disputes the cost claim in message #14, and the pgbench -S run in message #4 does not use predicate locking. The variant field that would remove the indirection is not yet part of the series.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Union keeps old field names, so extension misuse compiles silently",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension tests `rel->rd_index != NULL` to tell an index from a table, or reads `rd_rules` on any relation. After upgrading to 20 it recompiles with no warning. On a table with a rule, `rd_index` now aliases the RuleLock, and the backend crashes or returns wrong data in production.",
+      "argument": "The anonymous union keeps field names, so code that reads the inactive member still builds. Core itself had this pattern in predicate.c (message #6), relation_is_updatable() (message #17), and in RelationGetIndexExpressions() and RelationGetIndexPredicate(), whose documented NIL result for non-indexes broke (message #11). Each case was found by a reviewer, and message #3 says the only audit was grep plus tests. Out-of-core code gets neither, and the proposal does not say how extension authors learn of the change.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        6,
+        11,
+        17,
+        18
+      ],
+      "author_must_show": "How will out-of-core code that reads `rd_index`, `rd_rules` or similar fields on the wrong relation kind fail at compile time or in assert builds, instead of reading aliased memory?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "David Geier",
+          "date": "2026-09-18T15:06:27Z",
+          "url": "https://www.postgresql.org/message-id/d655cd02-ce3e-4e04-8035-c70d1464deb3%40gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Haibo Yan",
+          "date": "2026-10-14T16:24:30Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29GSHtWSoWpf71Mrv768tZN8d-5S5jsS5-r_Wn68dV51ww%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Haibo Yan",
+          "date": "2026-10-17T00:12:14Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29GTZkymnuJ6aLVeW36Ysma7j9%2BUuz05Eb3uTsV8G5MaHg%40mail.gmail.com"
+        },
+        {
+          "index": 17,
+          "from": "\"Yilin Zhang\"",
+          "date": "2026-10-20T06:56:52Z",
+          "url": "https://www.postgresql.org/message-id/632af30c.4d4c.1a1581940a9.Coremail.jiezhilove%40126.com"
+        },
+        {
+          "index": 18,
+          "from": "David Geier",
+          "date": "2026-10-20T12:31:56Z",
+          "url": "https://www.postgresql.org/message-id/83bf34d1-8e57-4d14-b2a1-fbc677a31742%40gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1, which covers both core and out-of-core readers of the inactive union member and asks for the same loud failure.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Union fields keep old names, so stale extension code compiles and misreads",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension tests `rel->rd_index != NULL` or reads `rel->rd_rules` to tell an index from a table. It recompiles against the new headers without a warning. On a rule-bearing table or an index, it reads the other union member and returns wrong results or crashes the backend in production.",
+      "argument": "The union keeps member names such as rd_index, rd_rules, rd_indexprs and rd_tableam, so source that relied on NULL in the inactive member still builds. Core code made this mistake three times after review began: predicate locking (message #6), the documented NIL contract of RelationGetIndexExpressions() (message #11), and relation_is_updatable() (message #17). Each was found by a reviewer, not by the compiler or an assertion (message #3 relies on grep and tests). Out-of-tree code gets no such review.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        6,
+        11,
+        17,
+        18
+      ],
+      "author_must_show": "How will out-of-tree code that reads an inactive union member fail loudly, at compile time or under cassert, instead of misreading memory?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "David Geier",
+          "date": "2026-09-18T15:06:27Z",
+          "url": "https://www.postgresql.org/message-id/d655cd02-ce3e-4e04-8035-c70d1464deb3%40gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Haibo Yan",
+          "date": "2026-10-14T16:24:30Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29GSHtWSoWpf71Mrv768tZN8d-5S5jsS5-r_Wn68dV51ww%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Haibo Yan",
+          "date": "2026-10-17T00:12:14Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29GTZkymnuJ6aLVeW36Ysma7j9%2BUuz05Eb3uTsV8G5MaHg%40mail.gmail.com"
+        },
+        {
+          "index": 17,
+          "from": "\"Yilin Zhang\"",
+          "date": "2026-10-20T06:56:52Z",
+          "url": "https://www.postgresql.org/message-id/632af30c.4d4c.1a1581940a9.Coremail.jiezhilove%40126.com"
+        },
+        {
+          "index": 18,
+          "from": "David Geier",
+          "date": "2026-10-20T12:31:56Z",
+          "url": "https://www.postgresql.org/message-id/83bf34d1-8e57-4d14-b2a1-fbc677a31742%40gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Untagged union lets SQL-reachable code read pointers of the wrong type",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges",
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An unprivileged user calls a SQL function, in core or an extension, that reads a table-only field such as rd_rules on an index. The backend follows a pointer of another type and crashes, so the postmaster restarts every session. Nobody notices until production, because release builds have no check.",
+      "argument": "Message #17 shows that any user could crash v5 with pg_relation_is_updatable() on an index. Messages #6 and #11 found two more wrong-member reads after the author had relied on grep and tests (message #3). The discriminator field proposed in messages #9 and #15 helps assertions and debugging, but a read of the wrong member in a release build still goes unchecked. Extensions that read rd_rules, rd_indexprs and similar fields directly can break in the same way.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        6,
+        11,
+        17
+      ],
+      "author_must_show": "How is every read of a union member in core and in extensions checked against the relation kind, and what happens in a release build if one check is missing?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "David Geier",
+          "date": "2026-09-18T15:06:27Z",
+          "url": "https://www.postgresql.org/message-id/d655cd02-ce3e-4e04-8035-c70d1464deb3%40gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Haibo Yan",
+          "date": "2026-10-14T16:24:30Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29GSHtWSoWpf71Mrv768tZN8d-5S5jsS5-r_Wn68dV51ww%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Haibo Yan",
+          "date": "2026-10-17T00:12:14Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29GTZkymnuJ6aLVeW36Ysma7j9%2BUuz05Eb3uTsV8G5MaHg%40mail.gmail.com"
+        },
+        {
+          "index": 17,
+          "from": "\"Yilin Zhang\"",
+          "date": "2026-10-20T06:56:52Z",
+          "url": "https://www.postgresql.org/message-id/632af30c.4d4c.1a1581940a9.Coremail.jiezhilove%40126.com"
+        }
+      ],
+      "id": "security-1",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1. The crashes it cites from messages #6, #11 and #17 are fixed in v6, and what is left is the same missing check on reads of the inactive union member.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "A 10% gain on one schema may not justify an API cost for everyone",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "desirability",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension reads rd_rules or rd_indexprs on the wrong relation kind and gets an overlaid pointer, which crashes the backend after upgrade. The user finds out in production. Sites with a few thousand relations save under a few MiB per backend in return.",
+      "argument": "The only field evidence is one schema with about 187,000 relations, measured with v1 under aset (message #1); there are no numbers for v6 with slab. The union moves a new class of misread risk onto every C caller, and reviewers found three such crashes in core alone (messages #6, #11, #17). Even after the patch, about 90% of CacheMemoryContext remains, so very large schemas still need other fixes. No other users or reports of this specific pain appear in the thread.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        6,
+        11,
+        17
+      ],
+      "author_must_show": "What do v6 numbers show per backend, multiplied by connections, for several real large-schema installations, and how often does this memory decide sizing for them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "David Geier",
+          "date": "2026-09-10T09:43:04Z",
+          "url": "https://www.postgresql.org/message-id/f97de758-b816-47db-96e0-0e6e2c2d3eef%40gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Haibo Yan",
+          "date": "2026-10-14T16:24:30Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29GSHtWSoWpf71Mrv768tZN8d-5S5jsS5-r_Wn68dV51ww%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Haibo Yan",
+          "date": "2026-10-17T00:12:14Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29GTZkymnuJ6aLVeW36Ysma7j9%2BUuz05Eb3uTsV8G5MaHg%40mail.gmail.com"
+        },
+        {
+          "index": 17,
+          "from": "\"Yilin Zhang\"",
+          "date": "2026-10-20T06:56:52Z",
+          "url": "https://www.postgresql.org/message-id/632af30c.4d4c.1a1581940a9.Coremail.jiezhilove%40126.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1 for the misread risk and of prior-attempts-1 for the missing v6 numbers. On demand, message #1 cites a second relcache memory thread, and no reviewer questions the goal.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "The patch bumps RELCACHE_INIT_FILEMAGIC, so old pg_internal.init files are rebuilt."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "The lock identifier change touches xlogutils.c, which builds fake relcache entries during WAL replay."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "RelationData layout changes, moves to rel_internal.h, loses rd_lockInfo, and overlays table-only and index-only fields in a union."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "In v5 any user could crash a backend with pg_relation_is_updatable() on an index (message #17); v6 fixes it."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "Renamed, moved and overlaid RelationData fields make later fixes in relcache callers harder to back-patch."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Every future reader of a union member must check the relation kind first, and nothing enforces it."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "RelationIsIndex() reads rd_rel->relkind where callers used to test rd_index, and lock identifiers are computed on each use."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "How will a cassert build catch a read of the inactive union member, in core and in extensions, without relying on a reviewer to spot it?",
+    "What do CacheMemoryContext and the new slab context use under v6, for a small schema and for the 187,000-relation schema, including after invalidation churn?",
+    "What is the relcache memory use with v6 compared with master on a schema with many partitions that cache a RelationPartitionInfo?",
+    "What do SERIALIZABLE and index-heavy workloads show for the paths that switched to RelationIsIndex(), with and without the in-struct variant field?",
+    "How do extension authors learn that fields such as rd_index and rd_rules now share storage and need a relation kind check first?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "The CommitFest entry lists a reviewer but no committer. The owner needs to know relcache.c, its invalidation and init-file paths, and the lock manager. Álvaro Herrera commented on the header move.",
+    "liability": "The committer signs for every wrong-member read of the union in core and in extensions, with no time limit. The committer also owns the lock identifier change in WAL replay and any memory regression from the slab context.",
+    "author_follow_up": "Good sign: the author posted six versions in about two months and fixed every crash that reviewers reported by v6."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "medium",
+    "review_cost": "high",
+    "recommended_action": "proceed",
+    "reason": "Installations with very large schemas gain about 10% of CacheMemoryContext per backend by the v1 numbers. The series touches relcache, lmgr, access methods and a widely included header, and the union needs a careful audit. Review is active and the open points are fixable."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, the audit of union member reads and the correctness of on-demand lock identifiers in every caller could not be checked. Only 3 of 18 messages were read in full, so later agreements may not be reflected.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:4554",
+      "kind": "cf",
+      "title": "Separate memory contexts for relcache and catcache",
+      "status": "Returned with feedback",
+      "date": "2024-12-11",
+      "first_date": "2023-08-09",
+      "url": "https://commitfest.postgresql.org/patch/4554/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGPVpCTJWEQLt2eOSDGTDtRbQPUQ9b9JtZWro9osJubTyWAEMA@mail.gmail.com"
+      ],
+      "authors": "Melih Mutlu (melihmutlu)",
+      "objectors": "Jeff Davis, Rahila Syed",
+      "summary": "The patch moves catcache and relcache entries out of CacheMemoryContext into their own child contexts, CatCacheMemoryContext and RelCacheMemoryContext, so that pg_backend_memory_contexts shows each cache's memory use. Later versions added more child contexts, such as PlanCacheContext, SPICacheContext and TypCacheContext, and a separate patch changed the initial context sizes.",
+      "objection": "Andres Freund's messages are not shown, but Jeff Davis reports Andres's concern that the extra contexts add memory fragmentation in each backend. Jeff saw rough consensus only for CatCacheContext and RelCacheContext, and the thread was still looking for ways to reduce the fragmentation. Rahila Syed and Ashutosh Bapat found little value in PlanCacheContext and SPICacheContext, which hold no allocations of their own. Michael Paquier marked the entry returned with feedback, citing the open feedback and concerns.",
+      "touch_points": [],
+      "matched_queries": [
+        "relcache memory usage",
+        "relcache entry size reduction",
+        "slab context relcache"
+      ],
+      "from_hint": false,
+      "score": 0.384,
+      "enriched": true,
+      "key_quote": "Andres's concern, IIUC, is that the additional memory contexts will cause additional fragmentation.",
+      "quote_message_url": "https://www.postgresql.org/message-id/4edadffe14ead8860f4d02141aaf154871fef0cb.camel%40j-davis.com",
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "revert:ca70c3cfda609d3b817c16b48f25c086c11b9e4c",
+      "kind": "revert",
+      "title": "Revert my ill-considered change that made formrdesc not insert the correct relation rowtype OID into the relcache entries it builds.",
+      "status": "Reverted",
+      "date": "2009-09-26",
+      "first_date": "2009-09-26",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ca70c3cfda609d3b817c16b48f25c086c11b9e4c",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert my ill-considered change that made formrdesc not insert the correct relation rowtype OID into the relcache entries it builds.  This ensures that catcache copies of the relation tupdescs will be fully correct. While the deficiency doesn't seem to have any effect in the current sources, we have been bitten by not-quite-right catcache tupdescs before, so it seems like a good idea to maintain the rule that they should be right.",
+      "objection": "Revert my ill-considered change that made formrdesc not insert the correct\nrelation rowtype OID into the relcache entries it builds.  This ensures\nthat catcache copies of the relation tupdescs will be fully correct.\nWhile the deficiency doesn't seem to have any effect in the current\nsources, we have been bitten by not-quite-right catcache tupdescs before,\nso it seems like a good idea to maintain the rule that they should be right.",
+      "touch_points": [],
+      "matched_queries": [
+        "relcache memory usage",
+        "relcache entry size reduction",
+        "slab context relcache"
+      ],
+      "from_hint": false,
+      "score": 0.241,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:5337",
+      "kind": "cf",
+      "title": "Reorganize CacheMemoryContext",
+      "status": "Withdrawn",
+      "date": "2024-10-29",
+      "first_date": "2024-10-29",
+      "url": "https://commitfest.postgresql.org/patch/5337/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/78599c442380ddb5990117e281a4fa65a74231af.camel@j-davis.com"
+      ],
+      "authors": "Jeff Davis (jdavis)",
+      "objectors": "David Rowley",
+      "summary": "The patch makes CacheMemoryContext mostly a parent context, with child contexts such as CatCacheContext, RelCacheContext and PlanCacheContext. The goal is to account for memory per cache, as a basis for later optimizations.",
+      "objection": "The author withdrew it as a duplicate. David Rowley pointed to an existing commitfest entry (4554) that already creates separate contexts for catcache and relcache, and the author chose to continue there.",
+      "touch_points": [],
+      "matched_queries": [
+        "CacheMemoryContext memory per backend",
+        "catalog cache memory bloat"
+      ],
+      "from_hint": false,
+      "score": 0.24,
+      "enriched": true,
+      "key_quote": "Is it worth merging efforts with [1]?",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAApHDvrVRUV_XGgc--L1B4ubY_9oL5hT7XXYUEkncg%3D%3DNPKC_A%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P4",
+      "source_id": "revert:922c4c461d213a422ee7eb6c38e399607539210a",
+      "kind": "revert",
+      "title": "Revert: Allow table AM to store complex data structures in rd_amcache",
+      "status": "Reverted",
+      "date": "2024-04-11",
+      "first_date": "2024-03-21",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=922c4c461d213a422ee7eb6c38e399607539210a",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20240410165236.rwyrny7ihi4ddxw4@awork3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/CAPpHfdurb9ycV8udYqM=o0sPS66PJ4RCBM1g-bBpvzUfogY0EA@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov",
+      "objectors": "",
+      "summary": "Revert: Allow table AM to store complex data structures in rd_amcache\nReverted commit(s): Allow table AM to store complex data structures in rd_amcache",
+      "objection": "This commit reverts 02eb07ea89 per review by Andres Freund.",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "shrink RelationData struct",
+        "rd_lockInfo remove"
+      ],
+      "from_hint": false,
+      "score": 0.23,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:1ad687827607ee02a51182ea8a255c230e61c740",
+      "kind": "revert",
+      "title": "Revert patch that removed BUFSIZ usage.  The memory has to hold the structures plus pointers used by the structure.",
+      "status": "Reverted",
+      "date": "2004-09-28",
+      "first_date": "2004-09-28",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1ad687827607ee02a51182ea8a255c230e61c740",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert patch that removed BUFSIZ usage.  The memory has to hold the structures plus pointers used by the structure.",
+      "objection": "Revert patch that removed BUFSIZ usage.  The memory has to hold the\nstructures plus pointers used by the structure.",
+      "touch_points": [],
+      "matched_queries": [
+        "relcache memory usage",
+        "shrink RelationData struct"
+      ],
+      "from_hint": false,
+      "score": 0.177,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:4386",
+      "kind": "cf",
+      "title": "XLog size reductions: Reduced XLog record header size",
+      "status": "Returned with feedback",
+      "date": "2024-04-09",
+      "first_date": "2023-06-20",
+      "url": "https://commitfest.postgresql.org/patch/4386/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2WgcW5SkPO_TGTqirRcCS_FN0xEZqUsXDE6pPz2TYzXQBA@mail.gmail.com"
+      ],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "Michael Paquier, Pavel Borisov",
+      "summary": "The patchset makes the WAL record header variable-length, which shrinks it to 14-21 bytes, with about 4-5% less WAL estimated for pgbench. It varlength-encodes the record length, gives rmgrs their own info byte, includes the XID only when the record asks for it with XLOG_INCLUDE_XID, and adds an invalid rmgr ID 0 used to detect the end of WAL.",
+      "objection": "The author stopped responding after review. Michael Paquier objected to the opt-in XLOG_INCLUDE_XID interface and questioned the use of rmgr ID 0 as an end-of-WAL marker. Pavel Borisov then asked for benchmarks showing the gain was large enough, the benchmarking was still a todo, and a reminder from Andrey M. Borodin in April 2024 got no visible reply before the entry was returned.",
+      "touch_points": [],
+      "matched_queries": [
+        "relcache entry size reduction"
+      ],
+      "from_hint": false,
+      "score": 0.142,
+      "enriched": true,
+      "key_quote": "But at the second round, some doubt arises on whether this long\npatchset indeed introduces enough performance gain?",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALT9ZEFx4jJ47t-Vmz-jAVRrG%2B9TSP9uThDssbDHmWdsSjz5Fw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:3751",
+      "kind": "cf",
+      "title": "Reduce timing overhead of EXPLAIN ANALYZE using rdtsc",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2020-06-12",
+      "url": "https://commitfest.postgresql.org/patch/3751/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200612232810.f46nbqkdhbutzqdg@alap3.anarazel.de"
+      ],
+      "authors": "Andres Freund (andresfreund), Lukas Fittl (lfittl), David Geier (geidav)",
+      "objectors": "",
+      "summary": "Make instr_time count CPU reference cycles read with rdtsc, which does not wait for prior instructions, and convert cycles to time only on output, to cut the timing overhead of EXPLAIN ANALYZE. The patch uses rdtsc only on Linux/x86 when the kernel clocksource is tsc, takes the TSC frequency from CPUID, and falls back to clock_gettime() otherwise.",
+      "objection": "The thread stopped after the v8 patch of February 2023, and nobody continued the work for about a year. vignesh C closed the entry as Returned with feedback because neither the author nor anyone else took it forward. Earlier, Andres Freund doubted the patch was ready on reliability and code complexity, citing the Linux-only restriction, but the entry closed from inactivity.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "rd_lockInfo remove"
+      ],
+      "from_hint": false,
+      "score": 0.141,
+      "enriched": true,
+      "key_quote": "Since the author or no one else showed interest in taking it forward\nand the patch had no activity for more than 1 year, I have changed the\nstatus to RWF.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALDaNm2awLBioTdQH%3Daj8Yp7%2BMwR%3DvzpzHrKtgjAnUN1esLmvg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "revert:9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "kind": "revert",
+      "title": "Fix index-only scan plans, take 2.",
+      "status": "Partially reverted",
+      "date": "2022-01-03",
+      "first_date": "2022-01-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3179992.1641150853@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/17350-b5bdcf476e5badbb@postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Fix index-only scan plans, take 2.\nReverted commit(s): Fix index-only scan plans when not all index columns can be returned.",
+      "objection": "Commit 4ace45677 failed to fix the problem fully, because the\nsame issue of attempting to fetch a non-returnable index column\ncan occur when rechecking the indexqual after using a lossy index\noperator.  Moreover, it broke EXPLAIN for such indexquals (which\nindicates a gap in our test cases :-().\n\nRevert the code changes of 4ace45677 in favor of adding a new field\nto struct IndexOnlyScan, containing a version of the indexqual that\ncan be executed against the index-returned tuple without using any\nnon-returnable columns.  (The restrictions imposed by check_index_only\nguarantee this is possible, although we may have to recompute indexed\nexpressions.)  Support construction of that during setrefs.c\nprocessing by marking IndexOnlyScan.indextlist entries as resjunk\nif they can't be returned, rather than removing them entirely.\n(We could alternatively require setrefs.c to look up the IndexOptInfo\nagain, but abusing resjunk this way seems like a reasonably safe way\nto avoid needing to do that.)\n\nThis solution isn't great from an API-stability standpoint: if there\nare any extensions out there that build IndexOnlyScan structs directly,\nthey'll be broken in the next minor releases.  However, only a very\ninvasive extension would be likely to do such a thing.  There's no\nchange in the Path representation, so typical planner extensions\nshouldn't have a problem.\n\nAs before, back-patch to all supported branches.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "union index fields RelationData"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:3867",
+      "kind": "cf",
+      "title": "Add the ability to limit the amount of memory that can be allocated to backends.",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2022-08-31",
+      "url": "https://commitfest.postgresql.org/patch/3867/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/67bb5c15c0489cb499723b0340f16e10c22485ec.camel@crunchydata.com",
+        "https://www.postgresql.org/message-id/flat/bd57d9a4c219cc1392665fd5fba61dde8027b3da.camel@crunchydata.com",
+        "https://www.postgresql.org/message-id/flat/BYAPR13MB26776A35AB57940680D4CE0EA0A0A@BYAPR13MB2677.namprd13.prod.outlook.com"
+      ],
+      "authors": "Reid Thompson (jreidthompsoncd), John Morris (coyotebush)",
+      "objectors": "",
+      "summary": "The patch tracks the memory each backend allocates and shows it in pg_stat_activity, and a second patch adds max_total_backend_memory to cap total backend allocations across the cluster. A later version by John Morris keeps local counters in each process and adds them to shared counters from time to time, with error of up to 1 MB per process.",
+      "objection": "The visible messages do not show why. The last message shown is a code review from September 2023, and no message covers the 2024 decision. Earlier messages object to widening pg_stat_activity and note that the counts miss OS memory and direct malloc() calls, but nothing shown ties these points to the outcome.",
+      "touch_points": [],
+      "matched_queries": [
+        "CacheMemoryContext memory per backend"
+      ],
+      "from_hint": false,
+      "score": 0.131,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:4324",
+      "kind": "cf",
+      "title": "XLog size reductions: smaller XLogRecordBlockHeader",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-05-18",
+      "url": "https://commitfest.postgresql.org/patch/4324/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2WjuJqVeB6EUZ1z75_ittk54H6Lk7WtwRskEeGtZubr4bQ@mail.gmail.com"
+      ],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "Heikki Linnakangas, Michael Paquier, Robert Haas",
+      "summary": "The patch shrinks XLogRecordBlockHeader by storing the size class of the block data length (0, 1 or 2 bytes) in the upper 2 bits of the block ID. Block IDs are limited to 6 bits, so registered blocks with little or no data take up to 2 fewer bytes of WAL.",
+      "objection": "Reviewers objected to a field-specific encoding. Heikki Linnakangas suggested generic varint functions, and Andres Freund (quoted) and Michael Paquier judged the added complexity not worth the savings. Robert Haas found no consensus on design, with two committers favoring a uniform varint encoding over ad-hoc bit packing, and saw no path forward for the patch in its current form. The author's own measurements showed no aligned record size savings in pgbench.",
+      "touch_points": [],
+      "matched_queries": [
+        "relcache entry size reduction"
+      ],
+      "from_hint": false,
+      "score": 0.131,
+      "enriched": true,
+      "key_quote": "But the question for this thread is really more about whether we're OK with using ad-hoc bit swizzling to reduce the size of xlog records or whether we want to insist on the use of a uniform varint encoding.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoaNBhAB7fFx2rBe2PcYHpT96ho-AuKxYehKsPjXSBGfew%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:4844",
+      "kind": "cf",
+      "title": "Change the bool member of the Query structure to bits",
+      "status": "Withdrawn",
+      "date": "2024-02-20",
+      "first_date": "2024-02-20",
+      "url": "https://commitfest.postgresql.org/patch/4844/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/d05a1c87-82e9-49a3-a4e2-e0d2b38b2e8b@yeah.net"
+      ],
+      "authors": "Zongliang Quan (quanzl)",
+      "objectors": "Tomas Vondra, Tom Lane",
+      "summary": "The patch replaces the separate bool members of the Query structure with bit flags behind a macro layer. The author argued that the number of such flags is growing and that bits would save memory.",
+      "objection": "Tomas Vondra and Tom Lane found the memory saving negligible: Query shrinks from about 256B to about 232B, but allocation rounds up to a 256B chunk anyway, and a query has few Query structs. Tom Lane also objected that the code churn would make back-patching harder and that bit flags would make pprint output unreadable. The author withdrew the patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "shrink RelationData struct"
+      ],
+      "from_hint": false,
+      "score": 0.129,
+      "enriched": true,
+      "key_quote": "The amount of space saved is quite negligible.  If queries had many\nQuery structs then it could matter, but they don't.",
+      "quote_message_url": "https://www.postgresql.org/message-id/184953.1708443951%40sss.pgh.pa.us",
+      "relevant": true
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:931",
+      "kind": "cf",
+      "title": "Protect syscache from bloating with negative cache entries",
+      "status": "Returned with feedback",
+      "date": "2021-10-05",
+      "first_date": "2016-12-19",
+      "url": "https://commitfest.postgresql.org/patch/931/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20161219.201505.11562604.horiguchi.kyotaro@lab.ntt.co.jp"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti)",
+      "objectors": "",
+      "summary": "The first patches removed negative catcache entries through invalidation callbacks, for example when a relation or a schema is dropped. The later version adds a GUC, catalog_cache_prune_min_age, so that a backend removes catcache entries not accessed for that long when it would otherwise grow the hash table.",
+      "objection": "The visible messages do not show why. In the last technical messages, from January 2021, Heikki Linnakangas found the slowdown acceptable and suggested enabling the feature by default. Bruce Momjian asked in March 2021 whether it would make PG 14, and no later message is shown.",
+      "touch_points": [],
+      "matched_queries": [
+        "catalog cache memory bloat"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:2787",
+      "kind": "cf",
+      "title": "allow partial union-all and improve parallel subquery costing",
+      "status": "Returned with feedback",
+      "date": "2021-04-08",
+      "first_date": "2020-10-13",
+      "url": "https://commitfest.postgresql.org/patch/2787/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/FRXPR01MB09021F98988B057A636AA4EEB7040@FRXPR01MB0902.DEUPRD01.PROD.OUTLOOK.DE"
+      ],
+      "authors": "Luc Vlaming (luc.vlaming)",
+      "objectors": "",
+      "summary": "allow partial union-all and improve parallel subquery costing\nThreads: allow partial union-all and improve parallel subquery costing",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "union index fields RelationData"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:5186",
+      "kind": "cf",
+      "title": "replace magic num in struct cachedesc with CATCACHE_MAXKEYS",
+      "status": "Withdrawn",
+      "date": "2024-08-24",
+      "first_date": "2024-08-15",
+      "url": "https://commitfest.postgresql.org/patch/5186/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEG8a3KypEJPtZ5DYuaFY+2SYQ3rR7QcvcWhZrYw9C9utJ9W_g@mail.gmail.com"
+      ],
+      "authors": "Zhao Junwang (zhjwpku)",
+      "objectors": "",
+      "summary": "replace magic num in struct cachedesc with CATCACHE_MAXKEYS\nThreads: replace magic num in struct cachedesc with CATCACHE_MAXKEYS",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "shrink RelationData struct"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:688",
+      "kind": "cf",
+      "title": "Temporary tables that do not bloat pg_catalog (a.k.a fast temp tables)",
+      "status": "Rejected",
+      "date": "2016-09-20",
+      "first_date": "2016-07-29",
+      "url": "https://commitfest.postgresql.org/patch/688/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20160729141552.4062e19b@fujitsu"
+      ],
+      "authors": "Aleksander Alekseev (a.alekseev)",
+      "objectors": "",
+      "summary": "Temporary tables that do not bloat pg_catalog (a.k.a fast temp tables)\nThreads: [Patch] Temporary tables that do not bloat pg_catalog (a.k.a fast\ntemp tables)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "catalog cache memory bloat"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:2298",
+      "kind": "cf",
+      "title": "JIT: Optimize generated functions earlier to lower memory usage",
+      "status": "Withdrawn",
+      "date": "2019-11-12",
+      "first_date": "2019-10-07",
+      "url": "https://commitfest.postgresql.org/patch/2298/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAE-ML+_OE4-sHvn0AA_qakc5qkZvQvainxwb1ztuuT67SPMegw@mail.gmail.com"
+      ],
+      "authors": "Soumyadeep Chakraborty (soumyadeep2007)",
+      "objectors": "",
+      "summary": "JIT: Optimize generated functions earlier to lower memory usage\nThreads: JIT: Optimize generated functions earlier to lower memory usage",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "relcache memory usage"
+      ],
+      "from_hint": false,
+      "score": 0.116,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:3865",
+      "kind": "cf",
+      "title": "Add tracking of backend memory allocated to pg_stat_activity",
+      "status": "Withdrawn",
+      "date": "2023-01-05",
+      "first_date": "2022-08-31",
+      "url": "https://commitfest.postgresql.org/patch/3865/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/67bb5c15c0489cb499723b0340f16e10c22485ec.camel@crunchydata.com"
+      ],
+      "authors": "Reid Thompson (jreidthompsoncd)",
+      "objectors": "",
+      "summary": "Add tracking of backend memory allocated to pg_stat_activity\nThreads: Add tracking of backend memory allocated to pg_stat_activity",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "CacheMemoryContext memory per backend"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:3070",
+      "kind": "cf",
+      "title": "add explicit partial union-all and improve parallel subquery costing",
+      "status": "Returned with feedback",
+      "date": "2021-12-02",
+      "first_date": "2020-10-13",
+      "url": "https://commitfest.postgresql.org/patch/3070/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/FRXPR01MB09021F98988B057A636AA4EEB7040@FRXPR01MB0902.DEUPRD01.PROD.OUTLOOK.DE"
+      ],
+      "authors": "Luc Vlaming (luc.vlaming)",
+      "objectors": "",
+      "summary": "add explicit partial union-all and improve parallel subquery costing\nThreads: allow partial union-all and improve parallel subquery costing",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "union index fields RelationData"
+      ],
+      "from_hint": false,
+      "score": 0.112,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:3229",
+      "kind": "cf",
+      "title": "Remove redundant initializations",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-06-28",
+      "url": "https://commitfest.postgresql.org/patch/3229/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/9561865d-c352-9ceb-f6d1-016dc999c7e2@enterprisedb.com"
+      ],
+      "authors": "Peter Eisentraut (petere)",
+      "objectors": "",
+      "summary": "Remove redundant initializations\nThreads: Remove redundant initializations",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "rd_lockInfo remove"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:4715",
+      "kind": "cf",
+      "title": "Union Replacement of OR logic",
+      "status": "Rejected",
+      "date": "2024-07-24",
+      "first_date": "2023-07-03",
+      "url": "https://commitfest.postgresql.org/patch/4715/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAE-ML+9r2=aO1wwji1sBN9gvPz2xRAtFUGfnffpd0ZqyuzjamA@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "Union Replacement of OR logic\nThreads: brininsert optimization opportunity",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "union index fields RelationData"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:2330",
+      "kind": "cf",
+      "title": "Reducing memory usage of creating foreign key between partitioned tables",
+      "status": "Rejected",
+      "date": "2020-09-12",
+      "first_date": "2019-10-23",
+      "url": "https://commitfest.postgresql.org/patch/2330/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/OSAPR01MB374809E8DE169C8BF2B82CBD9F6B0@OSAPR01MB3748.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "sho kato (kato-sho)",
+      "objectors": "",
+      "summary": "Reducing memory usage of creating foreign key between partitioned tables\nThreads: Creating foreign key on partitioned table is too slow",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "relcache memory usage"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:2326",
+      "kind": "cf",
+      "title": "Shared system catalog cache",
+      "status": "Returned with feedback",
+      "date": "2020-02-01",
+      "first_date": "2019-10-30",
+      "url": "https://commitfest.postgresql.org/patch/2326/",
+      "thread_urls": [],
+      "authors": "Takeshi Ideriha (ideriha)",
+      "objectors": "",
+      "summary": "Shared system catalog cache",
+      "objection": "",
+      "touch_points": [
+        "catalog changes"
+      ],
+      "matched_queries": [
+        "catalog cache memory bloat"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:2166",
+      "kind": "cf",
+      "title": "Shared Memory Context",
+      "status": "Returned with feedback",
+      "date": "2019-09-30",
+      "first_date": "2019-06-24",
+      "url": "https://commitfest.postgresql.org/patch/2166/",
+      "thread_urls": [],
+      "authors": "Takeshi Ideriha (ideriha)",
+      "objectors": "",
+      "summary": "Shared Memory Context",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "slab context relcache"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:6112",
+      "kind": "cf",
+      "title": "Remove unused #include's",
+      "status": "Withdrawn",
+      "date": "2025-10-15",
+      "first_date": "2025-10-08",
+      "url": "https://commitfest.postgresql.org/patch/6112/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJ7c6TMykDnFQRi2vOYonB82Oyz0MajYADi=2qr11p1EW_=mZg@mail.gmail.com"
+      ],
+      "authors": "Aleksander Alekseev (a.alekseev)",
+      "objectors": "",
+      "summary": "Remove unused #include's\nThreads: [PATCH] Remove unused #include's in src/backend/commands/*",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "rd_lockInfo remove"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 7,
+    "new_calls": 1,
+    "failed": 0,
+    "quotes_verified": 1,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 6
+  },
+  "precedent_cutoff": "2026-09-10",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "The closest precedent, P11, died because the savings were negligible. That reason does not apply here: the author reports about 10% of CacheMemoryContext saved on a large schema, and the slab context removes the rounding problem. Message #1 points to a related relcache deduplication thread, but the thread does not report a rejection there."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 1,
+      "note": "No SQL, GUC, pg_dump or psql surface changes. The pg_internal.init magic bump rebuilds old files, and removed fields such as rd_lockInfo fail loudly at compile time."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "The pg_internal.init change is covered by the RELCACHE_INIT_FILEMAGIC bump. The fake-relcache dbOid case in WAL replay was settled in messages #5 and #7. The nbtree VACUUM invariant does not apply, because nbtutils.c changes only for lock identifiers. There is no WAL, catalog or wire protocol change."
+    },
+    {
+      "angle": "security",
+      "objections": 1,
+      "note": "The patch adds no privilege, role or new exposure. The only security concern is the risk that an unprivileged user can crash the server through wrong-member reads of the union."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "The nbtree VACUUM bookkeeping invariant does not apply: nbtutils.c changes only to compute lock identifiers. Demand is plausible for large schemas, so no fit objection is raised."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "Postgres has no feature, setting or extension that shrinks relcache entries; only core can change the layout of RelationData. Pooling cuts the number of backends, not the cost per entry, and the slab context reuses an existing allocator, so this angle finds nothing to raise."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "Relcache growth with large schemas is a real, recurring problem, and several reviewers engaged in depth. The objection above asks for current numbers and broader evidence, not for rejection."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 9,
+      "new_objections": 8,
+      "new_survived": 4,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [
+    "invariants/nbtree.md"
+  ],
+  "warnings": [
+    "attachment limit (8) reached; v1-0002-Use-union.patch not read",
+    "attachment limit (8) reached; v1-0003-Packing-RelationData.patch not read",
+    "attachment limit (8) reached; v1-0004-Remove-rd_lockinfo.patch not read",
+    "attachment limit (8) reached; v1-0005-Move-out-partition-members.patch not read",
+    "attachment limit (8) reached; v1-0006-Remove-rd_fkeyvalid.patch not read",
+    "attachment limit (8) reached; v1-0007-Remove-rd_index.patch not read",
+    "attachment limit (8) reached; v1-0008-Add-static-assert-for-size.patch not read"
+  ],
+  "tone_lint": {
+    "fields_checked": 92,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 14,
+    "wall_ms": 176523,
+    "cost_usd": 3.024159,
+    "dry_run": false
+  }
+}

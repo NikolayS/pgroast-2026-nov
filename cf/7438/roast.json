@@ -1,0 +1,1361 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:56:14.790Z",
+  "input": {
+    "arg": "7438",
+    "cf": {
+      "id": 7438,
+      "url": "https://commitfest.postgresql.org/patch/7438/",
+      "title": "Fix grouping-set nulling of variable-free grouping expressions",
+      "status": "Needs review",
+      "authors": "Haibo Yan (billyean)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CABXr29FSih8YtLCEe6Swquu_c%3DYvFiLVoH-ejvk2jVge9EMEMQ%40mail.gmail.com",
+    "subject": "[PATCH] Fix grouping-set nulling of variable-free grouping expressions",
+    "thread_start": "2026-10-10T06:10:48Z",
+    "messages_read": 8,
+    "messages_total": 8,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v3-0001-Fix-grouping-set-nulling-of-variable-free-grouping-exprs.patch",
+      "v1-0001-Fix-grouping-set-nulling-of-variable-free-grouping-exprs.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The bug is real and a fix is wanted, but the proposal now holds two definitions of the correct result (standards-compat-2). The commit message says `(1 + 1) * 10 ... rollup (1 + 1)` and now() cases are wrong results. The parser rules planned in message #6 stop matching such expressions, and message #8 accepts the unmatched result for now(). No posted patch contains those rules, so the list has to agree on the definition before design review.",
+  "failing_level": "1a",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "failed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "not_evaluated"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "not_evaluated"
+    }
+  ],
+  "brief": {
+    "title": "Share one PlaceHolderVar ID per grouping column for variable-free grouping expressions",
+    "problem": "Grouping sets return non-null values in rows where a variable-free grouping expression should be NULL, for example `(1 + 1) * 10 ... GROUP BY ROLLUP (1 + 1)` returns 20 in the grand-total row. Postgres 18 already has this bug. In 19, commit e2debb64380 folds `a IS NOT NULL` to true for NOT NULL columns, so common queries now give results that differ from 18.",
+    "proposed_design": "mark_nullable_by_grouping() now reuses one PlaceHolderVar ID per RTE_GROUP column, cached in PlannerInfo, instead of making a new ID for each reference. Then setrefs matches every reference to the grouping column, and the grouping step nulls it. After review, the author plans to add two parser rules in parse_agg.c that limit which expressions become group Vars.",
+    "user_visible_surface": [
+      "Query results change for grouping sets with variable-free or constant-folded grouping expressions.",
+      "New PlannerInfo field, to be moved to the end of the struct in back branches."
+    ],
+    "author_claims": [
+      "Fixes the 19 regression and the older bug without limiting constant folding or changing the aggregate executor.",
+      "Distinct grouping columns keep separate IDs even when they fold to the same constant.",
+      "Core regression, isolation and relevant TAP tests pass on master and REL_19_STABLE with assertions.",
+      "Should go into REL_19_STABLE and back-patch to 18, which needs its own expected output."
+    ],
+    "thread_state": "Shihao Zhong reviewed v1 and later showed that v3 breaks correct results (`SELECT 1 AS one, 1 AS uno GROUP BY ROLLUP(one)`, a HAVING case, a CUBE case). The author agrees v3 is unsafe, proposes two parser matching rules tied to bug #19752, and waits for Tom Lane's opinion before a new revision.",
+    "unclear": [
+      "No posted patch contains the parser rules, so the reviewable version does not exist yet.",
+      "The thread does not say whether this fix will be split from, or wait on, Andrey Rachitskiy's patch for bug #19752.",
+      "The level-zero-Var rule changes which expressions match grouping items; the thread does not say if any currently correct query changes result.",
+      "The thread does not say whether the parser rules can be back-patched to 18 and 19.",
+      "The v2 attachment was the wrong file; only v1 and v3 are the intended patch."
+    ],
+    "search_queries": [
+      "grouping sets wrong result constant",
+      "rollup constant grouping expression null",
+      "PlaceHolderVar grouping sets nullingrels",
+      "RTE_GROUP grouping expression",
+      "group by rollup variable-free expression",
+      "grouping expression matching parser equal",
+      "NOT NULL constant folding NullTest",
+      "grouping sets nulling regression"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Planned matching rules redefine the bug the patch reports",
+      "level": "1a",
+      "rubric_item": 1,
+      "category": "sql_standard_syntax",
+      "touch_points": [
+        "sql_standard_syntax",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The v1/v3 commit message says `select (1 + 1) * 10 ... group by rollup (1 + 1)` should return NULL in the grand-total row. The second planned rule excludes grouping items without a level-zero Var from structural matching, so `1 + 1` inside `(1 + 1) * 10` is no longer a grouping reference and still returns 20. Users then cannot tell which result the project considers correct.",
+      "argument": "Message #8 accepts f,f for `now() is null ... rollup(now())` because the independently written expression is not a reference, but the commit message lists now() and constant expressions as cases that return wrong results. These two positions disagree on a user-visible contract, namely which expressions in the target list and HAVING count as grouping references. Rules that change query results in minor releases need one stated definition, checked against the standard and against 17 and 18 behaviour.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        6,
+        7,
+        8
+      ],
+      "author_must_show": "Under the two planned parser rules, what does `select (1 + 1) * 10 from generate_series(1, 10) group by rollup (1 + 1)` return, and which documented rule says that is correct?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Haibo Yan",
+          "date": "2026-10-10T06:10:48Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29FSih8YtLCEe6Swquu_c%3DYvFiLVoH-ejvk2jVge9EMEMQ%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Haibo Yan",
+          "date": "2026-10-20T20:38:32Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29F4UDTaQVz7QZmVvLzz4R84ECP1%2Be6sVaSEWfbM6xKt%3Dw%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "shihao zhong",
+          "date": "2026-10-21T00:48:09Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTbwvQKNaGuWwOvH0-DMTvdrC_wBRpu9GzQC5dOzgDMcA%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Haibo Yan",
+          "date": "2026-10-23T01:45:05Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29EVOzjAseaNKO5xK2JrhQVP2UA89QfP3xw2A_gDOiNATA%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The commit message lists `(1 + 1) * 10 ... ROLLUP (1 + 1)` and now() as wrong results. The second rule in message #6 stops matching such subexpressions, and message #8 accepts f,f for now(), so the two definitions disagree.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "Stored view parse trees keep the old group Var matching after back-patch",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "catalog"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "On 18, a user defines a view as `select 1 as one, 1 as uno group by rollup(one)`, and pg_rewrite stores `uno` as a group Var. After a minor update with shared phids and the new parser rules, the view is not re-parsed, so `uno` becomes NULL in the grand-total row. Nothing warns the user.",
+      "argument": "The planned fix has two halves: v3's planner change and parser rules in parse_agg.c (message #6). Message #5 shows that v3 is only safe when the parser does not turn independent expressions into group Vars. Since 18, views store Query trees that already contain RTE_GROUP references, made by the old matching. A minor release updates the planner but leaves pg_rewrite unchanged, so existing views get the message #5 wrong result until dump/restore or `create or replace view` re-parses them.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        5,
+        6,
+        7
+      ],
+      "author_must_show": "How does the back-patched planner avoid nulling group Vars that the old parser stored in existing views and rules on 18 and 19?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "shihao zhong",
+          "date": "2026-10-17T03:23:05Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqSrWujfEHHjKWGj%2BJ3De7y1-5FNaJLQsntYeF5gX75XYA%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Haibo Yan",
+          "date": "2026-10-20T20:38:32Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29F4UDTaQVz7QZmVvLzz4R84ECP1%2Be6sVaSEWfbM6xKt%3Dw%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "shihao zhong",
+          "date": "2026-10-21T00:48:09Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTbwvQKNaGuWwOvH0-DMTvdrC_wBRpu9GzQC5dOzgDMcA%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Since 18 the parser creates RTE_GROUP references and pg_rewrite stores them, so views created before the fix keep the old matching. The thread does not discuss stored views or rules, and message #5 shows the result for such a tree.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1a: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "Back-patching parser matching changes to 18 changes released behaviour",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user on 18.x upgrades to a minor release that contains the level-zero-Var rule. A query whose HAVING or target list matched a grouping item by structural equality now matches differently, and its rollup rows change. The user finds out from changed report output after the minor upgrade.",
+      "argument": "The commit message targets back-patching through 18, but v3 alone is unsafe (message #6), so the back-patch must include the parser rules too. Message #7 already shows cases such as now() where 17 and 18 disagree, so the matching rules decide visible results. The thread does not list which currently correct queries change under the new rules, and that list matters most for a minor release.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        6,
+        7,
+        8
+      ],
+      "author_must_show": "Which queries that return correct results on 18 today change results under the two parser rules, and is that acceptable in a minor release?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 6,
+          "from": "Haibo Yan",
+          "date": "2026-10-20T20:38:32Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29F4UDTaQVz7QZmVvLzz4R84ECP1%2Be6sVaSEWfbM6xKt%3Dw%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "shihao zhong",
+          "date": "2026-10-21T00:48:09Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTbwvQKNaGuWwOvH0-DMTvdrC_wBRpu9GzQC5dOzgDMcA%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Haibo Yan",
+          "date": "2026-10-23T01:45:05Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29EVOzjAseaNKO5xK2JrhQVP2UA89QfP3xw2A_gDOiNATA%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #6 shows the back-patch needs the parser rules, and message #7 shows they decide visible results. The thread checks a few examples but does not say which currently correct queries on 18 change, or whether the rules can be back-patched.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1a: not evaluated (base-up stop rule)"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Back-patched parser matching rules add a layer to grouping-clause code",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user on 18.x runs a ROLLUP query whose HAVING or target list repeats a grouping expression without a current-level Var. After a minor update with the level-zero-Var rule, that expression no longer matches the group Var, so the query returns different rows. The user finds out only after the update.",
+      "argument": "Message #6 shows v3 is unsafe without new matching rules in parse_agg.c, and no posted patch has them yet. [P6] was withdrawn because a fix layered onto grouping-clause handling was judged to add more impenetrability, and [P2] reverted a feature to avoid that churn late in beta. This fix aims at released branches 18 and 19, where a change to which expressions become group Vars is harder to defend than in master. Messages #7 and #8 only confirm behavior for a few examples.",
+      "precedent_ids": [
+        "P6",
+        "P2"
+      ],
+      "thread_message_refs": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "author_must_show": "Which currently correct queries change results under the two parser rules, and why is that change acceptable in a minor release of 18 and 19?",
+      "precedents": [
+        {
+          "id": "P6",
+          "title": "Fix GROUP BY ALL handling of ORDER BY operator semantics",
+          "url": "https://commitfest.postgresql.org/patch/6952/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/5243308F-8E5C-45AA-828C-FAD96C4F34DA@gmail.com"
+          ],
+          "date": "2026-07-16",
+          "status": "Withdrawn"
+        },
+        {
+          "id": "P2",
+          "title": "Revert \"Add GROUP BY ALL\".",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=a32733d8f10f0e35f7e4ee772ddbef552296577f",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/5243308F-8E5C-45AA-828C-FAD96C4F34DA@gmail.com",
+            "https://www.postgresql.org/message-id/flat/CAHM0NXjz0kDwtzoe-fnHAqPB1qA8_VJN0XAmCgUZ+iPnvP5LbA@mail.gmail.com"
+          ],
+          "date": "2026-07-17",
+          "status": "Reverted"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "shihao zhong",
+          "date": "2026-10-17T03:23:05Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqSrWujfEHHjKWGj%2BJ3De7y1-5FNaJLQsntYeF5gX75XYA%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Haibo Yan",
+          "date": "2026-10-20T20:38:32Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29F4UDTaQVz7QZmVvLzz4R84ECP1%2Be6sVaSEWfbM6xKt%3Dw%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "shihao zhong",
+          "date": "2026-10-21T00:48:09Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTbwvQKNaGuWwOvH0-DMTvdrC_wBRpu9GzQC5dOzgDMcA%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Haibo Yan",
+          "date": "2026-10-23T01:45:05Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29EVOzjAseaNKO5xK2JrhQVP2UA89QfP3xw2A_gDOiNATA%40mail.gmail.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-2, which asks the same question without precedents. [P6] and [P2] concern GROUP BY ALL, a new feature in beta, so they do not support an objection to a wrong-result fix.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Planner change also applies to stored views parsed under the old rules",
+      "level": "2",
+      "rubric_item": 13,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "pg_dump_round_trip",
+        "catalog"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user on 18.x has a view such as `select 1 as one, 1 as uno group by rollup(one)`, and its stored rule already holds a group Var for `uno`. After a minor update that ships the PHV sharing with the parser rules, that view returns NULL for `uno` in the grand-total row. A dump and restore re-parses the view and returns 1, so the result depends on how the server was upgraded.",
+      "argument": "Message #6 says the PHV sharing is safe only if the parser has identified genuine references, and the planned fix puts that guarantee in parse_agg.c. Stored rules keep the post-analysis Query with group Vars, so views created on 18 or 19 before the fix skip the new parser rules but still get the new planner behaviour. A back branch cannot bump catversion to force re-parsing. The thread does not mention views or rules.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        5,
+        6,
+        7
+      ],
+      "author_must_show": "How does the planner side stay correct for view and rule parse trees stored by an unfixed 18 or 19 parser, where an independent constant is already a group Var?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "shihao zhong",
+          "date": "2026-10-17T03:23:05Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqSrWujfEHHjKWGj%2BJ3De7y1-5FNaJLQsntYeF5gX75XYA%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Haibo Yan",
+          "date": "2026-10-20T20:38:32Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29F4UDTaQVz7QZmVvLzz4R84ECP1%2Be6sVaSEWfbM6xKt%3Dw%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "shihao zhong",
+          "date": "2026-10-21T00:48:09Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTbwvQKNaGuWwOvH0-DMTvdrC_wBRpu9GzQC5dOzgDMcA%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1, which states the stored-view case more directly. The catversion remark adds nothing, because a catversion bump does not re-parse stored rules.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Planner PHV sharing depends on a parser invariant nothing enforces",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch changes grouping-expression matching in parse_agg.c, as GROUP BY ALL or the bug #19752 fix does. The parser again maps an independently written expression to a group Var, and the shared phid nulls it. Users get NULL in rollup rows where they should see a value, and no assertion or test failure reports it.",
+      "argument": "Message #6 says sharing a phid per RTE_GROUP column is correct only if the parser has found genuine references to the same grouping output. So var.c would rely on a rule in parse_agg.c with no check between them. Messages #5 and #7 show v3 alone returning wrong results for queries that are correct today. [P6] records that grouping-set clause handling was already hard to follow and that a fix adding another layer was not accepted.",
+      "precedent_ids": [
+        "P6"
+      ],
+      "thread_message_refs": [
+        5,
+        6,
+        7
+      ],
+      "author_must_show": "How would a future change to parser grouping matching that breaks the new invariant be caught, by an assertion or a test, before it returns wrong results?",
+      "precedents": [
+        {
+          "id": "P6",
+          "title": "Fix GROUP BY ALL handling of ORDER BY operator semantics",
+          "url": "https://commitfest.postgresql.org/patch/6952/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/5243308F-8E5C-45AA-828C-FAD96C4F34DA@gmail.com"
+          ],
+          "date": "2026-07-16",
+          "status": "Withdrawn"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "shihao zhong",
+          "date": "2026-10-17T03:23:05Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqSrWujfEHHjKWGj%2BJ3De7y1-5FNaJLQsntYeF5gX75XYA%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Haibo Yan",
+          "date": "2026-10-20T20:38:32Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29F4UDTaQVz7QZmVvLzz4R84ECP1%2Be6sVaSEWfbM6xKt%3Dw%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "shihao zhong",
+          "date": "2026-10-21T00:48:09Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTbwvQKNaGuWwOvH0-DMTvdrC_wBRpu9GzQC5dOzgDMcA%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The scenario needs an unnamed future parser patch. The planner already nulls every group Var that contains a Var, so it relies on parser matching today, and message #8 plans regression tests for the independent-constant cases. [P6] concerns GROUP BY ALL.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "Views in pg_rewrite keep group Vars made by the old parser matching, and the new planner code acts on them."
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The patch adds a PlannerInfo field, to be moved to the end of the struct in back branches."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": true,
+      "reason": "The planned parser rules change which target-list and HAVING expressions count as references to a grouping item."
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": true,
+      "reason": "mark_nullable_by_grouping() shares one PlaceHolderVar ID per RTE_GROUP column, which changes grouping-set query results."
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": true,
+      "reason": "A restore re-parses views under the new matching rules, so a view can return different rows than before the dump."
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The commit message asks for a back-patch through 18, and the fix now needs parser rules as well."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "The planner change in var.c is correct only while parse_agg.c matches genuine grouping references."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Under the two planned parser rules, what does `select (1 + 1) * 10 from generate_series(1, 10) group by rollup (1 + 1)` return, and which stated rule makes that correct?",
+    "How does the back-patched planner avoid nulling group Vars that the old parser stored in existing views and rules on 18 and 19?",
+    "Which queries that return correct results on 18 today change results under the two parser rules, and is that acceptable in a minor release?",
+    "Can the two parser rules be back-patched to 18 and 19 in the same form as for master?",
+    "Will this fix be split from the patch for bug #19752, or wait for it?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "It needs a committer who knows grouping-set planning (RTE_GROUP, PlaceHolderVars, setrefs) and the grouping matching in parse_agg.c. The author waits for such an opinion, and none is in the visible thread.",
+    "liability": "The owner signs for changed query results in minor releases of 18 and 19, for a PlannerInfo layout change in back branches, and for a lasting dependency between var.c and parser matching.",
+    "author_follow_up": "The author posted three versions in a few days, agreed that v3 is unsafe, and plans a new revision with parser rules."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "fix design first",
+    "reason": "The 19 regression gives wrong rows for grouping sets over NOT NULL columns, so the fix deserves attention now. The posted patch is small, but v3 is known to be unsafe and the parser rules that complete it are not posted."
+  },
+  "self_advice": [],
+  "provisional_note": "The parser rules exist only as a description in the thread, so their effect on currently correct queries and on stored views could not be judged. The planner code in var.c was not read.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:2147",
+      "kind": "cf",
+      "title": "Parallel grouping sets",
+      "status": "Returned with feedback",
+      "date": "2020-07-12",
+      "first_date": "2019-06-12",
+      "url": "https://commitfest.postgresql.org/patch/2147/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAN_9JTx-k6cQdrLAFQrAa+Ozx7cET3M3rFe+u1YgaHjYpz8X0g@mail.gmail.com"
+      ],
+      "authors": "Richard Guo (richardguo)",
+      "objectors": "Daniel Gustafsson",
+      "summary": "Add parallel execution of GROUPING SETS queries by splitting aggregation into partial and final stages, first by grouping on the union of all grouping columns in workers and doing the grouping-sets aggregation in the leader. The later version instead performs grouping-sets aggregation in workers, tags each partial tuple with a grouping set ID, and has the leader combine results per grouping set, with refactoring of nodeAgg.c (phase reorganisation, sorting inside the Agg node).",
+      "objection": "The last patch version received no review and no longer applied to HEAD. A PGCon hallway-track discussion of the approach concluded that nodeAgg.c needs refactoring before it is complicated further, and after an off-list discussion with Melanie, who had picked up the patch, the entry was returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "grouping sets wrong result constant",
+        "rollup constant grouping expression null",
+        "PlaceHolderVar grouping sets nullingrels",
+        "RTE_GROUP grouping expression",
+        "group by rollup variable-free expression",
+        "grouping sets nulling regression"
+      ],
+      "from_hint": false,
+      "score": 0.664,
+      "enriched": true,
+      "key_quote": "There was also considerable discussion in a (virtual) hallway-track session\nduring PGCon which reviewed the approach (for lack of a better description),\ndeeming that nodeAgg.c needs a refactoring before complicating it further.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2A9578C9-A378-4BD9-AA9A-27C4CDBA71A5%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "revert:a32733d8f10f0e35f7e4ee772ddbef552296577f",
+      "kind": "revert",
+      "title": "Revert \"Add GROUP BY ALL\".",
+      "status": "Reverted",
+      "date": "2026-07-17",
+      "first_date": "2025-09-29",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=a32733d8f10f0e35f7e4ee772ddbef552296577f",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/5243308F-8E5C-45AA-828C-FAD96C4F34DA@gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAHM0NXjz0kDwtzoe-fnHAqPB1qA8_VJN0XAmCgUZ+iPnvP5LbA@mail.gmail.com"
+      ],
+      "authors": "Tom Lane, Peter Eisentraut",
+      "objectors": "",
+      "summary": "Revert \"Add GROUP BY ALL\".\nReverted commit(s): Add GROUP BY ALL.; Update GROUP BY ALL comments about window functions",
+      "objection": "This reverts commit ef38a4d9756db9ae1d20f40aa39f3cf76059b81a which\nimplemented the GROUP BY ALL syntax, as well as 2ce745836 which\nmade some comment improvements therein.\n\nA postcommit review discovered that GROUP BY ALL missed our special\nhandling of entries that also appear in an ORDER BY in the query.\nThis caused the query to return wrong results when ORDER BY\nspecifies non-default equality semantics.  While this should be\nfixable with some refactoring, doing it cleanly seems like too\nmuch code churn for late beta.  We'll revert and try again in v20.\n\nThe reverted commit also included some additional comment wordsmithing\nand docs cleanup, which are retained as they weren't connected to the\nreverted feature.\n\ncatversion bump needed due to change in struct Query.",
+      "touch_points": [
+        "security / privileges",
+        "SQL syntax / standard"
+      ],
+      "matched_queries": [
+        "grouping sets wrong result constant",
+        "PlaceHolderVar grouping sets nullingrels",
+        "RTE_GROUP grouping expression",
+        "group by rollup variable-free expression",
+        "grouping expression matching parser equal"
+      ],
+      "from_hint": false,
+      "score": 0.565,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:7419",
+      "kind": "cf",
+      "title": "Skip a redundant singleton GROUP BY node",
+      "status": "Withdrawn",
+      "date": "2026-10-09",
+      "first_date": "2026-10-09",
+      "url": "https://commitfest.postgresql.org/patch/7419/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/tencent_F52C0D4C4415EB90AF70934BE597CDCDB306@qq.com"
+      ],
+      "authors": "Xiangxin Zeng (xiangxin-zeng)",
+      "objectors": "David Rowley",
+      "summary": "The patch series lets the planner skip a plain GROUP BY step, adding projection paths in place of aggregate paths, when a unique index on a single base or partitioned table proves each input row is its own group. Patch 1 moves the unique-index matching logic out of remove_useless_groupby_columns() into a shared helper.",
+      "objection": "David Rowley noted that this was the author's third new thread on the topic in about three weeks, and that the idea is proposed regularly on the list. He also pointed to earlier discussions and to a patch for the same thing already in the commitfest, and advised against pursuing this one. The author agreed to review those proposals and the existing patch; the entry was then withdrawn.",
+      "touch_points": [],
+      "matched_queries": [
+        "rollup constant grouping expression null",
+        "PlaceHolderVar grouping sets nullingrels",
+        "RTE_GROUP grouping expression",
+        "group by rollup variable-free expression"
+      ],
+      "from_hint": false,
+      "score": 0.418,
+      "enriched": true,
+      "key_quote": "For this one, I wouldn't bother as the idea gets proposed regularly on\nthis mailing list.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAApHDvo8aZdjZpTeQbPF%2ByNEYAsJt-HMH6h%3DM%3D9o6grfeM-8hA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:23",
+      "kind": "cf",
+      "title": "group locking",
+      "status": "Rejected",
+      "date": "2015-01-19",
+      "first_date": "2014-10-15",
+      "url": "https://commitfest.postgresql.org/patch/23/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+TgmoYHVPTDQ=DWOFaK1p28oJFHCBVTVPSz62zpyiNvV6UAJA@mail.gmail.com"
+      ],
+      "authors": "Robert Haas (rhaas)",
+      "objectors": "Tom Lane, Andres Freund",
+      "summary": "Robert Haas proposed a heavyweight-lock concept of \"locking groups\" for parallelism: a user backend and its worker backends would form a group whose lock requests never conflict with each other, with changes to lock acquisition, wait-queue handling and the deadlock detector so that no group member waits behind an unrelated process. The posted patch was an incomplete draft (LockAcquireExtended() and ProcSleep() modified, ProcWakeup() and the deadlock detector not) meant to get feedback on the design.",
+      "objection": "Tom Lane objected that the leader could hold the locks for its workers, and that the proposal added too much complexity, with bugs and performance costs, to the lock manager. Andres Freund objected that letting group members hold self-exclusive locks at the same time removes guarantees that existing code relies on, citing transaction abort (smgrDoPendingDeletes) and relcache invalidation. Robert Haas then dropped the original design because it would put too much coordination burden on the workers, and moved to granting the leader's existing locks to workers at the start of a parallel operation. The visible thread ends without agreement on that alternative or a revised patch, and the closing decision is not shown.",
+      "touch_points": [],
+      "matched_queries": [
+        "rollup constant grouping expression null",
+        "PlaceHolderVar grouping sets nullingrels",
+        "RTE_GROUP grouping expression",
+        "group by rollup variable-free expression"
+      ],
+      "from_hint": false,
+      "score": 0.353,
+      "enriched": true,
+      "key_quote": "Based on your arguments and those of others, I have long-since abandoned the original proposal of having locks within a group never conflict.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoa7NNngUANO4eknJ3Me_gVdTWxEqnimPCcSHoeg4AiFLQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:390811750d1647ed81a462da3af7f1fd66166e95",
+      "kind": "revert",
+      "title": "Revert \"Use group updates when setting transaction status in clog.\"",
+      "status": "Reverted",
+      "date": "2017-03-10",
+      "first_date": "2017-03-09",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=390811750d1647ed81a462da3af7f1fd66166e95",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAA4eK1L_snxM_JcrzEstNq9P66++F4kKFce=1r5+D1vzPofdtg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAA4eK1LyR2A+m=RBSZ6rcPEwJ=rVi1ADPSndXHZdjn56yqO6Vg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/91d57161-d3ea-0cc2-6066-80713e4f90d7@2ndquadrant.com"
+      ],
+      "authors": "Robert Haas",
+      "objectors": "",
+      "summary": "Revert \"Use group updates when setting transaction status in clog.\"\nReverted commit(s): Use group updates when setting transaction status in clog.",
+      "objection": "This reverts commit ccce90b398673d55b0387b3de66639b1b30d451b.  This\noptimization is unsafe, at least, of rollbacks and rollbacks to\nsavepoints, but I'm concerned there may be other problematic cases as\nwell.  Therefore, I've decided to revert this pending further\ninvestigation.",
+      "touch_points": [],
+      "matched_queries": [
+        "grouping sets wrong result constant",
+        "PlaceHolderVar grouping sets nullingrels",
+        "grouping sets nulling regression"
+      ],
+      "from_hint": false,
+      "score": 0.313,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:6952",
+      "kind": "cf",
+      "title": "Fix GROUP BY ALL handling of ORDER BY operator semantics",
+      "status": "Withdrawn",
+      "date": "2026-07-16",
+      "first_date": "2026-06-29",
+      "url": "https://commitfest.postgresql.org/patch/6952/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/5243308F-8E5C-45AA-828C-FAD96C4F34DA@gmail.com"
+      ],
+      "authors": "Chao Li (chaol)",
+      "objectors": "Tom Lane",
+      "summary": "The patch makes GROUP BY ALL copy operator information from matching ORDER BY items, as explicit GROUP BY already does in transformGroupClauseExpr(). It does this by moving that logic into a shared helper, so that `group by all order by a using operator(pg_catalog.*<)` groups rows the same way as `group by a`.",
+      "objection": "Tom Lane judged that the patch adds another layer to clause-handling code that grouping sets had already made confusing, and he suspected other bugs of the same kind. He proposed a redesign of that code, which is too large a change after beta2, and suggested reverting GROUP BY ALL for v19 instead. Daniel Gustafsson agreed and posted a revert patch, and the author withdrew the fix.",
+      "touch_points": [],
+      "matched_queries": [
+        "PlaceHolderVar grouping sets nullingrels",
+        "RTE_GROUP grouping expression",
+        "group by rollup variable-free expression"
+      ],
+      "from_hint": false,
+      "score": 0.281,
+      "enriched": true,
+      "key_quote": "Chao's patch as proposed doesn't clean any of that up, but just adds\nanother layer of impenetrability to the logic.",
+      "quote_message_url": "https://www.postgresql.org/message-id/3278800.1783989856%40sss.pgh.pa.us",
+      "relevant": true
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:3766",
+      "kind": "cf",
+      "title": "remove_useless_groupby_columns is too enthusiastic",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-07-12",
+      "url": "https://commitfest.postgresql.org/patch/3766/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1657885.1657647073@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane (tgl)",
+      "objectors": "David Rowley, Richard Guo",
+      "summary": "Change remove_useless_groupby_columns so that it no longer removes GROUP BY items that are functionally dependent on a primary key when those items also appear in ORDER BY. This keeps the link between the GROUP BY and ORDER BY lists, so the planner can use a sorted index path with GroupAggregate and avoid an explicit sort.",
+      "objection": "Reviewers pointed out that keeping the redundant columns can make plans worse. Without a matching index, the extra sort columns cost more (Richard Guo measured a slowdown). Hash Aggregate would always pay for hashing and comparing the extra columns. David Rowley proposed a different design: mark redundant GROUP BY columns instead of removing them, and consider both the full and the minimal key sets. No revised patch followed, and the entry was marked Returned with Feedback after the thread had been idle for some weeks following that review.",
+      "touch_points": [],
+      "matched_queries": [
+        "PlaceHolderVar grouping sets nullingrels",
+        "RTE_GROUP grouping expression",
+        "group by rollup variable-free expression"
+      ],
+      "from_hint": false,
+      "score": 0.274,
+      "enriched": true,
+      "key_quote": "So the\npatch makes that case worse in favour of possibly making Group\nAggregate cases better.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAApHDvr5y_Jb0oLuhr_gJs8%3D_tz57qfBDf-fo%2B-Dn3J9dD1OHg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:4828",
+      "kind": "cf",
+      "title": "Rename constants in preparation of variableness",
+      "status": "Returned with feedback",
+      "date": "2024-10-08",
+      "first_date": "2024-02-07",
+      "url": "https://commitfest.postgresql.org/patch/4828/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOxo6XJUTj4QT87MJeqPj79+YLiLKeuVoysXe6SLWNU=2zrbrQ@mail.gmail.com"
+      ],
+      "authors": "David Christensen (davidchristensen)",
+      "objectors": "",
+      "summary": "The patch series splits each of the 4 page-size-dependent constants into a Cluster variant, meant to become a run-time variable, and a Limit variant holding the maximum value for static allocations. The values stay the same, so behaviour does not change; it prepares for the reserved page space work and was offered for back-branches too.",
+      "objection": "No one reviewed the design in the visible messages. In August 2024 Kirill Reshke noted that the patch set needed a rebase, asked whether the author would continue, and asked for more informative commit messages. The visible thread shows no reply from the author before the entry was returned with feedback in October 2024.",
+      "touch_points": [],
+      "matched_queries": [
+        "rollup constant grouping expression null",
+        "NOT NULL constant folding NullTest"
+      ],
+      "from_hint": false,
+      "score": 0.239,
+      "enriched": true,
+      "key_quote": "Your patchset needs a rebase. Are you going to push it forward?",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALdSSPjo_bXyhB7ghP-Ms0ghjNY2OznjDN8a%3DaEZC3%3DE32NFDA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:4781",
+      "kind": "cf",
+      "title": "GUC-ify WALSender's MAX_SEND_SIZE constant",
+      "status": "Rejected",
+      "date": "2024-05-14",
+      "first_date": "2024-01-19",
+      "url": "https://commitfest.postgresql.org/patch/4781/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFWczPui3wpceYBez4Z9drTL+4-crmpn_LFnoRH4Pk0evSm2vw@mail.gmail.com"
+      ],
+      "authors": "Majid Garoosi (magaroo)",
+      "objectors": "Andres Freund, Jakub Wartak",
+      "summary": "The patch turns the walsender constant MAX_SEND_SIZE (128kB) into a GUC, wal_sender_max_send_size, capped at wal_segment_size. The aim was larger WAL reads per walsender iteration on storage with high latency and high bandwidth, such as Ceph RBD volumes.",
+      "objection": "Andres Freund objected that the GUC is one more setting nobody can realistically tune, and that it is a poor proxy for the real issue: read size against high-latency storage, better solved by read_stream support for reading WAL. Jakub Wartak agreed and asked for a reproducible benchmark. The author had left the company and could not provide numbers, so Michael Paquier marked the patch rejected.",
+      "touch_points": [
+        "new GUC",
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "rollup constant grouping expression null",
+        "NOT NULL constant folding NullTest"
+      ],
+      "from_hint": false,
+      "score": 0.218,
+      "enriched": true,
+      "key_quote": "I think it's a bad idea to make it configurable. It's just one more guc that\nnobody has a chance of realistically tuning.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20240423220001.fevuhwirldhi3rkb%40awork3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:6480",
+      "kind": "cf",
+      "title": "Replace literal 0 values with the appropriate Invalid* constants",
+      "status": "Withdrawn",
+      "date": "2026-02-13",
+      "first_date": "2026-02-12",
+      "url": "https://commitfest.postgresql.org/patch/6480/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/aY2oKlSpikgO9m+X@ip-10-97-1-34.eu-west-3.compute.internal"
+      ],
+      "authors": "Bertrand Drouvot (bertranddrouvot.pg)",
+      "objectors": "Andres Freund",
+      "summary": "Replace literal 0 values with the matching Invalid* constants (InvalidMultiXactId, InvalidOffsetNumber, InvalidAttrNumber, InvalidDsaPointer, InvalidRelFileNumber) across about 30 files. A Coccinelle script generated the changes, following the earlier InvalidXLogRecPtr cleanup in ec317440716.",
+      "objection": "Andres Freund objected that such wholesale cleanup patches add more noise than they improve the code and use review bandwidth better spent elsewhere. He said these changes are fine when the code is edited for other reasons. The author agreed the changes add little value and withdrew the entry.",
+      "touch_points": [],
+      "matched_queries": [
+        "rollup constant grouping expression null",
+        "NOT NULL constant folding NullTest"
+      ],
+      "from_hint": false,
+      "score": 0.211,
+      "enriched": true,
+      "key_quote": "I think we should reject these and other similar patches, they generate way\nmore noise than they are improving the code.",
+      "quote_message_url": "https://www.postgresql.org/message-id/aY501dOolZoqEW_H%40alap3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "wiki:Features_We_Do_Not_Want:5",
+      "kind": "do_not_want",
+      "title": "Indeterminate behavior for the GROUP BY clause",
+      "status": "Not wanted",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Features_We_Do_Not_Want",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Indeterminate behavior for the GROUP BY clause\nSection: Features We Do Not Want\nLinked: Re: SQL compatibility reminder: MySQL vs PostgreSQL",
+      "objection": "At least one other database product allows specification of a subset of the result columns which GROUP BY would need to be able to provide predictable results; the server is free to return any value from the group. This is not viewed as a desirable feature. PostgreSQL 9.1 allows result columns that are not referenced by GROUP BY if a primary key for the same table is referenced in GROUP BY.",
+      "touch_points": [],
+      "matched_queries": [
+        "grouping sets wrong result constant",
+        "group by rollup variable-free expression"
+      ],
+      "from_hint": false,
+      "score": 0.15,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:6602",
+      "kind": "cf",
+      "title": "rewriteGraphTable: Fix missing RTEs in FROM clause by setting inFromCl=true",
+      "status": "Withdrawn",
+      "date": "2026-09-10",
+      "first_date": "2026-03-20",
+      "url": "https://commitfest.postgresql.org/patch/6602/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/tencent_04E75647691D8F0F4B9561B1@qq.com"
+      ],
+      "authors": "Man Zeng (zengman)",
+      "objectors": "",
+      "summary": "rewriteGraphTable: Fix missing RTEs in FROM clause by setting inFromCl=true\nThreads: rewriteGraphTable: Fix missing RTEs in FROM clause by setting inFromCl=true",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "RTE_GROUP grouping expression"
+      ],
+      "from_hint": false,
+      "score": 0.15,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:3236",
+      "kind": "cf",
+      "title": "Fix uninitialized variable access (freepages)",
+      "status": "Rejected",
+      "date": "2022-03-14",
+      "first_date": "2021-07-01",
+      "url": "https://commitfest.postgresql.org/patch/3236/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEudQApiF6K4Vy0=0RYfz0Qy+=irGzne1YTnTiWE4XG3Joxuvw@mail.gmail.com"
+      ],
+      "authors": "Ranier Vilela (raniervilela)",
+      "objectors": "",
+      "summary": "Fix uninitialized variable access (freepages)\nThreads: Fix uninitialized variable access (src/backend/utils/mmgr/freepage.c)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "group by rollup variable-free expression"
+      ],
+      "from_hint": false,
+      "score": 0.135,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3281",
+      "kind": "cf",
+      "title": "use regular expressions to simplify less_greater and not_equals",
+      "status": "Rejected",
+      "date": "2021-09-05",
+      "first_date": "2021-08-11",
+      "url": "https://commitfest.postgresql.org/patch/3281/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/03572d05-697c-4dd5-95e3-bbc3fd8b05c1.sunshihao.ssh@alibaba-inc.com"
+      ],
+      "authors": "Fan Xiaojian (funnyxj.qq.com), Shihao Sun (sunshihao.ssh.alibaba-inc.com)",
+      "objectors": "",
+      "summary": "use regular expressions to simplify less_greater and not_equals\nThreads: use-regular-expressions-to-simplify-less_greater-and-not_equals.patch",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "grouping expression matching parser equal"
+      ],
+      "from_hint": false,
+      "score": 0.133,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:6774",
+      "kind": "cf",
+      "title": "Fix bug of COPY (on_error set_null)",
+      "status": "Withdrawn",
+      "date": "2026-05-19",
+      "first_date": "2026-05-15",
+      "url": "https://commitfest.postgresql.org/patch/6774/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/90EF4FA7-9FE2-4EDE-AC04-C349487F7C2A@gmail.com"
+      ],
+      "authors": "Chao Li (chaol)",
+      "objectors": "",
+      "summary": "Fix bug of COPY (on_error set_null)\nThreads: Fix bug of COPY (on_error set_null)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "grouping sets nulling regression"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:1728",
+      "kind": "cf",
+      "title": "Allow to warn or error on ... = NULL expressions",
+      "status": "Returned with feedback",
+      "date": "2018-12-01",
+      "first_date": "2018-07-16",
+      "url": "https://commitfest.postgresql.org/patch/1728/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20180716014042.GS22932@fetter.org"
+      ],
+      "authors": "David Fetter (dfetter)",
+      "objectors": "",
+      "summary": "Allow to warn or error on ... = NULL expressions\nThreads: Make foo=null a warning by default.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "rollup constant grouping expression null"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:2699",
+      "kind": "cf",
+      "title": "Optimizing NULL check on pkey column",
+      "status": "Returned with feedback",
+      "date": "2021-09-27",
+      "first_date": "2020-08-27",
+      "url": "https://commitfest.postgresql.org/patch/2699/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALAY4q_Wazcha2f0kpd=zVh7bwfC=txF_n2XVdvmRmGCS+pWeQ@mail.gmail.com"
+      ],
+      "authors": "Surafel Temesgen (surafel)",
+      "objectors": "",
+      "summary": "Optimizing NULL check on pkey column\nThreads: Evaluate expression at planning time for two more cases",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "rollup constant grouping expression null"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:6422",
+      "kind": "cf",
+      "title": "ANALYZE: hash-accelerate MCV tracking for equality-only types",
+      "status": "Withdrawn",
+      "date": "2026-05-03",
+      "first_date": "2026-01-21",
+      "url": "https://commitfest.postgresql.org/patch/6422/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/C71ABD3E-93C7-41A5-99AC-77279557D36A@Outlook.com"
+      ],
+      "authors": "Chengpeng Yan (chengpeng.yan)",
+      "objectors": "",
+      "summary": "ANALYZE: hash-accelerate MCV tracking for equality-only types\nThreads: [PATCH] ANALYZE: hash-accelerate MCV tracking for equality-only types",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "grouping expression matching parser equal"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "revert:7204f35919b7e021e8d1bc9f2d76fd6bfcdd2070",
+      "kind": "revert",
+      "title": "Revert commit 66c0185a3 and follow-on patches.",
+      "status": "Reverted",
+      "date": "2024-05-20",
+      "first_date": "2024-03-25",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=7204f35919b7e021e8d1bc9f2d76fd6bfcdd2070",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/Zktzf926vslR35Fv@depesz.com",
+        "https://www.postgresql.org/message-id/flat/CAApHDvpb_63XQodmxKUF8vb9M7CxyUyT4sWvEgqeQU-GB7QFoQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/242fc7c6-a8aa-2daf-ac4c-0a231e2619c1@gmail.com",
+        "https://www.postgresql.org/message-id/flat/3703023.1711654574@sss.pgh.pa.us"
+      ],
+      "authors": "David Rowley, Tom Lane",
+      "objectors": "",
+      "summary": "Revert commit 66c0185a3 and follow-on patches.\nReverted commit(s): Allow planner to use Merge Append to efficiently implement UNION; Fix assert failure when planning setop subqueries with CTEs; Don't zero tuple_fraction when planning UNIONs with ORDER BYs; Don't adjust ressortgroupref in generate_setop_child_grouplist(); Finish incomplete revert of ec63622c0.",
+      "objection": "This reverts 66c0185a3 (Allow planner to use Merge Append to\nefficiently implement UNION) as well as the follow-on commits\nd5d2205c8, 3b1a7eb28, 7487044d6.  In addition to those, 07746a8ef\nhad to be removed then re-applied in a different place, because\n66c0185a3 moved the relevant code.\n\nThe reason for this last-minute thrashing is that depesz found a\ncase in which the patched code creates a completely wrong plan\nthat silently gives incorrect query results.  It's unclear what\nthe cause is or how many cases are affected, but with beta1 wrap\nstaring us in the face, there's no time for closer investigation.\nAfter we figure that out, we can decide whether to un-revert this\nfor beta2 or hold it for v18.\n\n(also some private discussion among pgsql-release)",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "grouping sets wrong result constant"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:2731",
+      "kind": "cf",
+      "title": "_bt_binsrch* improvements - equal-prefix-skip binary search",
+      "status": "Withdrawn",
+      "date": "2020-09-15",
+      "first_date": "2020-09-11",
+      "url": "https://commitfest.postgresql.org/patch/2731/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2WjnrkzT9tfqFhSCPeH6LV-UUj5_oO5vX038dvfK7fDuyQ@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "_bt_binsrch* improvements - equal-prefix-skip binary search\nThreads: [patch] _bt_binsrch* improvements - equal-prefix-skip binary search",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "grouping expression matching parser equal"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:100",
+      "kind": "cf",
+      "title": "Enforce creation of destination folders for source files in pg_regress",
+      "status": "Rejected",
+      "date": "2015-03-01",
+      "first_date": "2015-01-15",
+      "url": "https://commitfest.postgresql.org/patch/100/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB7nPqTdQiEvEUNHnnj2Q2h5zM1CbG2FZaunJmT+wynKTovCqw@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Enforce creation of destination folders for source files in pg_regress\nThreads: Enforce creation of destination folders for source files in\npg_regress (Was: pg_regress writes into source tree)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "NOT NULL constant folding NullTest"
+      ],
+      "from_hint": false,
+      "score": 0.101,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "wiki:Exotic_Features:1",
+      "kind": "do_not_want",
+      "title": "Allowing control of upper/lower case folding of unquoted identifiers",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Exotic_Features",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ACF85C502E55A143AB9F4ECFE960660A17282D@mailserver2.local.mstarlabs.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "Allowing control of upper/lower case folding of unquoted identifiers\nSection: Exotic Features\nLinked: Bringing PostgreSQL torwards the standard regarding case folding; Re: [SQL] Case Preservation disregarding case sensitivity?; TODO Item: Consider allowing control of upper/lower case folding of unquoted, identifiers; Identifier case folding notes; Identifier case folding notes; Cluster wide option to control symbol case folding",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "NOT NULL constant folding NullTest"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:1055",
+      "kind": "cf",
+      "title": "postgres_fdw: evaluate placeholdervars on remote server",
+      "status": "Returned with feedback",
+      "date": "2017-09-27",
+      "first_date": "2017-02-28",
+      "url": "https://commitfest.postgresql.org/patch/1055/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6533e100-dbdf-1ac3-23f3-6ca9da48adbb@lab.ntt.co.jp"
+      ],
+      "authors": "Etsuro Fujita (efujita)",
+      "objectors": "",
+      "summary": "postgres_fdw: evaluate placeholdervars on remote server\nThreads: postgres_fdw: evaluate placeholdervars on remote server",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "PlaceHolderVar grouping sets nullingrels"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:4282",
+      "kind": "cf",
+      "title": "Permute underscore separated components of columns before fuzzy matching",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-01-06",
+      "url": "https://commitfest.postgresql.org/patch/4282/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/555aa9ea1043489bae7a41962877bd04@index.de",
+        "https://www.postgresql.org/message-id/flat/03164ed4-f6fb-4eb7-bc5b-fcc8d34c1789@malkut.net"
+      ],
+      "authors": "Arne Roland (harks)",
+      "objectors": "",
+      "summary": "Permute underscore separated components of columns before fuzzy matching\nThreads: Permute underscore separated components of columns before fuzzy\nmatching; Re: Permute underscore separated components of columns before fuzzy\nmatching",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "grouping expression matching parser equal"
+      ],
+      "from_hint": false,
+      "score": 0.096,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 4,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 2
+  },
+  "precedent_cutoff": "2026-10-10",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "No precedent proposes the same fix. The one objection rests on the planned parser rules, which no posted patch contains yet."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "Two objections raised. The remaining compatibility effects depend on parser rules that no posted patch contains yet."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "The new PlannerInfo field is a back-branch ABI point, and the commit message already plans to move it to the end of the struct. Nothing else touches WAL, on-disk format or the wire protocol."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal is a planner wrong-result fix for grouping sets. It adds no privilege, role, function, setting or exposure path, so a user sees nothing they could not see before. Wrong values in grand-total rows could in theory affect RLS or view predicates, but no such case is shown, and the fix only restores the correct NULL values."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "The bug is real and a fix is wanted. The objections concern how the combined planner and parser fix will be maintained and back-patched, not whether to fix it."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "This is a wrong-result bugfix in planner internals. No existing feature, option or extension gives correct grouping-set nulling for variable-free grouping expressions, and the fix reuses the PHV-sharing approach of pullup_replace_vars_callback() and does not add a second mechanism."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "This is a wrong-result bug fix, so the demand angle does not apply. In 19, common queries on NOT NULL columns return different rows than in 18, and two people in the thread show reproducible cases. Users who hit the bug cannot work around it without rewriting queries. Any remaining concerns are about the design (v3 is unsafe without the parser rules) and are for other angles."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 10,
+      "new_objections": 6,
+      "new_survived": 3,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 76,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 17,
+    "wall_ms": 137988,
+    "cost_usd": 1.8459408000000002,
+    "dry_run": false
+  }
+}

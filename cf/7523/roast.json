@@ -1,0 +1,1773 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T04:03:33.883Z",
+  "input": {
+    "arg": "7523",
+    "cf": {
+      "id": 7523,
+      "url": "https://commitfest.postgresql.org/patch/7523/",
+      "title": "nbtree: opt-in leaf key prefix compression",
+      "status": "Needs review",
+      "authors": "Greg Burd (gregburd)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/at-01F1wsXLRH0qo%40floki",
+    "subject": "nbtree: opt-in leaf key prefix compression",
+    "thread_start": "2026-10-26T20:24:53Z",
+    "messages_read": 15,
+    "messages_total": 15,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v10-0001-nbtree-opt-in-leaf-key-prefix-compression.patch",
+      "0001-nbtree-opt-in-leaf-key-prefix-compression.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The goal has support: other databases have prefix compression, and the cost falls on indexes that turn it on. The design is not yet agreed. The leaf format would be permanent while header size, packing and fixed-width keys are still open (standards-compat-1). The proposal gives no argument that a coded leaf can always be split (replication-ondisk-3), and redo reruns the layout routine (maintenance-fit-1). Peter Geoghegan has not replied since v9.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "nbtree: opt-in leaf key prefix compression via a per-index storage parameter",
+    "problem": "Btree indexes on keys with long shared leading bytes store that prefix again in every tuple, so they are larger than needed and cost more I/O and WAL. The author names URLs, reverse-DNS names, file paths, tenant-prefixed keys and many btree indexes on jsonb paths, common in apps that moved from MongoDB.",
+    "proposed_design": "With prefix_compression on, a leaf written whole (build or split half) gets a BTP_PREFIX flag and a prefix directory item holding one or more groups, each with an anchor. Each data item stores only the bytes after its shared prefix, compared by stored bytes, not opclass equality. Old and new pages coexist with no BTREE_VERSION change, and redo rebuilds coded pages without full-page images.",
+    "user_visible_surface": [
+      "New btree storage parameter prefix_compression (boolean, default off), settable with ALTER INDEX without rewriting the index.",
+      "New page flag BTP_PREFIX (bit 512 of btpo_flags) and a prefix directory item on compressed leaf pages.",
+      "pageinspect bt_page_items shows coded items decoded, with itemlen giving the stored size.",
+      "xl_btree_split gains a flags field, which needs an XLOG_PAGE_MAGIC bump.",
+      "amcheck checks the directory and its cached decoded sizes."
+    ],
+    "author_claims": [
+      "On 2 million URL-like keys the index is 35-37% smaller and inserts write 17% less WAL, but inserts and CREATE INDEX take about 10% longer.",
+      "Warm reads are unchanged and cold-cache index scans are 25-35% faster.",
+      "Prefix compression composes with deduplication and bottom-up deletion on one page.",
+      "Byte-equality sharing is correct for every type, including user-defined ones, with no equalimage support function.",
+      "pg_upgrade, standbys and existing indexes need no REINDEX."
+    ],
+    "thread_state": "Peter Geoghegan asked for the motivation, the design trade-offs, and split guarantees in pathological cases before any WAL detail, and posted his own earlier prototype. Greg replaced v1-v8 with a multi-column, multi-prefix design (v9, v10) and asks for agreement on it; Yao Feng reviewed grouping and the per-item header cost.",
+    "unclear": [
+      "Whether Peter accepts the v9/v10 design or the new on-disk format commitment; he has not replied since v9.",
+      "No measured evidence that users put many btree indexes on jsonb paths, beyond the author's statement.",
+      "Message #7 asks a committer for BTREE_VERSION and catalog version bumps, but other messages say neither changes.",
+      "How fixed-width little-endian keys such as bigint or timestamptz should be handled; normalized keys are not explored.",
+      "Whether a legal split always exists in extreme pathological pages; the retry-split path has no stated proof or test."
+    ],
+    "search_queries": [
+      "btree prefix compression",
+      "nbtree key prefix truncation",
+      "index leaf front coding",
+      "btree index compression storage parameter",
+      "prefix_compression reloption",
+      "btree page format change compression",
+      "composite key prefix compression index",
+      "normalized keys btree"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P2",
+      "source_id": "cf:3078",
+      "title": "Iterating on IndexTuple attributes and nbtree page-level dynamic prefix truncation",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/3078/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2Whwvr8aYcBf0BeBuPy8mJGtwxGvQYA9OGR5eLFh6Q_ZvA@mail.gmail.com"
+      ],
+      "date": "2022-02-07",
+      "first_date": "2021-04-15",
+      "who_objected": "",
+      "quote": "Evidently, this needs improvements in the (likely common) attcacheoff-enabled multi-column case; as I don't think we can reasonably commit a 10+% regression.",
+      "quote_url": "https://www.postgresql.org/message-id/CAEze2WhyBT2bKZRdj_U0KS2Sbewa1XoO_BzgpzLC09sa5LUROg%40mail.gmail.com",
+      "enriched": true,
+      "reason": "The author's own June 2021 benchmarks showed regressions in multi-column indexes that can use attcacheoff: about 2% for insert and 15% for reindex with both patches. The author said this had to be fixed before commit, but no fixed version appears in the thread. In December 2021 Daniel Gustafsson moved the entry forward and noted that the patch no longer applied and needed a rebase. The visible messages do not show a rebased version or the final decision.",
+      "relation": "related_only",
+      "what_is_different": "P2 skipped equal leading attributes during binary search and stored nothing new. This proposal changes the leaf format, so P2 is an analogy only for the regression risk on reader paths."
+    },
+    {
+      "precedent_id": "P4",
+      "source_id": "cf:2731",
+      "title": "_bt_binsrch* improvements - equal-prefix-skip binary search",
+      "kind": "cf",
+      "status": "Withdrawn",
+      "url": "https://commitfest.postgresql.org/patch/2731/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2WjnrkzT9tfqFhSCPeH6LV-UUj5_oO5vX038dvfK7fDuyQ@mail.gmail.com"
+      ],
+      "date": "2020-09-15",
+      "first_date": "2020-09-11",
+      "who_objected": "Peter Geoghegan",
+      "quote": "Concurrent page deletions could occur, which could cause a scan that skips a prefix to miss that the page it landed on doesn't have the same common prefix anymore.",
+      "quote_url": "https://www.postgresql.org/message-id/CAH2-WznPxocJKaz%3DXMqKqPauawi-vtB62oXT9SkHhDNb7cpV9Q%40mail.gmail.com",
+      "enriched": true,
+      "reason": "Peter Geoghegan noted that his earlier patch for the same idea, dynamic prefix truncation, hit a problem with concurrent page deletions. A scan that carries a skipped prefix down the tree can land on a page that no longer shares that prefix. The author agreed this makes the approach near impossible without resetting the prefix on every page, and withdrew the patch.",
+      "relation": "related_only",
+      "what_is_different": "P4 carried a known-equal prefix down the tree, which concurrent page deletion breaks. This proposal codes items only against anchors on the same leaf, so that failure does not apply."
+    }
+  ],
+  "objections": [
+    {
+      "title": "On-disk format would be fixed while its basic layout is still in flux",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "backpatchability",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Release 20 ships the v10 layout: 6-byte code header, MAXALIGNed items, byte-order sharing. Release 21 adopts unaligned packing or normalized keys for bigint and timestamptz. Every later release must then read both layouts in pg_upgraded indexes, with only page flags to tell them apart.",
+      "argument": "Message #9 says the compressed representation is supported forever. The format has already been replaced once, from v8 to v9. Message #15 still lists unaligned packing and a smaller header as open, and message #13 leaves normalized keys open. Message #14 offers a different zone-based layout, and message #15 says neither layout is plainly right.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        9,
+        13,
+        14,
+        15
+      ],
+      "author_must_show": "Which of the open format questions (header size, unaligned packing, normalized keys) will be settled before commit, and how would a later change be marked on disk?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 9,
+          "from": "Peter Geoghegan",
+          "date": "2026-11-03T21:48:23Z",
+          "url": "https://www.postgresql.org/message-id/CAH2-WznyrHYLaROHDtaZfYWn3u6hx7jpzsbpQO_vxk8jDFO8GA%40mail.gmail.com"
+        },
+        {
+          "index": 13,
+          "from": "Greg Burd",
+          "date": "2026-11-09T15:57:48Z",
+          "url": "https://www.postgresql.org/message-id/avHtA-ipf4e30Hfk%40floki"
+        },
+        {
+          "index": 14,
+          "from": "Yao Feng",
+          "date": "2026-11-10T05:00:51Z",
+          "url": "https://www.postgresql.org/message-id/CAAU0Mh1an_cU-MoTgwfagxn1Bf0v8qc%2BPD-2WnkUvVJKZOFPng%40mail.gmail.com"
+        },
+        {
+          "index": 15,
+          "from": "Greg Burd",
+          "date": "2026-11-10T17:46:41Z",
+          "url": "https://www.postgresql.org/message-id/avNYO5QY5Jl127Rm%40floki"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #13 and #15 leave header size, unaligned packing and normalized keys open, and message #15 says neither layout is plainly right. The proposal does not say how a later layout change would be marked on disk.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No stated guarantee that a coded leaf can always be split",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user inserts a large key into a full coded leaf whose decoded contents are near the two-page limit. The retry path, which splits the existing items alone, still finds no legal split point. The insert then fails with an error on that page and keeps failing until the index is rebuilt, and the same layout may also be unreplayable on a standby.",
+      "argument": "Peter asked in message #9 for guarantees that a legal split is always available in pathological cases, and called it a property of the on-disk representation. The v10 commit message describes a cached decoded-size check plus an \"existing items are split alone and the insert is retried\" path, but it gives no argument for why the retry always succeeds. Message #3 also notes that the forced-image fallback is reachable only through an injection point. Peter has not replied since v9.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        9,
+        13
+      ],
+      "author_must_show": "What bound on decoded page contents, enforced on every insert, dedup and redo path, proves that both a split and its retry always find a legal point?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Greg Burd",
+          "date": "2026-10-27T17:50:50Z",
+          "url": "https://www.postgresql.org/message-id/y8lIX15Mjse_ALeMMfsK1oakyoxjIU4p2HLHF8sQArBsYgFDvAZz7vVCW26vl6IP7AEMWQArSkqBxvyCa4OKdXe8eiZ6OxqgvIC0FnJEM7c%3D%40burd.me"
+        },
+        {
+          "index": 9,
+          "from": "Peter Geoghegan",
+          "date": "2026-11-03T21:48:23Z",
+          "url": "https://www.postgresql.org/message-id/CAH2-WznyrHYLaROHDtaZfYWn3u6hx7jpzsbpQO_vxk8jDFO8GA%40mail.gmail.com"
+        },
+        {
+          "index": 13,
+          "from": "Greg Burd",
+          "date": "2026-11-09T15:57:48Z",
+          "url": "https://www.postgresql.org/message-id/avHtA-ipf4e30Hfk%40floki"
+        }
+      ],
+      "id": "replication-ondisk-3",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The README points to an argument in _bt_prefix_split_needed for the balanced split, but the visible material gives none for why the retry path always ends. The forced-image fallback in message #3 belongs to the replaced design and must not be used as support.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Redo reruns the grouping heuristic, freezing it into the WAL format",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication",
+        "backpatchability",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A minor release changes how leaf groups are chosen, as v10 already did. The standby runs the new minor version and the primary the old one, the usual order during a minor upgrade. Redo lays out a different coded left half than the primary wrote, and with wal_consistency_checking off nobody notices until a later read or failover returns wrong results.",
+      "argument": "The v10 commit message says redo collects the left half's items as the primary did and lays them out with the same routine, so the grouping rule runs on both sides. Message #2 names this hazard: two copies that must agree exactly, or a standby diverges with no version bump to catch it. Message #15 changed that rule between v9 and v10. A shared routine removes the duplicated code, but every future fix to the heuristic becomes a WAL format change that is easy to miss in a backpatch.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        15
+      ],
+      "author_must_show": "Why not log the chosen groups for both halves, so a later change to the grouping rule cannot make primary and standby build different pages?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Greg Burd",
+          "date": "2026-10-27T16:50:00Z",
+          "url": "https://www.postgresql.org/message-id/iMzeiKz_iFUwu8k8FTdo2CJ1Qp_x7SkvdLxEtYPhM3y_XfFY8mNM1fpSKoWimjR9ZKTz_4XT8BNCYKJWSq9w087DmY29cvnVrmvKCzLplnk%3D%40burd.me"
+        },
+        {
+          "index": 15,
+          "from": "Greg Burd",
+          "date": "2026-11-10T17:46:41Z",
+          "url": "https://www.postgresql.org/message-id/avNYO5QY5Jl127Rm%40floki"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The v10 commit message says redo lays out the left half with the same routine and does not say the groups are logged. Existing nbtree redo logs decisions such as dedup intervals and replays only mechanical steps, so this departure needs a stated reason.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Every future leaf reader must use _bt_getitem, and a missed one stays silent",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later nbtree patch, or an extension that inspects btree pages, reads a leaf data item with PageGetItem as all existing code does. On plain pages it works and its tests pass. On a BTP_PREFIX page it reads a coded tuple as a real key, which shows up in the field as a wrong comparison or a wrong index-only scan result.",
+      "argument": "Message #1 says every read of a leaf data item must go through _bt_getitem, and the audit missed the array-scan look-ahead in _bt_readpage on its first pass. Old and new formats coexist in one index with no version bump, so this rule applies to all nbtree code from now on. The proposal has no check that fails loudly when PageGetItem returns a coded item. External tools that parse btree pages get no signal beyond a flag bit.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "What makes a leaf data item read that bypasses _bt_getitem fail loudly in assert builds, and what is the plan for out-of-tree code that reads btree pages?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Greg Burd",
+          "date": "2026-10-26T20:24:53Z",
+          "url": "https://www.postgresql.org/message-id/at-01F1wsXLRH0qo%40floki"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Posting list tuples carry a similar rule, but they are marked in the tuple and exercised by default. A coded item has no tuple-level marker and the parameter is off by default, so a missed reader passes the regression tests.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No master-versus-patch numbers for the default-off path in v10",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user who never enables prefix_compression upgrades. Every leaf read now checks BTP_PREFIX and goes through _bt_getitem(), and _bt_compare() decodes on compressed pages. If that adds a few percent to descent or scans, every btree index pays for it, and users see it only as slower queries after the upgrade.",
+      "argument": "Message #1 showed the off path matching master, but that was for v1, which v9 and v10 replaced (message #13). The v10 commit message compares the index only with itself without the parameter, in the same binary. [P2] was returned because of about 2% insert and 15% reindex regressions on common multi-column indexes. Reader paths that every index uses carry the same risk here.",
+      "precedent_ids": [
+        "P2"
+      ],
+      "thread_message_refs": [
+        1,
+        13,
+        15
+      ],
+      "author_must_show": "With prefix_compression off, how do v10 point lookups, range scans, inserts and CREATE INDEX compare with master on common single- and multi-column indexes?",
+      "precedents": [
+        {
+          "id": "P2",
+          "title": "Iterating on IndexTuple attributes and nbtree page-level dynamic prefix truncation",
+          "url": "https://commitfest.postgresql.org/patch/3078/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CAEze2Whwvr8aYcBf0BeBuPy8mJGtwxGvQYA9OGR5eLFh6Q_ZvA@mail.gmail.com"
+          ],
+          "date": "2022-02-07",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Greg Burd",
+          "date": "2026-10-26T20:24:53Z",
+          "url": "https://www.postgresql.org/message-id/at-01F1wsXLRH0qo%40floki"
+        },
+        {
+          "index": 13,
+          "from": "Greg Burd",
+          "date": "2026-11-09T15:57:48Z",
+          "url": "https://www.postgresql.org/message-id/avHtA-ipf4e30Hfk%40floki"
+        },
+        {
+          "index": 15,
+          "from": "Greg Burd",
+          "date": "2026-11-10T17:46:41Z",
+          "url": "https://www.postgresql.org/message-id/avNYO5QY5Jl127Rm%40floki"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The only off-versus-master numbers are for v1 and v4, and message #13 says v9 replaces that design completely. [P2] concerns a different patch with a measured regression, so it is an analogy only and must not be used as support.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "Large single-commit nbtree change without an engaged owner for the aftermath",
+      "level": "2",
+      "rubric_item": 16,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer pushes the 175 KiB single commit. A year later a standby reports a page mismatch in a posting-list split on a coded page, one of the paths message #1 calls fiddly. The one nbtree expert in the thread never accepted the design, so the fix waits for whoever can reconstruct the reasoning behind a prototype its author calls vibe-coded.",
+      "argument": "Message #13 presents v9 as a proof of concept and asks for design agreement first, and v10 is still one commit touching insert, split, dedup, search, sort and redo. Message #9 reflects doubt about the design from the only nbtree specialist in the thread. [P3] records that nbtree is high-risk, hard to debug and short on expert review. Infrastructure such as the _bt_getitem accessor could land first, but the series does not separate it.",
+      "precedent_ids": [
+        "P3"
+      ],
+      "thread_message_refs": [
+        1,
+        9,
+        13,
+        15
+      ],
+      "author_must_show": "Which parts could be committed and reviewed alone first, and which nbtree-qualified committer has agreed to own the coded-page WAL paths after commit?",
+      "precedents": [
+        {
+          "id": "P3",
+          "title": "Btree compression",
+          "url": "https://commitfest.postgresql.org/patch/494/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/55E4051B.7020209@postgrespro.ru"
+          ],
+          "date": "2016-03-29",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Greg Burd",
+          "date": "2026-10-26T20:24:53Z",
+          "url": "https://www.postgresql.org/message-id/at-01F1wsXLRH0qo%40floki"
+        },
+        {
+          "index": 9,
+          "from": "Peter Geoghegan",
+          "date": "2026-11-03T21:48:23Z",
+          "url": "https://www.postgresql.org/message-id/CAH2-WznyrHYLaROHDtaZfYWn3u6hx7jpzsbpQO_vxk8jDFO8GA%40mail.gmail.com"
+        },
+        {
+          "index": 13,
+          "from": "Greg Burd",
+          "date": "2026-11-09T15:57:48Z",
+          "url": "https://www.postgresql.org/message-id/avHtA-ipf4e30Hfk%40floki"
+        },
+        {
+          "index": 15,
+          "from": "Greg Burd",
+          "date": "2026-11-10T17:46:41Z",
+          "url": "https://www.postgresql.org/message-id/avNYO5QY5Jl127Rm%40floki"
+        }
+      ],
+      "id": "maintenance-fit-4",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The single-commit shape is a real level 2 concern. Ownership belongs under committability, since Peter is engaged and message #13 does not ask for commit. [P3] was about late WAL support in a final CommitFest and must not be used as support.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "Motivating jsonb workload is asserted, and expression index keys may not hold paths",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The new leaf format ships, and a team that migrated from MongoDB turns prefix_compression on for its many indexes like (data->>'email'). Those keys hold only the extracted scalar values, so the indexes barely shrink. The project still supports the second leaf format for good.",
+      "argument": "Message #9 asks whether users put btree indexes on jsonb paths at all and calls a detailed picture of user impact essential, because the format is permanent. Message #10 answers with an assertion and a mention of documentdb, with no counts, field reports or schemas. An expression index on a jsonb field stores the extracted value, not the path, and the 'jsonb (tenant+path)' benchmark in message #4 is a synthetic key shape. The jsonb case is the main stated user group, so the demand behind it is not yet shown.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4,
+        9,
+        10,
+        13
+      ],
+      "author_must_show": "Which real schemas, with their index definitions, have btree keys whose stored bytes share long prefixes, and how much do those indexes shrink?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "Greg Burd",
+          "date": "2026-10-29T16:42:53Z",
+          "url": "https://www.postgresql.org/message-id/auN2SdTLllCuHksC%40floki"
+        },
+        {
+          "index": 9,
+          "from": "Peter Geoghegan",
+          "date": "2026-11-03T21:48:23Z",
+          "url": "https://www.postgresql.org/message-id/CAH2-WznyrHYLaROHDtaZfYWn3u6hx7jpzsbpQO_vxk8jDFO8GA%40mail.gmail.com"
+        },
+        {
+          "index": 10,
+          "from": "Greg Burd",
+          "date": "2026-11-04T14:31:45Z",
+          "url": "https://www.postgresql.org/message-id/7AFniRZ51Rofvz04_p1ypbJYNtVOdgj9Y093sxb6246oFoS4Z6kuwBdFvprrA_rXMA4Wf8CZlvF_PGSErXAaYg5_9yTB3KBcXKzKRPp7hXg%3D%40burd.me"
+        },
+        {
+          "index": 13,
+          "from": "Greg Burd",
+          "date": "2026-11-09T15:57:48Z",
+          "url": "https://www.postgresql.org/message-id/avHtA-ipf4e30Hfk%40floki"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #13 cites Oracle and SQL Server, which supports demand for prefix compression in general. The jsonb case is still only asserted in message #10, and an index on data->>'field' stores the extracted value, so its gain is not shown.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Contradictory statements on BTREE_VERSION and catalog version bumps",
+      "level": "1a",
+      "rubric_item": 1,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "catalog"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer follows message #7 and bumps BTREE_VERSION. pg_upgraded indexes then carry the old metapage version, while the docs promise that these indexes keep working without a REINDEX. Tools that check the metapage version then disagree with the docs about which indexes may hold BTP_PREFIX pages.",
+      "argument": "Message #7 asks the committer for a BTREE_VERSION bump and a catalog version bump. Messages #1 and #13 and the v10 commit message say neither changes. The pg_upgrade and replication promise depends on which of the two is true, so the compatibility contract cannot be judged until the proposal picks one.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        7,
+        13
+      ],
+      "author_must_show": "Does the final design change BTREE_VERSION or catversion, and if not, how does a tool or a later release tell from the metapage that an index may hold BTP_PREFIX pages?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Greg Burd",
+          "date": "2026-10-26T20:24:53Z",
+          "url": "https://www.postgresql.org/message-id/at-01F1wsXLRH0qo%40floki"
+        },
+        {
+          "index": 7,
+          "from": "Greg Burd",
+          "date": "2026-11-03T17:48:41Z",
+          "url": "https://www.postgresql.org/message-id/auocmb4xgo-Zl8_T%40floki"
+        },
+        {
+          "index": 13,
+          "from": "Greg Burd",
+          "date": "2026-11-09T15:57:48Z",
+          "url": "https://www.postgresql.org/message-id/avHtA-ipf4e30Hfk%40floki"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "Message #13 says v9 replaces v1-v8 completely and that BTREE_VERSION and the catalog do not change. The v10 commit message repeats this and names XLOG_PAGE_MAGIC as the only bump, so the current design is consistent.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "pageinspect output changes meaning on compressed leaves",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "psql_ux",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA runs bt_page_items and bt_page_stats on a compressed index to estimate bloat or average key size. The prefix directory appears as an extra item at the first data offset. itemlen no longer matches the length of data, so the estimates are wrong without any warning.",
+      "argument": "The pageinspect doc hunk says the directory item may sit where the first data item would be. It also says data is shown decoded while itemlen shows the stored size. The proposal does not say how bt_page_stats counts the directory in live_items and avg_item_size, or how a script can tell the directory apart from a data item without decoding btpo_flags.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        15
+      ],
+      "author_must_show": "How do bt_page_items and bt_page_stats mark the directory item and report sizes, so that existing inspection queries stay correct on compressed pages?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 15,
+          "from": "Greg Burd",
+          "date": "2026-11-10T17:46:41Z",
+          "url": "https://www.postgresql.org/message-id/avNYO5QY5Jl127Rm%40floki"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "The pageinspect doc hunk states where the directory item sits, that BTP_PREFIX marks the page, and that itemlen is the stored size. How bt_page_stats counts the directory is line-level detail, outside levels 1-2.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Split and dedup redo recompute layout, so minor-release fixes can desynchronize standbys",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication",
+        "backpatchability",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fatal",
+      "failure_scenario": "A minor release changes the grouping rule, as v10 did in message #15, and an operator upgrades the standby first. Split redo lays out the left half with the new routine while the primary used the old one. Later insert redo hits a different page layout, and the divergence shows up only as wrong results after failover or as a wal_consistency_checking failure nobody runs.",
+      "argument": "The v10 commit message says split redo decodes the original page, collects the left half's items \"as the primary did\" and lays them out with the same routine, and dedup is replayed \"by repeating the primary's steps\". Correctness then depends on primary and standby running identical heuristic code, with no full-page image to absorb a difference. Message #2 calls two copies that must agree \"the classic footgun\", and one shared routine still gives two binaries during a rolling upgrade. Any later fix to grouping or layout becomes a WAL compatibility change that minor releases normally avoid.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        13,
+        15
+      ],
+      "author_must_show": "Can redo build coded pages only from logged inputs, such as group boundaries and anchors, so that a later change to the grouping heuristic never changes replay output?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Greg Burd",
+          "date": "2026-10-27T16:50:00Z",
+          "url": "https://www.postgresql.org/message-id/iMzeiKz_iFUwu8k8FTdo2CJ1Qp_x7SkvdLxEtYPhM3y_XfFY8mNM1fpSKoWimjR9ZKTz_4XT8BNCYKJWSq9w087DmY29cvnVrmvKCzLplnk%3D%40burd.me"
+        },
+        {
+          "index": 13,
+          "from": "Greg Burd",
+          "date": "2026-11-09T15:57:48Z",
+          "url": "https://www.postgresql.org/message-id/avHtA-ipf4e30Hfk%40floki"
+        },
+        {
+          "index": 15,
+          "from": "Greg Burd",
+          "date": "2026-11-10T17:46:41Z",
+          "url": "https://www.postgresql.org/message-id/avNYO5QY5Jl127Rm%40floki"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1. Logging the chosen groups for both halves would solve it, so the severity is fixable in any case.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Leaf item reads through PageGetItem silently return coded bytes",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A future core patch or an extension that reads nbtree leaf pages calls PageGetItem on a data item, as all such code does today. On a BTP_PREFIX page it gets a coded tuple and compares or returns wrong key bytes. Tests pass because prefix_compression is off by default, and users find out only through wrong query results.",
+      "argument": "Message #1 says every leaf data item read must go through _bt_getitem(), and the author already missed one reader in _bt_readpage(). With no BTREE_VERSION change, a coded page looks like an ordinary leaf to any code that does not check the flag. A missed check does not fail loudly, and regression runs with the default setting never reach a coded page.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "What makes a PageGetItem read of a coded leaf data item fail loudly, in core and in extensions, instead of returning coded bytes?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Greg Burd",
+          "date": "2026-10-26T20:24:53Z",
+          "url": "https://www.postgresql.org/message-id/at-01F1wsXLRH0qo%40floki"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-2.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Permanent on-disk format proposed before the design space is settled",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The v10 byte-level format is committed. Users with (bigint, timestamptz, text) keys get almost nothing because little-endian integers differ in their first byte. A later normalized-key or type-aware scheme then needs a second coded format, and every release must read v10 pages indefinitely because they are never converted back.",
+      "argument": "Message #9 asks for the trade-offs and the design space before the project takes on a compressed representation forever, and warns that an omitted capability will likely never be added after commit. Message #13 says normalized keys are not explored and leaves fixed-width keys as an open question. Message #14 gives a competing layout with no per-item header. Peter has not replied since v9, so there is no agreement yet on which format the project would carry.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        9,
+        13,
+        14
+      ],
+      "author_must_show": "Can v10 pages and a later normalized-key or type-aware format share one flag and reader, or would fixed-width support need a second permanent format?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 9,
+          "from": "Peter Geoghegan",
+          "date": "2026-11-03T21:48:23Z",
+          "url": "https://www.postgresql.org/message-id/CAH2-WznyrHYLaROHDtaZfYWn3u6hx7jpzsbpQO_vxk8jDFO8GA%40mail.gmail.com"
+        },
+        {
+          "index": 13,
+          "from": "Greg Burd",
+          "date": "2026-11-09T15:57:48Z",
+          "url": "https://www.postgresql.org/message-id/avHtA-ipf4e30Hfk%40floki"
+        },
+        {
+          "index": 14,
+          "from": "Yao Feng",
+          "date": "2026-11-10T05:00:51Z",
+          "url": "https://www.postgresql.org/message-id/CAAU0Mh1an_cU-MoTgwfagxn1Bf0v8qc%2BPD-2WnkUvVJKZOFPng%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1, which covers the same open format questions and also asks how a later change would be marked on disk.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No comparison with hash and GIN indexes for the motivating workloads",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "desirability",
+      "touch_points": [
+        "does_not_fit",
+        "on_disk_pg_upgrade",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user with a large URL index enables prefix_compression and gets about 35% savings. A hash index on the same column, used only for equality lookups, already stores a 4-byte hash code per tuple. The project still supports a permanent second leaf format for a case that existing index types may already serve well.",
+      "argument": "The two named workloads are URL-like keys and many btree indexes on jsonb paths. The thread never compares the feature with a hash index for URL equality lookups, or with one GIN index (jsonb_ops or jsonb_path_ops) in place of dozens of per-field btree expression indexes (messages #1, #10, #13). Both alternatives exist today, but neither supports range scans or ordering, and hash indexes cannot back unique constraints. Message #9 says the format would be supported forever, so a committer would likely ask which cases are left that only this feature can serve.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        9,
+        10,
+        13
+      ],
+      "author_must_show": "For the URL and many-jsonb-field users you describe, which queries need btree ordering, range scans or uniqueness, so that a hash index or one GIN index cannot serve them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Greg Burd",
+          "date": "2026-10-26T20:24:53Z",
+          "url": "https://www.postgresql.org/message-id/at-01F1wsXLRH0qo%40floki"
+        },
+        {
+          "index": 9,
+          "from": "Peter Geoghegan",
+          "date": "2026-11-03T21:48:23Z",
+          "url": "https://www.postgresql.org/message-id/CAH2-WznyrHYLaROHDtaZfYWn3u6hx7jpzsbpQO_vxk8jDFO8GA%40mail.gmail.com"
+        },
+        {
+          "index": 10,
+          "from": "Greg Burd",
+          "date": "2026-11-04T14:31:45Z",
+          "url": "https://www.postgresql.org/message-id/7AFniRZ51Rofvz04_p1ypbJYNtVOdgj9Y093sxb6246oFoS4Z6kuwBdFvprrA_rXMA4Wf8CZlvF_PGSErXAaYg5_9yTB3KBcXKzKRPp7hXg%3D%40burd.me"
+        },
+        {
+          "index": 13,
+          "from": "Greg Burd",
+          "date": "2026-11-09T15:57:48Z",
+          "url": "https://www.postgresql.org/message-id/avHtA-ipf4e30Hfk%40floki"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "Hash indexes are single-column and cannot serve unique constraints, ordering or prefix range scans. GIN on jsonb serves containment only. The tenant-prefixed multicolumn keys, file paths and unique URL keys named in the thread need btree, as the objection itself concedes.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Measured gain on realistic keys is modest beside a 10% write cost",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "desirability",
+      "touch_points": [
+        "maintenance_burden",
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA enables prefix_compression on an ordinary text or code index because the thread promised 'about 3x smaller'. After REINDEX the index is about 9% smaller, and inserts and builds are about 10% slower. The DBA sees this only after measuring in production.",
+      "argument": "Message #1 and message #10 claim a gain of about 3x, and message #10 calls 3x the likely 'floor' without measuring it. The CREATE INDEX table in message #4 shows 8-10% smaller indexes for url, code, md5 and jsonb shapes, and build WAL grew for md5. The v10 commit message reports 35-37% smaller indexes on one URL shape, against about 10% slower inserts and builds. The users who gain a lot may form a narrow group, while every future nbtree change must handle the second leaf format.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        4,
+        10
+      ],
+      "author_must_show": "On key shapes taken from real indexes, not synthetic generators, what size reduction and what insert or build cost does v10 show?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Greg Burd",
+          "date": "2026-10-26T20:24:53Z",
+          "url": "https://www.postgresql.org/message-id/at-01F1wsXLRH0qo%40floki"
+        },
+        {
+          "index": 4,
+          "from": "Greg Burd",
+          "date": "2026-10-29T16:42:53Z",
+          "url": "https://www.postgresql.org/message-id/auN2SdTLllCuHksC%40floki"
+        },
+        {
+          "index": 10,
+          "from": "Greg Burd",
+          "date": "2026-11-04T14:31:45Z",
+          "url": "https://www.postgresql.org/message-id/7AFniRZ51Rofvz04_p1ypbJYNtVOdgj9Y093sxb6246oFoS4Z6kuwBdFvprrA_rXMA4Wf8CZlvF_PGSErXAaYg5_9yTB3KBcXKzKRPp7hXg%3D%40burd.me"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "The 8-10% table is from the replaced v4 design on near-duplicate keys, which message #4 explains; v10 reports 35-52%. The 10% write cost falls only on indexes that turn the parameter on, so rubric item 4 does not fail.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "New BTP_PREFIX leaf format with a prefix directory item coexists with plain pages in one index indefinitely."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "xl_btree_split gains a flags field, XLOG_PAGE_MAGIC is bumped, and redo rebuilds coded pages without full-page images."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "Out-of-tree code that reads leaf data items with PageGetItem gets coded bytes on BTP_PREFIX pages."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": true,
+      "reason": "The new prefix_compression storage parameter must be dumped and restored like other btree reloptions."
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "Redo reruns the layout routine, so a later fix to grouping changes what a standby on another minor version builds."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "A second permanent leaf format, and every future leaf reader must go through _bt_getitem()."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Every leaf read checks the page flag and goes through _bt_getitem(), also for indexes with the parameter off."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Which open format questions (header size, unaligned packing, normalized keys for fixed-width types) will be settled before commit, and how would a later layout change be marked on disk?",
+    "What bound on decoded page contents, kept by every insert, deduplication and redo path, proves that a split and its retry always find a legal split point?",
+    "Why does split redo rerun the layout routine for the left half instead of replaying logged groups and anchors for both halves?",
+    "With prefix_compression off, how does v10 compare with master on point lookups, range scans, inserts and CREATE INDEX for common single-column and multicolumn indexes?",
+    "Which real schemas, with their index definitions, have btree keys whose stored bytes share long prefixes, and how much do those indexes shrink with v10?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Peter Geoghegan asked the design questions in message #9 but has not replied since v9. The owner must know nbtree page splits, deduplication and nbtree redo.",
+    "liability": "A second leaf format that every later release must read, because coded pages are never converted back. Also the coded-page redo paths and the rule that all leaf readers use _bt_getitem().",
+    "author_follow_up": "The author posted ten versions in about three weeks and says in message #1 that he will work through whatever review turns up."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "high",
+    "review_cost": "high",
+    "recommended_action": "fix design first",
+    "reason": "Keys with long shared prefixes and low-cardinality leading columns are common enough to matter. The patch is about 175 KiB in one commit across nbtree insert, split, deduplication, search and redo, and the permanent format is still open."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, the split argument in _bt_prefix_split_needed, the completeness of the _bt_getitem() audit and the determinism of redo could not be checked. Only 3 of 15 messages were shown in full.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:4635",
+      "kind": "cf",
+      "title": "nbtree: implement dynamic prefix truncation",
+      "status": "Withdrawn",
+      "date": "2026-10-01",
+      "first_date": "2023-10-31",
+      "url": "https://commitfest.postgresql.org/patch/4635/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2Wh-h20DmPSMXp4qHR0-ykh9=Z3ejX8MSsbikbOqaYe_OQ@mail.gmail.com"
+      ],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "Peter Geoghegan",
+      "summary": "The patch adds per-page dynamic prefix truncation to the nbtree binary search. When tuples on both sides of the search position are known to equal the scan key on their first attributes, comparisons skip those attributes, which cuts compare calls for indexes with long, low-cardinality key prefixes.",
+      "objection": "The visible messages do not show why the author withdrew the entry. The last review, by Peter Geoghegan on v16, found almost no speedup on his land registry benchmark, which he expected to suit the patch. He also asked why the prefix handling in _bt_check_unique is safe and reported an amcheck bug. The thread shows no author reply or new version after that review.",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "btree prefix compression",
+        "nbtree key prefix truncation",
+        "prefix_compression reloption",
+        "composite key prefix compression index"
+      ],
+      "from_hint": false,
+      "score": 0.572,
+      "enriched": true,
+      "key_quote": "I wasn't able to see much of an improvement with this patch applied.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAH2-Wzm5M%2BDjb8dJnGdiP8dwN7fZDNR-PSwNekGvKxa9-a_9cQ%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:3078",
+      "kind": "cf",
+      "title": "Iterating on IndexTuple attributes and nbtree page-level dynamic prefix truncation",
+      "status": "Returned with feedback",
+      "date": "2022-02-07",
+      "first_date": "2021-04-15",
+      "url": "https://commitfest.postgresql.org/patch/3078/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2Whwvr8aYcBf0BeBuPy8mJGtwxGvQYA9OGR5eLFh6Q_ZvA@mail.gmail.com"
+      ],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "",
+      "summary": "Patch 0001 adds an API to iterate over index tuple attributes and reuse the offset of the last extracted attribute, so extracting all attributes costs O(n) instead of O(n*n) when attcacheoff cannot be used. Patch 0002 uses this to truncate attribute prefixes dynamically during nbtree binary search within a page, as a first step toward prefix truncation in nbtree.",
+      "objection": "The author's own June 2021 benchmarks showed regressions in multi-column indexes that can use attcacheoff: about 2% for insert and 15% for reindex with both patches. The author said this had to be fixed before commit, but no fixed version appears in the thread. In December 2021 Daniel Gustafsson moved the entry forward and noted that the patch no longer applied and needed a rebase. The visible messages do not show a rebased version or the final decision.",
+      "touch_points": [],
+      "matched_queries": [
+        "btree prefix compression",
+        "nbtree key prefix truncation",
+        "prefix_compression reloption",
+        "composite key prefix compression index"
+      ],
+      "from_hint": false,
+      "score": 0.472,
+      "enriched": true,
+      "key_quote": "Evidently, this needs improvements in the (likely common) attcacheoff-enabled multi-column case; as I don't think we can reasonably commit a 10+% regression.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAEze2WhyBT2bKZRdj_U0KS2Sbewa1XoO_BzgpzLC09sa5LUROg%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:494",
+      "kind": "cf",
+      "title": "Btree compression",
+      "status": "Returned with feedback",
+      "date": "2016-03-29",
+      "first_date": "2015-08-31",
+      "url": "https://commitfest.postgresql.org/patch/494/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/55E4051B.7020209@postgrespro.ru"
+      ],
+      "authors": "Anastasia Lubennikova (lubennikovaav)",
+      "objectors": "Robert Haas, Peter Geoghegan, Jim Nasby",
+      "summary": "Store duplicate keys in B-tree indexes as posting lists (one index tuple per unique key carrying multiple heap TIDs), porting GIN's duplicate handling to nbtree to reduce index size and avoid page splits. The WIP patch targeted non-unique indexes, with WAL support added late, and microvacuum (LP_DEAD) handling disabled at that point.",
+      "objection": "The patch was judged too immature for the final 9.6 CommitFest: WAL support was added only weeks into that CommitFest, the WAL changes had no code review, and the author still listed open items (NULL handling, locking re-check, BTMaxItemSize, microvacuum). Reviewers noted that the B-tree access method is a high-risk place for destabilizing changes, hard to debug and short on expert review, and that design questions such as the deletion locking protocol had not been answered. The author agreed and moved it to a future CommitFest.",
+      "touch_points": [],
+      "matched_queries": [
+        "btree prefix compression",
+        "btree index compression storage parameter",
+        "btree page format change compression",
+        "composite key prefix compression index"
+      ],
+      "from_hint": false,
+      "score": 0.433,
+      "enriched": true,
+      "key_quote": "A btree patch that didn't\nhave WAL support until two and a half weeks into the final CommitFest\njust doesn't seem to me like a good candidate.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoaT4-YM-aMWrE8NOiV10UEnZaZ19RaPHdAbweWYJOra2g%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:2731",
+      "kind": "cf",
+      "title": "_bt_binsrch* improvements - equal-prefix-skip binary search",
+      "status": "Withdrawn",
+      "date": "2020-09-15",
+      "first_date": "2020-09-11",
+      "url": "https://commitfest.postgresql.org/patch/2731/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2WjnrkzT9tfqFhSCPeH6LV-UUj5_oO5vX038dvfK7fDuyQ@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "Peter Geoghegan",
+      "summary": "The patch changes _bt_compare and the _bt_binsrch* functions to track which key columns are already known equal from the page's high and low keys, so later comparisons skip that equal prefix during descent. It also moves the core of _bt_compare into a static inline function to cut call overhead in the binary search loops.",
+      "objection": "Peter Geoghegan noted that his earlier patch for the same idea, dynamic prefix truncation, hit a problem with concurrent page deletions. A scan that carries a skipped prefix down the tree can land on a page that no longer shares that prefix. The author agreed this makes the approach near impossible without resetting the prefix on every page, and withdrew the patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "btree prefix compression",
+        "nbtree key prefix truncation",
+        "prefix_compression reloption"
+      ],
+      "from_hint": false,
+      "score": 0.326,
+      "enriched": true,
+      "key_quote": "Concurrent page deletions could occur, which could\ncause a scan that skips a prefix to miss that the page it landed on\ndoesn't have the same common prefix anymore.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAH2-WznPxocJKaz%3DXMqKqPauawi-vtB62oXT9SkHhDNb7cpV9Q%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:4606",
+      "kind": "cf",
+      "title": "Fix log_line_prefix to display the transaction id (%x) for statements not in a transaction block",
+      "status": "Withdrawn",
+      "date": "2024-05-18",
+      "first_date": "2023-10-08",
+      "url": "https://commitfest.postgresql.org/patch/4606/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/12fa0c9a-2189-ed7a-016a-3f1b99bd756c@yeah.net"
+      ],
+      "authors": "Zongliang Quan (quanzl)",
+      "objectors": "Robert Haas, jian he",
+      "summary": "The patch makes log_statement output show the real XID in the %x escape of log_line_prefix for statements outside a transaction block. When no XID is assigned yet, it holds back the statement log line and writes it before finish_xact_command, once the XID is known.",
+      "objection": "Robert Haas argued that log_statement should keep logging a statement before it runs, as it has long done. With the patch the log line comes sometimes before and sometimes after execution, so users can no longer assume a running statement has already been logged. jian he showed that with auto_explain the plan and statement lines come out in the wrong order. The author found no simpler design, withdrew the entry, and Bruce Momjian removed the TODO item.",
+      "touch_points": [],
+      "matched_queries": [
+        "btree prefix compression",
+        "nbtree key prefix truncation",
+        "prefix_compression reloption"
+      ],
+      "from_hint": false,
+      "score": 0.312,
+      "enriched": true,
+      "key_quote": "I don't think it's reasonable at all. We can't log the XID before it's\nassigned, and we can't log the statement after the XID is assigned\nwithout completely changing how the parameter works.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoZMLA6G3ZknhDuC02evgU6Dc5GGb%2B-7YaonR-Qc%3DTcUXA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "revert:8aee330af55d8a759b2b73f5a771d9d34a7b887f",
+      "kind": "revert",
+      "title": "Revert temporal primary keys and foreign keys",
+      "status": "Reverted",
+      "date": "2024-05-16",
+      "first_date": "2024-01-19",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=8aee330af55d8a759b2b73f5a771d9d34a7b887f",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/d0b64a7a-dfe4-4b84-a906-c7dedfa40a3e@eisentraut.org",
+        "https://www.postgresql.org/message-id/flat/CA+renyUApHgSZF9-nd-a0+OPGharLQLO=mDHcY4_qQ0+noCUVg@mail.gmail.com"
+      ],
+      "authors": "Peter Eisentraut",
+      "objectors": "",
+      "summary": "Revert temporal primary keys and foreign keys\nReverted commit(s): Add stratnum GiST support function; Add temporal PRIMARY KEY and UNIQUE constraints; Fix comment on gist_stratnum_btree; Rename pg_constraint.conwithoutoverlaps to conperiod; Use daterange and YMD in without_overlaps tests instead of tsrange.",
+      "objection": "This feature set did not handle empty ranges correctly, and it's now\ntoo late for PostgreSQL 17 to fix it.\n\nThe following commits are reverted:\n\n    6db4598fcb8 Add stratnum GiST support function\n    46a0cd4cefb Add temporal PRIMARY KEY and UNIQUE constraints\n    86232a49a43 Fix comment on gist_stratnum_btree\n    030e10ff1a3 Rename pg_constraint.conwithoutoverlaps to conperiod\n    a88c800deb6 Use daterange and YMD in without_overlaps tests instead of tsrange.\n    5577a71fb0c Use half-open interval notation in without_overlaps tests\n    34768ee3616 Add temporal FOREIGN KEY contraints\n    482e108cd38 Add test for REPLICA IDENTITY with a temporal key\n    c3db1f30cba doc:  clarify PERIOD and WITHOUT OVERLAPS in CREATE TABLE\n    144c2ce0cc7 Fix ON CONFLICT DO NOTHING/UPDATE for temporal indexes",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "composite key prefix compression index",
+        "normalized keys btree"
+      ],
+      "from_hint": false,
+      "score": 0.236,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "revert:71ed8b3ca76cd720f4013c3c20f0d2706583ab9a",
+      "kind": "revert",
+      "title": "Revert \"Fix bogus %name-prefix option syntax in all our Bison files.\"",
+      "status": "Reverted",
+      "date": "2014-05-28",
+      "first_date": "2014-05-28",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=71ed8b3ca76cd720f4013c3c20f0d2706583ab9a",
+      "thread_urls": [],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Fix bogus %name-prefix option syntax in all our Bison files.\"\nReverted commit(s): Fix bogus %name-prefix option syntax in all our Bison files.",
+      "objection": "This reverts commit 45b7abe59e9485657ac9380f35d2d917dd0da25b.\n\nIt turns out that the %name-prefix syntax without \"=\" does not work\nat all in pre-2.4 Bison.  We are not prepared to make such a large\njump in minimum required Bison version just to suppress a warning\nmessage in a version hardly any developers are using yet.\nWhen 3.0 gets more popular, we'll figure out a way to deal with this.\nIn the meantime, BISONFLAGS=-Wno-deprecated is recommendable for\nanyone using 3.0 who doesn't want to see the warning.",
+      "touch_points": [
+        "SQL syntax / standard"
+      ],
+      "matched_queries": [
+        "btree prefix compression",
+        "nbtree key prefix truncation",
+        "prefix_compression reloption"
+      ],
+      "from_hint": false,
+      "score": 0.222,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:5606",
+      "kind": "cf",
+      "title": "Remove extra Sort node above a btree-compatible Index Scan",
+      "status": "Returned with feedback",
+      "date": "2025-09-01",
+      "first_date": "2025-02-28",
+      "url": "https://commitfest.postgresql.org/patch/5606/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAK98qZ0MVVdV1tQKhHq=2qVkKN1rWff-YW6BGOOLoO509krv4Q@mail.gmail.com"
+      ],
+      "authors": "Alexandra Wang (alexandrawang)",
+      "objectors": "Tom Lane",
+      "summary": "The patch changes the planner's pathkey comparison so that an index from a B-tree-compatible access method in a different operator family is treated as matching the ORDER BY. This removes the extra Sort node above such an index scan, as seen with the xtree test module from the Index AM API cleanup series.",
+      "objection": "Tom Lane objected that the patch ignores the operator family when deciding whether two pathkeys represent the same ordering, as in create_mergejoin_plan(). He said pathkeys are designed so that pointer comparison of canonical pathkeys is enough, and that the patch may cover up a break in that design. The author answered with context, and no revised patch appears in the visible messages.",
+      "touch_points": [],
+      "matched_queries": [
+        "btree index compression storage parameter",
+        "normalized keys btree"
+      ],
+      "from_hint": false,
+      "score": 0.209,
+      "enriched": true,
+      "key_quote": "You can't just ignore the opfamily\netc. while deciding whether two pathkeys represent the same sort\nordering, as you did in create_mergejoin_plan().",
+      "quote_message_url": "https://www.postgresql.org/message-id/2681345.1740721397%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "revert:8b06e6aba8773df8040b357a1cb058879ed2d94f",
+      "kind": "revert",
+      "title": "Revert idea of zer-padding padding session id in log_line_prefix",
+      "status": "Reverted",
+      "date": "2013-05-06",
+      "first_date": "2013-05-06",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=8b06e6aba8773df8040b357a1cb058879ed2d94f",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert idea of zer-padding padding session id in log_line_prefix",
+      "objection": "Removal of doc adjustment and release note mention as well.",
+      "touch_points": [],
+      "matched_queries": [
+        "btree prefix compression",
+        "nbtree key prefix truncation",
+        "prefix_compression reloption"
+      ],
+      "from_hint": false,
+      "score": 0.201,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "revert:164899db1ceed1e582e5ae1af9455740e7aaa94a",
+      "kind": "revert",
+      "title": "Revert thinko introduced into prefix_selectivity() by my recent patch: make_greater_string needs the < procedure not the >= one.  Spotted by Peter.",
+      "status": "Reverted",
+      "date": "2008-03-17",
+      "first_date": "2008-03-17",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=164899db1ceed1e582e5ae1af9455740e7aaa94a",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert thinko introduced into prefix_selectivity() by my recent patch: make_greater_string needs the < procedure not the >= one.  Spotted by Peter.",
+      "objection": "Revert thinko introduced into prefix_selectivity() by my recent patch:\nmake_greater_string needs the < procedure not the >= one.  Spotted by\nPeter.",
+      "touch_points": [],
+      "matched_queries": [
+        "btree prefix compression",
+        "nbtree key prefix truncation",
+        "prefix_compression reloption"
+      ],
+      "from_hint": false,
+      "score": 0.18,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:5614",
+      "kind": "cf",
+      "title": "Leaf and internal block access stats for indexes",
+      "status": "Withdrawn",
+      "date": "2026-04-10",
+      "first_date": "2025-02-28",
+      "url": "https://commitfest.postgresql.org/patch/5614/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/f0b091ff-864a-45ed-8ddd-1f81263661a0@gmail.com"
+      ],
+      "authors": "Mircea Cadariu (mcadariu)",
+      "objectors": "Aleksander Alekseev",
+      "summary": "The patch adds an idx_metadata_blks column to pg_statio_all_indexes, which counts index blocks read that are not leaf pages (metapage and internal pages). Users can then compute a leaf-page hit ratio that the overall index hit ratio hides, because internal pages are usually cached.",
+      "objection": "The visible messages do not show why it was withdrawn. The only critical review, from Aleksander Alekseev, asked for more practical use cases because the change affects everyone, and asked for performance measurements. The author replied that the patch \"hasn't caught on\" and might stay an educational exercise, but later sent a use case and benchmarks showing no regression, and a later tester reported it as useful.",
+      "touch_points": [],
+      "matched_queries": [
+        "index leaf front coding"
+      ],
+      "from_hint": false,
+      "score": 0.148,
+      "enriched": true,
+      "key_quote": "If only a few users will benefit from it once in several years, the value of the patch is arguably low.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAJ7c6TPhxerMTwAQ4dETQpb68QRb5tHwK9dM3MFZpK2E3y93Bg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:4419",
+      "kind": "cf",
+      "title": "Use ReadRecentBuffer() for btree root page",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-06-27",
+      "url": "https://commitfest.postgresql.org/patch/4419/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20230627020546.t6z4tntmj7wmjrfh@awork3.anarazel.de"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "Andres Freund",
+      "summary": "Cache the btree root page's buffer ID per relation and use ReadRecentBuffer() in _bt_getroot() to skip the buffer mapping lookup. To make that scale, ReadRecentBuffer() would pin with PinBuffer() instead of taking the buffer header spinlock, which also bumps the usage count.",
+      "objection": "Andres Freund objected to keeping the cached root buffer in rd_amcache, because each access method would then duplicate the same code. He suggested putting the fields in RelationData instead. Thomas Munro answered with an experimental LRU of recent lookups, and Andres said that should be a separate facility. No revised patch followed, so in January 2024 the entry was set to Waiting on Author, and the visible messages show no reply after that.",
+      "touch_points": [],
+      "matched_queries": [
+        "btree page format change compression"
+      ],
+      "from_hint": false,
+      "score": 0.13,
+      "enriched": true,
+      "key_quote": "I am wondering if we don't want something more generic than stashing this in rd_amcache.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20230629153948.rk7re27qz3qresdt%40awork3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:4813",
+      "kind": "cf",
+      "title": "table inheritance versus column compression and storage settings",
+      "status": "Returned with feedback",
+      "date": "2024-03-21",
+      "first_date": "2023-12-04",
+      "url": "https://commitfest.postgresql.org/patch/4813/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/24656cec-d6ef-4d15-8b5b-e8dfc9c833a7@eisentraut.org"
+      ],
+      "authors": "Ashutosh Bapat (ashutoshbapat)",
+      "objectors": "",
+      "summary": "table inheritance versus column compression and storage settings\nThreads: table inheritance versus column compression and storage settings",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "btree index compression storage parameter"
+      ],
+      "from_hint": false,
+      "score": 0.128,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3672",
+      "kind": "cf",
+      "title": "nbtree performance improvements through specialization on key shape",
+      "status": "Withdrawn",
+      "date": "2026-10-01",
+      "first_date": "2022-06-05",
+      "url": "https://commitfest.postgresql.org/patch/3672/",
+      "thread_urls": [],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "",
+      "summary": "nbtree performance improvements through specialization on key shape",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "nbtree key prefix truncation"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:6923",
+      "kind": "cf",
+      "title": "Adding a { LOCK ROWS | LOCK KEY INDEX } clause to FK definitions",
+      "status": "Withdrawn",
+      "date": "2026-09-09",
+      "first_date": "2026-06-22",
+      "url": "https://commitfest.postgresql.org/patch/6923/",
+      "thread_urls": [],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "",
+      "summary": "Adding a { LOCK ROWS | LOCK KEY INDEX } clause to FK definitions",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "composite key prefix compression index"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:6756",
+      "kind": "cf",
+      "title": "Fix pg_stat_statements display of normalized FETCH counts",
+      "status": "Withdrawn",
+      "date": "2026-05-12",
+      "first_date": "2026-05-11",
+      "url": "https://commitfest.postgresql.org/patch/6756/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/8ED8C22D-54CD-4EC4-B53C-D39F935FA83D@gmail.com"
+      ],
+      "authors": "Chao Li (chaol)",
+      "objectors": "",
+      "summary": "Fix pg_stat_statements display of normalized FETCH counts\nThreads: Fix pg_stat_statements display of normalized FETCH counts",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "normalized keys btree"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:3455",
+      "kind": "cf",
+      "title": "Sort leaf pages by ctid for gist indexes built using sorting method",
+      "status": "Withdrawn",
+      "date": "2021-12-16",
+      "first_date": "2021-12-15",
+      "url": "https://commitfest.postgresql.org/patch/3455/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHqSB9gd0NnQuPHSnnR7BC-rNnJWZ53rRA+vYZF4pcRK-4y_kw@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "Sort leaf pages by ctid for gist indexes built using sorting method\nThreads: [PATCH] sort leaf pages by ctid for gist indexes built using sorted method",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "index leaf front coding"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "revert:74563f6b90216180fc13649725179fc119dddeb5",
+      "kind": "revert",
+      "title": "Revert \"Improve compression and storage support with inheritance\"",
+      "status": "Reverted",
+      "date": "2024-02-20",
+      "first_date": "2024-02-16",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=74563f6b90216180fc13649725179fc119dddeb5",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/24656cec-d6ef-4d15-8b5b-e8dfc9c833a7@eisentraut.org"
+      ],
+      "authors": "Peter Eisentraut",
+      "objectors": "",
+      "summary": "Revert \"Improve compression and storage support with inheritance\"\nReverted commit(s): Improve compression and storage support with inheritance",
+      "objection": "This reverts commit 0413a556990ba628a3de8a0b58be020fd9a14ed0.\n\npg_dump cannot currently dump all the structures that are allowed by\nthis patch.  This needs more work in pg_dump and more test coverage.",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "btree index compression storage parameter"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:3783",
+      "kind": "cf",
+      "title": "Page compression for OLTP",
+      "status": "Returned with feedback",
+      "date": "2023-01-31",
+      "first_date": "2020-05-21",
+      "url": "https://commitfest.postgresql.org/patch/3783/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/272dd2d9.e52a.17235f2c050.Coremail.chjischj@163.com"
+      ],
+      "authors": "Chen huajun (chenhuajun)",
+      "objectors": "",
+      "summary": "Page compression for OLTP\nThreads: [Proposal] Page Compression for OLTP",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "btree page format change compression"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:6979",
+      "kind": "cf",
+      "title": "WAL compression setting after PostgreSQL LZ4 default change",
+      "status": "Withdrawn",
+      "date": "2026-07-03",
+      "first_date": "2026-06-30",
+      "url": "https://commitfest.postgresql.org/patch/6979/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGjGUAL1b=Mwd1SCvLbo+fivEr9KDpFcu4jmqKCZXwT=6CiiGQ@mail.gmail.com"
+      ],
+      "authors": "wenhui qiu (wenhuiqiu)",
+      "objectors": "",
+      "summary": "WAL compression setting after PostgreSQL LZ4 default change\nThreads: WAL compression setting after PostgreSQL LZ4 default change",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "btree page format change compression"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:3454",
+      "kind": "cf",
+      "title": "sort leaf pages by ctid for gist indexes built using sorted method",
+      "status": "Returned with feedback",
+      "date": "2022-03-22",
+      "first_date": "2021-12-15",
+      "url": "https://commitfest.postgresql.org/patch/3454/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHqSB9gd0NnQuPHSnnR7BC-rNnJWZ53rRA+vYZF4pcRK-4y_kw@mail.gmail.com"
+      ],
+      "authors": "Aliaksandr Kalenik (kalenik.aliaksandr.gmail.com)",
+      "objectors": "",
+      "summary": "sort leaf pages by ctid for gist indexes built using sorted method\nThreads: [PATCH] sort leaf pages by ctid for gist indexes built using sorted method",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "index leaf front coding"
+      ],
+      "from_hint": false,
+      "score": 0.112,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:5659",
+      "kind": "cf",
+      "title": "PGSERVICEFILE as part of a normal connection string [duplicated please delete]",
+      "status": "Withdrawn",
+      "date": "2025-03-20",
+      "first_date": "2024-11-18",
+      "url": "https://commitfest.postgresql.org/patch/5659/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKkG4_nCjx3a_F3gyXHSPWxD8Sd8URaM89wey7fG_9g7KBkOCQ@mail.gmail.com"
+      ],
+      "authors": "Torsten Foertsch (tfoertsch123), Ryo Kanbayashi (ryokanbayashi)",
+      "objectors": "",
+      "summary": "PGSERVICEFILE as part of a normal connection string [duplicated please delete]\nThreads: PGSERVICEFILE as part of a normal connection string",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "normalized keys btree"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:4622",
+      "kind": "cf",
+      "title": "Index Insert Prefetching",
+      "status": "Withdrawn",
+      "date": "2024-06-21",
+      "first_date": "2023-10-22",
+      "url": "https://commitfest.postgresql.org/patch/4622/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/8081aa62-4032-927c-8411-548e1b87ed5b@enterprisedb.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "Index Insert Prefetching\nThreads: PoC: prefetching index leaf pages (for inserts)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "index leaf front coding"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:784",
+      "kind": "cf",
+      "title": "enum support in btree_gin and btree_gist",
+      "status": "Returned with feedback",
+      "date": "2016-12-02",
+      "first_date": "2016-03-17",
+      "url": "https://commitfest.postgresql.org/patch/784/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/56EA8A71.8060107@dunslane.net"
+      ],
+      "authors": "Andrew Dunstan (adunstan)",
+      "objectors": "",
+      "summary": "enum support in btree_gin and btree_gist\nThreads: btree_gin and btree_gist for enums",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "normalized keys btree"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 6,
+    "new_calls": 2,
+    "failed": 0,
+    "quotes_verified": 2,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 5
+  },
+  "precedent_cutoff": "2026-10-26",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "No listed precedent tried storage-level prefix compression in nbtree. Peter's own unposted prototype from April (message #9) is the closest earlier attempt, and the thread does not say why it stalled."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "The reloption itself follows the existing deduplicate_items pattern, and its pg_dump round-trip behaves as other btree reloptions do, so no objection is raised on that point."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 3,
+      "note": "The nbtree VACUUM bookkeeping invariant does not apply: emptying a coded leaf drops its directory and leaves no state for a later VACUUM pass."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal has no privilege aspect. prefix_compression is an index storage parameter that only the index owner can set, it is off by default, and it changes no SQL-visible behaviour: comparisons, RLS, column privileges and leakproofness all see the same decoded values. A size side channel, where a user inserts guessed keys and watches index growth, already exists through default-on deduplication and is coarser at page granularity. Memory checks, decode bounds and redo safety on corrupt pages are not security questions at design level and need the code to check."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 4,
+      "note": "Checked the nbtree VACUUM bookkeeping invariant; the proposal leaves no state for a later VACUUM pass, since an emptied coded leaf drops its directory, so it does not apply."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "No extension or contrib module offers btree leaf prefix compression, and nbtree's leaf format cannot be changed from outside core. The only out-of-core alternative named is the author's own separate index AM, BARK."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "Oracle and SQL Server have prefix compression, and message #9 accepts that the technique works in sympathetic cases. The objections above are about how large the group that gains is."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 14,
+      "new_survived": 7,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [
+    "invariants/nbtree.md"
+  ],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 124,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 14,
+    "wall_ms": 219084,
+    "cost_usd": 4.5236916,
+    "dry_run": false
+  }
+}

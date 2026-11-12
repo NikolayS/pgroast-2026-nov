@@ -1,0 +1,2094 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:59:06.442Z",
+  "input": {
+    "arg": "7471",
+    "cf": {
+      "id": 7471,
+      "url": "https://commitfest.postgresql.org/patch/7471/",
+      "title": "ZSTD TOAST compression, and an extensible compression method encoding",
+      "status": "Needs review",
+      "authors": "Nikhil Kumar Veldanda (nikhilkumarv)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAFAfj_GGY4W81XjtYLvYOhqPtvfZbBNj%3DYRS6Mq_0SA9AqEwoQ%40mail.gmail.com",
+    "subject": "ZSTD TOAST compression, and an extensible compression method encoding",
+    "thread_start": "2026-09-22T02:26:20Z",
+    "messages_read": 48,
+    "messages_total": 48,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v7-0003-Add-zstd-as-a-TOAST-compression-method.patch",
+      "v7-0001-Decode-the-compression-method-in-toast_external_i.patch",
+      "v7-0002-Allow-more-than-four-TOAST-compression-methods.patch",
+      "v2-0002-Allow-more-than-four-TOAST-compression-methods.patch",
+      "v2-0003-Add-zstd-as-a-TOAST-compression-method.patch",
+      "v2-0001-Refactor-TOAST-compression-header-handling.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection concerns the long-form method ID or plain zstd (0001-0003), and 0002 answers the reason recorded in P3. The dictionary and evolution patches carry open design points. A missed containment check leaves stored values unreadable (maintenance-fit-1), heap data embeds pg_toast_dictionary OIDs while a generic store is still under discussion (replication-ondisk-2), and retirement needs a rewrite (prior-attempts-1). All are fixable, but the list should settle them, and the split of the series, before code review of 0004-0005.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Zstd TOAST compression with a long-form method ID and column dictionaries",
+    "problem": "A compressed varlena and an external TOAST pointer store the compression method in two bits, and pglz, lz4 and the invalid ID use three of the four values. Adding zstd would take the last value and block any later method, including dictionary-based ones. The target users want better compression of large values than pglz or lz4 give.",
+    "proposed_design": "Method bits value 3 now means \"long form\": the method ID sits in an extra byte after the header (inline) or after the pointer (two new vartags), for methods other than pglz and lz4, so up to 255 IDs fit. Zstd becomes method ID 2 on that form. Later patches, added by a reviewer, add column-local zstd and lz4 dictionaries in a new catalog and optional retraining during ANALYZE.",
+    "user_visible_surface": [
+      "COMPRESSION zstd in create table and alter table, and default_toast_compression = 'zstd'; attcompression value 'z'.",
+      "On-disk format: new long-form compressed header (9 bytes) and vartags VARTAG_ONDISK_OID_LONG and VARTAG_ONDISK_OID8_LONG; TOAST_INVALID_COMPRESSION_ID moves from 2 to 3.",
+      "Methods zstd_dict and lz4_dict (attcompression 'd', 'e'), catalog pg_toast_dictionary, and function pg_train_toast_dictionary(rel, col, dict_size).",
+      "Per-column attribute option dictionary_evolution and PGC_SUSET GUCs such as dictionary_evolution_min_interval and dictionary_evolution_growth.",
+      "C API: VARATT_EXTINFO_GET_COMPRESS_METHOD() removed in favor of toast_external_data.compress_method; amcheck checks the pointer form."
+    ],
+    "author_claims": [
+      "Existing pglz and lz4 data keeps its representation bit for bit; a reviewer confirmed this by hashing pages and running pg_upgrade.",
+      "Zstd stores test corpora at about 27% of raw size against 36% for pglz and 41% for lz4, and saves about a quarter on base64 text.",
+      "Zstd reads of 4 kB values cost about 2.6 times lz4, and a prefix costs as much as the whole value below 128 kB.",
+      "Reusing the zstd decompression context makes small slices of large values about 25 to 40% faster.",
+      "Dictionaries raise lz4 from about 1.9x to 2.5x on 3 kB docs, and evolution recovers about 8% after data drift."
+    ],
+    "thread_state": "Michael Paquier committed two refactoring patches and wants the format change held for v21, after the oid8 work settles. Greg Burd now carries the series (v16) with dictionaries and evolution; Hannu Krosing calls 0001-0003 ready for committer, and his generic encoding-context proposal overlaps the dictionary design.",
+    "unclear": [
+      "The original author has not posted since early October, and no committer has said whether the long-form format goes into v20 or v21.",
+      "No end-to-end benchmark exists; all speed and ratio numbers are microbenchmarks or CLI runs.",
+      "Michael's earlier preference for one vartag per method is noted but he has not answered the long-form choice.",
+      "The material does not say whether dictionaries and evolution should be split into a separate CommitFest entry.",
+      "Retiring a dictionary still needs a table rewrite; the proposal has no lazy or rewrite-free path."
+    ],
+    "search_queries": [
+      "zstd TOAST compression",
+      "TOAST compression method bits extensible",
+      "compression dictionaries TOAST",
+      "zstd dictionary column compression",
+      "new TOAST pointer vartag compression",
+      "default_toast_compression zstd",
+      "pluggable compression methods",
+      "custom compression method access method"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P3",
+      "source_id": "cf:3639",
+      "title": "Zstandard support for toast compression",
+      "kind": "cf",
+      "status": "Withdrawn",
+      "url": "https://commitfest.postgresql.org/patch/3639/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/YoMiNmkztrslDbNS@paquier.xyz"
+      ],
+      "date": "2022-06-16",
+      "first_date": "2022-05-17",
+      "who_objected": "Robert Haas",
+      "quote": "If we decide not to add this now, we can always change our minds and add it later, but if we decide to add it now, there's no backing it out.",
+      "quote_url": "https://www.postgresql.org/message-id/CA%2BTgmobZkCvpUJAh63XkCPRN3aYYbEEcMTY%3DcqmZdGRLZNbyCg%40mail.gmail.com",
+      "enriched": true,
+      "reason": "Robert Haas saw no urgency and noted that a method added to one of the few ID bit patterns can never be removed. He proposed reserving the fourth pattern for an extensible scheme first, and Michael Paquier agreed the extensible header should come before zstd. The thread then turned to designing that header, and the visible messages do not show the withdrawal itself.",
+      "relation": "same_idea",
+      "what_is_different": "This series first spends the last bit pattern on a long form with a method byte, as the earlier thread asked, and only then adds zstd as ID 2 of 255."
+    },
+    {
+      "precedent_id": "P7",
+      "source_id": "cf:3626",
+      "title": "Compression dictionaries",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/3626/",
+      "thread_urls": [],
+      "date": "2024-01-26",
+      "first_date": "2022-04-22",
+      "who_objected": "",
+      "quote": null,
+      "quote_url": null,
+      "enriched": false,
+      "reason": "",
+      "relation": "similar_idea",
+      "what_is_different": "The dictionaries here are column-local and are retired by rewrite. The precedent row records no reason, so the difference cannot be checked."
+    },
+    {
+      "precedent_id": "P1",
+      "source_id": "cf:3102",
+      "title": "Toast compression method options",
+      "kind": "cf",
+      "status": "Withdrawn",
+      "url": "https://commitfest.postgresql.org/patch/3102/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFiTN-vMHU_yakMgNo90SUih_6LtvmqZ5hpQb2iTgQtVyOjyFA@mail.gmail.com"
+      ],
+      "date": "2021-10-01",
+      "first_date": "2021-05-03",
+      "who_objected": "Michael Paquier",
+      "quote": "I don't recall seeing much on this list that users would like to have such a level of tuning for pglz, while lz4 only offers the option to reduce the compression rate while being already very cheap in CPU so the impact is limited.",
+      "quote_url": "https://www.postgresql.org/message-id/YVa028Lj99Eqtckt%40paquier.xyz",
+      "enriched": true,
+      "reason": "Michael Paquier saw no practical use case. Nobody had asked to tune pglz, LZ4 is already cheap in CPU, and users who want to avoid compression cost can store values externally. He also objected that the patch adds a pg_attribute column and complexity to the ALTER TABLE code paths in tablecmds.c. The author withdrew the patch, citing that objection and little interest from other hackers.",
+      "relation": "related_only",
+      "what_is_different": "Compression level stays out of this series, but 0005 adds per-column options and SUSET GUCs to tune dictionary evolution, which is a similar tuning surface."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Dictionary containment depends on a predicate every future datum path must add",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds a path that copies or holds datums across statements and tests only VARATT_IS_EXTERNAL(). An inline zstd_dict datum escapes its column. After the next VACUUM FULL retires the dictionary, reads fail with \"compression dictionary N does not exist\", long after the escape happened.",
+      "argument": "0004 makes inline dictionary datums safe only by adding VARATT_IS_COMPRESSED_DICT() next to VARATT_IS_EXTERNAL() at each spot that copies a datum. Review has already found escapes in a PL/pgSQL expanded record (message #38), indirect pointers and datumTransfer() (message #41), and check_domain_for_new_field() (message #44), and Manu counted 141 predicate uses to audit (message #45). Nothing fails loudly when a new site forgets the check, and the result is unreadable stored data. Extension code that holds datums has the same exposure.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        38,
+        41,
+        44,
+        45
+      ],
+      "author_must_show": "What makes a new datum-copying path that omits VARATT_IS_COMPRESSED_DICT() fail in tests, before a dictionary retirement makes stored values unreadable?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 38,
+          "from": "Hannu Krosing",
+          "date": "2026-10-29T22:15:57Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQS-xv0CzmDz8xwvLRbChs7D8tkb4CEvbSD7rjEaQstUsg%40mail.gmail.com"
+        },
+        {
+          "index": 41,
+          "from": "Greg Burd",
+          "date": "2026-10-30T18:14:25Z",
+          "url": "https://www.postgresql.org/message-id/auTdVHKihzViHELQ%40floki"
+        },
+        {
+          "index": 44,
+          "from": "Hannu Krosing",
+          "date": "2026-11-02T23:45:04Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQTWgNJ1%3DQLbmr5rqtsFM5-6Xr0iuen5y4xipG%3DOm_pe8A%40mail.gmail.com"
+        },
+        {
+          "index": 45,
+          "from": "Manu",
+          "date": "2026-11-03T04:01:44Z",
+          "url": "https://www.postgresql.org/message-id/179367850497.1374811.8378346906553509584%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #38, #42 and #44 each found a new escape, and nothing in the series makes a missed site fail before retirement. A store-time or amcheck check for nested dictionary datums could close this in a new version, so it is fixable.",
+        "original_severity": "fatal"
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Heap bytes embed pg_toast_dictionary OIDs before the catalog design is settled",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "catalog",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "catalog"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "v20 ships zstd_dict, and user tables fill with datums carrying a pg_toast_dictionary OID after va_cmid 4. A later release adopts a generic store such as pg_encoding_context. pg_upgrade keeps heap files as they are, so the new release must keep reading pg_toast_dictionary indefinitely or require every user to rewrite their tables.",
+      "argument": "Message #35 calls re-expressing the dictionary catalog on a generic store \"a mechanical change\". That holds for code but not for data already on disk, which holds the dictionary OID, method ID 4 and attcompression 'd'/'e'. Hannu's overlapping design is still under discussion (messages #29, #39), and Michael's concern about retaining past dictionaries (message #2) concerns this same on-disk dependency. 0001-0003 do not need this commitment, and 0004 makes it permanent.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        18,
+        29,
+        35,
+        39
+      ],
+      "author_must_show": "If a generic encoding-context catalog is adopted later, how does the series let it read existing zstd_dict datums without keeping pg_toast_dictionary forever or rewriting tables at upgrade?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Michael Paquier",
+          "date": "2026-09-24T06:12:06Z",
+          "url": "https://www.postgresql.org/message-id/arS_NVVZZ2XsfCYU%40paquier.xyz"
+        },
+        {
+          "index": 18,
+          "from": "Greg Burd",
+          "date": "2026-10-15T15:27:31Z",
+          "url": "https://www.postgresql.org/message-id/9e2DVFB_h2qGbP2K8kDioxqzP6l67HWLLHEM7Kp8j7Ee1KozM7XPFXpoennCxqqCD4pxMHITBgvqV7wefAaga-xy3aTl_G0cselilKkTT5Y%3D%40burd.me"
+        },
+        {
+          "index": 29,
+          "from": "Hannu Krosing",
+          "date": "2026-10-25T16:52:14Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQEXX7tQf1-yNnweE9JdMMRQezc_5QQMbs7yJfUAz8%3DNQ%40mail.gmail.com"
+        },
+        {
+          "index": 35,
+          "from": "Greg Burd",
+          "date": "2026-10-27T11:53:23Z",
+          "url": "https://www.postgresql.org/message-id/XVi2K1FkIfByjYymEzR-_jZUUmkjZHPvCDX1AI9OXDZX4JiD0ymxTbEpCa2ccN8Ma3O0q4ik9NltiQZWeCLLTWicCZ64DHSBWaN0hxcaxGQ%3D%40burd.me"
+        },
+        {
+          "index": 39,
+          "from": "Hannu Krosing",
+          "date": "2026-10-29T22:42:30Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQTZXKWfnsn9DvTononbY4oP7pdbdy6TjNigoWg%2Bh4diOQ%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #18 confirms heap files embed dictionary OIDs that pg_upgrade must keep, and message #35 gives no plan for data already on disk. Hannu agreed in message #39 not to block on the generic store, which lowers the risk but does not answer the question.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Dictionary accumulation concern from the first thread returns under automatic evolution",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "prior_rejection",
+      "touch_points": [
+        "catalog",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator turns on dictionary_evolution for a large, busy table. Autoanalyze adopts new dictionaries until the per-column cap, then logs and stops retraining while the data keeps drifting. The only way to retire the old dictionaries is VACUUM FULL, CLUSTER or REPACK, which the operator cannot schedule on that table.",
+      "argument": "Message #18 reports that the first thread stopped on undroppable dictionaries accumulating and on pg_depend tracking, and that these were deferred, not answered. Michael raised retention of past dictionaries in message #2 and has not commented on 0004-0005. 0005 makes adoption automatic while retirement still needs a rewrite (messages #25, #35), and Hannu calls that rewrite prohibitive on live databases (message #39). The cap only declines with a LOG, so the old problem becomes a silent stall.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        18,
+        25,
+        35,
+        39
+      ],
+      "author_must_show": "How does a column with evolution enabled get rid of superseded dictionaries without a rewrite under AccessExclusiveLock, and what happens when it hits the cap?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Michael Paquier",
+          "date": "2026-09-24T06:12:06Z",
+          "url": "https://www.postgresql.org/message-id/arS_NVVZZ2XsfCYU%40paquier.xyz"
+        },
+        {
+          "index": 18,
+          "from": "Greg Burd",
+          "date": "2026-10-15T15:27:31Z",
+          "url": "https://www.postgresql.org/message-id/9e2DVFB_h2qGbP2K8kDioxqzP6l67HWLLHEM7Kp8j7Ee1KozM7XPFXpoennCxqqCD4pxMHITBgvqV7wefAaga-xy3aTl_G0cselilKkTT5Y%3D%40burd.me"
+        },
+        {
+          "index": 25,
+          "from": "Greg Burd",
+          "date": "2026-10-24T18:49:17Z",
+          "url": "https://www.postgresql.org/message-id/SNzmb8pP-a8zJJ5yVcfuLceJj2jQV0gJw5v1_akpKONEaO9BZJ_r6ctAEcyx6nMNy8u-mYh8w6f-oIeQoZzz-kWDXp3Q1Gv-GzlOuHPGcRw%3D%40burd.me"
+        },
+        {
+          "index": 35,
+          "from": "Greg Burd",
+          "date": "2026-10-27T11:53:23Z",
+          "url": "https://www.postgresql.org/message-id/XVi2K1FkIfByjYymEzR-_jZUUmkjZHPvCDX1AI9OXDZX4JiD0ymxTbEpCa2ccN8Ma3O0q4ik9NltiQZWeCLLTWicCZ64DHSBWaN0hxcaxGQ%3D%40burd.me"
+        },
+        {
+          "index": 39,
+          "from": "Hannu Krosing",
+          "date": "2026-10-29T22:42:30Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQTZXKWfnsn9DvTononbY4oP7pdbdy6TjNigoWg%2Bh4diOQ%40mail.gmail.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #25 and #35 confirm that retirement needs a rewrite and that the cap only declines with a LOG. Message #28 shows a stale dictionary compresses worse than none, so a column at the cap degrades with no path that avoids AccessExclusiveLock.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "pg_toast_dictionary exposes trained column content without privilege checks",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges",
+        "catalog"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A role with no SELECT on a table, or with RLS limiting it to its own rows, reads pg_toast_dictionary.tddict. Zstd and lz4 dictionaries hold literal substrings taken from the sampled values, so the role sees fragments of other users' data. Nobody notices, because nothing errors.",
+      "argument": "Message #18 places the dictionary rows next to pg_statistic, but pg_statistic is readable only by superusers, and pg_stats filters it by column privilege. Message #41 lists a pg_stats-like view as a follow-up, which suggests the raw catalog has no such filter yet. Training reads every row as the owner and ignores RLS and column grants, so tddict summarizes data some readers may not see. Retired dictionaries keep this content until the next rewrite, even after the source rows are deleted.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        18,
+        41
+      ],
+      "author_must_show": "Is pg_toast_dictionary revoked from PUBLIC like pg_statistic, and if not, which roles can read tddict for a column they cannot select?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 18,
+          "from": "Greg Burd",
+          "date": "2026-10-15T15:27:31Z",
+          "url": "https://www.postgresql.org/message-id/9e2DVFB_h2qGbP2K8kDioxqzP6l67HWLLHEM7Kp8j7Ee1KozM7XPFXpoennCxqqCD4pxMHITBgvqV7wefAaga-xy3aTl_G0cselilKkTT5Y%3D%40burd.me"
+        },
+        {
+          "index": 41,
+          "from": "Greg Burd",
+          "date": "2026-10-30T18:14:25Z",
+          "url": "https://www.postgresql.org/message-id/auTdVHKihzViHELQ%40floki"
+        }
+      ],
+      "id": "security-1",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The thread compares pg_toast_dictionary rows to pg_statistic but does not say who can read tddict. Trained dictionaries hold literal fragments of sampled values, and message #41 leaves a filtered view as a follow-up.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Logical dump and restore drops trained dictionaries without notice",
+      "level": "2",
+      "rubric_item": 13,
+      "category": "pg_dump_round_trip",
+      "touch_points": [
+        "pg_dump_round_trip",
+        "catalog"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA moves a database with pg_dump and pg_restore, which is also the usual path for logical migrations. The zstd_dict column restores with no dictionary, so new rows get plain zstd or no dictionary benefit. The DBA sees the restored table is much larger and has to retrain and run VACUUM FULL.",
+      "argument": "Message #18 and #43 cover pg_toast_dictionary only in binary-upgrade dumps, where heap files keep dictionary OIDs. The material does not say what a normal dump emits for a dictionary column, or whether it restores the trained bytes. Message #24 shows that the dictionary carries most of the gain: logs go from 2.75 to 4.32. Planner statistics now have a dump path, so dictionary state can follow the same model.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        18,
+        24,
+        43
+      ],
+      "author_must_show": "What does a non-binary pg_dump emit for a zstd_dict column with a current dictionary, and does pg_restore get the same compression ratio without a retrain and a rewrite?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 18,
+          "from": "Greg Burd",
+          "date": "2026-10-15T15:27:31Z",
+          "url": "https://www.postgresql.org/message-id/9e2DVFB_h2qGbP2K8kDioxqzP6l67HWLLHEM7Kp8j7Ee1KozM7XPFXpoennCxqqCD4pxMHITBgvqV7wefAaga-xy3aTl_G0cselilKkTT5Y%3D%40burd.me"
+        },
+        {
+          "index": 24,
+          "from": "Greg Burd",
+          "date": "2026-10-24T18:33:59Z",
+          "url": "https://www.postgresql.org/message-id/ROIZ-hAIfM-v11M1kJOiAdSbeZaC_3paEONbdF67Pi-G0tMvU88x-kcPs_CpGFGPDVab9cKKP8LOkdWNMhcbJqWsXkvGPOjgbJyl5ZPIa-I%3D%40burd.me"
+        },
+        {
+          "index": 43,
+          "from": "Greg Burd",
+          "date": "2026-11-02T19:46:56Z",
+          "url": "https://www.postgresql.org/message-id/aujm92faOjl592iB%40floki"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #18 and #43 describe dictionary handling only for binary-upgrade dumps. The thread does not say what a plain dump emits, and rows restored before a dictionary exists would need a retrain and a rewrite to regain the ratio.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "Shared column dictionary gives a compression-size oracle across rows",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "In a multi-tenant table with RLS, one tenant inserts guessed strings into a zstd_dict column and reads pg_column_size() of its own rows. A guess that compresses unusually well shows the substring is common in the data the dictionary was trained on, including other tenants' rows. Automatic evolution keeps the dictionary current with new data.",
+      "argument": "Plain zstd, pglz and lz4 compress each value on its own, so stored size depends only on that value. A per-column dictionary trained from all rows makes the size of one row depend on the content of others, which is the known compression-oracle pattern. Messages #25 and #28 present per-column training and evolution during ANALYZE, but the thread does not discuss this exposure or document it for RLS users.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        25,
+        28
+      ],
+      "author_must_show": "Will the documentation warn that dictionary methods leak content across rows through stored size, or should training respect RLS and column privileges?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 25,
+          "from": "Greg Burd",
+          "date": "2026-10-24T18:49:17Z",
+          "url": "https://www.postgresql.org/message-id/SNzmb8pP-a8zJJ5yVcfuLceJj2jQV0gJw5v1_akpKONEaO9BZJ_r6ctAEcyx6nMNy8u-mYh8w6f-oIeQoZzz-kWDXp3Q1Gv-GzlOuHPGcRw%3D%40burd.me"
+        },
+        {
+          "index": 28,
+          "from": "Greg Burd",
+          "date": "2026-10-25T16:33:13Z",
+          "url": "https://www.postgresql.org/message-id/mbpEaa2SDZ4ZtMH5XA4uH2Z7ZfrQ0C-dSqpDdYJ72XgPW5N6863AwsZEX_cMKhxNwp-xqd5aZSDwNEAqdoaJooLh8aZuQj1IM2sUnod12SU%3D%40burd.me"
+        }
+      ],
+      "id": "security-2",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "With a shared dictionary, the stored size of one row depends on content sampled from other rows, and the thread does not discuss this. The exposure is limited to substrings common enough to enter the dictionary, so a documentation note may be enough.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "No committer has engaged with the dictionary and evolution patches",
+      "level": "2",
+      "rubric_item": 16,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "catalog",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "0004-0005 go in with a new catalog, pg_upgrade support, relcache fields and ANALYZE-time training. A containment or upgrade bug shows up in the field after release. The committer who knows TOAST raised the dictionary retention concern and has not reviewed this design, so the fix waits for someone qualified.",
+      "argument": "Michael Paquier is the committer active in this area. He wrote that dictionaries \"worry me a lot\" because of retention of past dictionaries (message #2), and he wants even the format change held for v21 (message #15). The original author has not posted since message #14. The thread does not show him or another committer reviewing 0004-0005. The ready-for-committer judgement covers 0001-0003 only (message #47).",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        14,
+        15,
+        47
+      ],
+      "author_must_show": "Which committer has reviewed the pg_toast_dictionary lifecycle and containment design and agreed to own it, separately from 0001-0003?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Michael Paquier",
+          "date": "2026-09-24T06:12:06Z",
+          "url": "https://www.postgresql.org/message-id/arS_NVVZZ2XsfCYU%40paquier.xyz"
+        },
+        {
+          "index": 14,
+          "from": "Nikhil Kumar Veldanda",
+          "date": "2026-09-29T05:39:42Z",
+          "url": "https://www.postgresql.org/message-id/CAFAfj_FyPijDZUas%3DoEjSr5LpwfC3-TQ1QQTdx7uLokPvt%3DySg%40mail.gmail.com"
+        },
+        {
+          "index": 15,
+          "from": "Michael Paquier",
+          "date": "2026-09-30T06:19:39Z",
+          "url": "https://www.postgresql.org/message-id/aryp-_pANFiyzVlx%40paquier.xyz"
+        },
+        {
+          "index": 47,
+          "from": "Hannu Krosing",
+          "date": "2026-11-09T17:54:57Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQT%3DDgOegpinD1PmT%2BMEv%2B1i2mzgTp0Ev%2Bd_BR_6zqFMVw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The thread shows no committer reviewing 0004-0005, and Michael's retention concern in message #2 has no reply from him on the new design. This bears on committability of 0004-0005 only and should not count against 0001-0003.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "Automatic dictionary evolution repeats what a scheduled training call can do",
+      "level": "1b",
+      "rubric_item": 5,
+      "category": "does_not_fit",
+      "touch_points": [
+        "does_not_fit",
+        "new_guc",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA who wants a dictionary retrained as data drifts can call pg_train_toast_dictionary() from a cron job or a scheduler extension today. With 0005, every ANALYZE also runs gates, sampling and held-out training. Bugs in that code show up inside autovacuum, as the stuck-gates and swallowed-cancel cases in messages #31 and #47 did.",
+      "argument": "0004 already ships pg_train_toast_dictionary(), and messages #28 and #30 agree that manual functions must stay. 0005 adds a per-column attribute option, several PGC_SUSET GUCs, two catalog columns and retraining logic inside ANALYZE, which is a second way to trigger the same training. Message #28 argues ANALYZE already holds a sample, but that saves work and does not make anything possible that was impossible before. The held-out \"adopt only if better\" test could be an option of the manual function.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        28,
+        30,
+        31,
+        36,
+        47,
+        48
+      ],
+      "author_must_show": "What does ANALYZE-driven evolution give that a scheduled pg_train_toast_dictionary() call with an adopt-only-if-smaller option could not?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 28,
+          "from": "Greg Burd",
+          "date": "2026-10-25T16:33:13Z",
+          "url": "https://www.postgresql.org/message-id/mbpEaa2SDZ4ZtMH5XA4uH2Z7ZfrQ0C-dSqpDdYJ72XgPW5N6863AwsZEX_cMKhxNwp-xqd5aZSDwNEAqdoaJooLh8aZuQj1IM2sUnod12SU%3D%40burd.me"
+        },
+        {
+          "index": 30,
+          "from": "Hannu Krosing",
+          "date": "2026-10-25T16:58:42Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQRCq5Y2o5pezyohzeOsi7fqtBt1_Gi%3DNj%3DGMMtqfhqkYA%40mail.gmail.com"
+        },
+        {
+          "index": 31,
+          "from": "Manu",
+          "date": "2026-10-26T01:21:37Z",
+          "url": "https://www.postgresql.org/message-id/179297769702.742704.7777764998846128300%40gmail.com"
+        },
+        {
+          "index": 36,
+          "from": "Greg Burd",
+          "date": "2026-10-27T11:57:37Z",
+          "url": "https://www.postgresql.org/message-id/lHIOcamwvyJPNB1Fp-A0tEalU92hYzfEeU5iF0RPHvXzfcKSg2vkKnxw3bzO4_Gw5vIX9bPZVQBY4e1vUJDpPFjWFVeFdMfGv-9MPLjLuJQ%3D%40burd.me"
+        },
+        {
+          "index": 47,
+          "from": "Hannu Krosing",
+          "date": "2026-11-09T17:54:57Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQT%3DDgOegpinD1PmT%2BMEv%2B1i2mzgTp0Ev%2Bd_BR_6zqFMVw%40mail.gmail.com"
+        },
+        {
+          "index": 48,
+          "from": "Greg Burd",
+          "date": "2026-11-10T18:49:48Z",
+          "url": "https://www.postgresql.org/message-id/179432185962.3379798.1613728745172918153%40burd.me"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #28 argues that ANALYZE already holds a sample, which is a convenience argument, and the thread shows no workload where a scheduled pg_train_toast_dictionary() call fails. Evolution is opt-in, so the cost for non-users is code in ANALYZE and new settings, but the question stands.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Dictionary catalog and on-disk OIDs fix a design before the generic one settles",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "prior_rejection",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "catalog",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "v20 ships pg_toast_dictionary and datums that embed its OIDs under method IDs 4 and 5. A later release adopts Hannu's pg_encoding_context. pg_upgrade must then keep the old catalog, or map every embedded dictionary OID, for as long as any heap page from v20 survives.",
+      "argument": "In [P3] the reason to wait was that an on-disk method pattern cannot be removed once added, and 0002 now answers that for plain methods. But the same reason applies to 0004, whose datums carry a dictionary OID into heap files that pg_upgrade keeps (message #18). Message #35 calls a later move onto a generic store mechanical, but it gives no plan for datums already on disk. [P8] stalled on whether a standalone compression object was needed at all.",
+      "precedent_ids": [
+        "P3",
+        "P8"
+      ],
+      "thread_message_refs": [
+        16,
+        18,
+        29,
+        35,
+        39
+      ],
+      "author_must_show": "If pg_encoding_context or another generic store lands later, how will existing datums that embed pg_toast_dictionary OIDs be read or migrated across pg_upgrade?",
+      "precedents": [
+        {
+          "id": "P3",
+          "title": "Zstandard support for toast compression",
+          "url": "https://commitfest.postgresql.org/patch/3639/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/YoMiNmkztrslDbNS@paquier.xyz"
+          ],
+          "date": "2022-06-16",
+          "status": "Withdrawn"
+        },
+        {
+          "id": "P8",
+          "title": "Custom compression methods",
+          "url": "https://commitfest.postgresql.org/patch/1294/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/20170907194236.4cefce96@wp.localdomain"
+          ],
+          "date": "2019-09-30",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 16,
+          "from": "Hannu Krosing",
+          "date": "2026-09-30T11:42:05Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQRdaSuN_usWjsJGEkfcz9Ctk%3DoVmJN1inh0zs26QJCjYg%40mail.gmail.com"
+        },
+        {
+          "index": 18,
+          "from": "Greg Burd",
+          "date": "2026-10-15T15:27:31Z",
+          "url": "https://www.postgresql.org/message-id/9e2DVFB_h2qGbP2K8kDioxqzP6l67HWLLHEM7Kp8j7Ee1KozM7XPFXpoennCxqqCD4pxMHITBgvqV7wefAaga-xy3aTl_G0cselilKkTT5Y%3D%40burd.me"
+        },
+        {
+          "index": 29,
+          "from": "Hannu Krosing",
+          "date": "2026-10-25T16:52:14Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQEXX7tQf1-yNnweE9JdMMRQezc_5QQMbs7yJfUAz8%3DNQ%40mail.gmail.com"
+        },
+        {
+          "index": 35,
+          "from": "Greg Burd",
+          "date": "2026-10-27T11:53:23Z",
+          "url": "https://www.postgresql.org/message-id/XVi2K1FkIfByjYymEzR-_jZUUmkjZHPvCDX1AI9OXDZX4JiD0ymxTbEpCa2ccN8Ma3O0q4ik9NltiQZWeCLLTWicCZ64DHSBWaN0hxcaxGQ%3D%40burd.me"
+        },
+        {
+          "index": 39,
+          "from": "Hannu Krosing",
+          "date": "2026-10-29T22:42:30Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQTZXKWfnsn9DvTononbY4oP7pdbdy6TjNigoWg%2Bh4diOQ%40mail.gmail.com"
+        }
+      ],
+      "id": "prior-attempts-2",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-2, which makes the same on-disk point without precedents. [P8] concerned user-defined compression method objects, which this series does not add, so it is not support here.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Dictionary SQL surface fixed before the generic encoding-context design settles",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "sql_standard_syntax",
+      "touch_points": [
+        "sql_standard_syntax",
+        "catalog",
+        "on_disk_pg_upgrade",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Users adopt COMPRESSION zstd_dict, pg_train_toast_dictionary() and pg_toast_dictionary in v20. A later release adds Hannu's generic encoding context for the same job. The project must then keep two user-facing ways to manage dictionaries, because datums on disk already carry method IDs 4 and 5 and scripts call the old function.",
+      "argument": "Messages #29, #33 and #35 show two overlapping designs, and the thread has not agreed which one owns dictionaries. Message #35 calls a later re-expression \"mechanical\", but that holds only for internals: method names, attcompression chars 'd' and 'e', the function and the catalog name become a public contract. As [P3] records, a method ID written to disk cannot be backed out. Encoding the dictionary choice in the method name also doubles the method list for each codec.",
+      "precedent_ids": [
+        "P3"
+      ],
+      "thread_message_refs": [
+        2,
+        29,
+        33,
+        35,
+        39
+      ],
+      "author_must_show": "Which user-visible names and method IDs would survive unchanged if pg_encoding_context is later accepted, and why is dictionary use a separate method instead of an option on zstd and lz4?",
+      "precedents": [
+        {
+          "id": "P3",
+          "title": "Zstandard support for toast compression",
+          "url": "https://commitfest.postgresql.org/patch/3639/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/YoMiNmkztrslDbNS@paquier.xyz"
+          ],
+          "date": "2022-06-16",
+          "status": "Withdrawn"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Michael Paquier",
+          "date": "2026-09-24T06:12:06Z",
+          "url": "https://www.postgresql.org/message-id/arS_NVVZZ2XsfCYU%40paquier.xyz"
+        },
+        {
+          "index": 29,
+          "from": "Hannu Krosing",
+          "date": "2026-10-25T16:52:14Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQEXX7tQf1-yNnweE9JdMMRQezc_5QQMbs7yJfUAz8%3DNQ%40mail.gmail.com"
+        },
+        {
+          "index": 33,
+          "from": "Hannu Krosing",
+          "date": "2026-10-26T21:49:22Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQ%2B7bhiM9FtrZ7cdWxxFR%3DjtQCq6poDPs75oJuGMDdPKg%40mail.gmail.com"
+        },
+        {
+          "index": 35,
+          "from": "Greg Burd",
+          "date": "2026-10-27T11:53:23Z",
+          "url": "https://www.postgresql.org/message-id/XVi2K1FkIfByjYymEzR-_jZUUmkjZHPvCDX1AI9OXDZX4JiD0ymxTbEpCa2ccN8Ma3O0q4ik9NltiQZWeCLLTWicCZ64DHSBWaN0hxcaxGQ%3D%40burd.me"
+        },
+        {
+          "index": 39,
+          "from": "Hannu Krosing",
+          "date": "2026-10-29T22:42:30Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQTZXKWfnsn9DvTononbY4oP7pdbdy6TjNigoWg%2Bh4diOQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-2; the public names follow from the same early commitment to pg_toast_dictionary and method IDs 4 and 5. The question of a separate method against an option on zstd and lz4 is a design preference with no failure shown.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Evolution policy split across SUSET GUCs and per-column options",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "new_guc",
+      "touch_points": [
+        "new_guc",
+        "psql_ux"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator turns on dictionary_evolution for one column and sets dictionary_evolution_min_rows on it. The growth and interval thresholds come from cluster-wide SUSET GUCs, which a superuser may have changed in postgresql.conf. The column then retrains at a time the table owner cannot predict, see or override.",
+      "argument": "Messages #28, #41 and #47 show the policy spread over an attribute option, per-column options such as dictionary_evolution_min_rows, and at least three GUCs that were moved to PGC_SUSET for privilege reasons. Message #28 describes the margin as a GUC chosen to \"absorb the slack\", so a GUC stands in for a policy the thread has not decided. Autovacuum settings already have one model, a GUC default plus a per-table override, and this design does not follow it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        28,
+        30,
+        41,
+        47
+      ],
+      "author_must_show": "Why are the evolution thresholds global GUCs and not per-column options with GUC defaults, as autovacuum settings are, and could 0005 be left out until the policy settles?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 28,
+          "from": "Greg Burd",
+          "date": "2026-10-25T16:33:13Z",
+          "url": "https://www.postgresql.org/message-id/mbpEaa2SDZ4ZtMH5XA4uH2Z7ZfrQ0C-dSqpDdYJ72XgPW5N6863AwsZEX_cMKhxNwp-xqd5aZSDwNEAqdoaJooLh8aZuQj1IM2sUnod12SU%3D%40burd.me"
+        },
+        {
+          "index": 30,
+          "from": "Hannu Krosing",
+          "date": "2026-10-25T16:58:42Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQRCq5Y2o5pezyohzeOsi7fqtBt1_Gi%3DNj%3DGMMtqfhqkYA%40mail.gmail.com"
+        },
+        {
+          "index": 41,
+          "from": "Greg Burd",
+          "date": "2026-10-30T18:14:25Z",
+          "url": "https://www.postgresql.org/message-id/auTdVHKihzViHELQ%40floki"
+        },
+        {
+          "index": 47,
+          "from": "Hannu Krosing",
+          "date": "2026-11-09T17:54:57Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQT%3DDgOegpinD1PmT%2BMEv%2B1i2mzgTp0Ev%2Bd_BR_6zqFMVw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "wrong_facts",
+        "reasoning": "The repro in message #47 sets dictionary_evolution_min_rows and dictionary_evolution_growth per column with alter table ... set (...), next to a GUC for the interval. So the table owner can override thresholds per column, and the scenario of an owner unable to override does not hold as stated.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Dictionary containment depends on every datum-copying path, and escapes persist",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user stores a composite or array value holding a raw zstd_dict datum in another table, through a copy path that misses VARATT_IS_COMPRESSED_DICT(). A later VACUUM FULL retires the dictionary. Months later, reads of that value fail with \"compression dictionary N does not exist\", and the data cannot be recovered.",
+      "argument": "toast_tuple_init() checks only top-level attributes on store, so values nested inside containers rely on HEAP_HASEXTERNAL and flattening at each copy site. Review found escapes through indirect pointers, datumTransfer(), the expanded-record fast path and check_domain_for_new_field() (messages #38, #44), and one still depends on a separate core fix (message #40). Extensions that test only VARATT_IS_EXTERNAL() before copying a datum would leak the same way, and nothing fails until retirement.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        18,
+        38,
+        40,
+        44,
+        45
+      ],
+      "author_must_show": "What check, at store time or in amcheck, detects a dictionary datum nested outside its owning column before its dictionary is retired, including copies made by extension code?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 18,
+          "from": "Greg Burd",
+          "date": "2026-10-15T15:27:31Z",
+          "url": "https://www.postgresql.org/message-id/9e2DVFB_h2qGbP2K8kDioxqzP6l67HWLLHEM7Kp8j7Ee1KozM7XPFXpoennCxqqCD4pxMHITBgvqV7wefAaga-xy3aTl_G0cselilKkTT5Y%3D%40burd.me"
+        },
+        {
+          "index": 38,
+          "from": "Hannu Krosing",
+          "date": "2026-10-29T22:15:57Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQS-xv0CzmDz8xwvLRbChs7D8tkb4CEvbSD7rjEaQstUsg%40mail.gmail.com"
+        },
+        {
+          "index": 40,
+          "from": "Manu",
+          "date": "2026-10-30T02:57:00Z",
+          "url": "https://www.postgresql.org/message-id/179332902019.1387066.394996492975416925%40gmail.com"
+        },
+        {
+          "index": 44,
+          "from": "Hannu Krosing",
+          "date": "2026-11-02T23:45:04Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQTWgNJ1%3DQLbmr5rqtsFM5-6Xr0iuen5y4xipG%3DOm_pe8A%40mail.gmail.com"
+        },
+        {
+          "index": 45,
+          "from": "Manu",
+          "date": "2026-11-03T04:01:44Z",
+          "url": "https://www.postgresql.org/message-id/179367850497.1374811.8378346906553509584%40gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1, which states the same containment risk with the audit count from message #45 and the same request for a check that fails early.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Automatic evolution adds dictionaries that only a full rewrite can remove",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "design",
+      "touch_points": [
+        "catalog",
+        "new_guc",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA enables dictionary_evolution on a large table. Autoanalyze retrains and adopts new dictionaries as data drifts until the per-column cap. Then ANALYZE only logs that a rewrite is needed, so the DBA must take an AccessExclusiveLock rewrite of a live table to keep compression current.",
+      "argument": "Retirement is still bound to VACUUM FULL, CLUSTER or REPACK, and the proposal has no rewrite-free path (messages #25, #35). Hannu calls those rewrites prohibitively expensive on live databases (message #39). 0005 makes dictionary creation automatic but leaves removal manual and heavy. It also fixes several PGC_SUSET GUCs, attribute options and two catalog columns as permanent user-facing policy knobs. The policy itself is still listed as open (message #41).",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        25,
+        35,
+        39,
+        41
+      ],
+      "author_must_show": "How does a user of evolution on a large table that cannot be rewritten keep pg_toast_dictionary bounded, and why must the evolution knobs ship before rewrite-free retirement exists?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 25,
+          "from": "Greg Burd",
+          "date": "2026-10-24T18:49:17Z",
+          "url": "https://www.postgresql.org/message-id/SNzmb8pP-a8zJJ5yVcfuLceJj2jQV0gJw5v1_akpKONEaO9BZJ_r6ctAEcyx6nMNy8u-mYh8w6f-oIeQoZzz-kWDXp3Q1Gv-GzlOuHPGcRw%3D%40burd.me"
+        },
+        {
+          "index": 35,
+          "from": "Greg Burd",
+          "date": "2026-10-27T11:53:23Z",
+          "url": "https://www.postgresql.org/message-id/XVi2K1FkIfByjYymEzR-_jZUUmkjZHPvCDX1AI9OXDZX4JiD0ymxTbEpCa2ccN8Ma3O0q4ik9NltiQZWeCLLTWicCZ64DHSBWaN0hxcaxGQ%3D%40burd.me"
+        },
+        {
+          "index": 39,
+          "from": "Hannu Krosing",
+          "date": "2026-10-29T22:42:30Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQTZXKWfnsn9DvTononbY4oP7pdbdy6TjNigoWg%2Bh4diOQ%40mail.gmail.com"
+        },
+        {
+          "index": 41,
+          "from": "Greg Burd",
+          "date": "2026-10-30T18:14:25Z",
+          "url": "https://www.postgresql.org/message-id/auTdVHKihzViHELQ%40floki"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of prior-attempts-1, which covers the same cap and rewrite-only retirement. The added point about permanent evolution knobs is covered by already-exists-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "TOAST-specific dictionary catalog overlaps with the generic encoding-context proposal",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "catalog",
+      "touch_points": [
+        "catalog",
+        "does_not_fit",
+        "pg_dump_round_trip"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "pg_toast_dictionary and attcompression 'd'/'e' ship. A later generic pg_encoding_context lands for Avro schemas and quantization tables. The project then carries two side-artifact catalogs with different lifecycles, plus binary-upgrade support for both, and existing heap data that embeds pg_toast_dictionary OIDs.",
+      "argument": "Greg agrees that both designs store \"an id, owning state, and a bytea blob\" and expects re-expressing the TOAST catalog on the generic store later (message #35). That later step is not mechanical, because heap files embed dictionary OIDs that pg_upgrade must keep (message #18). Hannu's design leaves lifecycle to the user (message #39), which conflicts with column-local ownership. Committing one catalog now makes the other choice harder to reverse.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        18,
+        29,
+        35,
+        39
+      ],
+      "author_must_show": "If a generic encoding-context catalog is accepted later, how would existing heap values that embed pg_toast_dictionary OIDs move to it without a rewrite?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 18,
+          "from": "Greg Burd",
+          "date": "2026-10-15T15:27:31Z",
+          "url": "https://www.postgresql.org/message-id/9e2DVFB_h2qGbP2K8kDioxqzP6l67HWLLHEM7Kp8j7Ee1KozM7XPFXpoennCxqqCD4pxMHITBgvqV7wefAaga-xy3aTl_G0cselilKkTT5Y%3D%40burd.me"
+        },
+        {
+          "index": 29,
+          "from": "Hannu Krosing",
+          "date": "2026-10-25T16:52:14Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQEXX7tQf1-yNnweE9JdMMRQezc_5QQMbs7yJfUAz8%3DNQ%40mail.gmail.com"
+        },
+        {
+          "index": 35,
+          "from": "Greg Burd",
+          "date": "2026-10-27T11:53:23Z",
+          "url": "https://www.postgresql.org/message-id/XVi2K1FkIfByjYymEzR-_jZUUmkjZHPvCDX1AI9OXDZX4JiD0ymxTbEpCa2ccN8Ma3O0q4ik9NltiQZWeCLLTWicCZ64DHSBWaN0hxcaxGQ%3D%40burd.me"
+        },
+        {
+          "index": 39,
+          "from": "Hannu Krosing",
+          "date": "2026-10-29T22:42:30Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQTZXKWfnsn9DvTononbY4oP7pdbdy6TjNigoWg%2Bh4diOQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-4",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-2. Both rest on heap values that embed pg_toast_dictionary OIDs while the generic catalog is still under discussion.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Automatic dictionary evolution has no shown user demand",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "new_guc",
+        "catalog",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer takes on 0005 and maintains new per-column options, PGC_SUSET GUCs and catalog columns for a retraining policy. Autovacuum ANALYZE then retrains dictionaries for users who never asked for it to happen automatically. If the policy misbehaves, nobody can point to a workload it was built for.",
+      "argument": "The only evidence is one synthetic drift test with about 8% gain (message #28), which Greg calls a ratio proxy, not a TOAST measurement. No user in the thread asked for evolution. Greg raised it himself in message #25. Manual pg_train_toast_dictionary() plus a rewrite already covers drift, and Greg offers to hold 0005 back (message #36).",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        25,
+        28,
+        31,
+        36
+      ],
+      "author_must_show": "Which production workloads see dictionary drift, and why does running pg_train_toast_dictionary() on a schedule not serve them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 25,
+          "from": "Greg Burd",
+          "date": "2026-10-24T18:49:17Z",
+          "url": "https://www.postgresql.org/message-id/SNzmb8pP-a8zJJ5yVcfuLceJj2jQV0gJw5v1_akpKONEaO9BZJ_r6ctAEcyx6nMNy8u-mYh8w6f-oIeQoZzz-kWDXp3Q1Gv-GzlOuHPGcRw%3D%40burd.me"
+        },
+        {
+          "index": 28,
+          "from": "Greg Burd",
+          "date": "2026-10-25T16:33:13Z",
+          "url": "https://www.postgresql.org/message-id/mbpEaa2SDZ4ZtMH5XA4uH2Z7ZfrQ0C-dSqpDdYJ72XgPW5N6863AwsZEX_cMKhxNwp-xqd5aZSDwNEAqdoaJooLh8aZuQj1IM2sUnod12SU%3D%40burd.me"
+        },
+        {
+          "index": 31,
+          "from": "Manu",
+          "date": "2026-10-26T01:21:37Z",
+          "url": "https://www.postgresql.org/message-id/179297769702.742704.7777764998846128300%40gmail.com"
+        },
+        {
+          "index": 36,
+          "from": "Greg Burd",
+          "date": "2026-10-27T11:57:37Z",
+          "url": "https://www.postgresql.org/message-id/lHIOcamwvyJPNB1Fp-A0tEalU92hYzfEeU5iF0RPHvXzfcKSg2vkKnxw3bzO4_Gw5vIX9bPZVQBY4e1vUJDpPFjWFVeFdMfGv-9MPLjLuJQ%3D%40burd.me"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of already-exists-1, which makes the same case against 0005 with the concrete alternative. The scenario of retraining for users who never asked does not hold, because message #28 makes evolution opt-in per column and off by default.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Dictionary benefit lacks field evidence while containment cost falls on everyone",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "demand",
+      "touch_points": [
+        "maintenance_burden",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A future patch adds a path that copies datums and checks only VARATT_IS_EXTERNAL(). It does not know about VARATT_IS_COMPRESSED_DICT(), and a dictionary datum escapes its column. After the next rewrite or DROP TABLE, a user reading the copy gets \"compression dictionary ... does not exist\".",
+      "argument": "Reviewers found containment escapes in v12, v13 and v14 (messages #38, #42, #44). So every future datum-copying path must carry the extra check, including for users who never use dictionaries. Demand rests on CLI and synthetic runs. The 1 kB figure was withdrawn in message #34, leaving 1.9x to 2.5x for lz4 at 3 kB. Hannu's own use (message #33) is the only user report, and Michael's retention concern in message #2 has not been answered.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        33,
+        34,
+        38,
+        42,
+        44
+      ],
+      "author_must_show": "Which real tables, with which value sizes, would store measurably less with zstd_dict or lz4_dict than with plain zstd, in an end-to-end test?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Michael Paquier",
+          "date": "2026-09-24T06:12:06Z",
+          "url": "https://www.postgresql.org/message-id/arS_NVVZZ2XsfCYU%40paquier.xyz"
+        },
+        {
+          "index": 33,
+          "from": "Hannu Krosing",
+          "date": "2026-10-26T21:49:22Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQ%2B7bhiM9FtrZ7cdWxxFR%3DjtQCq6poDPs75oJuGMDdPKg%40mail.gmail.com"
+        },
+        {
+          "index": 34,
+          "from": "Greg Burd",
+          "date": "2026-10-27T11:47:13Z",
+          "url": "https://www.postgresql.org/message-id/ormEJV9zReviaUUzJw6tZ2RSvu5Up688drMbhZWYk4jn4VshCUL9L1UNnZVadUPZqkX7FS7mtv3wzoJ50Frnd1DGTyDmTPe1JMjYpasdum0%3D%40burd.me"
+        },
+        {
+          "index": 38,
+          "from": "Hannu Krosing",
+          "date": "2026-10-29T22:15:57Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQS-xv0CzmDz8xwvLRbChs7D8tkb4CEvbSD7rjEaQstUsg%40mail.gmail.com"
+        },
+        {
+          "index": 42,
+          "from": "Hannu Krosing",
+          "date": "2026-10-31T00:40:59Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQS8GA4e-ObaJmc6DyO_MP1K%3D2bk%3DB_BAEqb5nsafrJ4%2Bg%40mail.gmail.com"
+        },
+        {
+          "index": 44,
+          "from": "Hannu Krosing",
+          "date": "2026-11-02T23:45:04Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQTWgNJ1%3DQLbmr5rqtsFM5-6Xr0iuen5y4xipG%3DOm_pe8A%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "The containment half is a duplicate of maintenance-fit-1. On evidence, message #24 reports relation-size ratios for stored tables (logs 2.75 to 4.32), and message #22 cites a tweet data set at 210 MB with zstd against 114 MB with a dictionary.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "New 9-byte long-form header, two new vartags, and dictionary OIDs embedded in heap datums that pg_upgrade keeps."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "Long-form datums and pg_toast_dictionary rows must replay on standbys; the reviewers report this was tested in the thread."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "New catalog pg_toast_dictionary and new attcompression values 'z', 'd' and 'e'."
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "VARATT_EXTINFO_GET_COMPRESS_METHOD() is removed, and extensions that copy datums must learn the new vartags and VARATT_IS_COMPRESSED_DICT()."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": true,
+      "reason": "New values zstd, zstd_dict and lz4_dict for the non-standard COMPRESSION column option."
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": true,
+      "reason": "New PGC_SUSET GUCs for dictionary evolution, and a new value for default_toast_compression."
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": true,
+      "reason": "pg_dump emits the zstd column setting; dictionary contents are covered only for binary-upgrade dumps."
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": true,
+      "reason": "psql's \\d+ and tab completion learn the new method."
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "pg_toast_dictionary.tddict holds fragments of sampled column values, and a shared dictionary makes stored size depend on other rows."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Permanent on-disk format, a new catalog, ANALYZE-time retraining, and a containment check that every datum-copying path must carry."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Detoast and TOAST pointer decoding gain the long-form branch; zstd reads of 4 kB values cost about 2.6 times lz4."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "Evolution in 0005 overlaps with a scheduled pg_train_toast_dictionary() call, which 0004 already allows."
+    }
+  ],
+  "questions": [
+    "What makes a new datum-copying path that omits VARATT_IS_COMPRESSED_DICT() fail in tests or amcheck, before a dictionary retirement makes stored values unreadable?",
+    "If a generic encoding-context catalog is adopted later, how are existing datums that embed pg_toast_dictionary OIDs read without keeping that catalog forever or rewriting tables?",
+    "How does a column with evolution enabled retire old dictionaries without a rewrite under AccessExclusiveLock, and what happens to compression once it reaches the cap?",
+    "Is pg_toast_dictionary revoked from PUBLIC like pg_statistic, and if not, which roles can read tddict for a column they cannot select?",
+    "Should 0004-0005 move to a separate CommitFest entry so that 0001-0003 can be judged alone for v20 or v21?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Michael Paquier committed two refactoring patches and reviews the format change. No committer has reviewed the dictionary catalog, containment or ANALYZE-time retraining in 0004-0005.",
+    "liability": "For 0001-0003: a permanent on-disk header and two vartags. For 0004-0005: a catalog whose OIDs live in heap data, containment in every datum-copying path, and retraining inside autovacuum, with no end date.",
+    "author_follow_up": "The original author has not posted since early October. Greg Burd now carries the series through v16 and answers review."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "high",
+    "review_cost": "high",
+    "recommended_action": "fix design first",
+    "reason": "Plain zstd on the long form has no surviving objection and an engaged committer, so it can go ahead separately. The dictionary and evolution patches add a catalog, on-disk OIDs and GUCs, and their containment, retirement and generic-store questions need answers first."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read, so the claim that pglz and lz4 data stays bit for bit the same, and the completeness of the containment checks, rest on the thread's reports. Only 3 of 48 messages were visible here; later messages are known through the objections.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:3102",
+      "kind": "cf",
+      "title": "Toast compression method options",
+      "status": "Withdrawn",
+      "date": "2021-10-01",
+      "first_date": "2021-05-03",
+      "url": "https://commitfest.postgresql.org/patch/3102/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFiTN-vMHU_yakMgNo90SUih_6LtvmqZ5hpQb2iTgQtVyOjyFA@mail.gmail.com"
+      ],
+      "authors": "Dilip Kumar (dilip.kumar)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch lets users set per-column options for the TOAST compression method, such as the LZ4 acceleration level, through a new pg_attribute attribute and ALTER TABLE support. It rebases an earlier patch from the custom compression thread onto the committed lz4 TOAST compression design.",
+      "objection": "Michael Paquier saw no practical use case. Nobody had asked to tune pglz, LZ4 is already cheap in CPU, and users who want to avoid compression cost can store values externally. He also objected that the patch adds a pg_attribute column and complexity to the ALTER TABLE code paths in tablecmds.c. The author withdrew the patch, citing that objection and little interest from other hackers.",
+      "touch_points": [],
+      "matched_queries": [
+        "zstd TOAST compression",
+        "TOAST compression method bits extensible",
+        "compression dictionaries TOAST",
+        "new TOAST pointer vartag compression",
+        "default_toast_compression zstd",
+        "pluggable compression methods",
+        "custom compression method access method"
+      ],
+      "from_hint": false,
+      "score": 0.788,
+      "enriched": true,
+      "key_quote": "I don't recall seeing much on\nthis list that users would like to have such a level of tuning for\npglz, while lz4 only offers the option to reduce the compression rate\nwhile being already very cheap in CPU so the impact is limited.",
+      "quote_message_url": "https://www.postgresql.org/message-id/YVa028Lj99Eqtckt%40paquier.xyz",
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:6727",
+      "kind": "cf",
+      "title": "Refactor code around GUC default_toast_compression",
+      "status": "Withdrawn",
+      "date": "2026-09-16",
+      "first_date": "2026-05-01",
+      "url": "https://commitfest.postgresql.org/patch/6727/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/afRbVhoYuw4RStIO@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch adds a registry in toast_compression.c that holds each TOAST compression method's name, GUC enum value, attcompression char and on-disk varatt ID, plus translation routines between them. The goal was to make adding new compression methods easier and to drop TOAST_INVALID_COMPRESSION_ID from the default_toast_compression GUC values.",
+      "objection": "The author withdrew it. Reviewers found only small issues, but while working on the extensibility of compression methods in varlenas he concluded this registry was not the best path forward.",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "zstd TOAST compression",
+        "TOAST compression method bits extensible",
+        "compression dictionaries TOAST",
+        "new TOAST pointer vartag compression",
+        "default_toast_compression zstd"
+      ],
+      "from_hint": false,
+      "score": 0.598,
+      "enriched": true,
+      "key_quote": "What I am pretty sure about is that this patch may not be the best path forward, actually.",
+      "quote_message_url": "https://www.postgresql.org/message-id/aqomcQ4n2D5GPY7_%40paquier.xyz",
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:3639",
+      "kind": "cf",
+      "title": "Zstandard support for toast compression",
+      "status": "Withdrawn",
+      "date": "2022-06-16",
+      "first_date": "2022-05-17",
+      "url": "https://commitfest.postgresql.org/patch/3639/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/YoMiNmkztrslDbNS@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Robert Haas",
+      "summary": "The patch adds Zstandard as a third TOAST compression method beside pglz and LZ4, using the attribute compression framework. The method ID is stored in the 2 spare bits of the raw length, which allow at most 4 methods.",
+      "objection": "Robert Haas saw no urgency and noted that a method added to one of the few ID bit patterns can never be removed. He proposed reserving the fourth pattern for an extensible scheme first, and Michael Paquier agreed the extensible header should come before zstd. The thread then turned to designing that header, and the visible messages do not show the withdrawal itself.",
+      "touch_points": [],
+      "matched_queries": [
+        "zstd TOAST compression",
+        "TOAST compression method bits extensible",
+        "compression dictionaries TOAST",
+        "new TOAST pointer vartag compression",
+        "default_toast_compression zstd"
+      ],
+      "from_hint": false,
+      "score": 0.58,
+      "enriched": true,
+      "key_quote": "If we decide not to add this now, we can always change our minds and add it later, but if we decide to add it now, there's no backing it out.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmobZkCvpUJAh63XkCPRN3aYYbEEcMTY%3DcqmZdGRLZNbyCg%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P4",
+      "source_id": "revert:4f0b3afab4da87255ee159b96ba531157ee5af3b",
+      "kind": "revert",
+      "title": "Revert \"Change default value of default_toast_compression to \"lz4\"\"",
+      "status": "Reverted",
+      "date": "2026-03-04",
+      "first_date": "2026-03-04",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=4f0b3afab4da87255ee159b96ba531157ee5af3b",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOYmi+meTT0NbLbnVqOJD5OKwCtHL86PQ+RZZTrn6umfmHyWaw@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Change default value of default_toast_compression to \"lz4\"\"\nReverted commit(s): Change default value of default_toast_compression to \"lz4\", when available",
+      "objection": "This reverts commit 7c1849311e49, due to the fact that more than 60% of\nthe buildfarm members do not have lz4 installed.  As we are in the last\ncommit fest of the development cycle, and that it could take a couple\nof weeks to stabilize things, this change is reverted for now.\n\nThis commit will be reworked in a lighter version, as\ndefault_toast_compression's default can be changed to \"lz4\" without the\nswitch from --with-lz4 to --without-lz4.  This approach will keep the\nbuildfarm at bay, and still allow builds to take advantage of LZ4 in\nTOAST by default, as long as the code is compiled with LZ4 support.\n\nA harder requirement based on LZ4 should be achievable at some point,\nbut it is going to require some work from the buildfarm owners first.\nPerhaps this part could be revisited at the beginning of the next\ndevelopment cycle.",
+      "touch_points": [],
+      "matched_queries": [
+        "zstd TOAST compression",
+        "TOAST compression method bits extensible",
+        "compression dictionaries TOAST",
+        "new TOAST pointer vartag compression",
+        "default_toast_compression zstd"
+      ],
+      "from_hint": false,
+      "score": 0.557,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:229bffedbc52f12aadb95ca2ee24d5bef36b7c7d",
+      "kind": "revert",
+      "title": "Revert the default toast compression strategy to the former behavior where there's no limit on the size of datum we'll try to compress.",
+      "status": "Reverted",
+      "date": "2009-01-06",
+      "first_date": "2009-01-06",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=229bffedbc52f12aadb95ca2ee24d5bef36b7c7d",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert the default toast compression strategy to the former behavior where there's no limit on the size of datum we'll try to compress. Other 8.4 tweaks to the behavior remain in place.  Per discussion.",
+      "objection": "Revert the default toast compression strategy to the former behavior\nwhere there's no limit on the size of datum we'll try to compress.\nOther 8.4 tweaks to the behavior remain in place.  Per discussion.",
+      "touch_points": [],
+      "matched_queries": [
+        "zstd TOAST compression",
+        "TOAST compression method bits extensible",
+        "compression dictionaries TOAST",
+        "new TOAST pointer vartag compression",
+        "default_toast_compression zstd"
+      ],
+      "from_hint": false,
+      "score": 0.393,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:3835",
+      "kind": "cf",
+      "title": "pg_basebackup: add test about zstd compress option",
+      "status": "Rejected",
+      "date": "2022-12-06",
+      "first_date": "2022-08-23",
+      "url": "https://commitfest.postgresql.org/patch/3835/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAcByaKm9tNP8Ua4nQNz4feev0ZmiQYdp2BUdLG=6ccEgCEgyw@mail.gmail.com"
+      ],
+      "authors": "DongWook Lee (dongwooklee)",
+      "objectors": "Robert Haas",
+      "summary": "Add a test to pg_basebackup's TAP tests that exercises the zstd compression option, later extended to verify the generated files with the zstd binary. A follow-up version refactored the test to cover multiple compression methods (gzip, lz4, zstd) and check output with each respective decompression program.",
+      "objection": "Robert Haas pointed out that existing tests in src/bin/pg_verifybackup (008_untar.pl and 009_extract.pl) already cover compressed base backups, and that the only additional scenario the new test could catch was not worth the extra CPU cycles. Ian Lawrence Barwick and the author agreed the test did not add anything, and the entry was closed.",
+      "touch_points": [],
+      "matched_queries": [
+        "zstd TOAST compression",
+        "zstd dictionary column compression",
+        "default_toast_compression zstd"
+      ],
+      "from_hint": false,
+      "score": 0.38,
+      "enriched": true,
+      "key_quote": "I would be inclined to dismiss that particular scenario as not important\nenough to be worth the additional CPU cycles.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoZgSqV0FkvHchZpajX1N1n%3DE92doV3kQST-miEzJNuDNA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:3626",
+      "kind": "cf",
+      "title": "Compression dictionaries",
+      "status": "Returned with feedback",
+      "date": "2024-01-26",
+      "first_date": "2022-04-22",
+      "url": "https://commitfest.postgresql.org/patch/3626/",
+      "thread_urls": [],
+      "authors": "Aleksander Alekseev (a.alekseev)",
+      "objectors": "",
+      "summary": "Compression dictionaries",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "compression dictionaries TOAST",
+        "zstd dictionary column compression",
+        "pluggable compression methods"
+      ],
+      "from_hint": false,
+      "score": 0.352,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:1294",
+      "kind": "cf",
+      "title": "Custom compression methods",
+      "status": "Returned with feedback",
+      "date": "2019-09-30",
+      "first_date": "2017-09-07",
+      "url": "https://commitfest.postgresql.org/patch/1294/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20170907194236.4cefce96@wp.localdomain"
+      ],
+      "authors": "Ildus Kurbangaliev (ildus)",
+      "objectors": "Peter Eisentraut, David Steele",
+      "summary": "The patch adds create compression method with a handler function that returns compress and decompress routines, which can be attached to columns or types with options stored in new catalogs pg_compression and pg_compression_opt. Custom-compressed datums use a free bit in va_rawsize and keep an options Oid, so changing a column's method never recompresses old values.",
+      "objection": "The patch moved from commitfest to commitfest for two years with periodic rebases but, per David Steele, no code review after January 2018. Reviewers said the community first had to decide whether it wants the feature at all. Peter Eisentraut doubted the need for a standalone compression method object and asked for a list of problems to solve. When the entry was closed, the patch had not compiled for a long time.",
+      "touch_points": [],
+      "matched_queries": [
+        "TOAST compression method bits extensible",
+        "pluggable compression methods",
+        "custom compression method access method"
+      ],
+      "from_hint": false,
+      "score": 0.338,
+      "enriched": true,
+      "key_quote": "So far, it's not clear to me that we need a compression method as a standalone top-level object.",
+      "quote_message_url": "https://www.postgresql.org/message-id/5c84382f-1065-e9e8-dde8-4c1f5ae1007b%402ndquadrant.com",
+      "relevant": true
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:6386",
+      "kind": "cf",
+      "title": "Fix minor issues in astreamer_zstd.c",
+      "status": "Withdrawn",
+      "date": "2026-01-10",
+      "first_date": "2026-01-10",
+      "url": "https://commitfest.postgresql.org/patch/6386/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/tencent_33169E186D56ED2851C88FD4@qq.com"
+      ],
+      "authors": "Man Zeng (zengman)",
+      "objectors": "",
+      "summary": "The patches fix a header comment in astreamer_zstd.c that says \"lz4 compression\" instead of \"zstd compression\". They also change astreamer_zstd_decompressor_finalize to pass the decompressed length (zstd_outBuf.pos) to astreamer_content instead of the full buffer capacity (bbs_buffer.maxlen).",
+      "objection": "The visible messages do not show why. The only reviewer agreed with both fixes and found the same length bug in the gzip and lz4 decompressor finalize functions. The thread ends there, and the entry was withdrawn the same day.",
+      "touch_points": [],
+      "matched_queries": [
+        "zstd TOAST compression",
+        "zstd dictionary column compression",
+        "default_toast_compression zstd"
+      ],
+      "from_hint": false,
+      "score": 0.293,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:12",
+      "kind": "cf",
+      "title": "compress method for spgist",
+      "status": "Rejected",
+      "date": "2015-01-16",
+      "first_date": "2014-10-22",
+      "url": "https://commitfest.postgresql.org/patch/12/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/5447B3FF.2080406@sigaev.ru"
+      ],
+      "authors": "Fedor Sigaev (sigaev)",
+      "objectors": "",
+      "summary": "Add an optional compress method to SP-GiST, analogous to GiST's compress method, so that the type stored in the index can differ from the type of the indexed column. The motivating case was PostGIS indexing polygons while storing only their bounding boxes.",
+      "objection": "The visible messages do not show why.",
+      "touch_points": [],
+      "matched_queries": [
+        "TOAST compression method bits extensible",
+        "pluggable compression methods",
+        "custom compression method access method"
+      ],
+      "from_hint": false,
+      "score": 0.263,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:146",
+      "kind": "cf",
+      "title": "compress method for spgist",
+      "status": "Returned with feedback",
+      "date": "2015-08-25",
+      "first_date": "2014-12-16",
+      "url": "https://commitfest.postgresql.org/patch/146/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/54907069.1030506@sigaev.ru"
+      ],
+      "authors": "Fedor Sigaev (sigaev)",
+      "objectors": "Heikki Linnakangas",
+      "summary": "Add an optional compress method to SP-GiST operator classes so that the leaf data type stored in the index can differ from the indexed column type, for example to store polygons as bounding boxes. The patch distinguishes the input type (attType) from the leaf type (attLeafType) and updates the documentation.",
+      "objection": "The reviewer asked for a use case in a built-in or contrib datatype that a regression test could exercise, and asked how overlapping polygons could be stored in SP-GiST, which partitions space into non-overlapping sections. The author's answer was that a compress method would be needed once a way to index boxes was found, which was still being investigated. No new patch version was submitted after that, and the entry was returned with feedback for inactivity.",
+      "touch_points": [],
+      "matched_queries": [
+        "TOAST compression method bits extensible",
+        "pluggable compression methods",
+        "custom compression method access method"
+      ],
+      "from_hint": false,
+      "score": 0.24,
+      "enriched": true,
+      "key_quote": "SP-GiST partitions the space into non-overlapping sections. How\ncan you store polygons - which can overlap - in an SP-GiST index? And\nhow does the compress method help with that?",
+      "quote_message_url": "https://www.postgresql.org/message-id/55B09964.80707%40iki.fi",
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:4111",
+      "kind": "cf",
+      "title": "basebackup: support zstd long distance matching",
+      "status": "Withdrawn",
+      "date": "2023-04-04",
+      "first_date": "2023-01-08",
+      "url": "https://commitfest.postgresql.org/patch/4111/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20230108202737.GB27637@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "",
+      "summary": "basebackup: support zstd long distance matching\nThreads: [PATCH] basebackup: support zstd long distance matching",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "zstd TOAST compression",
+        "zstd dictionary column compression"
+      ],
+      "from_hint": false,
+      "score": 0.18,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:1298",
+      "kind": "cf",
+      "title": "Compress method for SP-GiST",
+      "status": "Returned with feedback",
+      "date": "2017-11-30",
+      "first_date": "2014-12-16",
+      "url": "https://commitfest.postgresql.org/patch/1298/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/54907069.1030506@sigaev.ru"
+      ],
+      "authors": "Heikki Linnakangas (heikki), Fedor Sigaev (sigaev), Alexander Korotkov (smagen), Nikita Glukhov (n.glukhov)",
+      "objectors": "",
+      "summary": "Compress method for SP-GiST\nThreads: Re: compress method for spgist - 2",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pluggable compression methods",
+        "custom compression method access method"
+      ],
+      "from_hint": false,
+      "score": 0.162,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:1461",
+      "kind": "cf",
+      "title": "Shared Ispell dictionaries",
+      "status": "Returned with feedback",
+      "date": "2019-02-03",
+      "first_date": "2017-12-26",
+      "url": "https://commitfest.postgresql.org/patch/1461/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20171226164825.GA29922@zakirov.localdomain"
+      ],
+      "authors": "Artur Zakirov (a.zakirov)",
+      "objectors": "",
+      "summary": "Shared Ispell dictionaries\nThreads: [PROPOSAL] Shared Ispell dictionaries",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "compression dictionaries TOAST",
+        "zstd dictionary column compression"
+      ],
+      "from_hint": false,
+      "score": 0.147,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:4973",
+      "kind": "cf",
+      "title": "Add minimal C example and SQL registration example for custom table access methods",
+      "status": "Withdrawn",
+      "date": "2024-07-25",
+      "first_date": "2023-11-02",
+      "url": "https://commitfest.postgresql.org/patch/4973/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAByiw+r+CS-ojBDP7Dm=9YeOLkZTXVnBmOe_ajK=en8C_zB3_g@mail.gmail.com"
+      ],
+      "authors": "Phil Eaton (eatonphil)",
+      "objectors": "",
+      "summary": "Add minimal C example and SQL registration example for custom table access methods\nThreads: Add minimal C example and SQL registration example for custom table\naccess methods.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "custom compression method access method"
+      ],
+      "from_hint": false,
+      "score": 0.13,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "wiki:Text_Search:1",
+      "kind": "do_not_want",
+      "title": "Allow dictionaries to change the token that is passed on to later dictionaries",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Text_Search",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Allow dictionaries to change the token that is passed on to later dictionaries\nSection: Data Types / Text Search\nLinked: a tsearch2 (8.2.4) dictionary that only filters out stopwords",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "compression dictionaries TOAST",
+        "zstd dictionary column compression"
+      ],
+      "from_hint": false,
+      "score": 0.129,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:4813",
+      "kind": "cf",
+      "title": "table inheritance versus column compression and storage settings",
+      "status": "Returned with feedback",
+      "date": "2024-03-21",
+      "first_date": "2023-12-04",
+      "url": "https://commitfest.postgresql.org/patch/4813/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/24656cec-d6ef-4d15-8b5b-e8dfc9c833a7@eisentraut.org"
+      ],
+      "authors": "Ashutosh Bapat (ashutoshbapat)",
+      "objectors": "",
+      "summary": "table inheritance versus column compression and storage settings\nThreads: table inheritance versus column compression and storage settings",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "zstd dictionary column compression"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:3546",
+      "kind": "cf",
+      "title": "Support custom authentication methods using hooks",
+      "status": "Returned with feedback",
+      "date": "2022-08-02",
+      "first_date": "2022-02-17",
+      "url": "https://commitfest.postgresql.org/patch/3546/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJxrbyxTRn5P8J-p+wHLwFahK5y56PhK28VOb55jqMO05Y-DJw@mail.gmail.com"
+      ],
+      "authors": "Samay Sharma (samaysharma)",
+      "objectors": "",
+      "summary": "Support custom authentication methods using hooks\nThreads: Proposal: Support custom authentication methods using hooks",
+      "objection": "",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "custom compression method access method"
+      ],
+      "from_hint": false,
+      "score": 0.097,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:5506",
+      "kind": "cf",
+      "title": "Avoid possible null pointer dereference",
+      "status": "Withdrawn",
+      "date": "2025-02-06",
+      "first_date": "2025-01-04",
+      "url": "https://commitfest.postgresql.org/patch/5506/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEudQApsZ8sdoRsn_oE=KEwkSMjh-sgsjuGWaE6CmHwQ+3xt1g@mail.gmail.com"
+      ],
+      "authors": "Ranier Vilela (raniervilela)",
+      "objectors": "",
+      "summary": "Avoid possible null pointer dereference\nThreads: Avoid possible deference NULL pointer (src/backend/optimizer/path/allpaths.c)",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "new TOAST pointer vartag compression"
+      ],
+      "from_hint": false,
+      "score": 0.096,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:6979",
+      "kind": "cf",
+      "title": "WAL compression setting after PostgreSQL LZ4 default change",
+      "status": "Withdrawn",
+      "date": "2026-07-03",
+      "first_date": "2026-06-30",
+      "url": "https://commitfest.postgresql.org/patch/6979/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGjGUAL1b=Mwd1SCvLbo+fivEr9KDpFcu4jmqKCZXwT=6CiiGQ@mail.gmail.com"
+      ],
+      "authors": "wenhui qiu (wenhuiqiu)",
+      "objectors": "",
+      "summary": "WAL compression setting after PostgreSQL LZ4 default change\nThreads: WAL compression setting after PostgreSQL LZ4 default change",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "default_toast_compression zstd"
+      ],
+      "from_hint": false,
+      "score": 0.093,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:3490",
+      "kind": "cf",
+      "title": "Pluggable toaster",
+      "status": "Rejected",
+      "date": "2023-04-03",
+      "first_date": "2021-12-30",
+      "url": "https://commitfest.postgresql.org/patch/3490/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/224711f9-83b7-a307-b17f-4457ab73aa0a@sigaev.ru"
+      ],
+      "authors": "Fedor Sigaev (sigaev), Nikita Glukhov (n.glukhov), Oleg Bartunov (oleg), Nikita Malakhov (nmalakh)",
+      "objectors": "",
+      "summary": "Pluggable toaster\nThreads: Pluggable toaster",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pluggable compression methods"
+      ],
+      "from_hint": false,
+      "score": 0.092,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:5807",
+      "kind": "cf",
+      "title": "Cleanup gcc trick with varattrib_1b_e in VARATT_EXTERNAL_GET_POINTER()",
+      "status": "Withdrawn",
+      "date": "2025-07-14",
+      "first_date": "2025-06-09",
+      "url": "https://commitfest.postgresql.org/patch/5807/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/aEaZf_45j-D_HNw5@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Cleanup gcc trick with varattrib_1b_e in VARATT_EXTERNAL_GET_POINTER()\nThreads: Cleanup gcc trick with varattrib_1b_e in\nVARATT_EXTERNAL_GET_POINTER()",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "new TOAST pointer vartag compression"
+      ],
+      "from_hint": false,
+      "score": 0.086,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:2773",
+      "kind": "cf",
+      "title": "libpq compression",
+      "status": "Returned with feedback",
+      "date": "2021-12-03",
+      "first_date": "2018-03-30",
+      "url": "https://commitfest.postgresql.org/patch/2773/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/aad16e41-b3f9-e89d-fa57-fb4c694bec25@postgrespro.ru"
+      ],
+      "authors": "Konstantin Knizhnik (knizhnik), Daniil Zakhlystov (usernamedt)",
+      "objectors": "",
+      "summary": "libpq compression\nThreads: libpq compression",
+      "objection": "",
+      "touch_points": [
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "pluggable compression methods"
+      ],
+      "from_hint": false,
+      "score": 0.084,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:2722",
+      "kind": "cf",
+      "title": "Detect escape of ErrorContextCallback stack pointers (and from PG_TRY() )",
+      "status": "Withdrawn",
+      "date": "2020-09-10",
+      "first_date": "2020-09-03",
+      "url": "https://commitfest.postgresql.org/patch/2722/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMsr+YE8tveiaGPuNzw+5fuo0yeZf7LePVLpx9MxUrFHMBG0gQ@mail.gmail.com"
+      ],
+      "authors": "Craig Ringer (ringerc)",
+      "objectors": "",
+      "summary": "Detect escape of ErrorContextCallback stack pointers (and from PG_TRY() )\nThreads: [PATCH] Detect escape of ErrorContextCallback stack pointers (and\nfrom PG_TRY() )",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "new TOAST pointer vartag compression"
+      ],
+      "from_hint": false,
+      "score": 0.081,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 3,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 6
+  },
+  "precedent_cutoff": "2026-09-22",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 2,
+      "note": "0002 answers the [P3] reason for zstd and the long form. Both objections are about the dictionary and evolution patches, 0004-0005."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "0001-0003 (the long form and plain zstd) follow the lz4 precedent for syntax, the GUC, pg_dump, psql and pg_column_compression. I have no compatibility objection to them."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 2,
+      "note": "The long-form header and tags in 0002-0003 leave pglz and lz4 data unchanged; hash checks and pg_upgrade tests (message #10) back this. WAL, standby replay and pg_upgrade of dictionaries were tested in the thread, so no objection is raised there."
+    },
+    {
+      "angle": "security",
+      "objections": 2,
+      "note": "The zstd method and the long-form format (0001-0003) add no new privilege or exposure surface; both objections concern the dictionary patches only. The manual trainer already checks ownership, recovery and temp tables, and the evolution GUCs are PGC_SUSET."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 4,
+      "note": "No objection is raised against 0001-0003. The long-form ID and plain zstd reuse the libzstd already linked in, cost nothing for pglz and lz4, and Michael accepted the one-byte cost."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "For 0001-0004 there is no existing alternative. Core has only pglz and lz4, and extensions cannot add a TOAST compression method or the containment rules dictionaries need, so plain zstd and dictionaries draw no objection from this angle."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "Demand for plain zstd (0001-0003) is reasonably shown: several independent threads, ratio gains on base64 and JSON, and the extensible header that [P3] asked for first. Objections target only the dictionary and evolution patches."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 9,
+      "new_objections": 16,
+      "new_survived": 8,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 136,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 17,
+    "wall_ms": 239674,
+    "cost_usd": 8.9099144,
+    "dry_run": false
+  }
+}

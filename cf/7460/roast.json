@@ -1,0 +1,1215 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:57:08.446Z",
+  "input": {
+    "arg": "7460",
+    "cf": {
+      "id": 7460,
+      "url": "https://commitfest.postgresql.org/patch/7460/",
+      "title": "Fix double-counting of pending relation stats by VACUUM and ANALYZE",
+      "status": "Needs review",
+      "authors": "Manuel Reyes Bravo (manu15), Ilya Staroverov (ilyastar)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/1DC9D815-8754-4A76-B2B1-99C1A614A55A%40localhost.localdomain",
+    "subject": "VACUUM/ANALYZE double-count the backend's own pending table stats (n_live_tup = 2*N after INSERT + ANALYZE)",
+    "thread_start": "2026-10-14T10:39:50Z",
+    "messages_read": 12,
+    "messages_total": 12,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v2-0001-Fix-double-counting-of-pending-relation-stats-by-.patch",
+      "v2-0002-Don-t-count-pending-inserts-in-ins_since_vacuum-a.patch",
+      "v1-0001-Fix-double-counting-of-pending-relation-stats-by-.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection is fatal, and no level fails. The thread shows a deterministic single-session reproduction on 14 through master and measured extra autovacuum runs. Two fixable points remain. prior-attempts-1 asks why an earlier thread judged a similar case not a bug. standards-compat-1 asks whether 0002 may change a pgstat.h struct in stable branches. A committer who knows the cumulative stats code has to settle both.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Fix double counting of pending table stats by VACUUM and ANALYZE",
+    "problem": "VACUUM and ANALYZE overwrite live_tuples and dead_tuples with their own counts, but the same backend's earlier committed deltas may still be pending and get added again at the next flush. After INSERT of N rows and ANALYZE in one session, n_live_tup shows 2*N, and mod_since_analyze or dead_tuples stay inflated, so autovacuum runs extra passes. A separate bug loses a pending TRUNCATE reset when a later transaction commits.",
+    "proposed_design": "When VACUUM or ANALYZE report new totals, the backend drops its own pending live/dead deltas, and pending changed_tuples for ANALYZE with resetcounter. Commit and COMMIT PREPARED only set truncdropped and never clear it. Patch 0002 adds a pending ins_before_vacuum field so the flush skips inserts that VACUUM already covered for ins_since_vacuum, while n_tup_ins stays cumulative.",
+    "user_visible_surface": [
+      "Changed values in pg_stat_user_tables: n_live_tup, n_dead_tup, n_mod_since_analyze, n_ins_since_vacuum after same-session VACUUM or ANALYZE.",
+      "New field ins_before_vacuum appended to the pending table stats struct in pgstat.h, visible to C extensions."
+    ],
+    "author_claims": [
+      "The bug is deterministic in one session, unlike the known inaccuracy from concurrent sessions.",
+      "Every tested release reproduces it, 14 through 18 and master, so it predates shared-memory stats.",
+      "Sebastian measured 20 extra autoanalyze or autovacuum runs per 20 tables without the fix and 0 with v1 plus 0002.",
+      "Commit 81e82a2bd48 fixed the same class of problem in 2016 and called it an oversight.",
+      "The struct field goes at the end so inline pgstat_count_* offsets stay the same, which keeps a back-patch possible."
+    ],
+    "thread_state": "Manu, Sebastian and João tested v2 and report correct counts, but Bertrand Drouvot says a similar case was earlier judged not a bug and suggests fixing only TRUNCATE. Ilya disagrees and offers to split out the TRUNCATE fix, and no committer has replied.",
+    "unclear": [
+      "The material does not show why the earlier thread Bertrand cites judged the similar case not a bug.",
+      "No one tested 0001 and 0002 apart, under concurrent sessions, or with check-world.",
+      "The material does not say whether a committer wants a back-patch to 14 through 18, or whether the struct change is ABI-safe there.",
+      "The order of this patch and the in-transaction stats flush patch (v17) is not settled.",
+      "The VACUUM regression test still passes without the fix if a flush happens between statements."
+    ],
+    "search_queries": [
+      "n_live_tup double counted after analyze",
+      "pending stats vacuum analyze double counting",
+      "pgstat_report_analyze delta_live_tuples",
+      "n_mod_since_analyze not reset after analyze",
+      "truncdropped pending stats truncate",
+      "ins_since_vacuum autovacuum insert threshold",
+      "inaccurate pg_stat_user_tables live tuples",
+      "pgstat flush pending relation stats"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Same cause as an earlier case judged not a bug",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "prior_rejection",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer who took part in the earlier thread sees the same root cause raised again and declines 0001 for the same reason. Only the TRUNCATE fix goes in. The VACUUM and ANALYZE double count stays, and users running ETL scripts keep seeing extra autovacuum and autoanalyze runs.",
+      "argument": "Message #10 points to an earlier thread where a similar case was not treated as a bug. Message #11 agrees the VACUUM example there has the same cause. The thread does not report why that thread decided as it did. Message #11 reads the earlier reason as a wish to keep stats batched and says the patch keeps batching. If the earlier reason was that these counters are approximate by design, the fix is still partial: other backends' pending deltas, including those seen by autovacuum's own VACUUM, still inflate the counters, as message #11 concedes.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        10,
+        11
+      ],
+      "author_must_show": "What reason did the earlier thread give for calling this not a bug, and why does that reason not cover the same-backend case fixed here?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 10,
+          "from": "Bertrand Drouvot",
+          "date": "2026-11-05T05:48:38Z",
+          "url": "https://www.postgresql.org/message-id/auwYtm6qM3fPltNF%40bdtpg"
+        },
+        {
+          "index": 11,
+          "from": "Staroverov Ilja",
+          "date": "2026-11-05T07:07:35Z",
+          "url": "https://www.postgresql.org/message-id/2C6AA9AE-4348-4952-B971-E0D63B2B1A53%40localhost.localdomain"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #11 argues the same-backend case differs and keeps batching, and ANALYZE already subtracts pending delta_dead_tuples. But the thread does not state the earlier thread's reason, and Bertrand has not replied, so the question stays open.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Back-patching 0002 changes a public pgstat.h struct in stable branches",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A packager ships a 14-18 minor release with 0002, and an extension built against the old pgstat.h keeps running unrebuilt. If that extension embeds, copies or sizes the pending table stats struct, it now reads or allocates the wrong layout. The breakage would show up as wrong counters or memory errors after the minor update.",
+      "argument": "0002 adds ins_before_vacuum to a struct in pgstat.h that C extensions can see. Message #2 and message #5 argue that appending the field keeps the inline pgstat_count_* offsets stable, so a back-patch stays possible. That covers offsets inside the struct. It does not cover the struct's size, or any containing struct that holds it ahead of other members, and nobody in the thread ran an ABI check on 14-18. 0001 touches only pgstat_relation.c, so it can be back-patched alone, with 0002 kept for master only.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        5,
+        12
+      ],
+      "author_must_show": "Which stable branches would receive 0002, and does an ABI comparison of 14-18 show no size or layout change in any struct visible to extensions?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Manu",
+          "date": "2026-10-14T18:47:04Z",
+          "url": "https://www.postgresql.org/message-id/179200362437.252424.7000490135467740876%40gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Staroverov Ilja",
+          "date": "2026-10-15T06:08:19Z",
+          "url": "https://www.postgresql.org/message-id/1CBF745F-CB0D-4D35-9E25-D6B5208335E4%40localhost.localdomain"
+        },
+        {
+          "index": 12,
+          "from": "João Rito",
+          "date": "2026-11-12T02:41:12Z",
+          "url": "https://www.postgresql.org/message-id/CADMs5ONUqqmPcNWnqobGy8wWujFbYHusZjwdJsehShGH3SsS1Q%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Appending the field keeps offsets inside the counts struct but grows it, which moves later members of any struct that embeds it. The thread shows no ABI check on 14-18 and does not say which branches get 0002.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Back-patching a new field in the pgstat.h pending struct",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "backpatchability",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer back-patches 0002 to 14 through 18, which appends ins_before_vacuum to the pending table stats struct in pgstat.h. An extension or fork built against the older minor release embeds, copies or sizes that struct, and it reads or writes the wrong size after the minor update. Users find out from memory errors after a routine minor upgrade.",
+      "argument": "0002 changes a struct in an installed header. Appending the field keeps the offsets used by the inline pgstat_count_* macros, but it does not keep the struct size. Message #12 shows how this struct can fail when an old build meets a new header: \"write past chunk end in PgStat Pending\" from stale objects. Messages #5 and #11 offer back-branch versions, but the thread does not say whether 0002 is meant for 14 through 18 or only for master.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        5,
+        11,
+        12
+      ],
+      "author_must_show": "Is 0002 proposed for back branches, and if so, which known extensions or code paths use the size of the pending table stats struct?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Manu",
+          "date": "2026-10-14T18:47:04Z",
+          "url": "https://www.postgresql.org/message-id/179200362437.252424.7000490135467740876%40gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Staroverov Ilja",
+          "date": "2026-10-15T06:08:19Z",
+          "url": "https://www.postgresql.org/message-id/1CBF745F-CB0D-4D35-9E25-D6B5208335E4%40localhost.localdomain"
+        },
+        {
+          "index": 11,
+          "from": "Staroverov Ilja",
+          "date": "2026-11-05T07:07:35Z",
+          "url": "https://www.postgresql.org/message-id/2C6AA9AE-4348-4952-B971-E0D63B2B1A53%40localhost.localdomain"
+        },
+        {
+          "index": 12,
+          "from": "João Rito",
+          "date": "2026-11-12T02:41:12Z",
+          "url": "https://www.postgresql.org/message-id/CADMs5ONUqqmPcNWnqobGy8wWujFbYHusZjwdJsehShGH3SsS1Q%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1. Its extra evidence from message #12 is a stale incremental build of core, which João attributes to his build, so it does not show an extension failure.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Pending-delta reset is tied to the current flush model",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The in-transaction stats flush patch (v17) later lands and adds flushed_xact baselines. A developer rebases it and keeps the 'zero the pending counters' step from this patch, where the new model needs the baseline to move. The next flush computes a wrong delta, and the counters drift again. The VACUUM test passes whenever a flush happens between statements, so nothing catches it.",
+      "argument": "Message #1 says that under v17 'forget the pending deltas' would have to mean 'advance the baseline', and the order of the two patches is not settled. Message #5 keeps the VACUUM regression test best-effort, and message #7 rejects both ways to pin it, so a later change to the flush path can bring back the double count with no test failure. The pgstat area has few people who know it well, and no committer has replied.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        5,
+        6,
+        7,
+        10
+      ],
+      "author_must_show": "How should the reset be written so that it stays correct if flushes happen inside running transactions, and what test fails if a later change breaks it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Staroverov Ilja",
+          "date": "2026-10-14T10:39:50Z",
+          "url": "https://www.postgresql.org/message-id/1DC9D815-8754-4A76-B2B1-99C1A614A55A%40localhost.localdomain"
+        },
+        {
+          "index": 5,
+          "from": "Staroverov Ilja",
+          "date": "2026-10-15T06:08:19Z",
+          "url": "https://www.postgresql.org/message-id/1CBF745F-CB0D-4D35-9E25-D6B5208335E4%40localhost.localdomain"
+        },
+        {
+          "index": 6,
+          "from": "Manu",
+          "date": "2026-10-15T07:11:27Z",
+          "url": "https://www.postgresql.org/message-id/179204828715.3237120.899220695784427126%40gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Staroverov Ilja",
+          "date": "2026-10-15T07:48:32Z",
+          "url": "https://www.postgresql.org/message-id/F8A8C3AC-195A-442A-86FC-57EF5B114A18%40localhost.localdomain"
+        },
+        {
+          "index": 10,
+          "from": "Bertrand Drouvot",
+          "date": "2026-11-05T05:48:38Z",
+          "url": "https://www.postgresql.org/message-id/auwYtm6qM3fPltNF%40bdtpg"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "Message #1 names the conflict with the uncommitted v17 patch and states what the reset must become there. The scenario needs a later rebase error in that other patch, and 0001's ANALYZE and TRUNCATE tests are pinned and would fail.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "0002 appends ins_before_vacuum to the pending table stats struct in pgstat.h, which C extensions can see."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The bug reproduces on 14 through 18, and the thread offers back-branch versions, including the struct change in 0002."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "The reset of pending deltas conflicts with the in-transaction stats flush patch (v17), and the VACUUM test is best-effort."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "What reason did the earlier thread cited in message #10 give for calling the similar case not a bug, and why does it not cover the same-backend case?",
+    "Which stable branches should receive 0002, and does an ABI comparison on 14 through 18 show no size or layout change visible to extensions?",
+    "Should this patch or the in-transaction stats flush patch (v17) go first, and how does the reset look with flushed_xact baselines?",
+    "Do 0001 alone and 0001 plus 0002 each pass check-world, and what do the counters show when another session modifies the table concurrently?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "Someone who knows the cumulative stats code in pgstat_relation.c and how autovacuum reads these counters; no committer has replied in the thread.",
+    "liability": "The owner signs for the counters that drive autovacuum and autoanalyze on every branch that gets the fix. With 0002, the owner also signs for a pgstat.h struct change.",
+    "author_follow_up": "Ilya posted v2, offers to rebase in either order against the v17 flush patch, and offers to split out the TRUNCATE fix. Manu wrote 0002 and offers more repros."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "low",
+    "review_cost": "low",
+    "recommended_action": "proceed",
+    "reason": "The patches are small and touch one source file plus one header field. They fix a deterministic miscount that causes extra autovacuum runs after a bulk load or delete followed by ANALYZE or VACUUM in the same session. A committer must answer the \"not a bug\" question and the back-patch question."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, nobody can check that dropping pending deltas is correct with subtransactions, 2PC and concurrent sessions. The same holds for whether the 0002 struct change is ABI-safe on 14 through 18.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "revert:2c9b46c090e76c62f24563b9be2c34e6b92e9329",
+      "kind": "revert",
+      "title": "Revert \"Fix issues with Windows' stat() for files pending on deletion\"",
+      "status": "Reverted",
+      "date": "2021-07-12",
+      "first_date": "2021-07-12",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=2c9b46c090e76c62f24563b9be2c34e6b92e9329",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/YOvOlfRrIO0yGtgw@paquier.xyz",
+        "https://www.postgresql.org/message-id/flat/c3427edf-d7c0-ff57-90f6-b5de3bb62709@gmail.com"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Fix issues with Windows' stat() for files pending on deletion\"\nReverted commit(s): Fix issues with Windows' stat() for files pending on deletion",
+      "objection": "This reverts commit 54fb8c7, as per the issues reported by fairywren\nwhen it comes to MinGW because of the lack of microsoft_native_stat()\nthere.  Using just stat() for MSVC is not sufficient to take care of the\nconcurrency problems with files pending on deletion.  It may be possible\nto paint some __MINGW64__ in the code to switch to a different\nimplementation of stat() in this build context, but I am not sure either\nif relying on the implementation of stat() in MinGW to take care of the\nproblems we are trying to fix is enough or not.  So this needs more\nstudy.",
+      "touch_points": [],
+      "matched_queries": [
+        "pending stats vacuum analyze double counting",
+        "truncdropped pending stats truncate",
+        "pgstat flush pending relation stats"
+      ],
+      "from_hint": false,
+      "score": 0.336,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "revert:6f8127b7390119c21479f5ce495b7d2168930e82",
+      "kind": "revert",
+      "title": "Revert analyze support for partitioned tables",
+      "status": "Reverted",
+      "date": "2021-08-16",
+      "first_date": "2021-04-08",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6f8127b7390119c21479f5ce495b7d2168930e82",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210722205458.f2bug3z6qzxzpx2s@alap3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/20210423180152.GA17270@telsasoft.com",
+        "https://www.postgresql.org/message-id/flat/1823909.1617862590@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20210408213051.GL6592@telsasoft.com",
+        "https://www.postgresql.org/message-id/flat/CAKkQ508_PwVgwJyBY=0Lmkz90j8CmWNPUxgHvCUwGhMrouz6UA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CALNJ-vS1R3Qoe5t4tbzxrkpBtzRbPq1dDcW4RmA_a+oqweF30w@mail.gmail.com"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert analyze support for partitioned tables\nReverted commit(s): Describe (auto-)analyze behavior for partitioned tables; Set pg_class.reltuples for partitioned tables; Document ANALYZE storage parameters for partitioned tables; autovacuum: handle analyze for partitioned tables; Don't reset relhasindex for partitioned tables on ANALYZE",
+      "objection": "This reverts the following commits:\n1b5617eb844cd2470a334c1d2eec66cf9b39c41a Describe (auto-)analyze behavior for partitioned tables\n0e69f705cc1a3df273b38c9883fb5765991e04fe Set pg_class.reltuples for partitioned tables\n41badeaba8beee7648ebe7923a41c04f1f3cb302 Document ANALYZE storage parameters for partitioned tables\n0827e8af70f4653ba17ed773f123a60eadd9f9c9 autovacuum: handle analyze for partitioned tables\n\nThere are efficiency issues in this code when handling databases with\nlarge numbers of partitions, and it doesn't look like there isn't any\ntrivial way to handle those.  There are some other issues as well.  It's\nnow too late in the cycle for nontrivial fixes, so we'll have to let\nPostgres 14 users continue to manually deal with ANALYZE their\npartitioned tables, and hopefully we can fix the issues for Postgres 15.\n\nI kept [most of] be280cdad298 (\"Don't reset relhasindex for partitioned\ntables on ANALYZE\") because while we added it due to 0827e8af70f4, it is\na good bugfix in its own right, since it affects manual analyze as well\nas autovacuum-induced analyze, and there's no reason to revert it.\n\nI retained the addition of relkind 'p' to tables included by\npg_stat_user_tables, because reverting that would require a catversion\nbump.\nAlso, in pg14 only, I keep a struct member that was added to\nPgStat_TabStatEntry to avoid breaking compatibility with existing stat\nfiles.\n\nBackpatch to 14.",
+      "touch_points": [
+        "catalog changes"
+      ],
+      "matched_queries": [
+        "pgstat_report_analyze delta_live_tuples",
+        "n_mod_since_analyze not reset after analyze",
+        "inaccurate pg_stat_user_tables live tuples"
+      ],
+      "from_hint": false,
+      "score": 0.322,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "revert:d00107cd63e780753aa25563fa37603369997d0c",
+      "kind": "revert",
+      "title": "Revert \"Show index search count in EXPLAIN ANALYZE.\"",
+      "status": "Reverted",
+      "date": "2025-03-05",
+      "first_date": "2025-03-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=d00107cd63e780753aa25563fa37603369997d0c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAH2-Wz=PKR6rB7qbx+Vnd7eqeB5VTcrW=iJvAsTsKbdG+kW_UA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAH2-WzkRqvaqR2CTNqTZP0z6FuL4-3ED6eQB0yx38XBNj1v-4Q@mail.gmail.com"
+      ],
+      "authors": "Peter Geoghegan",
+      "objectors": "",
+      "summary": "Revert \"Show index search count in EXPLAIN ANALYZE.\"\nReverted commit(s): Show index search count in EXPLAIN ANALYZE.",
+      "objection": "This reverts commit 5ead85fbc81162ab1594f656b036a22e814f96b3.\n\nThis commit shows test failures with debug_parallel_query=regress.  The\nunderlying issue needs to be debugged, so revert for now.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "n_live_tup double counted after analyze",
+        "pending stats vacuum analyze double counting"
+      ],
+      "from_hint": false,
+      "score": 0.265,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "revert:5721e5453ebc59360b6756fe72d7499c4a02177c",
+      "kind": "revert",
+      "title": "Revert \"Add redo LSN to pgstats files\"",
+      "status": "Reverted",
+      "date": "2025-03-16",
+      "first_date": "2024-08-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=5721e5453ebc59360b6756fe72d7499c4a02177c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2563883.1741826489@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/Zp8o6_cl0KSgsnvS@paquier.xyz"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Add redo LSN to pgstats files\"\nReverted commit(s): Add redo LSN to pgstats files",
+      "objection": "This reverts commit b860848232aa, that was added as a prerequisite for\nthe support of pgstats data flush across checkpoints, linking a pgstats\nfile to a specific checkpoint redo LSN.\n\nAs reported, this is proving to be currently problematic when going\nthrough a pg_upgrade, that does direct manipulations of the control file\nin the new cluster.  The LSN stored in the pgstats file is not able to\ncope with any changes done in the control file by pg_upgrade yet,\ncausing the pgstats file to be discarded when starting the new cluster\nafter overriding its redo LSN (one is a `pg_resetwal -l` where the new\ncluster's start LSN is bumped by a hardcoded value of 8 segments, see\ncopy_xact_xlog_xid).\n\nThe least painful path going forward is likely going to be a refactor of\nthe pgstats code so as it is possible to read and write some of its data\nwith some routines in src/common/, so as pg_upgrade or pg_resetwal are\nable to update its data.  The main point is that we are going to need a\nLSN in the stats file should we make it written at checkpoint time and\nnot only as part of a shutdown sequence.  It is too late to dive into\nthese details for v18, so let's revert the change, and let's try to\nfigure out all the details in the next release cycle.  The pgstats file\nis currently only written as part of a shutdown sequence, and its\ncontents are still lost on crash, same as older releases.\n\nBump PGSTAT_FILE_FORMAT_ID.",
+      "touch_points": [
+        "on-disk format / pg_upgrade"
+      ],
+      "matched_queries": [
+        "pgstat_report_analyze delta_live_tuples",
+        "pgstat flush pending relation stats"
+      ],
+      "from_hint": false,
+      "score": 0.243,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:19e57f4f78e4354d9a21c284868373d28bb0d368",
+      "kind": "revert",
+      "title": "Revert \"vacuumdb: Add option for analyzing only relations missing stats.\"",
+      "status": "Reverted",
+      "date": "2025-03-07",
+      "first_date": "2025-03-07",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=19e57f4f78e4354d9a21c284868373d28bb0d368",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/Z5O1bpcwDrMgyrYy@nathan"
+      ],
+      "authors": "Nathan Bossart",
+      "objectors": "",
+      "summary": "Revert \"vacuumdb: Add option for analyzing only relations missing stats.\"\nReverted commit(s): vacuumdb: Add option for analyzing only relations missing stats.",
+      "objection": "This reverts commit 5f8eb25706b62923c53172e453c8a4dedd877a3d, which in\nmy branch by mistake.",
+      "touch_points": [],
+      "matched_queries": [
+        "pending stats vacuum analyze double counting",
+        "pgstat flush pending relation stats"
+      ],
+      "from_hint": false,
+      "score": 0.23,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:5047",
+      "kind": "cf",
+      "title": "Flush pgstats file during checkpoints",
+      "status": "Returned with feedback",
+      "date": "2024-10-02",
+      "first_date": "2024-06-18",
+      "url": "https://commitfest.postgresql.org/patch/5047/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ZnEiqAITL-VgZDoY@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Heikki Linnakangas",
+      "summary": "The patch writes the pgstats file during non-shutdown checkpoints and restart points and stores the checkpoint redo LSN in the file. At startup, including crash recovery, stats load when the redo LSN matches, so statistics survive a crash.",
+      "objection": "Heikki Linnakangas found that stats entries can leak into the pgstats file after a crash, for example for a relation created in an uncommitted transaction. Since 5891c7a8ed nothing garbage-collects such orphaned entries. He also found that two immediate shutdowns in a row log an incorrect redo LSN warning, because the stats file is not flushed at the end-of-recovery checkpoint. Michael Paquier said he would look at these, and the visible messages end there.",
+      "touch_points": [],
+      "matched_queries": [
+        "pgstat_report_analyze delta_live_tuples",
+        "pgstat flush pending relation stats"
+      ],
+      "from_hint": false,
+      "score": 0.227,
+      "enriched": true,
+      "key_quote": "There are various race conditions where a stats entry can be leaked in the pgstats file.",
+      "quote_message_url": "https://www.postgresql.org/message-id/54fdfc3e-74f6-4ea4-b844-05aa66b39490%40iki.fi",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:2428",
+      "kind": "cf",
+      "title": "explain to report bucket and memory stats for TupleHashTable nodes",
+      "status": "Returned with feedback",
+      "date": "2020-07-23",
+      "first_date": "2020-01-03",
+      "url": "https://commitfest.postgresql.org/patch/2428/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200103161925.GM12066@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "Jeff Davis, Daniel Gustafsson",
+      "summary": "The patch adds bucket counts and peak memory statistics to explain analyze output for nodes that use a TupleHashTable, such as HashAggregate, HashSetOp and Bitmap Heap Scan. It also splits memory accounting into separate contexts for the hashtable and the tuples.",
+      "objection": "The hash spill to disk commit (1f39bce02) already added most of the instrumentation, and the author asked whether the patch still served a purpose. Jeff Davis said the extra detail should go under VERBOSE or a new explain option. The patch then stayed Waiting on Author from March, and Daniel Gustafsson closed the entry when no new activity followed.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "pgstat_report_analyze delta_live_tuples",
+        "inaccurate pg_stat_user_tables live tuples"
+      ],
+      "from_hint": false,
+      "score": 0.225,
+      "enriched": true,
+      "key_quote": "This thread has stalled and the patch has been Waiting on Author since March,\nand skimming the thread there seems to be questions raised over the value\nproposition.",
+      "quote_message_url": "https://www.postgresql.org/message-id/767625E9-AFBB-44DD-AAC7-337202A56A97%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:4531",
+      "kind": "cf",
+      "title": "Change tuple table slot for Unique node to \"virtual\"",
+      "status": "Withdrawn",
+      "date": "2024-03-28",
+      "first_date": "2023-08-30",
+      "url": "https://commitfest.postgresql.org/patch/4531/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/388BA879-CAEC-4930-A4EE-F06DC1F12C96@gmail.com"
+      ],
+      "authors": "Denis Smirnov (darthunix)",
+      "objectors": "Heikki Linnakangas, David Rowley, Ashutosh Bapat",
+      "summary": "The patch changed the Unique node's result slot from a minimal tuple slot to a virtual slot, because the copy into a minimal tuple slot (with palloc) made DISTINCT slower than the equivalent GROUP BY. A later version used the outer child's slot type instead of a fixed type.",
+      "objection": "Benchmarks showed mixed results. Heikki Linnakangas found a slowdown when the input is a minimal tuple from a Sort, and David Rowley measured Q2 and Q3 as slower with the revised patch because tts_virtual_materialize() costs more. Ashutosh Bapat doubted the change was worth pursuing when only one query improved clearly. The author then asked how slot types should be chosen across all materialization nodes, and the entry was withdrawn after an offline discussion.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "n_live_tup double counted after analyze",
+        "inaccurate pg_stat_user_tables live tuples"
+      ],
+      "from_hint": false,
+      "score": 0.212,
+      "enriched": true,
+      "key_quote": "Q1 is consistently giving performance > 25% for both of us. But other queries aren't showing a whole lot improvement.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAExHW5uku%3DD2Dy6ST4JHO1sokZF8arecymk2RksioKk2BGb4UA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:6756",
+      "kind": "cf",
+      "title": "Fix pg_stat_statements display of normalized FETCH counts",
+      "status": "Withdrawn",
+      "date": "2026-05-12",
+      "first_date": "2026-05-11",
+      "url": "https://commitfest.postgresql.org/patch/6756/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/8ED8C22D-54CD-4EC4-B53C-D39F935FA83D@gmail.com"
+      ],
+      "authors": "Chao Li (chaol)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch adds a query_normalized flag to pgssEntry, so a FETCH with a count can replace an unnormalized query text stored earlier by a FETCH without a count. A new pgss_store() parameter limits this replacement to FETCH, because SET SESSION AUTHORIZATION would break otherwise.",
+      "objection": "Michael Paquier said the expectation was wrong: both FETCH forms jumble to the same node once howMany is ignored, and pg_stat_statements keeps the first query string it sees. He also rejected the extra generate_normalized_query() call because it makes pg_stat_statements heavier. He named a new FetchDirectionKeywords value in gram.y as the right fix if the two forms ever need to be told apart, but saw no monitoring gain. The author then withdrew the patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "n_live_tup double counted after analyze",
+        "pending stats vacuum analyze double counting"
+      ],
+      "from_hint": false,
+      "score": 0.211,
+      "enriched": true,
+      "key_quote": "This is an incorrect expectation.",
+      "quote_message_url": "https://www.postgresql.org/message-id/agK94m2QMp4o3Abh%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:1721",
+      "kind": "cf",
+      "title": "Allow to specify a index name as ANALYZE parameter",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2018-07-11",
+      "url": "https://commitfest.postgresql.org/patch/1721/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20180711180408.39862b9e.nagata@sraoss.co.jp"
+      ],
+      "authors": "Yugo Nagata (yugo.nagata)",
+      "objectors": "",
+      "summary": "The patch lets ANALYZE take an index name and collect statistics only for the expressions in that index, the same way a column list limits ANALYZE to those columns. The use case is a new expression index whose statistics are needed without analyzing other costly expression indexes.",
+      "objection": "The author stopped responding. Alexander Korotkov asked for column selection inside the index clause, since a multicolumn index can hold several expressions, and the author agreed to add it. No updated patch followed, so the entry stayed Waiting on Author and Michael Paquier returned it with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "n_live_tup double counted after analyze",
+        "n_mod_since_analyze not reset after analyze"
+      ],
+      "from_hint": false,
+      "score": 0.19,
+      "enriched": true,
+      "key_quote": "The patch has been waiting on\nauthor input for a couple of weeks unfortunately, so I am marking as\nreturned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20181002052717.GZ11712%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "revert:20d3fe9009ddbbbb3da3a2da298f922054b43f8c",
+      "kind": "revert",
+      "title": "In INSERT/UPDATE, use the table's real tuple descriptor as target.",
+      "status": "Partially reverted",
+      "date": "2020-10-26",
+      "first_date": "2020-10-25",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=20d3fe9009ddbbbb3da3a2da298f922054b43f8c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/16644-5da7ef98a7ac4545@postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "In INSERT/UPDATE, use the table's real tuple descriptor as target.\nReverted commit(s): Fix corner case for a BEFORE ROW UPDATE trigger returning OLD.",
+      "objection": "Previously, ExecInitModifyTable relied on ExecInitJunkFilter,\nand thence ExecCleanTypeFromTL, to build the target descriptor from\nthe query tlist.  While we just checked (in ExecCheckPlanOutput)\nthat the tlist produces compatible output, this is not a great\nsubstitute for the relation's actual tuple descriptor that's\navailable from the relcache.  For one thing, dropped columns will\nnot be correctly marked attisdropped; it's a bit surprising that\nwe've gotten away with that this long.  But the real reason for\nbeing concerned with this is that using the table's descriptor means\nthat the slot will have correct attrmissing data, allowing us to\nrevert the klugy fix of commit ba9f18abd.  (This commit undoes\nthat one's changes in trigger.c, but keeps the new test case.)\nThus we can solve the bogus-trigger-tuple problem with fewer cycles\nrather than more.\n\nNo back-patch, since this doesn't fix any additional bug, and it\nseems somewhat more likely to have unforeseen side effects than\nba9f18abd's narrow fix.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "ins_since_vacuum autovacuum insert threshold",
+        "inaccurate pg_stat_user_tables live tuples"
+      ],
+      "from_hint": false,
+      "score": 0.163,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:5282",
+      "kind": "cf",
+      "title": "Enhance file_fdw to report processed and skipped tuples in COPY progress",
+      "status": "Withdrawn",
+      "date": "2025-03-09",
+      "first_date": "2024-10-03",
+      "url": "https://commitfest.postgresql.org/patch/5282/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2ffa9bfa-41f6-4180-a32a-2c693ec1eeed@oss.nttdata.com"
+      ],
+      "authors": "Fujii Masao (masaofujii)",
+      "objectors": "Masahiko Sawada, Fujii Masao",
+      "summary": "The patch makes file_fdw report tuples_processed and tuples_skipped (rows skipped with on_error = 'ignore') in pg_stat_progress_copy. file_fdw already reports some columns there, such as relid and bytes_processed.",
+      "objection": "Masahiko Sawada noted that file_fdw's use of COPY progress does not work well, because one query can run several file_fdw scans at once and each backend has only one progress slot. The author first argued this was a separate, existing problem, then withdrew the patch: wider COPY progress support in file_fdw would make wrong progress reports more common.",
+      "touch_points": [],
+      "matched_queries": [
+        "pgstat_report_analyze delta_live_tuples"
+      ],
+      "from_hint": false,
+      "score": 0.145,
+      "enriched": true,
+      "key_quote": "I don’t think the fact that the issue\nalready exists is a good reason to introduce more, and likely more common,\nscenarios where it could occur.",
+      "quote_message_url": "https://www.postgresql.org/message-id/7b3a258a-20ee-4ab1-86ab-347bd4c2201c%40oss.nttdata.com",
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:4769",
+      "kind": "cf",
+      "title": "System username in pg_stat_activity",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2024-01-10",
+      "url": "https://commitfest.postgresql.org/patch/4769/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABUevEy8vkHLn2v0P3gkLhfDPCV9SFdtOqni9Oay3gB=APTkXg@mail.gmail.com"
+      ],
+      "authors": "Magnus Hagander (mha)",
+      "objectors": "",
+      "summary": "The patch adds an authname column to pg_stat_activity that shows the externally authenticated user name, the same value the SYSTEM_USER keyword returns. It also covers methods such as peer and ident, which have no view of their own like pg_stat_gss.",
+      "objection": "The thread stopped in February 2024 during an open discussion about whether pg_stat_activity already has too many columns and should be split into several views. Magnus Hagander replied that moving columns would break existing monitoring tools, and no one answered. Michael Paquier marked the entry Returned with feedback in October 2024 because nobody had posted since.",
+      "touch_points": [],
+      "matched_queries": [
+        "inaccurate pg_stat_user_tables live tuples"
+      ],
+      "from_hint": false,
+      "score": 0.143,
+      "enriched": true,
+      "key_quote": "This is the last message sent on this thread, and an entry was still registered in the CF app, so I am marking that as RwF for now.",
+      "quote_message_url": "https://www.postgresql.org/message-id/ZwM08Q8AH2IYnhG2%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3802",
+      "kind": "cf",
+      "title": "Making autovacuum logs indicate if insert-based threshold was the triggering condition",
+      "status": "Withdrawn",
+      "date": "2022-11-27",
+      "first_date": "2022-08-06",
+      "url": "https://commitfest.postgresql.org/patch/3802/",
+      "thread_urls": [],
+      "authors": "Peter Geoghegan (pgeoghegan)",
+      "objectors": "",
+      "summary": "Making autovacuum logs indicate if insert-based threshold was the triggering condition",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "ins_since_vacuum autovacuum insert threshold"
+      ],
+      "from_hint": false,
+      "score": 0.137,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:6640",
+      "kind": "cf",
+      "title": "Track skipped vacuum and analyze in pg_stat_all_tables",
+      "status": "Withdrawn",
+      "date": "2026-04-03",
+      "first_date": "2026-03-24",
+      "url": "https://commitfest.postgresql.org/patch/6640/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20260324151133.7940a5c1f2ebd594d54da481@sraoss.co.jp"
+      ],
+      "authors": "Yugo Nagata (yugo.nagata)",
+      "objectors": "",
+      "summary": "The patch adds per-table counters and last-skip timestamps to pg_stat_all_tables for autovacuum and autoanalyze runs that were skipped because the lock could not be acquired. Later versions also count manual vacuum and analyze skipped under SKIP_LOCKED.",
+      "objection": "The visible messages do not show why. The review was still active when the shown messages end, and the author had agreed to Michael Paquier's point that the patch was too late for v19. No message explains the withdrawal.",
+      "touch_points": [],
+      "matched_queries": [
+        "pending stats vacuum analyze double counting"
+      ],
+      "from_hint": false,
+      "score": 0.135,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:6441",
+      "kind": "cf",
+      "title": "Decoupling our alignment assumptions about int64 and double",
+      "status": "Withdrawn",
+      "date": "2026-02-03",
+      "first_date": "2026-01-29",
+      "url": "https://commitfest.postgresql.org/patch/6441/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1127261.1769649624@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane (tgl)",
+      "objectors": "",
+      "summary": "Decoupling our alignment assumptions about int64 and double\nThreads: Decoupling our alignment assumptions about int64 and double",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "n_live_tup double counted after analyze"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "revert:918de37652138da7f7e54c79351178367d60f501",
+      "kind": "revert",
+      "title": "Revert ill-considered change in pg_resetwal output.",
+      "status": "Reverted",
+      "date": "2022-09-15",
+      "first_date": "2022-09-14",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=918de37652138da7f7e54c79351178367d60f501",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/fbea8c6f-415a-bad9-c3de-969c40d08a84@dunslane.net",
+        "https://www.postgresql.org/message-id/flat/CALj2ACUeXa8tDPaiTLexBDMZ7hgvaN+RTb957-cn5qwv9zf-MQ@mail.gmail.com"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert ill-considered change in pg_resetwal output.\nReverted commit(s): Use the terminology \"WAL file\" not \"log file\" more consistently.",
+      "objection": "Commit 31dcfae83 changed one pg_resetwal output string, and a\ncorresponding test in pg_upgrade, without sufficient thought for\nthe consequences.  We can't change that output without creating\nhazards for cross-version upgrades, since pg_upgrade needs to be able\nto read the output of several different versions of pg_resetwal.\nThere may well be external tools with the same requirement.\n\nFor the moment, just revert those two changes.  What we really\nought to do here is have a separate, stable, easily machine-readable\noutput format for pg_resetwal and pg_controldata, as proposed\nyears ago by Alvaro.  Once that's in place and tools no longer\nneed to depend on the exact spelling of the human-readable output,\nwe can put back this change.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "on-disk format / pg_upgrade"
+      ],
+      "matched_queries": [
+        "n_mod_since_analyze not reset after analyze"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:6389",
+      "kind": "cf",
+      "title": "Flush some statistics within running transactions",
+      "status": "Returned with feedback",
+      "date": "2026-03-25",
+      "first_date": "2026-01-12",
+      "url": "https://commitfest.postgresql.org/patch/6389/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/aWTVEycKj7Qh%2FSXH@ip-10-97-1-34.eu-west-3.compute.internal"
+      ],
+      "authors": "Bertrand Drouvot (bertranddrouvot.pg)",
+      "objectors": "",
+      "summary": "Flush some statistics within running transactions\nThreads: Flush some statistics within running transactions",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pgstat flush pending relation stats"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:2211",
+      "kind": "cf",
+      "title": "Resume vacuum and autovacuum from interruption and cancellation",
+      "status": "Returned with feedback",
+      "date": "2020-04-08",
+      "first_date": "2019-07-16",
+      "url": "https://commitfest.postgresql.org/patch/2211/",
+      "thread_urls": [],
+      "authors": "Masahiko Sawada (masahikosawada)",
+      "objectors": "",
+      "summary": "Resume vacuum and autovacuum from interruption and cancellation",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "ins_since_vacuum autovacuum insert threshold"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:6830",
+      "kind": "cf",
+      "title": "Add autovacuum_warning to surface concurrent vacuum collisions",
+      "status": "Withdrawn",
+      "date": "2026-08-22",
+      "first_date": "2026-06-01",
+      "url": "https://commitfest.postgresql.org/patch/6830/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOzEurSChaPD2tMaEQ7k+=7cbgTL0D9j29o0J5-Se0SMDNWZGg@mail.gmail.com"
+      ],
+      "authors": "Shinya Kato (shinyakato)",
+      "objectors": "",
+      "summary": "Add autovacuum_warning to surface concurrent vacuum collisions\nThreads: Add autovacuum_warning to surface concurrent vacuum collisions",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "ins_since_vacuum autovacuum insert threshold"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:3382",
+      "kind": "cf",
+      "title": "Add support for ALTER INDEX .. ALTER [COLUMN] col_num {SET,RESET}",
+      "status": "Withdrawn",
+      "date": "2021-11-01",
+      "first_date": "2021-10-29",
+      "url": "https://commitfest.postgresql.org/patch/3382/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/YXuCDicA8rq4iryZ@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Add support for ALTER INDEX .. ALTER [COLUMN] col_num {SET,RESET}\nThreads: Add support for ALTER INDEX .. ALTER [COLUMN] col_num {SET,RESET}",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "n_mod_since_analyze not reset after analyze"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:3060",
+      "kind": "cf",
+      "title": "use AV work items infrastructure for GIN pending list's cleanup",
+      "status": "Returned with feedback",
+      "date": "2021-09-08",
+      "first_date": "2021-04-05",
+      "url": "https://commitfest.postgresql.org/patch/3060/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210405063117.GA2478@ahch-to"
+      ],
+      "authors": "Jaime Casanova (jcasanov)",
+      "objectors": "",
+      "summary": "use AV work items infrastructure for GIN pending list's cleanup\nThreads: use AV worker items infrastructure for GIN pending list's cleanup",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "truncdropped pending stats truncate"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "revert:381b3cfe2be02aa114ef7a28c4ec24feaf377c63",
+      "kind": "revert",
+      "title": "Revert \"Rename routines for write/read of pgstats file\"",
+      "status": "Reverted",
+      "date": "2026-07-14",
+      "first_date": "2025-11-25",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=381b3cfe2be02aa114ef7a28c4ec24feaf377c63",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/a4a8e9af-3eaf-4bbf-9b21-21620f3fc434@eisentraut.org",
+        "https://www.postgresql.org/message-id/flat/CAA5RZ0s9SDOu+Z6veoJCHWk+kDeTktAtC-KY9fQ9Z6BJdDUirQ@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Rename routines for write/read of pgstats file\"\nReverted commit(s): Rename routines for write/read of pgstats file",
+      "objection": "This reverts commit ed823da1289, that has made pgstat_write_chunk() and\npgstat_read_chunk() available for public use.  These routines do not\nhave a symmetric API definition across reads and writes, with the write\npart returning a void status, deferring an error detection once all the\nstats entries have been processed with an ferror(), and the read part\nreturning a boolean status.\n\nThese routines are just tiny wrappers around fread() and fwrite(), and\nextensions can just define they own routines instead of relying on the\nsame facilities as the core pgstat.c.  This commit removes their\ndeclaration from the public headers, to reduce the confusion.\ntest_custom_stats is updated to use its own read/write routines.\nPerhaps something better could be designed in the future; trying to do\nso for v19 is not feasable during beta.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "pgstat flush pending relation stats"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:6574",
+      "kind": "cf",
+      "title": "Compress prune/freeze records with Delta Frame of Reference algorithm",
+      "status": "Returned with feedback",
+      "date": "2026-07-07",
+      "first_date": "2026-03-07",
+      "url": "https://commitfest.postgresql.org/patch/6574/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/acf7e923-7ad6-42ed-b16a-df15e876d249@tantorlabs.com"
+      ],
+      "authors": "Evgeny Voropaev (evoro)",
+      "objectors": "",
+      "summary": "Compress prune/freeze records with Delta Frame of Reference algorithm\nThreads: Compress prune/freeze records with Delta Frame of Reference algorithm",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pgstat_report_analyze delta_live_tuples"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 6,
+    "new_calls": 2,
+    "failed": 0,
+    "quotes_verified": 1,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 2
+  },
+  "precedent_cutoff": "2026-10-14",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "No listed precedent matches. [P18] is the in-transaction flush patch this one conflicts with, and it has no recorded reason. [P2] is about analyze of partitioned tables. The only earlier discussion is the one cited in message #10."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 1,
+      "note": "The SQL surface does not change: there is no new syntax, GUC, catalog or psql change, and nothing for pg_dump. The changed pg_stat_user_tables values are corrections, and they move toward count(*) and reltuples. Only the back-branch ABI question falls within this angle."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The proposal touches no persistent or cross-node state. Pending table stats live only in backend memory and are freed after a flush, so the stats file format, WAL, replication, catalogs and pg_upgrade are unaffected. Standbys keep their own cumulative stats. The only ABI point is 0002's new field in the pending struct in pgstat.h. It is appended at the end, so inline pgstat_count_* offsets do not move, and core allocates pending entries. I could not build a concrete extension failure for master. For a back-patch to 14 through 18, a committer would likely ask for an ABI check of the struct size change, or for back-patching 0001 alone. That cannot be checked without the code. João's \"write past chunk end\" report came from stale objects in his own incremental build, not from the patch."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal changes only how one backend accounts for its own pending table stats before a flush. It adds no new privilege, function, view or setting, and it does not expose any data that pg_stat_user_tables does not already show. Autovacuum scheduling changes only by removing extra runs, so no unprivileged user gains a new way to use resources or learn about other sessions."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "On fit and hot-path cost there is no objection. The change runs only in VACUUM, ANALYZE and commit bookkeeping, adds no GUC or catalog, and fixes core accounting that cannot live in an extension."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing feature or extension gives correct same-session counts. The closest is calling pg_stat_force_next_flush() before ANALYZE or VACUUM, a workaround users would have to know about, not a way to fix wrong stats. The in-transaction flush patch [P18] does not change this behavior, per message #1."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "This is a deterministic bug fix with a common trigger (bulk load or delete, then ANALYZE or VACUUM in one session), reproduced on 14 through master, and measured at 20 extra autovacuum or autoanalyze runs per 20 tables. Whether it is a bug at all (message #10) is a desirability and design question for other angles; demand itself is shown."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 4,
+      "new_survived": 2,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "synthesis said NEEDS-COMMITTER-EYES but listed a level 1b objection (prior-attempts-1); changed to NEEDS-DESIGN-DISCUSSION"
+  ],
+  "tone_lint": {
+    "fields_checked": 64,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 13,
+    "wall_ms": 115673,
+    "cost_usd": 1.9202148,
+    "dry_run": false
+  }
+}

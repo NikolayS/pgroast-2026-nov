@@ -1,0 +1,1967 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:53:16.979Z",
+  "input": {
+    "arg": "7415",
+    "cf": {
+      "id": 7415,
+      "url": "https://commitfest.postgresql.org/patch/7415/",
+      "title": "Extensible ReadyForQuery wire protocol message and C hook, for connection pools and WAIT FOR LSN",
+      "status": "Needs review",
+      "authors": "Hannu Krosing (hannukrosing)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAMT0RQSP2Qopgr%2B5Z5NH1wur17%3D2fs0VAn5v3F8TtyQEApCmAQ%40mail.gmail.com",
+    "subject": "[PATCH] Extensible ReadyForQuery wire protocol message and C hook, for connection pools and WAIT FOR LSN",
+    "thread_start": "2026-10-08T09:35:27Z",
+    "messages_read": 8,
+    "messages_total": 8,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v3-0001-Extend-ReadyForQuery-wire-protocol-message-and-pr.patch",
+      "0001-Extend-ReadyForQuery-wire-protocol-message-and-provi.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The proposal fails at level 1b. It does not compare rich 'Z' with ParameterStatus and GUC_REPORT, which already deliver session state before ReadyForQuery and which old libpq accepts (already-exists-1). The keys 'T', 'H' and 'P' do not cover enough state for a pooler to skip DISCARD ALL (maintenance-fit-2). No pooler maintainer or measured cost appears in the thread (demand-1, demand-2). The goal may be sound, but the list needs these answers before design review.",
+  "failing_level": "1b",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "failed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "not_evaluated"
+    }
+  ],
+  "brief": {
+    "title": "Opt-in rich ReadyForQuery message with session state and a C hook",
+    "problem": "Connection poolers in transaction mode cannot tell cheaply whether a backend is clean enough to reuse, so they run DISCARD ALL or extra probe queries. Proxies that route read-your-writes traffic to standbys need the commit LSN for WAIT FOR LSN, which costs an extra round trip today.",
+    "proposed_design": "A new GUC switches the ReadyForQuery ('Z') message between the standard 5-byte form and a 'rich' form that appends length-prefixed key-value pairs. The server fills built-in keys for temp objects, WITH HOLD cursors, prepared statements and the last commit LSN, and extensions can append their own pairs through a hook. libpq is changed to skip trailing bytes in 'Z' and to trace them.",
+    "user_visible_surface": [
+      "GUC ready_for_query_message (enum plain/rich, PGC_USERSET, default plain).",
+      "Protocol: ReadyForQuery length becomes variable, followed by [uint8 key_len][key][uint8 val_len][val] pairs in rich mode.",
+      "Built-in keys 'T', 'H', 'P' ('1'/'0') and 'l' (8-byte big-endian commit LSN).",
+      "C API: ready_for_query_hook, ready_for_query_has_key(), ready_for_query_append_kv().",
+      "libpq: fe-protocol3.c ignores extra 'Z' bytes and PQtrace() prints the pairs."
+    ],
+    "author_claims": [
+      "Plain mode is byte-identical to master, including startup, with no extra ParameterStatus since v3.",
+      "Poolers and proxies avoid DISCARD ALL and extra LSN queries.",
+      "'H' and 'P' checks are O(1), and the 'T' catalog scan runs only when a transaction touched temp objects.",
+      "Rich mode should be enabled only with clients that support it; protecting old clients is the user's job.",
+      "check-world, the new module's 42 subtests and libpq_pipeline pass in both modes."
+    ],
+    "thread_state": "Only Manu reviewed; he confirmed the v2 fixes in v3 but reported further false-negative 'T' and 'H' cases, a hook that throws ERROR leaving an unkillable backend, and mid-session SET to rich hanging every unpatched libpq. The author has not replied to messages #7 and #8.",
+    "unclear": [
+      "The proposal does not use protocol version or _pq_ negotiation, so the server cannot know the client accepts rich 'Z'.",
+      "The proposal does not say why the GUC stays PGC_USERSET when a mid-session SET hangs unpatched clients.",
+      "The docs say 'temporary tables' but the code counts other temp objects, and the intended definition of 'T' is not stated.",
+      "Nothing says what a pooler should do with the data, or whether any pooler maintainer asked for it.",
+      "No key namespace or collision rule exists for extension keys, and the 30,000-byte libpq limit on 'Z' is not documented.",
+      "The hook contract does not say whether the hook may throw an error."
+    ],
+    "search_queries": [
+      "ReadyForQuery protocol extension",
+      "connection pooler session state reporting",
+      "report commit LSN to client",
+      "protocol message session dirty flag",
+      "wire protocol extension key value",
+      "GUC_REPORT pooler transaction pooling",
+      "read your writes LSN protocol",
+      "DISCARD ALL connection pool cheap"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P1",
+      "source_id": "cf:4736",
+      "title": "Add new protocol message to change GUCs to be able to change protocol extension parameters",
+      "kind": "cf",
+      "status": "Withdrawn",
+      "url": "https://commitfest.postgresql.org/patch/4736/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGECzQTg2hcmb5GaU53uuWcdC7gCNJFLL6mnW0WNhWHgq9UTgw@mail.gmail.com"
+      ],
+      "date": "2025-02-22",
+      "first_date": "2023-12-29",
+      "who_objected": "",
+      "quote": "This required another rebase, but I've decided that I think it'll be most fruitful to continue the discussion on protocol changes in the thread about longer cancel keys[1].",
+      "quote_url": "https://www.postgresql.org/message-id/CAGECzQTk8qAt3dfU7NuEv7nvAH%2Bckk4M28LFYpxs7W1Za%3D%2BeMg%40mail.gmail.com",
+      "enriched": true,
+      "reason": "The author withdrew the entry and moved the remaining protocol patches to the thread about longer cancel keys. Some pieces were committed here, including a libpq function PQfullProtocolVersion added in place of redefining PQprotocolVersion. The visible messages show no objection that rejected the core design.",
+      "relation": "related_only",
+      "what_is_different": "P1 built protocol-level negotiation, with a minor version bump and protocol parameters, so poolers see session state changes. This proposal changes a message format through an ordinary GUC and does no negotiation."
+    },
+    {
+      "precedent_id": "P6",
+      "source_id": "cf:4166",
+      "title": "Add new protocol message to make GUC_REPORT configurable and use it for psql prompt substitution of %N with the current user",
+      "kind": "cf",
+      "status": "Withdrawn",
+      "url": "https://commitfest.postgresql.org/patch/4166/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFj8pRBFU-WzzQhNrwRHn67N0Ug8a9-0-9BOo69PPtcHiBDQMA@mail.gmail.com"
+      ],
+      "date": "2024-01-30",
+      "first_date": "2023-02-03",
+      "who_objected": "Peter Eisentraut, Jelte Fennema-Nio",
+      "quote": "I think this is probably one of the core reasons why I would very much prefer GUCs over new message types to configure protocol extensions like this: It means proxies would not to keep track of and re-sync a new kind of connection state every time a protocol extension is added.",
+      "quote_url": "https://www.postgresql.org/message-id/CAGECzQSg0ND%3DgRmpZHBsiaZT5-a17y%3DVFf3AQfi5N7oECtM1Ug%40mail.gmail.com",
+      "enriched": true,
+      "reason": "The author withdrew the patch and said he would resend it once Jelte Fennema-Nio's _pq_.report_parameters patch is committed. Peter Eisentraut suggested a GUC that lists the settings to report instead of a new protocol message. Jelte Fennema-Nio argued that proxies such as PgBouncer already re-sync GUCs, so a GUC-based design is less fragile for them than a new message type with its own connection state.",
+      "relation": "related_only",
+      "what_is_different": "P6 added a new message type to control reporting and was withdrawn in favor of a protocol extension parameter. This proposal uses a GUC, but an ordinary SET-able one, and changes an existing message."
+    }
+  ],
+  "objections": [
+    {
+      "title": "ParameterStatus with GUC_REPORT already pushes session state to clients",
+      "level": "1b",
+      "rubric_item": 12,
+      "category": "does_not_fit",
+      "touch_points": [
+        "wire_protocol",
+        "does_not_fit",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A pooler maintainer must parse ParameterStatus for in_hot_standby and other reported settings, and also a second key-value format inside 'Z'. An extension author picks one of two channels for the same kind of data. An application with an older libpq that meets the new channel hangs, where an unknown ParameterStatus would have been ignored.",
+      "argument": "The server already sends changed GUC_REPORT settings as ParameterStatus just before ReadyForQuery, so each change arrives at the same point in the cycle the patch targets. Extensions can define custom GUC_REPORT variables today, and libpq of every supported version accepts unknown parameter names. Messages #3 and #8 show that the new 'Z' form breaks every unpatched libpq, a cost the existing channel does not have. The thread does not say why 'T', 'H', 'P' and 'l' could not be read-only reported pseudo-variables.",
+      "precedent_ids": [
+        "P6"
+      ],
+      "thread_message_refs": [
+        1,
+        3,
+        6,
+        8
+      ],
+      "author_must_show": "What can the rich 'Z' carry that read-only GUC_REPORT pseudo-variables, sent as ParameterStatus before ReadyForQuery, cannot?",
+      "precedents": [
+        {
+          "id": "P6",
+          "title": "Add new protocol message to make GUC_REPORT configurable and use it for psql prompt substitution of %N with the current user",
+          "url": "https://commitfest.postgresql.org/patch/4166/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CAFj8pRBFU-WzzQhNrwRHn67N0Ug8a9-0-9BOo69PPtcHiBDQMA@mail.gmail.com"
+          ],
+          "date": "2024-01-30",
+          "status": "Withdrawn"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Hannu Krosing",
+          "date": "2026-10-08T09:35:27Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQSP2Qopgr%2B5Z5NH1wur17%3D2fs0VAn5v3F8TtyQEApCmAQ%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Manu",
+          "date": "2026-10-08T11:48:02Z",
+          "url": "https://www.postgresql.org/message-id/179146008286.393055.16733548853161134599%40gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Hannu Krosing",
+          "date": "2026-10-09T08:13:56Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQ7GiNjmMzOP6rcfUnXPriqVjNNKxbiOpCgh4MGVAMvcQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Manu",
+          "date": "2026-10-17T20:39:00Z",
+          "url": "https://www.postgresql.org/message-id/179226954033.1033182.6926602894967135011%40gmail.com"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The server sends changed GUC_REPORT values just before ReadyForQuery and old libpq accepts unknown names, and the thread does not compare the two. P6 concerns how to configure reporting and is weak support; a later version can switch channels.",
+        "original_severity": "fatal"
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "The indicators do not cover enough state to drop DISCARD ALL",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "desirability",
+      "touch_points": [
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A pooler trusts T=0, H=0 and P=0 and skips DISCARD ALL. The previous client left a session-level SET, a LISTEN or an advisory lock. The next client gets wrong settings or a held lock, and finds out only when queries behave oddly or block.",
+      "argument": "DISCARD ALL also resets GUCs, LISTEN, advisory locks, sequence state and plan caches, and none of these has a key. The thread does not say which state a pooler may skip resetting on the basis of these three flags. No maintainer of PgBouncer, pgpool-II or Odyssey has asked for the format or commented on it, and only one reviewer has engaged (message #3 to message #8). Core would then carry a partial answer that its target users have not confirmed they can use.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        6,
+        8
+      ],
+      "author_must_show": "Which pooler would skip DISCARD ALL based on T, H and P alone, and how would it handle GUC, LISTEN and advisory-lock state?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Hannu Krosing",
+          "date": "2026-10-08T09:35:27Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQSP2Qopgr%2B5Z5NH1wur17%3D2fs0VAn5v3F8TtyQEApCmAQ%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Hannu Krosing",
+          "date": "2026-10-09T08:13:56Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQ7GiNjmMzOP6rcfUnXPriqVjNNKxbiOpCgh4MGVAMvcQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Manu",
+          "date": "2026-10-17T20:39:00Z",
+          "url": "https://www.postgresql.org/message-id/179226954033.1033182.6926602894967135011%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "DISCARD ALL also resets GUCs, LISTEN, advisory locks, sequence state and cached plans, and no key covers these. The thread does not say which reset a pooler may skip using T, H and P alone.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No pooler or proxy maintainer has asked for rich ReadyForQuery",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit",
+        "wire_protocol",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Postgres ships the rich 'Z' format, a GUC and a hook. No pooler adds a parser for it, because none was asked about the format or its key set. The project then maintains a protocol variant and a hook API with no known consumer, and later poolers may want a different shape.",
+      "argument": "Message #1 and message #6 name PgBouncer, pgpool-II and Odyssey, but no maintainer or user of these tools appears in the thread. The only reviewer, in message #3 and message #7, tested behaviour and did not ask for the feature. Message #1 asks whether a finer setting such as \"rich:THL\" is wanted, and no consumer was there to answer. A change to a protocol message is hard to take back, so a committer would likely want a named consumer first.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3,
+        6,
+        7
+      ],
+      "author_must_show": "Which pooler or proxy maintainers have said they would parse rich 'Z', and which keys and failure behaviour do they need?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Hannu Krosing",
+          "date": "2026-10-08T09:35:27Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQSP2Qopgr%2B5Z5NH1wur17%3D2fs0VAn5v3F8TtyQEApCmAQ%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Manu",
+          "date": "2026-10-08T11:48:02Z",
+          "url": "https://www.postgresql.org/message-id/179146008286.393055.16733548853161134599%40gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Hannu Krosing",
+          "date": "2026-10-09T08:13:56Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQ7GiNjmMzOP6rcfUnXPriqVjNNKxbiOpCgh4MGVAMvcQ%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Manu",
+          "date": "2026-10-09T17:48:42Z",
+          "url": "https://www.postgresql.org/message-id/179156812295.351250.10807709444689166669%40gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The thread names three poolers but shows no maintainer or user of them asking for this format. The only reviewer tested behaviour and did not state a need.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "The problem statement does not match how transaction poolers reset today",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "problem_statement",
+      "touch_points": [
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A PgBouncer user in transaction mode does not run DISCARD ALL between transactions by default, and gives up session state such as temp tables in exchange. Rich 'Z' saves this user no round trip. The users who do run a reset query per release are in session mode, where one reset per disconnect is cheap.",
+      "argument": "Message #1 and message #6 say transaction-mode poolers must run DISCARD ALL or probe queries to decide whether a backend is reusable, but give no measurement or field report of that cost. The proposal does not say which pooler setting or workload pays the cost today, or how large it is. The LSN case has a working path: a client can run a query for the commit LSN or carry the LSN in the application. The proposal does not show that the extra round trip is a measured bottleneck for anyone.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        6
+      ],
+      "author_must_show": "Which deployment runs DISCARD ALL or an LSN query per transaction today, and what share of latency or throughput does that round trip cost?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Hannu Krosing",
+          "date": "2026-10-08T09:35:27Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQSP2Qopgr%2B5Z5NH1wur17%3D2fs0VAn5v3F8TtyQEApCmAQ%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Hannu Krosing",
+          "date": "2026-10-09T08:13:56Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQ7GiNjmMzOP6rcfUnXPriqVjNNKxbiOpCgh4MGVAMvcQ%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "PgBouncer does not run its reset query in transaction mode by default, and the thread gives no measurement or field report of the round-trip cost. Messages #1 and #6 assert the cost without naming a deployment.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "Wire format switched by a user-settable GUC, without protocol negotiation",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "wire_protocol",
+      "touch_points": [
+        "wire_protocol",
+        "new_guc",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA sets ready_for_query_message = rich in postgresql.conf, or with ALTER ROLE ... SET, for a pooler that supports it. Every other client on the cluster using an unpatched libpq or driver then fails at connect or hangs mid-session after reload. Through a transaction pooler, one client's SET changes the shared backend and the next client receives rich 'Z'.",
+      "argument": "Message #8 reports that turning rich on mid-session hangs 7 of 7 unpatched libpq versions, 14 through master. The server cannot know whether the client accepts the format, because the proposal uses neither the protocol version nor a _pq_ startup parameter, the existing ways for a client to opt in to protocol changes. Message #4 answers that protecting old clients is the user's job. A committer would likely ask for a client-negotiated switch, since a GUC can be set by parties other than the client that must parse the reply.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        4,
+        6,
+        8
+      ],
+      "author_must_show": "Why should a server-side PGC_USERSET GUC choose the 'Z' format when the protocol version or a _pq_ parameter lets the client declare that it can parse it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Manu",
+          "date": "2026-10-08T11:48:02Z",
+          "url": "https://www.postgresql.org/message-id/179146008286.393055.16733548853161134599%40gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "Hannu Krosing",
+          "date": "2026-10-08T20:13:37Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQRSkPpVzSbd_DiN6esTnE24kAYP-mvv9gfw7sAhTJNpNw%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Hannu Krosing",
+          "date": "2026-10-09T08:13:56Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQ7GiNjmMzOP6rcfUnXPriqVjNNKxbiOpCgh4MGVAMvcQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Manu",
+          "date": "2026-10-17T20:39:00Z",
+          "url": "https://www.postgresql.org/message-id/179226954033.1033182.6926602894967135011%40gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #8 confirms the hang on 7 of 7 unpatched libpq versions, and v3 answers only with a doc warning. A later version can move the opt-in to a _pq_ parameter or minor version, so this is fixable.",
+        "original_severity": "fatal"
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "Extension keys share a one-byte namespace with no collision rule",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "wire_protocol",
+      "touch_points": [
+        "wire_protocol",
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Two extensions both append key 'S', or a later release adds a core key that an extension already uses. A pooler that reads 'S' then gets the wrong value or two values with no defined winner. A hook payload over 30,000 bytes makes patched libpq drop the connection.",
+      "argument": "The proposal adds ready_for_query_has_key() but defines no reserved range for core keys, no prefix rule for extensions, and no rule for duplicate keys. The built-in keys already changed between versions, 'L' as text in v1 and 'l' as binary in v3, which shows how easily key meanings shift once clients depend on them. Message #8 reports the 30,000-byte libpq limit, and the protocol docs do not mention it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        6,
+        8
+      ],
+      "author_must_show": "Which keys are reserved for core, how must extensions name theirs, and what must a client do on a duplicate or oversized key?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 6,
+          "from": "Hannu Krosing",
+          "date": "2026-10-09T08:13:56Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQ7GiNjmMzOP6rcfUnXPriqVjNNKxbiOpCgh4MGVAMvcQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Manu",
+          "date": "2026-10-17T20:39:00Z",
+          "url": "https://www.postgresql.org/message-id/179226954033.1033182.6926602894967135011%40gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Keys carry a uint8 length, so they are not limited to one byte, and ready_for_query_has_key() lets a hook detect a clash. The proposal still gives no reserved range, no naming rule, and no documented size limit.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "Built-in key semantics are not defined precisely enough to freeze",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "wire_protocol",
+      "touch_points": [
+        "wire_protocol",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A pooler author codes against the docs, which say 'T' means temporary tables and 'l' means last commit LSN. A session with a temp function created through pg_temp_N reports T=0, and the pooler reuses it. Changing 'T' later to count all temp objects changes the protocol contract for deployed poolers.",
+      "argument": "Message #8 shows that the code counts more temp object kinds than the documentation says, and that the intended definition is open. Message #7 shows that 'l' advances on xid-less WAL, while the docs describe it as the commit LSN. Once a protocol field ships, its meaning is hard to change, so the contract should be settled first.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        7,
+        8
+      ],
+      "author_must_show": "What exact definition of 'T' and 'l' is the protocol promising, and how will it be changed later without breaking poolers?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "Manu",
+          "date": "2026-10-09T17:48:42Z",
+          "url": "https://www.postgresql.org/message-id/179156812295.351250.10807709444689166669%40gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Manu",
+          "date": "2026-10-17T20:39:00Z",
+          "url": "https://www.postgresql.org/message-id/179226954033.1033182.6926602894967135011%40gmail.com"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #8 shows the docs and the code disagree on what 'T' counts, and the author has not replied. The 'l' behaviour is safe for read-your-writes, but the documented meaning still differs from what is sent.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "Hook contract runs extension code where an ERROR cannot be handled",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension's ready_for_query_hook raises ERROR, for example on out-of-memory. The backend loops sending ErrorResponse at full CPU, ignores pg_terminate_backend() and fast shutdown, and the DBA must SIGKILL it, which forces a crash restart of the whole cluster.",
+      "argument": "Message #8 shows the loop with a test hook. The hook is called at the point where the backend reports readiness, so any error path re-enters ReadyForQuery. The proposed API does not say whether the hook may throw or what core does if it does. A hook that every extension author can register needs a contract that fails safely, not only one that works when every hook behaves.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        8
+      ],
+      "author_must_show": "What does core do when the hook throws, and how does the design keep the backend killable in that case?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 8,
+          "from": "Manu",
+          "date": "2026-10-17T20:39:00Z",
+          "url": "https://www.postgresql.org/message-id/179226954033.1033182.6926602894967135011%40gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-3",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #8 reproduces the loop, and the hook contract does not say whether a hook may throw. The author has not replied, and nothing in v3 guards the call.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "Session can suppress its own 'T' flag and plant state for the next client",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges",
+        "wire_protocol",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "In transaction pooling, client A runs BEGIN; SET LOCAL ready_for_query_message = plain; CREATE TEMP TABLE accounts(...); COMMIT, and the server reports T=0 (message #7). The pooler hands the backend to client B without a reset. B's unqualified queries on accounts resolve to A's temp table through pg_temp, and A can read B's rows later.",
+      "argument": "The patch offers 'T' as the signal a pooler uses to skip DISCARD ALL. The session being judged can change that signal itself, because the GUC is PGC_USERSET and SET LOCAL turns tracking off. Message #8 adds rollback and pg_temp_N paths that also leave T=0 with a live temp object. The flags cannot replace a reset unless the client cannot influence them, and the docs do not warn poolers about this.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        6,
+        7,
+        8
+      ],
+      "author_must_show": "How can a pooler rely on 'T' when the client session can switch tracking off or reach T=0 while a temp relation that shadows a normal table still exists?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 6,
+          "from": "Hannu Krosing",
+          "date": "2026-10-09T08:13:56Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQ7GiNjmMzOP6rcfUnXPriqVjNNKxbiOpCgh4MGVAMvcQ%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Manu",
+          "date": "2026-10-09T17:48:42Z",
+          "url": "https://www.postgresql.org/message-id/179156812295.351250.10807709444689166669%40gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Manu",
+          "date": "2026-10-17T20:39:00Z",
+          "url": "https://www.postgresql.org/message-id/179226954033.1033182.6926602894967135011%40gmail.com"
+        }
+      ],
+      "id": "security-1",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #7 reproduces T=0 with a live temp table after SET LOCAL to plain, and message #8 adds rollback paths. The session being judged controls the GUC, and v3 does not address this.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "Any user's code can switch another session's protocol format",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges",
+        "wire_protocol",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A table owner puts set_config('ready_for_query_message','rich',false) in a trigger function. When an application or an administrator using an unpatched libpq inserts into that table, the session switches to rich and the client hangs (7 of 7 libpq versions in message #8). A database owner can use ALTER DATABASE ... SET to break every older client that connects, including maintenance tools.",
+      "argument": "Wire framing depends on a PGC_USERSET GUC. It can therefore be set through function code, ALTER ROLE SET and ALTER DATABASE SET by parties other than the client that must parse the messages. Message #4 answers that there are other ways to make a connection unresponsive. But this path needs no superuser and hangs the client, and it runs counter to protocol-level negotiation, so a committer would likely still ask about it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        4,
+        6,
+        8
+      ],
+      "author_must_show": "Why should the message format be settable from SQL by any user's code, when a protocol parameter negotiated by the client would stop non-clients from changing it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Manu",
+          "date": "2026-10-08T11:48:02Z",
+          "url": "https://www.postgresql.org/message-id/179146008286.393055.16733548853161134599%40gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "Hannu Krosing",
+          "date": "2026-10-08T20:13:37Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQRSkPpVzSbd_DiN6esTnE24kAYP-mvv9gfw7sAhTJNpNw%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Hannu Krosing",
+          "date": "2026-10-09T08:13:56Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQ7GiNjmMzOP6rcfUnXPriqVjNNKxbiOpCgh4MGVAMvcQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Manu",
+          "date": "2026-10-17T20:39:00Z",
+          "url": "https://www.postgresql.org/message-id/179226954033.1033182.6926602894967135011%40gmail.com"
+        }
+      ],
+      "id": "security-2",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "It shares a root cause with standards-compat-1 but adds a separate case: another user's function or ALTER DATABASE SET hangs a client that never asked for rich. The reply in message #4 does not cover a path that needs no superuser.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "Mirrored session-state flags drift from the catalog as code changes",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "catalog"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later release adds a new kind of temp object, or a new path that holds or restores portals. Nobody updates the 'T' or 'H' bookkeeping, and no test fails. A pooler reads T=0, hands the backend to another client, and that client sees the first client's temp table.",
+      "argument": "'T' and 'H' are counters and scans kept apart from the state they describe, spread across xact.c, namespace.c and portalmem.c. In message #7 and message #8 the reviewer found about nine ways they drift, including ROLLBACK after DROP, a 40001 failure and procedure COMMIT, and most of these are false negatives. The fixes so far were made one case at a time. Every future change to temp objects, subtransactions or portals must also keep this mirror correct, and when it does not, nothing fails loudly.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        7,
+        8
+      ],
+      "author_must_show": "How will a future patch that adds a temp object kind or a portal path find out that it broke 'T' or 'H'?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "Manu",
+          "date": "2026-10-09T17:48:42Z",
+          "url": "https://www.postgresql.org/message-id/179156812295.351250.10807709444689166669%40gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Manu",
+          "date": "2026-10-17T20:39:00Z",
+          "url": "https://www.postgresql.org/message-id/179226954033.1033182.6926602894967135011%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #7 and #8 list about nine drift cases, most of them false negatives, and v3 fixed cases one at a time. A design that reads the flags from the state itself could remove the mirror, so this is fixable.",
+        "original_severity": "fatal"
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Rich 'Z' changes the wire format without protocol negotiation",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "wire_protocol",
+      "touch_points": [
+        "wire_protocol",
+        "new_guc",
+        "security_privileges"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A role owner runs alter role app set ready_for_query_message = rich, or a function carries that SET clause. Every client on unpatched libpq (14 through master) then fails at connect or hangs on the next query. The DBA finds out from application outages, with no error naming the setting.",
+      "argument": "Message #8 reports that a mid-session SET or reload to rich hangs 7 of 7 unpatched libpq versions. The server has no way to know the client accepts the longer 'Z', because the proposal uses neither the protocol minor version nor a _pq_ parameter, which is the path recent protocol work took. In message #4 the author answers that users should not enable rich for old clients and that other ways to hang a connection exist. A committer would likely see a PGC_USERSET switch that any user can flip as a different class of risk from those other ways.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        4,
+        6,
+        8
+      ],
+      "author_must_show": "Why should rich 'Z' be enabled by a user-settable GUC and not by a _pq_ protocol parameter or protocol version that only a capable client can request?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Manu",
+          "date": "2026-10-08T11:48:02Z",
+          "url": "https://www.postgresql.org/message-id/179146008286.393055.16733548853161134599%40gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "Hannu Krosing",
+          "date": "2026-10-08T20:13:37Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQRSkPpVzSbd_DiN6esTnE24kAYP-mvv9gfw7sAhTJNpNw%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Hannu Krosing",
+          "date": "2026-10-09T08:13:56Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQ7GiNjmMzOP6rcfUnXPriqVjNNKxbiOpCgh4MGVAMvcQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Manu",
+          "date": "2026-10-17T20:39:00Z",
+          "url": "https://www.postgresql.org/message-id/179226954033.1033182.6926602894967135011%40gmail.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1, which states the same missing negotiation and adds the shared-backend case through a transaction pooler.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Rich 'Z' format is switched by a user GUC, without protocol negotiation",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "wire_protocol",
+      "touch_points": [
+        "wire_protocol",
+        "new_guc",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An admin sets ready_for_query_message = rich with ALTER ROLE, ALTER SYSTEM or a reload so that one pooler can use it. Sessions from unpatched libpq, JDBC or other drivers then fail at connect or hang mid-session. Poolers in the middle that check the 'Z' length break the same way, and the admin finds out from client outages.",
+      "argument": "The server changes the length of an existing message without knowing whether the peer accepts it. Message #8 reports that 7 of 7 unpatched libpq versions hang after a mid-session SET or reload. Message #4 answers that users should not enable it for old clients, and v3 keeps PGC_USERSET with a doc warning (message #6). The server and every driver outside the tree cannot enforce that warning, and the existing _pq_ and minor-version mechanisms exist for this kind of opt-in.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        4,
+        6,
+        8
+      ],
+      "author_must_show": "Why is a server-side USERSET GUC safer than a client-requested _pq_ parameter or protocol minor version that the server honours only when the client asks for it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Manu",
+          "date": "2026-10-08T11:48:02Z",
+          "url": "https://www.postgresql.org/message-id/179146008286.393055.16733548853161134599%40gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "Hannu Krosing",
+          "date": "2026-10-08T20:13:37Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQRSkPpVzSbd_DiN6esTnE24kAYP-mvv9gfw7sAhTJNpNw%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Hannu Krosing",
+          "date": "2026-10-09T08:13:56Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQ7GiNjmMzOP6rcfUnXPriqVjNNKxbiOpCgh4MGVAMvcQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Manu",
+          "date": "2026-10-17T20:39:00Z",
+          "url": "https://www.postgresql.org/message-id/179226954033.1033182.6926602894967135011%40gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Extension-defined keys become wire content with no namespace or limits",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "wire_protocol",
+      "touch_points": [
+        "wire_protocol",
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Two extensions, or an extension and a future core release, both append key 'x' with different meanings. A pooler reads the wrong value, or the patched libpq drops the connection once the 'Z' grows past its 30,000-byte guard. The user finds out only when sessions are reused wrongly or disconnected.",
+      "argument": "The format lets any loaded hook add bytes to every ReadyForQuery, but the proposal gives no rule for who owns a key name, how core reserves keys, or how large the payload may be (message #8). Once clients parse these keys, core cannot add or rename keys without risking a clash, so the format would be hard to take back. Single-letter keys 'T', 'H', 'P' and 'l' already use most of the obvious names.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        8
+      ],
+      "author_must_show": "What naming rule and size limit keep core keys, extension keys and client parsers from clashing in later releases?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Hannu Krosing",
+          "date": "2026-10-08T09:35:27Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQSP2Qopgr%2B5Z5NH1wur17%3D2fs0VAn5v3F8TtyQEApCmAQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Manu",
+          "date": "2026-10-17T20:39:00Z",
+          "url": "https://www.postgresql.org/message-id/179226954033.1033182.6926602894967135011%40gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-2.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "An unnegotiated 'Z' format change becomes a permanent wire commitment",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "wire_protocol",
+      "touch_points": [
+        "wire_protocol",
+        "new_guc",
+        "maintenance_burden"
+      ],
+      "severity": "fatal",
+      "failure_scenario": "Poolers and drivers start to parse rich 'Z' as switched by a USERSET GUC. Any user can run SET or ALTER SYSTEM plus reload, and every unpatched libpq on that connection hangs. Later protocol versions must keep this side channel working next to whatever negotiation they add.",
+      "argument": "The rich format is chosen by a GUC with no protocol version or _pq_ parameter, so the server cannot know that the client accepts it. Message #8 shows that a mid-session switch hangs every unpatched libpq tested, from 14 to master. In message #4 the author calls the protocol change \"for the distant future\" and leaves protection to the user. Once poolers depend on the format, the project cannot remove it or change its key encoding without breaking them.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        4,
+        8
+      ],
+      "author_must_show": "Why should rich 'Z' be enabled by a USERSET GUC instead of a negotiated protocol extension that the client must request?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Manu",
+          "date": "2026-10-08T11:48:02Z",
+          "url": "https://www.postgresql.org/message-id/179146008286.393055.16733548853161134599%40gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "Hannu Krosing",
+          "date": "2026-10-08T20:13:37Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQRSkPpVzSbd_DiN6esTnE24kAYP-mvv9gfw7sAhTJNpNw%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Manu",
+          "date": "2026-10-17T20:39:00Z",
+          "url": "https://www.postgresql.org/message-id/179226954033.1033182.6926602894967135011%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1. The permanence concern follows from the same missing negotiation, and a negotiated opt-in in a later version would answer it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Hook API has no key namespace, error contract or size limit",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "wire_protocol",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Two extensions both append key 't', or one adds a large payload and patched libpq drops the connection above 30,000 bytes. A hook that throws ERROR leaves a backend at full CPU that only SIGKILL stops. Operators find out when they need to restart the server.",
+      "argument": "ready_for_query_append_kv() lets any extension write one-byte keys into a shared wire namespace, with no rule for collisions and no reserved range for core keys. Message #8 reports the unkillable loop on ERROR and the undocumented 30,000-byte limit. Every extension author and every pooler would need to coordinate keys outside the project, and core would own the result.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        8
+      ],
+      "author_must_show": "What key namespace, error behaviour and size limit does the hook contract guarantee to extensions and to clients?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 8,
+          "from": "Manu",
+          "date": "2026-10-17T20:39:00Z",
+          "url": "https://www.postgresql.org/message-id/179226954033.1033182.6926602894967135011%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-4",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-2 for the namespace and size limit, and of replication-ondisk-3 for the error contract. Keys also carry a uint8 length, so they are not one-byte keys.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Opt-in by GUC bypasses existing protocol negotiation",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "wire_protocol",
+      "touch_points": [
+        "wire_protocol",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An application sets ready_for_query_message = rich through a pooler, or an administrator enables it with ALTER SYSTEM. Every unpatched libpq on the server then hangs mid-session, 7 of 7 versions in message #8. No client was asked whether it accepts the new format.",
+      "argument": "Postgres already has a mechanism for opting into protocol changes: the protocol minor version and _pq_ startup options, which [P1] extended with min/max_protocol_version and protocol-level parameters. With these the server knows what the client accepts. The patch uses a PGC_USERSET GUC and leaves client safety to the user, as message #4 says. Its own answer about 'other ways to make the connection unresponsive' does not justify adding one more such way beside a mechanism built for this purpose.",
+      "precedent_ids": [
+        "P1"
+      ],
+      "thread_message_refs": [
+        3,
+        4,
+        6,
+        8
+      ],
+      "author_must_show": "Why can rich mode not be negotiated through a _pq_ protocol option or a protocol minor version, so the server sends it only to clients that asked?",
+      "precedents": [
+        {
+          "id": "P1",
+          "title": "Add new protocol message to change GUCs to be able to change protocol extension parameters",
+          "url": "https://commitfest.postgresql.org/patch/4736/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CAGECzQTg2hcmb5GaU53uuWcdC7gCNJFLL6mnW0WNhWHgq9UTgw@mail.gmail.com"
+          ],
+          "date": "2025-02-22",
+          "status": "Withdrawn"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Manu",
+          "date": "2026-10-08T11:48:02Z",
+          "url": "https://www.postgresql.org/message-id/179146008286.393055.16733548853161134599%40gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "Hannu Krosing",
+          "date": "2026-10-08T20:13:37Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQRSkPpVzSbd_DiN6esTnE24kAYP-mvv9gfw7sAhTJNpNw%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Hannu Krosing",
+          "date": "2026-10-09T08:13:56Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQ7GiNjmMzOP6rcfUnXPriqVjNNKxbiOpCgh4MGVAMvcQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Manu",
+          "date": "2026-10-17T20:39:00Z",
+          "url": "https://www.postgresql.org/message-id/179226954033.1033182.6926602894967135011%40gmail.com"
+        }
+      ],
+      "id": "already-exists-2",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "The 'l' key reports the last commit LSN from xact.c so that proxies can use WAIT FOR LSN on standbys."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": true,
+      "reason": "ReadyForQuery becomes variable-length with key-value pairs in rich mode, with no protocol version or _pq_ negotiation."
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The patch adds ready_for_query_hook, ready_for_query_has_key() and ready_for_query_append_kv() for extensions."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": true,
+      "reason": "The patch adds ready_for_query_message (enum plain/rich, PGC_USERSET)."
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "Any user's SET, function or ALTER DATABASE SET can switch the 'Z' format, and a session can suppress its own 'T' flag."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "Released libpq versions 14 and later cannot parse rich 'Z'; only the patched libpq skips the extra bytes."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Core must keep the 'T' and 'H' bookkeeping in xact.c, namespace.c and portalmem.c correct, and keep the key format stable."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Rich mode adds work to every ReadyForQuery; message #3 measured near-zero cost in plain mode."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "ParameterStatus with GUC_REPORT already sends session state to clients before ReadyForQuery."
+    }
+  ],
+  "questions": [
+    "What can rich 'Z' carry that read-only GUC_REPORT pseudo-variables, sent as ParameterStatus before ReadyForQuery, cannot?",
+    "Which pooler would skip DISCARD ALL based on 'T', 'H' and 'P' alone, and how would it handle GUC, LISTEN and advisory-lock state?",
+    "Which pooler or proxy maintainers have said they would parse rich 'Z', and which keys do they need?",
+    "Which deployment runs DISCARD ALL or an LSN query per transaction today, and what does that round trip cost in latency or throughput?",
+    "Why does a PGC_USERSET GUC choose the 'Z' format, when a _pq_ parameter or protocol minor version lets the client declare that it can parse it?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "A committer who knows the frontend/backend protocol and libpq would have to own it, with help on xact.c and portal code. Only one reviewer, Manu, appears in the visible thread.",
+    "liability": "The owner signs for a permanent wire format and its key meanings, a hook that runs on every ReadyForQuery, and 'T' and 'H' bookkeeping that every later change to temp objects or portals must keep correct.",
+    "author_follow_up": "The author posted v2 and v3 in response to review, but has not replied to messages #7 and #8."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "unclear",
+    "maintenance_burden": "high",
+    "review_cost": "high",
+    "recommended_action": "needs design rethink",
+    "reason": "The thread names three poolers but shows no maintainer of them asking for the format, and the choice of channel and of opt-in mechanism is open. The patch changes a protocol message and touches xact.c, namespace.c, portalmem.c and libpq, so review is costly."
+  },
+  "self_advice": [],
+  "provisional_note": "Level 2 was not evaluated because level 1b fails; surviving design objections on negotiation, key naming, the hook error loop and flag drift remain open. Without the code, the correctness and cost of the 'T', 'H' and 'P' tracking in v3 could not be judged.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:4736",
+      "kind": "cf",
+      "title": "Add new protocol message to change GUCs to be able to change protocol extension parameters",
+      "status": "Withdrawn",
+      "date": "2025-02-22",
+      "first_date": "2023-12-29",
+      "url": "https://commitfest.postgresql.org/patch/4736/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGECzQTg2hcmb5GaU53uuWcdC7gCNJFLL6mnW0WNhWHgq9UTgw@mail.gmail.com"
+      ],
+      "authors": "Jelte Fennema-Nio (jeltef)",
+      "objectors": "",
+      "summary": "Add a protocol message that lets a client set a GUC without a SET command, so poolers can see the change and some parameters can be set only at the protocol level. Over time the work became a patch set with a protocol minor version bump, min_protocol_version and max_protocol_version libpq options, and protocol parameters such as report_parameters.",
+      "objection": "The author withdrew the entry and moved the remaining protocol patches to the thread about longer cancel keys. Some pieces were committed here, including a libpq function PQfullProtocolVersion added in place of redefining PQprotocolVersion. The visible messages show no objection that rejected the core design.",
+      "touch_points": [
+        "new GUC",
+        "wire protocol / libpq",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "ReadyForQuery protocol extension",
+        "protocol message session dirty flag",
+        "wire protocol extension key value"
+      ],
+      "from_hint": false,
+      "score": 0.397,
+      "enriched": true,
+      "key_quote": "This required another rebase, but I've decided that I think it'll be most fruitful to continue the discussion on protocol changes in the thread about longer cancel keys[1].",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAGECzQTk8qAt3dfU7NuEv7nvAH%2Bckk4M28LFYpxs7W1Za%3D%2BeMg%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:3043",
+      "kind": "cf",
+      "title": "Built-in connection pooler",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2019-01-24",
+      "url": "https://commitfest.postgresql.org/patch/3043/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ac873432-31cf-d5e4-0b80-b5ac95cfe385@postgrespro.ru"
+      ],
+      "authors": "Konstantin Knizhnik (knizhnik)",
+      "objectors": "Antonin Houska",
+      "summary": "The patch adds a connection pooler inside Postgres, with proxy worker processes that accept clients on a separate port and multiplex them over a small pool of backends per database and user. A session that changes session state, such as temporary tables, prepared statements or GUCs, is marked tainted and keeps a dedicated backend until the client disconnects.",
+      "objection": "The visible messages do not show why the entry was closed in 2021. An earlier commitfest entry was returned in 2020 because the patch needed a rebase and had waited on author for 6 weeks. After the 2021 resubmission, Antonin Houska reported that the patch did not apply to master and raised design issues, including the proxy's use of libpq inside the server, the static connection_proxies setting, walsender connections and unsynchronized shared memory; no reply from the author is shown.",
+      "touch_points": [],
+      "matched_queries": [
+        "connection pooler session state reporting",
+        "GUC_REPORT pooler transaction pooling",
+        "DISCARD ALL connection pool cheap"
+      ],
+      "from_hint": false,
+      "score": 0.357,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:3514",
+      "kind": "cf",
+      "title": "Move SLRU data into the regular buffer pool",
+      "status": "Returned with feedback",
+      "date": "2023-09-04",
+      "first_date": "2022-01-13",
+      "url": "https://commitfest.postgresql.org/patch/3514/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGKAYze99B-jk9NoMp-2BDqAgiRC4oJv+bFxghNgdieq8Q@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/EFAAC0BE-27E9-4186-B925-79B7C696D5AC@amazon.com"
+      ],
+      "authors": "Heikki Linnakangas (heikki), Thomas Munro (macdice)",
+      "objectors": "Aleksander Alekseev",
+      "summary": "The patch moves SLRU data (pg_xact, multixact, subtrans, commit_ts, serial, notify) into the shared buffer pool as pseudo-relations in a pseudo-database, so that SLRU caches compete with relation pages and need no separate size settings. It replaces most per-SLRU locks with buffer pins and page content locks, and reuses the common buffer mapping, replacement and write-back code.",
+      "objection": "The patch set stopped applying after February 2023, and its second patch failed the pg_upgrade tests. In September 2023 it was marked Returned with feedback by consensus, because it was not in good shape and other patches had priority. The closer also asked that the competing SLRU threads agree on one design and work on a single patch set.",
+      "touch_points": [],
+      "matched_queries": [
+        "connection pooler session state reporting",
+        "GUC_REPORT pooler transaction pooling",
+        "DISCARD ALL connection pool cheap"
+      ],
+      "from_hint": false,
+      "score": 0.293,
+      "enriched": true,
+      "key_quote": "There\nare many patches to be reviewed and this one doesn't seem to be in the\nbest shape, so we have to prioritise.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAJ7c6TN%3D1EF1bTA6w8W%3D0e_Bj%2B-jsiHK0ap1uC_ZUGjwu%2B4JGw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "revert:5721e5453ebc59360b6756fe72d7499c4a02177c",
+      "kind": "revert",
+      "title": "Revert \"Add redo LSN to pgstats files\"",
+      "status": "Reverted",
+      "date": "2025-03-16",
+      "first_date": "2024-08-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=5721e5453ebc59360b6756fe72d7499c4a02177c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2563883.1741826489@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/Zp8o6_cl0KSgsnvS@paquier.xyz"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Add redo LSN to pgstats files\"\nReverted commit(s): Add redo LSN to pgstats files",
+      "objection": "This reverts commit b860848232aa, that was added as a prerequisite for\nthe support of pgstats data flush across checkpoints, linking a pgstats\nfile to a specific checkpoint redo LSN.\n\nAs reported, this is proving to be currently problematic when going\nthrough a pg_upgrade, that does direct manipulations of the control file\nin the new cluster.  The LSN stored in the pgstats file is not able to\ncope with any changes done in the control file by pg_upgrade yet,\ncausing the pgstats file to be discarded when starting the new cluster\nafter overriding its redo LSN (one is a `pg_resetwal -l` where the new\ncluster's start LSN is bumped by a hardcoded value of 8 segments, see\ncopy_xact_xlog_xid).\n\nThe least painful path going forward is likely going to be a refactor of\nthe pgstats code so as it is possible to read and write some of its data\nwith some routines in src/common/, so as pg_upgrade or pg_resetwal are\nable to update its data.  The main point is that we are going to need a\nLSN in the stats file should we make it written at checkpoint time and\nnot only as part of a shutdown sequence.  It is too late to dive into\nthese details for v18, so let's revert the change, and let's try to\nfigure out all the details in the next release cycle.  The pgstats file\nis currently only written as part of a shutdown sequence, and its\ncontents are still lost on crash, same as older releases.\n\nBump PGSTAT_FILE_FORMAT_ID.",
+      "touch_points": [
+        "on-disk format / pg_upgrade"
+      ],
+      "matched_queries": [
+        "report commit LSN to client",
+        "read your writes LSN protocol"
+      ],
+      "from_hint": false,
+      "score": 0.276,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:5341",
+      "kind": "cf",
+      "title": "Use \"protocol options\" name instead of \"protocol extensions\" everywhere",
+      "status": "Rejected",
+      "date": "2025-03-11",
+      "first_date": "2024-10-30",
+      "url": "https://commitfest.postgresql.org/patch/5341/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGECzQQoc+V94TrF-5cMikCMaf-uUnU52euwSCtQBeDYqXnXyA@mail.gmail.com"
+      ],
+      "authors": "Jelte Fennema-Nio (jeltef)",
+      "objectors": "Heikki Linnakangas, Robert Haas, Jacob Champion, Laurenz Albe, Peter Eisentraut",
+      "summary": "The patch replaces the term \"protocol extensions\" with \"protocol options\" in the docs and in a libpq error message, because \"extension\" suggests a link to Postgres extensions. No protocol options existed yet, so the author saw this as the time to settle on one name.",
+      "objection": "Reviewers did not agree on a new name. Heikki Linnakangas said \"protocol option\" suggests GUCs, Robert Haas found \"protocol extensions\" mildly clearer, Jacob Champion preferred keeping \"protocol extension\" with a docs note, and Laurenz Albe voted to keep \"extension\" because \"option\" already names other things in the docs. Peter Eisentraut rejected the patch for lack of consensus to change.",
+      "touch_points": [
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "ReadyForQuery protocol extension",
+        "wire protocol extension key value"
+      ],
+      "from_hint": false,
+      "score": 0.276,
+      "enriched": true,
+      "key_quote": "I don't think there is consensus for change, so I'm rejecting it.",
+      "quote_message_url": "https://www.postgresql.org/message-id/e8ada547-1bfc-473c-8af3-1867c6aebb77%40eisentraut.org",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:4166",
+      "kind": "cf",
+      "title": "Add new protocol message to make GUC_REPORT configurable and use it for psql prompt substitution of %N with the current user",
+      "status": "Withdrawn",
+      "date": "2024-01-30",
+      "first_date": "2023-02-03",
+      "url": "https://commitfest.postgresql.org/patch/4166/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFj8pRBFU-WzzQhNrwRHn67N0Ug8a9-0-9BOo69PPtcHiBDQMA@mail.gmail.com"
+      ],
+      "authors": "Pavel Stehule (okbobcz)",
+      "objectors": "Peter Eisentraut, Jelte Fennema-Nio",
+      "summary": "The patch adds a psql prompt escape %N that shows the current role. To keep the prompt current, it adds a new protocol message and libpq functions (PQlinkParameterStatus, PQunlinkParameterStatus) that turn GUC_REPORT on or off for a given setting during a session.",
+      "objection": "The author withdrew the patch and said he would resend it once Jelte Fennema-Nio's _pq_.report_parameters patch is committed. Peter Eisentraut suggested a GUC that lists the settings to report instead of a new protocol message. Jelte Fennema-Nio argued that proxies such as PgBouncer already re-sync GUCs, so a GUC-based design is less fragile for them than a new message type with its own connection state.",
+      "touch_points": [
+        "psql",
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "protocol message session dirty flag",
+        "GUC_REPORT pooler transaction pooling"
+      ],
+      "from_hint": false,
+      "score": 0.246,
+      "enriched": true,
+      "key_quote": "I think this is probably one of the core reasons why I would very much prefer GUCs over new message types to configure protocol extensions like this: It means proxies would not to keep track of and re-sync a new kind of connection state every time a protocol extension is added.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAGECzQSg0ND%3DgRmpZHBsiaZT5-a17y%3DVFf3AQfi5N7oECtM1Ug%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:3018",
+      "kind": "cf",
+      "title": "Hooks and API to allow loadable wire protocol extensions",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-01-25",
+      "url": "https://commitfest.postgresql.org/patch/3018/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGBW59d5SjLyJLt-jwNv+oP6esbD8SCB===11WVe5=dOHLQ5wQ@mail.gmail.com"
+      ],
+      "authors": "Jan Wieck (wieck)",
+      "objectors": "Peter Eisentraut",
+      "summary": "Add hooks and an API so a loadable extension, listed in shared_preload_libraries, can make the postmaster listen on extra ports and serve a different wire protocol, such as TDS. Extensions register callbacks for accept, authentication, error reporting and the TCOP loop, and the existing backend libpq code registers itself through the same API.",
+      "objection": "The visible messages do not show the closing decision; the thread goes silent in March 2021 and the entry was returned in October. The last review objection shown is that the patch's abstractions are still tied to the libpq protocol (cancel key, ready-for-query, simple and extended query), so an extension could not implement another vendor's protocol through them. The author replied that TDS needs a full replacement of PostgresMain(), and that code was not yet posted.",
+      "touch_points": [
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "ReadyForQuery protocol extension",
+        "wire protocol extension key value"
+      ],
+      "from_hint": false,
+      "score": 0.244,
+      "enriched": true,
+      "key_quote": "I think, the way the abstractions are chosen in this patch, it is still very much tied to how the libpq protocol works.",
+      "quote_message_url": "https://www.postgresql.org/message-id/ecf65157-ec37-8e12-adc9-62297ee065a3%40enterprisedb.com",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:752",
+      "kind": "cf",
+      "title": "Send numeric version to clients (server_version_num GUC_REPORT)",
+      "status": "Rejected",
+      "date": "2016-08-30",
+      "first_date": "2016-08-29",
+      "url": "https://commitfest.postgresql.org/patch/752/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMsr+YGtwgpa-MZH1suehvTxDXOZB7U+DC0=qyCG9j02je1pWQ@mail.gmail.com"
+      ],
+      "authors": "Craig Ringer (ringerc)",
+      "objectors": "Tom Lane, Robert Haas",
+      "summary": "Mark server_version_num as GUC_REPORT so the server sends the numeric version to network clients at connection start, next to server_version. Clients could then use it when present and fall back to parsing server_version on older servers.",
+      "objection": "Tom Lane argued that clients would skip the fallback code and so fail on pre-v10 servers, and that libpq's PQserverVersion already solves this for C clients. Robert Haas agreed: clients could not rely on the new parameter for years, and by then the simpler two-part version format would make server_version easy to parse, for example with atoi(). The author accepted this and dropped the patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "report commit LSN to client",
+        "GUC_REPORT pooler transaction pooling"
+      ],
+      "from_hint": false,
+      "score": 0.222,
+      "enriched": true,
+      "key_quote": "I think that this would merely create an attractive nuisance: people would be very likely to omit the \"fallback\" code and thereby build clients that fail for no very good reason on pre-v10 servers.",
+      "quote_message_url": "https://www.postgresql.org/message-id/21063.1472478162%40sss.pgh.pa.us",
+      "relevant": true
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:2067",
+      "kind": "cf",
+      "title": "Built-in connection proxy",
+      "status": "Returned with feedback",
+      "date": "2020-09-17",
+      "first_date": "2019-01-24",
+      "url": "https://commitfest.postgresql.org/patch/2067/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ac873432-31cf-d5e4-0b80-b5ac95cfe385@postgrespro.ru"
+      ],
+      "authors": "Konstantin Knizhnik (knizhnik)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch adds a built-in connection proxy: clients connect to a separate port (6543 by default), and proxy workers spread their sessions over a small pool of backends. A backend whose session changes state (GUCs, temporary tables, prepared statements) is marked tainted and stays dedicated to that client.",
+      "objection": "Michael Paquier marked the entry Returned with Feedback because the patch needed another rebase and had been Waiting on Author for six weeks. The author had posted a rebased patch on 2020-07-02 but did not change the status, and he did not notice it stopped applying. Earlier reviews raised open design issues: pool limits that are per proxy and not global, too little monitoring, coarse tainting, and a busy loop with poll().",
+      "touch_points": [],
+      "matched_queries": [
+        "connection pooler session state reporting",
+        "DISCARD ALL connection pool cheap"
+      ],
+      "from_hint": false,
+      "score": 0.216,
+      "enriched": true,
+      "key_quote": "This needs again a rebase, and has been waiting on author for 6 weeks\nnow, so I am switching it to RwF.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20200917050711.GK2873%40paquier.xyz",
+      "relevant": true
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:1090",
+      "kind": "cf",
+      "title": "Add and report the new \"session_read_only\" GUC pseudo-variable.",
+      "status": "Returned with feedback",
+      "date": "2019-02-04",
+      "first_date": "2017-03-17",
+      "url": "https://commitfest.postgresql.org/patch/1090/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1700970.cRWpxnom9y@hammer.magicstack.net"
+      ],
+      "authors": "Elvis Pranskevichus (elprans)",
+      "objectors": "",
+      "summary": "Add and report the new \"session_read_only\" GUC pseudo-variable.\nThreads: [PATCH v1] Add and report the new \"in_hot_standby\" GUC pseudo-variable.",
+      "objection": "",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "connection pooler session state reporting",
+        "GUC_REPORT pooler transaction pooling"
+      ],
+      "from_hint": false,
+      "score": 0.186,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P11",
+      "source_id": "revert:414c2fd1e1c0ccd1af1cad046bef1264e3f4347f",
+      "kind": "revert",
+      "title": "Revert \"Add GUC checks for ssl_min_protocol_version and ssl_max_protocol_version\"",
+      "status": "Reverted",
+      "date": "2020-02-06",
+      "first_date": "2020-01-18",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=414c2fd1e1c0ccd1af1cad046bef1264e3f4347f",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/27574.1581015893@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20200114035420.GE1515@paquier.xyz"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Add GUC checks for ssl_min_protocol_version and ssl_max_protocol_version\"\nReverted commit(s): Add GUC checks for ssl_min_protocol_version and ssl_max_protocol_version",
+      "objection": "This reverts commit 41aadee, as the GUC checks could run on older values\nwith the new values used, and result in incorrect errors if both\nparameters are changed at the same time.\n\nPer complaint from Tom Lane.",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "ReadyForQuery protocol extension",
+        "wire protocol extension key value"
+      ],
+      "from_hint": false,
+      "score": 0.183,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:2352",
+      "kind": "cf",
+      "title": "Re: MarkBufferDirtyHint() and LSN update",
+      "status": "Withdrawn",
+      "date": "2019-11-25",
+      "first_date": "2019-10-30",
+      "url": "https://commitfest.postgresql.org/patch/2352/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/28452.1572443058@antos"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Re: MarkBufferDirtyHint() and LSN update\nThreads: MarkBufferDirtyHint() and LSN update",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "report commit LSN to client",
+        "read your writes LSN protocol"
+      ],
+      "from_hint": false,
+      "score": 0.159,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:772",
+      "kind": "cf",
+      "title": "Make async slave to wait for lsn to be replayed",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2020-03-05",
+      "url": "https://commitfest.postgresql.org/patch/772/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/80f267591b373db5588d580fdfb432f0@postgrespro.ru",
+        "https://www.postgresql.org/message-id/flat/195e2d07ead315b1620f1a053313f490@postgrespro.ru"
+      ],
+      "authors": "Ivan Kartyshov (fenimorkin)",
+      "objectors": "",
+      "summary": "Make async slave to wait for lsn to be replayed\nThreads: Re: [HACKERS] make async slave to wait for lsn to be replayed; Re: [HACKERS] make async slave to wait for lsn to be replayed",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "report commit LSN to client",
+        "read your writes LSN protocol"
+      ],
+      "from_hint": false,
+      "score": 0.157,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:535",
+      "kind": "cf",
+      "title": "Password identifiers, protocol aging and SCRAM protocol",
+      "status": "Returned with feedback",
+      "date": "2016-03-22",
+      "first_date": "2016-02-23",
+      "url": "https://commitfest.postgresql.org/patch/535/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB7nPqSMXU35g=W9X74HVeQp0uvgJxvYOuA4A-A3M+0wfEBv-w@mail.gmail.com"
+      ],
+      "authors": "Heikki Linnakangas (heikki), Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Password identifiers, protocol aging and SCRAM protocol\nThreads: Password identifiers, protocol aging and SCRAM protocol",
+      "objection": "",
+      "touch_points": [
+        "wire protocol / libpq",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "ReadyForQuery protocol extension",
+        "wire protocol extension key value"
+      ],
+      "from_hint": false,
+      "score": 0.156,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:89",
+      "kind": "cf",
+      "title": "LSN Map",
+      "status": "Returned with feedback",
+      "date": "2015-07-06",
+      "first_date": "2015-01-07",
+      "url": "https://commitfest.postgresql.org/patch/89/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/54AD016E.9020406@2ndquadrant.it"
+      ],
+      "authors": "Marco Nenciarini (mnencia)",
+      "objectors": "",
+      "summary": "LSN Map\nThreads: [RFC] LSN Map",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "report commit LSN to client",
+        "read your writes LSN protocol"
+      ],
+      "from_hint": false,
+      "score": 0.15,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:2919",
+      "kind": "cf",
+      "title": "Discarding DISCARD ALL",
+      "status": "Withdrawn",
+      "date": "2021-06-21",
+      "first_date": "2020-12-23",
+      "url": "https://commitfest.postgresql.org/patch/2919/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANP8+jK0RS1=BiLnka8iJ7BUFcr6usEg4NE9uzTw0O3+MWF92w@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon)",
+      "objectors": "",
+      "summary": "Discarding DISCARD ALL\nThreads: Discarding DISCARD ALL",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "DISCARD ALL connection pool cheap"
+      ],
+      "from_hint": false,
+      "score": 0.132,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:2602",
+      "kind": "cf",
+      "title": "ALTER SYSTEM READ { ONLY | WRITE }",
+      "status": "Withdrawn",
+      "date": "2022-01-10",
+      "first_date": "2020-06-16",
+      "url": "https://commitfest.postgresql.org/patch/2602/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAJ_b97KZzdJsffwRK7w0XU5HnXkcgKgTR69t8cOZztsyXjkQw@mail.gmail.com"
+      ],
+      "authors": "Amul Sul (sulamul)",
+      "objectors": "",
+      "summary": "ALTER SYSTEM READ { ONLY | WRITE }\nThreads: [Patch] ALTER SYSTEM READ ONLY",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "read your writes LSN protocol"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:749",
+      "kind": "cf",
+      "title": "Make server_version_num GUC_REPORT",
+      "status": "Returned with feedback",
+      "date": "2016-08-30",
+      "first_date": "2016-08-29",
+      "url": "https://commitfest.postgresql.org/patch/749/",
+      "thread_urls": [],
+      "authors": "Craig Ringer (ringerc)",
+      "objectors": "",
+      "summary": "Make server_version_num GUC_REPORT",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "GUC_REPORT pooler transaction pooling"
+      ],
+      "from_hint": false,
+      "score": 0.116,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:4285",
+      "kind": "cf",
+      "title": "Revise get_cheapest_parallel_safe_total_inner",
+      "status": "Returned with feedback",
+      "date": "2026-02-09",
+      "first_date": "2023-04-11",
+      "url": "https://commitfest.postgresql.org/patch/4285/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMbWs49xR_2T1BPDw+vO4Bs7pqYiQn4aNaWdmA9BdVEaHhtktg@mail.gmail.com"
+      ],
+      "authors": "Richard Guo (richardguo)",
+      "objectors": "",
+      "summary": "Revise get_cheapest_parallel_safe_total_inner\nThreads: Can we rely on the ordering of paths in pathlist?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "DISCARD ALL connection pool cheap"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "revert:e54ce0b2da62ac71e3b2a5212f32e82b07bf39a5",
+      "kind": "revert",
+      "title": "Revert \"Use WAIT FOR LSN in PostgreSQL::Test::Cluster::wait_for_catchup()\"",
+      "status": "Reverted",
+      "date": "2026-01-07",
+      "first_date": "2026-01-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e54ce0b2da62ac71e3b2a5212f32e82b07bf39a5",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKG+L0OQR8dQtsNBSaA3FNNyQeFabdeRVzurm0b7Xtp592g@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CABPTF7UiArgW-sXj9CNwRzUhYOQrevLzkYcgBydmX5oDes1sjg@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov",
+      "objectors": "",
+      "summary": "Revert \"Use WAIT FOR LSN in PostgreSQL::Test::Cluster::wait_for_catchup()\"\nReverted commit(s): Use WAIT FOR LSN in PostgreSQL::Test::Cluster::wait_for_catchup()",
+      "objection": "This reverts commit f30848cb05d4d63e1a5a2d6a9d72604f3b63370d.  Due to\nbuildfarm failures related to recovery conflicts while executing the\nWAIT FOR command.  It appears that WAIT FOR still holds xmin for a while.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "report commit LSN to client"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:3515",
+      "kind": "cf",
+      "title": "Add last commit LSN to pg_last_committed_xact()",
+      "status": "Returned with feedback",
+      "date": "2022-08-02",
+      "first_date": "2022-01-15",
+      "url": "https://commitfest.postgresql.org/patch/3515/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAaqYe9QBiAu+j8rBun_JKBRe-3HeKLUhfVVsYfsxQG0VqLXsA@mail.gmail.com"
+      ],
+      "authors": "James Coleman (jcole1989)",
+      "objectors": "",
+      "summary": "Add last commit LSN to pg_last_committed_xact()\nThreads: Add last commit LSN to pg_last_committed_xact()",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "report commit LSN to client"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:5516",
+      "kind": "cf",
+      "title": "quick and dirty fix: Quadratic planning time for ordered paths over partitioned tables",
+      "status": "Rejected",
+      "date": "2025-02-03",
+      "first_date": "2025-01-22",
+      "url": "https://commitfest.postgresql.org/patch/5516/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALzhyqzmZ6b9Sbp4jCORJV48t4kz2a1EqR3z4DUxX4RfRYR2xA@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "quick and dirty fix: Quadratic planning time for ordered paths over partitioned tables\nThreads: Quadratic planning time for ordered paths over partitioned tables",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "protocol message session dirty flag"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "revert:a58db3aa10e62e4228aa409ba006014fa07a8ca2",
+      "kind": "revert",
+      "title": "Revert \"Cannot use WL_SOCKET_WRITEABLE without WL_SOCKET_READABLE.\"",
+      "status": "Reverted",
+      "date": "2020-12-15",
+      "first_date": "2013-02-27",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=a58db3aa10e62e4228aa409ba006014fa07a8ca2",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3d57bc29-4459-578b-79cb-7641baf53c57@iki.fi"
+      ],
+      "authors": "Heikki Linnakangas, Andres Freund",
+      "objectors": "",
+      "summary": "Revert \"Cannot use WL_SOCKET_WRITEABLE without WL_SOCKET_READABLE.\"\nReverted commit(s): Cannot use WL_SOCKET_WRITEABLE without WL_SOCKET_READABLE.; Allow latches to wait for socket writability without waiting for readability.",
+      "objection": "This reverts commit 3a9e64aa0d96c8ffb6c682b082d0f72b1d373327.\n\nCommit 4bad60e3 fixed the root of the problem that 3a9e64aa worked\naround.\n\nThis enables proper pipelining of commands after terminating\nreplication, eliminating an undocumented limitation.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "read your writes LSN protocol"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "revert:381b3cfe2be02aa114ef7a28c4ec24feaf377c63",
+      "kind": "revert",
+      "title": "Revert \"Rename routines for write/read of pgstats file\"",
+      "status": "Reverted",
+      "date": "2026-07-14",
+      "first_date": "2025-11-25",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=381b3cfe2be02aa114ef7a28c4ec24feaf377c63",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/a4a8e9af-3eaf-4bbf-9b21-21620f3fc434@eisentraut.org",
+        "https://www.postgresql.org/message-id/flat/CAA5RZ0s9SDOu+Z6veoJCHWk+kDeTktAtC-KY9fQ9Z6BJdDUirQ@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Rename routines for write/read of pgstats file\"\nReverted commit(s): Rename routines for write/read of pgstats file",
+      "objection": "This reverts commit ed823da1289, that has made pgstat_write_chunk() and\npgstat_read_chunk() available for public use.  These routines do not\nhave a symmetric API definition across reads and writes, with the write\npart returning a void status, deferring an error detection once all the\nstats entries have been processed with an ferror(), and the read part\nreturning a boolean status.\n\nThese routines are just tiny wrappers around fread() and fwrite(), and\nextensions can just define they own routines instead of relying on the\nsame facilities as the core pgstat.c.  This commit removes their\ndeclaration from the public headers, to reduce the confusion.\ntest_custom_stats is updated to use its own read/write routines.\nPerhaps something better could be designed in the future; trying to do\nso for v19 is not feasable during beta.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "read your writes LSN protocol"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 7,
+    "new_calls": 1,
+    "failed": 0,
+    "quotes_verified": 1,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 9
+  },
+  "precedent_cutoff": "2026-10-08",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "No listed precedent records a rejection reason for reporting session state in ReadyForQuery. P2, P9, P16, P10, P21 and P18 share the area, but their recorded reasons are absent or about rebases, so they do not apply."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "Objections listed above."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 3,
+      "note": "The proposal touches no on-disk format, WAL record, catalog or replication protocol. Objections cover only the wire protocol and the extension API."
+    },
+    {
+      "angle": "security",
+      "objections": 2,
+      "note": "The 'l', 'H' and 'P' values expose only session-local state or WAL positions that any user can already read. The hook error loop needs a superuser-installed extension, so it is out of scope for this angle."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 4,
+      "note": "Not applicable; four objections are listed."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 2,
+      "note": "Objections raised. The LSN-without-extra-round-trip claim was not raised separately, because a client can already send COMMIT and an LSN query in one message but a transparent proxy cannot."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "Not applicable. The plain-mode cost is negligible per message #3, so the demand objections concern what the project takes on, not a cost on non-users."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 17,
+      "new_survived": 11,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 144,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 12,
+    "wall_ms": 177987,
+    "cost_usd": 2.8522830000000003,
+    "dry_run": false
+  }
+}

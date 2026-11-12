@@ -1,0 +1,1285 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T04:09:23.134Z",
+  "input": {
+    "arg": "7553",
+    "cf": {
+      "id": 7553,
+      "url": "https://commitfest.postgresql.org/patch/7553/",
+      "title": "Fix cumulative WAL statistics double-counting from parallel workers",
+      "status": "Needs review",
+      "authors": "Lukas Fittl (lfittl)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAP53PkzL-jF-Pm%2Bev2vBDvBYqDFNhcN4bpjGbGGbBfM_gtSdag%40mail.gmail.com",
+    "subject": "Fix cumulative WAL statistics double-counting from parallel workers",
+    "thread_start": "2026-10-29T22:58:03Z",
+    "messages_read": 24,
+    "messages_total": 24,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v1-0001-pgstat-Don-t-double-count-parallel-worker-activit.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "The bug is real and reproduced in message #1 and message #22, and no objection survived at level 1a or 1b. The surviving objections are fixable design points at level 2: maintenance-fit-1 (nothing enforces the worker subtraction), maintenance-fit-2 (whether master takes the same exported symbols as back branches) and standards-compat-1 (the per-backend attribution change in minor releases). Michael Paquier's objection for HEAD is still open in message #21, so a committer who knows the area must decide the shape per branch.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Stop parallel worker WAL being counted twice in pg_stat_wal",
+    "problem": "Since Postgres 14, pg_stat_wal counts WAL written by parallel workers twice, once by the worker and once by the leader through InstrAccumParallelQuery. The author's parallel VACUUM reproducer reports 131% of the WAL actually written. Parallel vacuum, pruning and hint bits set in parallel scans are affected, and so is pg_stat_get_backend_wal().",
+    "proposed_design": "The leader adds worker counters both to pgWalUsage/pgBufferUsage and to new globals pgWalUsageFromWorkers/pgBufferUsageFromWorkers. Before reporting to cumulative stats, the leader subtracts the worker part using a helper, ComputeOwnWalUsage, and workers keep reporting their own activity. EXPLAIN and pg_stat_statements keep reading the combined pgWalUsage.",
+    "user_visible_surface": [
+      "pg_stat_wal stops counting parallel worker WAL twice.",
+      "pg_stat_get_backend_wal() for a leader stops including its workers' WAL, about 31MB less in one reviewer's test.",
+      "C API: new exported globals pgWalUsageFromWorkers and pgBufferUsageFromWorkers in instrument.h; a reviewer asked to make them static.",
+      "C API: new function ComputeOwnWalUsage()."
+    ],
+    "author_claims": [
+      "The bug exists since pg_stat_wal arrived in Postgres 14 and has a reproducer.",
+      "The fix has no performance impact, because the subtraction runs at stats flush and not in a hot path.",
+      "The fix is simple enough to backpatch to all branches.",
+      "The same approach can later replace pgStatBlock(Read|Write)Time with diffs of pgBufferUsage for pg_stat_database."
+    ],
+    "thread_state": "Bertrand Drouvot and Andres Freund accept approach (1) for back branches, but Michael Paquier objects that pgWalUsage should not contain worker data and prefers a leader-only counter, at least on HEAD. Lukas plans a v2 with Bertrand's comments and a commit message saying the pg_stat_get_backend_wal() change fixes attribution.",
+    "unclear": [
+      "No v2 is posted, so the brief does not know whether the new globals become static or which comments get added.",
+      "The thread does not settle whether master takes the same fix or waits for the stack-based instrumentation rework.",
+      "The patch adds no regression test, and reviewers chose not to insist on one.",
+      "The material does not say whether the backpatch adds exported symbols to stable branches, which matters for ABI.",
+      "The commit message mentions buffer statistics, but the material does not say whether any buffer-based cumulative stats change now."
+    ],
+    "search_queries": [
+      "parallel worker WAL statistics double counting",
+      "pg_stat_wal parallel workers",
+      "pgWalUsage parallel leader accumulate",
+      "InstrAccumParallelQuery worker usage",
+      "pgBufferUsage cumulative statistics parallel",
+      "pg_stat_get_backend_wal leader workers",
+      "instrumentation stack based nested statements",
+      "parallel vacuum WAL usage reporting"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P7",
+      "source_id": "cf:2315",
+      "title": "Parallel leader process info in EXPLAIN output",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/2315/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKG+Z22=vkVkXtKRznzRdtj=MtygfZMYUJs8j7ObjzkG1Lw@mail.gmail.com"
+      ],
+      "date": "2020-03-17",
+      "first_date": "2019-10-23",
+      "who_objected": "Tom Lane",
+      "quote": "I think this is doubling down on a fundamentally wrong decision to have ExecParallelRetrieveInstrumentation do some aggregation immediately.",
+      "quote_url": "https://www.postgresql.org/message-id/18323.1580078950%40sss.pgh.pa.us",
+      "enriched": true,
+      "reason": "Tom Lane objected that 0001 adds another field to every PlanState and builds on ExecParallelRetrieveInstrumentation aggregating data early, so it should instead return raw leader and per-worker data for explain.c to aggregate. He also said it was unclear how the leader output maps to non-text formats without breaking which fields are present. The author dropped 0002 because of other refactoring work, agreed 0001 needed a rewrite, and marked the entry returned with feedback.",
+      "relation": "related_only",
+      "what_is_different": "P7 added leader-only EXPLAIN output and a PlanState field, not a cumulative stats fix. It shares only the background that worker data is merged into leader state early."
+    },
+    {
+      "precedent_id": "P3",
+      "source_id": "revert:1d6fb35ad62968c8678d0321887e2b9ca8fe1a84",
+      "title": "Revert \"Fix accumulation of parallel worker instrumentation.\"",
+      "kind": "revert",
+      "status": "Reverted",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1d6fb35ad62968c8678d0321887e2b9ca8fe1a84",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAA4eK1LW2aFKzY3=vwvc=t-juzPPVWP2uT1bpx_MeyEqnM+p8g@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20171127175631.GA405@depesz.com"
+      ],
+      "date": "2017-12-13",
+      "first_date": "2017-12-05",
+      "who_objected": "",
+      "quote": "Per further discussion, that doesn't seem to be the best possible fix.",
+      "quote_url": null,
+      "enriched": false,
+      "reason": "This reverts commit 2c09a5c12a66087218c7f8cba269cd3de51b9b82.  Per\nfurther discussion, that doesn't seem to be the best possible fix.",
+      "relation": "related_only",
+      "what_is_different": "P3 reverted a fix to how parallel worker executor instrumentation was accumulated, not WAL cumulative stats. The row gives no reason that applies to this patch."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Unenforced rule: every pgWalUsage diff for cumulative stats must subtract workers",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch diffs pgBufferUsage to feed pg_stat_database, or adds another WAL-based stats kind, and uses the global directly instead of a ComputeOwn*Usage helper. Parallel worker activity is counted twice again. Nothing fails at build or test time, and users find out from inflated monitoring numbers years later, as happened with pg_stat_wal since version 14.",
+      "argument": "Message #3 says nothing guarantees the invariant, and the planned guard is a comment in instrument.h (messages #3, #7). The patch adds no regression test, and reviewers chose not to ask for one (message #7). The author already plans the next user of this pattern, buffer timing for pg_stat_database (message #1), so the same trap gets a second consumer soon.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3,
+        7
+      ],
+      "author_must_show": "What makes a future patch that diffs pgWalUsage or pgBufferUsage for cumulative stats, without the worker subtraction, fail in a test or at review instead of in the field?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Lukas Fittl",
+          "date": "2026-10-29T22:58:03Z",
+          "url": "https://www.postgresql.org/message-id/CAP53PkzL-jF-Pm%2Bev2vBDvBYqDFNhcN4bpjGbGGbBfM_gtSdag%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Lukas Fittl",
+          "date": "2026-10-30T19:19:51Z",
+          "url": "https://www.postgresql.org/message-id/CAP53PkxYDUEa_cjRT9HWfzFrvQqYMfLngaEh7kWYkwLABTVfPw%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Bertrand Drouvot",
+          "date": "2026-11-02T08:33:19Z",
+          "url": "https://www.postgresql.org/message-id/auhKz%2FRirAnqHl3f%40bdtpg"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The hazard predates the patch, but message #3 confirms that nothing enforces the rule and the only planned guard is a comment. Message #1 plans a second user of the pattern for pg_stat_database, so the scenario is concrete.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Master gets exported API the author calls an interim workaround",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Master ships ComputeOwnWalUsage() and pgWalUsageFromWorkers/pgBufferUsageFromWorkers, and an extension starts using them. Stack-based instrumentation then removes or redefines them one release later, and the extension breaks. Meanwhile pgBufferUsageFromWorkers is accumulated on every parallel query but no stats consumer reads it yet.",
+      "argument": "The author calls approach (1) \"ugly\" and a step before a more elegant solution in the stack-based thread (message #20). Michael objects to it on HEAD as an abuse of pgWalUsage (messages #13, #21), and Andres says the stack-based work removes the main problem with approach (2) (message #17). Back branches may need approach (1), but master could take a leader-only design or a fix with no new exported symbols. [P3] reverted a parallel instrumentation fix that \"doesn't seem to be the best possible fix\".",
+      "precedent_ids": [
+        "P3"
+      ],
+      "thread_message_refs": [
+        13,
+        17,
+        20,
+        21
+      ],
+      "author_must_show": "Why should master take the same exported globals and helper as the back branches, instead of a static-only fix or the leader-only design that the stack-based work allows?",
+      "precedents": [
+        {
+          "id": "P3",
+          "title": "Revert \"Fix accumulation of parallel worker instrumentation.\"",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1d6fb35ad62968c8678d0321887e2b9ca8fe1a84",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CAA4eK1LW2aFKzY3=vwvc=t-juzPPVWP2uT1bpx_MeyEqnM+p8g@mail.gmail.com",
+            "https://www.postgresql.org/message-id/flat/20171127175631.GA405@depesz.com"
+          ],
+          "date": "2017-12-13",
+          "status": "Reverted"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 13,
+          "from": "Michael Paquier",
+          "date": "2026-11-04T07:32:10Z",
+          "url": "https://www.postgresql.org/message-id/aurfeqkq2dgqvdZK%40paquier.xyz"
+        },
+        {
+          "index": 17,
+          "from": "Andres Freund",
+          "date": "2026-11-04T20:16:10Z",
+          "url": "https://www.postgresql.org/message-id/cz3lbv54b477owlxu73vtyfsoomg3snvpgdb5jtiqogffeznpa%40x2ecg363asoc"
+        },
+        {
+          "index": 20,
+          "from": "Lukas Fittl",
+          "date": "2026-11-05T00:10:08Z",
+          "url": "https://www.postgresql.org/message-id/CAP53Pkz%3DvE7X9BkSbxGJExERwHLqRHTsqgZo0hD_uQdO3bEFKA%40mail.gmail.com"
+        },
+        {
+          "index": 21,
+          "from": "Michael Paquier",
+          "date": "2026-11-05T05:33:40Z",
+          "url": "https://www.postgresql.org/message-id/auwVNOik4oOhAIjv%40paquier.xyz"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Michael's objection to approach (1) on HEAD is still open in message #21, so the question stands. [P3] gives no usable reason and must not be used as support, and an extension break at a major release is a weak scenario.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Backpatch removes parallel worker WAL from per-backend stats with no replacement",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A monitoring tool samples pg_stat_get_backend_wal() for a long-lived session that runs parallel VACUUM. After a minor release, that leader's wal_bytes drops by about a third in message #22's test. The worker WAL now shows up in no per-backend entry at all, because each worker's entry is dropped when it exits.",
+      "argument": "On stable branches, pg_stat_get_backend_wal() counts worker WAL once, in the leader's entry (message #22). The pgstat_backend.c hunk is an attribution change, not a double-counting fix, and message #23 and message #24 agree on that. It matches the documentation, but it moves WAL out of the only per-backend view that showed it, and message #24 leaves a per-leader worker view to future work. Fixing pg_stat_wal does not need this hunk, so a committer would likely ask why a reporting change goes into minor releases with the bug fix.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        22,
+        23,
+        24
+      ],
+      "author_must_show": "Why should the pg_stat_get_backend_wal() attribution change go to stable branches rather than only to HEAD, where a per-leader worker view could come with it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 22,
+          "from": "shihao zhong",
+          "date": "2026-11-10T02:51:13Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQskUo2s539Wk%2BiYav1mp%3DcDcMPT%2BofVXHFRE4HTRxfBQ%40mail.gmail.com"
+        },
+        {
+          "index": 23,
+          "from": "Bertrand Drouvot",
+          "date": "2026-11-10T04:14:40Z",
+          "url": "https://www.postgresql.org/message-id/avKaMOu4yUik38O2%40bdtpg"
+        },
+        {
+          "index": 24,
+          "from": "Lukas Fittl",
+          "date": "2026-11-10T22:47:56Z",
+          "url": "https://www.postgresql.org/message-id/CAP53Pkxo%3DTT3iOXxinGGrQEozt1Ai%2BNjdAy7uWrPkjCJK6LzRg%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #23 and #24 justify the change by the documentation, but they do not discuss stable branches. After a minor release, worker WAL appears in no per-backend entry, and the thread leaves the replacement to future work.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Patch adds compensating state instead of separating worker data on HEAD",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "prior_rejection",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch, such as the planned pg_stat_database change in message #1, diffs pgBufferUsage for cumulative stats and does not call the subtraction helper. Parallel worker activity is then counted twice again. Nothing fails, and users find out only when someone compares the stats against real activity, as happened here after Postgres 14.",
+      "argument": "[P7] was returned partly because worker data was aggregated into leader state early, and the reviewer did not want new code built on that. v1 keeps the same early merge into pgWalUsage and adds pgWalUsageFromWorkers plus a subtraction to undo it at report time. Message #3 states that nothing enforces the invariant, and messages #13 and #21 call the merge an abuse of pgWalUsage. Message #17 accepts approach (1) only for back branches, so a committer would likely ask why HEAD should take it too.",
+      "precedent_ids": [
+        "P7"
+      ],
+      "thread_message_refs": [
+        3,
+        13,
+        17,
+        20,
+        21
+      ],
+      "author_must_show": "On HEAD, what makes a future cumulative-stats user of pgWalUsage or pgBufferUsage fail loudly if it skips ComputeOwnWalUsage, rather than double count silently?",
+      "precedents": [
+        {
+          "id": "P7",
+          "title": "Parallel leader process info in EXPLAIN output",
+          "url": "https://commitfest.postgresql.org/patch/2315/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CA+hUKG+Z22=vkVkXtKRznzRdtj=MtygfZMYUJs8j7ObjzkG1Lw@mail.gmail.com"
+          ],
+          "date": "2020-03-17",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Lukas Fittl",
+          "date": "2026-10-30T19:19:51Z",
+          "url": "https://www.postgresql.org/message-id/CAP53PkxYDUEa_cjRT9HWfzFrvQqYMfLngaEh7kWYkwLABTVfPw%40mail.gmail.com"
+        },
+        {
+          "index": 13,
+          "from": "Michael Paquier",
+          "date": "2026-11-04T07:32:10Z",
+          "url": "https://www.postgresql.org/message-id/aurfeqkq2dgqvdZK%40paquier.xyz"
+        },
+        {
+          "index": 17,
+          "from": "Andres Freund",
+          "date": "2026-11-04T20:16:10Z",
+          "url": "https://www.postgresql.org/message-id/cz3lbv54b477owlxu73vtyfsoomg3snvpgdb5jtiqogffeznpa%40x2ecg363asoc"
+        },
+        {
+          "index": 20,
+          "from": "Lukas Fittl",
+          "date": "2026-11-05T00:10:08Z",
+          "url": "https://www.postgresql.org/message-id/CAP53Pkz%3DvE7X9BkSbxGJExERwHLqRHTsqgZo0hD_uQdO3bEFKA%40mail.gmail.com"
+        },
+        {
+          "index": 21,
+          "from": "Michael Paquier",
+          "date": "2026-11-05T05:33:40Z",
+          "url": "https://www.postgresql.org/message-id/auwVNOik4oOhAIjv%40paquier.xyz"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1, which states the same unenforced invariant without relying on [P7]. [P7] concerned a new PlanState field and EXPLAIN output, and the HEAD question is covered by maintenance-fit-2.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "instrument.h gains exported globals pgWalUsageFromWorkers and pgBufferUsageFromWorkers and the function ComputeOwnWalUsage(), also on stable branches."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The author proposes a backpatch to all branches, which changes pg_stat_wal and pg_stat_get_backend_wal() values in minor releases."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Every future cumulative-stats user of pgWalUsage or pgBufferUsage must subtract the worker part, and only a comment guards that rule."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "InstrAccumParallelQuery does extra additions per worker; the subtraction runs only at stats flush."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "What makes a future patch that diffs pgWalUsage or pgBufferUsage for cumulative stats, without the worker subtraction, fail in a test or at review?",
+    "Why should master take the same exported globals and helper as the back branches, instead of a static-only fix or the leader-only design?",
+    "Why should the pg_stat_get_backend_wal() attribution change go to stable branches, where no per-backend entry shows worker WAL afterwards?",
+    "Does the backpatch add exported symbols to stable branches, or will v2 make pgWalUsageFromWorkers and pgBufferUsageFromWorkers static?",
+    "Does any buffer-based cumulative statistic change with this patch, or is pgBufferUsageFromWorkers accumulated with no reader yet?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Andres Freund and Michael Paquier take part in the thread but disagree on the shape for HEAD. The owner needs to know the cumulative stats code and parallel instrumentation.",
+    "liability": "The owner signs for changed pg_stat_wal and pg_stat_get_backend_wal() numbers in minor releases on all branches since 14, and for new symbols in instrument.h that the stack-based instrumentation work may later change.",
+    "author_follow_up": "The author answers reviews within a day, plans a v2 with Bertrand's comments, and works on the related stack-based instrumentation thread."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "low",
+    "review_cost": "low",
+    "recommended_action": "proceed",
+    "reason": "The patch is about 10 KiB in four files and fixes wrong pg_stat_wal totals for anyone running parallel vacuum or parallel scans. The open points are the shape on HEAD and the scope of the backpatch, which a v2 and the engaged committers can settle."
+  },
+  "self_advice": [],
+  "provisional_note": "Only 3 of 24 messages and no code were read, and v2 is not posted. The review could not check whether the new globals are static, how the pgstat_backend.c hunk behaves, or whether every InstrAccumParallelQuery caller is covered.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:527",
+      "kind": "cf",
+      "title": "speeding up GIN build with parallel workers",
+      "status": "Returned with feedback",
+      "date": "2016-10-03",
+      "first_date": "2016-01-15",
+      "url": "https://commitfest.postgresql.org/patch/527/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20160116013839.57cfcb37@thought"
+      ],
+      "authors": "Constantin Pan (kvap)",
+      "objectors": "Robert Haas, Heikki Linnakangas",
+      "summary": "The patch splits a GIN index build between parallel workers, each scanning a range of heap blocks and building its own rbtree of entries. The workers send sorted entries through shared memory to the leader, which merges them and writes each key once; the leader later also takes part as a worker.",
+      "objection": "In April Robert Haas moved it to the next CommitFest because it had too little review and too few comments. He also found no parallel-safety check for expression indexes, workers opening the heap and index with no lock, and no agreement on the gin_shared_mem GUCs. Michael Paquier returned it with feedback mainly because of Heikki Linnakangas's suggestion to keep the rbtree but flush it to tapes and merge them with the tuplesort.c machinery from Peter Geoghegan's parallel B-tree patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel worker WAL statistics double counting",
+        "pg_stat_wal parallel workers",
+        "InstrAccumParallelQuery worker usage"
+      ],
+      "from_hint": false,
+      "score": 0.292,
+      "enriched": true,
+      "key_quote": "If we flushed the tree to a tape instead, then we could perhaps use the machinery that Peter's parallel B-tree patch is adding to tuplesort.c, to merge the tapes.",
+      "quote_message_url": "https://www.postgresql.org/message-id/0a0df4f6-66bb-aeaf-c7a7-60d6d4abaabb%40iki.fi",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:4499",
+      "kind": "cf",
+      "title": "logicalrep_worker_launch - counting/checking the type limits",
+      "status": "Withdrawn",
+      "date": "2024-04-23",
+      "first_date": "2023-08-11",
+      "url": "https://commitfest.postgresql.org/patch/4499/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHut+Pu-7DiCwMdbBf5vzUL1t8H=_NpyFR4RvpZbpMGXV=+QLQ@mail.gmail.com"
+      ],
+      "authors": "Peter Smith (smithpb2250)",
+      "objectors": "Amit Kapila",
+      "summary": "The patch changes logicalrep_worker_launch() so it checks only the worker limit for the type being launched: the tablesync limit for tablesync workers and the parallel apply limit for parallel apply workers. It also applies the same garbage-collection retry to parallel apply workers that tablesync workers already get, and fixes a copied comment in logicalrep_sync_worker_count().",
+      "objection": "The author withdrew the entry after a long period without activity. Amit Kapila asked whether the garbage-collection condition could be reproduced and whether a crashed leader worker would restart the server anyway, and the author never answered. The entry moved to Waiting on Author, and the author withdrew it when the commitfest manager asked him to answer or withdraw.",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel worker WAL statistics double counting",
+        "InstrAccumParallelQuery worker usage"
+      ],
+      "from_hint": false,
+      "score": 0.283,
+      "enriched": true,
+      "key_quote": "Did you try to reproduce this condition, if not, can you please try it\nonce? I wonder if the leader worker crashed, won't it lead to a\nrestart of the server?",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAA4eK1LtFyiMV6e9%2BRr66pe5e-MX7Pk6N3iHd4JgcBW1X4kS6Q%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "revert:1d6fb35ad62968c8678d0321887e2b9ca8fe1a84",
+      "kind": "revert",
+      "title": "Revert \"Fix accumulation of parallel worker instrumentation.\"",
+      "status": "Reverted",
+      "date": "2017-12-13",
+      "first_date": "2017-12-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1d6fb35ad62968c8678d0321887e2b9ca8fe1a84",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAA4eK1LW2aFKzY3=vwvc=t-juzPPVWP2uT1bpx_MeyEqnM+p8g@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20171127175631.GA405@depesz.com"
+      ],
+      "authors": "Robert Haas",
+      "objectors": "",
+      "summary": "Revert \"Fix accumulation of parallel worker instrumentation.\"\nReverted commit(s): Fix accumulation of parallel worker instrumentation.",
+      "objection": "This reverts commit 2c09a5c12a66087218c7f8cba269cd3de51b9b82.  Per\nfurther discussion, that doesn't seem to be the best possible fix.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_wal parallel workers",
+        "pgWalUsage parallel leader accumulate",
+        "instrumentation stack based nested statements"
+      ],
+      "from_hint": false,
+      "score": 0.281,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:2987",
+      "kind": "cf",
+      "title": "Allow setting parallel_workers on partitioned tables",
+      "status": "Returned with feedback",
+      "date": "2021-09-04",
+      "first_date": "2021-02-15",
+      "url": "https://commitfest.postgresql.org/patch/2987/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/95b1dd96-8634-4545-b1de-e2ac779beb44@www.fastmail.com"
+      ],
+      "authors": "Seamus Abshere (seamusabshere)",
+      "objectors": "David Rowley",
+      "summary": "Allow the parallel_workers reloption on partitioned tables, so that the planner uses it to choose the number of workers for a Parallel Append over the partitions. A later version also let grouping relations take the setting from the partitioned table they read, for partitionwise aggregation.",
+      "objection": "David Rowley questioned the semantics: a high setting on the partitioned table can request more workers than the partitions use, and the number does not shrink when the planner or run-time pruning removes partitions. Laurenz Albe and Amit Langote agreed the design needed more thought, and Amit Langote suggested a separate parallel_append_workers option. The thread then stalled, the patch stopped applying, and Daniel Gustafsson marked it Returned with Feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel worker WAL statistics double counting",
+        "pg_stat_wal parallel workers",
+        "InstrAccumParallelQuery worker usage"
+      ],
+      "from_hint": false,
+      "score": 0.28,
+      "enriched": true,
+      "key_quote": "If someone sets the partitioned table's parallel_workers high so that\nthey get a large number of workers when no partitions are pruned\nduring planning, do they really want the same number of workers in\nqueries where a large number of partitions are pruned?",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAApHDvruNYmZXc%2BojqXYfEby_JtNSqrYsC89f0zZKEBk05u0Jg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:3246",
+      "kind": "cf",
+      "title": "Parallelize correlated subqueries that execute within each worker",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2021-05-07",
+      "url": "https://commitfest.postgresql.org/patch/3246/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAaqYe_x1u3V4uPiv=dJ=k2EJ7txhdq6yexJDkYZ1x1pu0QwcQ@mail.gmail.com"
+      ],
+      "authors": "James Coleman (jcole1989)",
+      "objectors": "Tomas Vondra",
+      "summary": "The patch lets the planner build parallel plans for queries with correlated subplans when each subplan runs entirely within one parallel worker, so no Param value has to pass between workers. After review, the design changed to treat PARAM_EXEC params as parallel safe by default, track required params on each rel, and insert a Gather node only where that set is empty.",
+      "objection": "The thread shows no author reply after Tomas Vondra's July 2024 review, and the entry was returned with feedback in October 2024. That review found that regression tests failed on a changed plan in select_parallel, reported a compiler warning, and listed code comments. It also said no reviewer was able to confirm that the PARAM handling is correct.",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel worker WAL statistics double counting",
+        "pg_stat_wal parallel workers",
+        "InstrAccumParallelQuery worker usage"
+      ],
+      "from_hint": false,
+      "score": 0.269,
+      "enriched": true,
+      "key_quote": "And in general the patch looks reasonably simple and clean, but my knowledge of PARAM intricacies is pretty much nil, so I'm hesitant to claim the patch is correct.",
+      "quote_message_url": "https://www.postgresql.org/message-id/8459b9bd-6248-4a43-a281-e40adb537242%40enterprisedb.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:703",
+      "kind": "cf",
+      "title": "Add a max_parallel_workers GUC",
+      "status": "Returned with feedback",
+      "date": "2016-10-03",
+      "first_date": "2016-08-05",
+      "url": "https://commitfest.postgresql.org/patch/703/",
+      "thread_urls": [],
+      "authors": "Julien Rouhaud (rjuju)",
+      "objectors": "",
+      "summary": "Add a max_parallel_workers GUC",
+      "objection": "",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "parallel worker WAL statistics double counting",
+        "pg_stat_wal parallel workers",
+        "InstrAccumParallelQuery worker usage"
+      ],
+      "from_hint": false,
+      "score": 0.243,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:2315",
+      "kind": "cf",
+      "title": "Parallel leader process info in EXPLAIN output",
+      "status": "Returned with feedback",
+      "date": "2020-03-17",
+      "first_date": "2019-10-23",
+      "url": "https://commitfest.postgresql.org/patch/2315/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKG+Z22=vkVkXtKRznzRdtj=MtygfZMYUJs8j7ObjzkG1Lw@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "Tom Lane",
+      "summary": "The patch adds a \"Leader:\" line to EXPLAIN ANALYZE VERBOSE output that shows the leader process's own timing, row counts and buffer usage next to the per-worker lines. In structured formats the leader appears as a worker with number -1, and a second patch relabels the leader's Sort details for consistency.",
+      "objection": "Tom Lane objected that 0001 adds another field to every PlanState and builds on ExecParallelRetrieveInstrumentation aggregating data early, so it should instead return raw leader and per-worker data for explain.c to aggregate. He also said it was unclear how the leader output maps to non-text formats without breaking which fields are present. The author dropped 0002 because of other refactoring work, agreed 0001 needed a rewrite, and marked the entry returned with feedback.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "pgWalUsage parallel leader accumulate",
+        "pg_stat_get_backend_wal leader workers"
+      ],
+      "from_hint": false,
+      "score": 0.235,
+      "enriched": true,
+      "key_quote": "On a narrower note, I'm not at all happy with the fact that 0001\nadds yet another field to *every* PlanState.  I think this is\ndoubling down on a fundamentally wrong decision to have\nExecParallelRetrieveInstrumentation do some aggregation immediately.",
+      "quote_message_url": "https://www.postgresql.org/message-id/18323.1580078950%40sss.pgh.pa.us",
+      "relevant": true
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:725",
+      "kind": "cf",
+      "title": "system load consideration hook for parallel workers",
+      "status": "Rejected",
+      "date": "2016-09-22",
+      "first_date": "2016-07-29",
+      "url": "https://commitfest.postgresql.org/patch/725/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJrrPGe23T0TQ3V5GABDv0rGdBXhQtCp=SpfY6fJ+YHxuSt5nQ@mail.gmail.com"
+      ],
+      "authors": "Haribabu Kommi (haribabu)",
+      "objectors": "Peter Eisentraut, Tom Lane, Peter Geoghegan",
+      "summary": "Before starting parallel workers, check the current system load and reduce the number of workers when the system is busy, so parallel query does not slow down other sessions at peak load. The author proposed a hook for this and later posted a POC patch that measures CPU load and picks the worker count from the free CPUs.",
+      "objection": "Peter Eisentraut argued that a load-based control for parallel workers alone is premature before there is field experience with parallel query, and that the problem covers all process types. He also did not trust system load metrics as a gatekeeper, since load averages lag by about a minute, and found the POC code platform-specific and poorly documented. He suggested refining the existing process-count settings instead, and closed the entry as not favored by the community.",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "parallel worker WAL statistics double counting",
+        "pg_stat_wal parallel workers"
+      ],
+      "from_hint": false,
+      "score": 0.161,
+      "enriched": true,
+      "key_quote": "We don't yet have enough field experience with the parallel query\nfacilities to know what kind of use patterns there are and what systems\nfor load management we need.  So I think building a highly specific\nsystem like this seems premature.",
+      "quote_message_url": "https://www.postgresql.org/message-id/aca21e2c-746d-36aa-103a-275ce24bb395%402ndquadrant.com",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:7446",
+      "kind": "cf",
+      "title": "[PG19]pg_dump --statistics restores extended statistics by attribute number",
+      "status": "Withdrawn",
+      "date": "2026-10-19",
+      "first_date": "2026-10-13",
+      "url": "https://commitfest.postgresql.org/patch/7446/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGRkXqQh9vifL1JP1je4ZEGmkKmQNG6JEd7djcdPYhCfKA_b1A@mail.gmail.com"
+      ],
+      "authors": "shihao zhong (zhong950419)",
+      "objectors": "Michael Paquier, Corey Huinker",
+      "summary": "pg_dump --statistics writes extended statistics (ndistinct, dependencies) with the source table's attribute numbers, which can be invalid or point to other columns after restore. The patch passed source column numbers and names to pg_restore_extended_stats and remapped them by name; v2 only rejected the data when the column names did not match.",
+      "objection": "Michael Paquier said name-based mapping has its own problems, such as a column renamed to a former column's name, and that the logical vs physical attnum issue is old and not worth dozens of hours. Corey Huinker said the restored stats are overwritten by the next autovacuum and that rejected stats are caught by vacuumdb --missing-stats-only. On v2, Michael Paquier doubted the inheritance-child case happens in practice and saw nothing worth acting on, so the author withdrew the entry.",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "pgBufferUsage cumulative statistics parallel"
+      ],
+      "from_hint": false,
+      "score": 0.15,
+      "enriched": true,
+      "key_quote": "I mean that there is nothing that I see worth acting on here.",
+      "quote_message_url": "https://www.postgresql.org/message-id/atVZiIcK1nnu_0xS%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:6025",
+      "kind": "cf",
+      "title": "Get rid of pgstat_count_backend_io_op*() functions",
+      "status": "Rejected",
+      "date": "2026-03-25",
+      "first_date": "2025-09-01",
+      "url": "https://commitfest.postgresql.org/patch/6025/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/aLWonxez0MBSqEvA@ip-10-97-1-34.eu-west-3.compute.internal"
+      ],
+      "authors": "Bertrand Drouvot (bertranddrouvot.pg)",
+      "objectors": "Michael Paquier, Andres Freund",
+      "summary": "The patch removes the pgstat_count_backend_io_op*() functions, so I/O counters are incremented once, and copies the pending I/O stats into the per-backend pending stats when the I/O stats flush. To make this work, per-backend stats must flush after the other stats kinds, first by placing PGSTAT_KIND_BACKEND last in the enum and later (v3) by flushing it outside the loop in pgstat_report_stat().",
+      "objection": "Michael Paquier objected to the ordering dependency between stats kinds at flush time, which so far have been independent, and said the copy approach hurts readability. He also said there was no benchmark data to choose among inlining, static structures, copies or fewer diffs, so the picture was incomplete. Andres Freund rejected the alternative WalUsage-style diff approach as too costly. The thread ends with the author disagreeing, and the visible messages do not show a final decision.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_get_backend_wal leader workers"
+      ],
+      "from_hint": false,
+      "score": 0.148,
+      "enriched": true,
+      "key_quote": "Hmm.  I really have an issue with the ordering dependency this\nintroduces between stats kinds, assumed to happen inside the code.",
+      "quote_message_url": "https://www.postgresql.org/message-id/aNTkWRZAg9FCBKy0%40paquier.xyz",
+      "relevant": true
+    },
+    {
+      "id": "P11",
+      "source_id": "revert:f85f6ab051b7cf6950247e5fa6072c4130613555",
+      "kind": "revert",
+      "title": "Revert support for improved tracking of nested queries",
+      "status": "Reverted",
+      "date": "2025-06-12",
+      "first_date": "2024-10-22",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f85f6ab051b7cf6950247e5fa6072c4130613555",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/18947-cdd2668beffe02bf@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/CAO6_XqqM6S9bQ2qd=75W+yKATwoazxSNhv5sjW06fjGAtHbTUA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/844a3b38-bbf1-4fb2-9fd6-f58c35c09917@pgbackrest.org"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert support for improved tracking of nested queries\nReverted commit(s): Track more precisely query locations for nested statements; Fix regression with location calculation of nested statements; pg_stat_statements: Add tests for nested queries with level tracking",
+      "objection": "This commit reverts the two following commits:\n- 499edb09741b, track more precisely query locations for nested\nstatements.\n- 06450c7b8c70, a follow-up fix of 499edb09741b with query locations.\nThe test introduced in this commit is not reverted.  This is proving\nuseful to track a problem that only pgaudit was able to detect.\n\nThese prove to have issues with the tracking of SELECT statements, when\nthese use multiple parenthesis which is something supported by the\ngrammar.  Incorrect location and lengths are causing pg_stat_statements\nto become confused, failing its job in query normalization with\npotential out-of-bound writes because the location and the length may\nnot match with what can be handled.  A lot of the query patterns\ndiscussed when this issue was reported have no test coverage in the main\nregression test suite, or the recovery test 027_stream_regress.pl would\nhave caught the problems as pg_stat_statements is loaded by the node\nrunning the regression tests.  A first step would be to improve the test\ncoverage to stress more the query normalization logic.\n\nA different portion of this work was done in 45e0ba30fc40, with the\naddition of tests for nested queries.  These can be left in the tree.\nThey are useful to track the way inner queries are currently tracked by\nPGSS with non-top-level entries, and will be useful when reconsidering\nin the future the work reverted here.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "SQL syntax / standard"
+      ],
+      "matched_queries": [
+        "instrumentation stack based nested statements"
+      ],
+      "from_hint": false,
+      "score": 0.145,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:3666",
+      "kind": "cf",
+      "title": "Add last failed connection error message to pg_stat_wal_receiver",
+      "status": "Withdrawn",
+      "date": "2022-10-11",
+      "first_date": "2022-05-02",
+      "url": "https://commitfest.postgresql.org/patch/3666/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACWt6wkFnu7sac3pUb4WLZ3jA1m3cu7FJE3EovpGKzhwKw@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "",
+      "summary": "Add last failed connection error message to pg_stat_wal_receiver\nThreads: Add last failed connection error message to pg_stat_wal_receiver",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_wal parallel workers"
+      ],
+      "from_hint": false,
+      "score": 0.137,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:5711",
+      "kind": "cf",
+      "title": "temporary file usage report with extended protocol and unnamed portals",
+      "status": "Withdrawn",
+      "date": "2025-08-21",
+      "first_date": "2025-04-18",
+      "url": "https://commitfest.postgresql.org/patch/5711/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3d07ee43-8855-42db-97e0-bad5db82d972@dalibo.com"
+      ],
+      "authors": "Frédéric Yhuel (yhuelf)",
+      "objectors": "",
+      "summary": "temporary file usage report with extended protocol and unnamed portals\nThreads: [BUG] temporary file usage report with extended protocol and unnamed\nportals",
+      "objection": "",
+      "touch_points": [
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "parallel vacuum WAL usage reporting"
+      ],
+      "from_hint": false,
+      "score": 0.133,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3601",
+      "kind": "cf",
+      "title": "Summary Sort workers Stats in EXPLAIN ANALYZE",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-03-21",
+      "url": "https://commitfest.postgresql.org/patch/3601/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/BL0PR05MB5188210988EA15126C255B6DC4169@BL0PR05MB5188.namprd05.prod.outlook.com"
+      ],
+      "authors": "Jian Guo (jiang)",
+      "objectors": "",
+      "summary": "Summary Sort workers Stats in EXPLAIN ANALYZE\nThreads: Summary Sort workers Stats in EXPLAIN ANALYZE",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "pg_stat_get_backend_wal leader workers"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:844",
+      "kind": "cf",
+      "title": "Vacuum: allow usage of more than 1GB of work mem",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2016-10-26",
+      "url": "https://commitfest.postgresql.org/patch/844/",
+      "thread_urls": [],
+      "authors": "Heikki Linnakangas (heikki), Claudio Freire (klaussfreire)",
+      "objectors": "",
+      "summary": "Vacuum: allow usage of more than 1GB of work mem",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel vacuum WAL usage reporting"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:790",
+      "kind": "cf",
+      "title": "SQL statements statistics counter view (pg_stat_sql)",
+      "status": "Returned with feedback",
+      "date": "2020-09-17",
+      "first_date": "2016-08-20",
+      "url": "https://commitfest.postgresql.org/patch/790/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJrrPGeY4xujjoR=z=KoyRMHEK_pSjjp=7VBhOAHq9rfgpV7QQ@mail.gmail.com"
+      ],
+      "authors": "Haribabu Kommi (haribabu)",
+      "objectors": "",
+      "summary": "SQL statements statistics counter view (pg_stat_sql)\nThreads: New SQL counter statistics view (pg_stat_sql)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel worker WAL statistics double counting"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:1828",
+      "kind": "cf",
+      "title": "Undo worker and transaction rollback",
+      "status": "Withdrawn",
+      "date": "2019-09-09",
+      "first_date": "2018-10-11",
+      "url": "https://commitfest.postgresql.org/patch/1828/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFiTN-sYQ8r8ANjWFYkXVfNxgXyLRfvbX9Ee4SxO9ns-OBBgVA@mail.gmail.com"
+      ],
+      "authors": "Amit Kapila (amitkapila), Dilip Kumar (dilip.kumar), mithun cy (mithun.cy), Rafia Sabih (rafia.sabih)",
+      "objectors": "",
+      "summary": "Undo worker and transaction rollback\nThreads: Undo worker and transaction rollback",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "InstrAccumParallelQuery worker usage"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:3787",
+      "kind": "cf",
+      "title": "Add parallel counters to pg_stat_statements",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-07-21",
+      "url": "https://commitfest.postgresql.org/patch/3787/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6acbe570-068e-bd8e-95d5-00c737b865e8@gmail.com"
+      ],
+      "authors": "Daymel Bonne (bonne), Anthony Sotolongo León (asotolongo)",
+      "objectors": "",
+      "summary": "Add parallel counters to pg_stat_statements\nThreads: Expose Parallelism counters planned/execute in pg_stat_statements",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel worker WAL statistics double counting"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:5734",
+      "kind": "cf",
+      "title": "Improve logicalrep_worker_launch() logic",
+      "status": "Withdrawn",
+      "date": "2026-01-08",
+      "first_date": "2025-04-25",
+      "url": "https://commitfest.postgresql.org/patch/5734/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/d9e208a0-1bdf-42e3-b6c6-49bca1904060@oss.nttdata.com"
+      ],
+      "authors": "Fujii Masao (masaofujii)",
+      "objectors": "",
+      "summary": "Improve logicalrep_worker_launch() logic\nThreads: Questions about logicalrep_worker_launch()",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "InstrAccumParallelQuery worker usage"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:2332",
+      "kind": "cf",
+      "title": "Add accumulated statistics for wait event",
+      "status": "Returned with feedback",
+      "date": "2020-08-02",
+      "first_date": "2018-07-23",
+      "url": "https://commitfest.postgresql.org/patch/2332/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2022793411.102298.1532329482584.JavaMail.jboss@ep1ml402"
+      ],
+      "authors": "Yoshikazu Imai (yimai)",
+      "objectors": "",
+      "summary": "Add accumulated statistics for wait event\nThreads: [Proposal] Add accumulated statistics for wait event",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pgWalUsage parallel leader accumulate"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:3865",
+      "kind": "cf",
+      "title": "Add tracking of backend memory allocated to pg_stat_activity",
+      "status": "Withdrawn",
+      "date": "2023-01-05",
+      "first_date": "2022-08-31",
+      "url": "https://commitfest.postgresql.org/patch/3865/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/67bb5c15c0489cb499723b0340f16e10c22485ec.camel@crunchydata.com"
+      ],
+      "authors": "Reid Thompson (jreidthompsoncd)",
+      "objectors": "",
+      "summary": "Add tracking of backend memory allocated to pg_stat_activity\nThreads: Add tracking of backend memory allocated to pg_stat_activity",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_get_backend_wal leader workers"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "revert:3fb58625d18fd226cb929c9700d0db72ac92c075",
+      "kind": "revert",
+      "title": "Revert: Get rid of WALBufMappingLock",
+      "status": "Reverted",
+      "date": "2025-02-17",
+      "first_date": "2025-02-17",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=3fb58625d18fd226cb929c9700d0db72ac92c075",
+      "thread_urls": [],
+      "authors": "Alexander Korotkov",
+      "objectors": "",
+      "summary": "Revert: Get rid of WALBufMappingLock\nReverted commit(s): Get rid of WALBufMappingLock",
+      "objection": "This commit reverts 6a2275b895.  Buildfarm failure on batta spots some\nconcurrency issue, which requires further investigation.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_get_backend_wal leader workers"
+      ],
+      "from_hint": false,
+      "score": 0.103,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:120",
+      "kind": "cf",
+      "title": "multivariate statistics",
+      "status": "Returned with feedback",
+      "date": "2015-08-25",
+      "first_date": "2014-10-12",
+      "url": "https://commitfest.postgresql.org/patch/120/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/543AFA15.4080608@fuzzy.cz"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "multivariate statistics\nThreads: WIP: multivariate statistics / proof of concept",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pgBufferUsage cumulative statistics parallel"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "revert:26acb54a1368bf3706294400abca85b15c9233a6",
+      "kind": "revert",
+      "title": "Revert \"Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".\"",
+      "status": "Reverted",
+      "date": "2021-03-24",
+      "first_date": "2021-03-10",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=26acb54a1368bf3706294400abca85b15c9233a6",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/E1lMiB9-0001c3-SY@gemulon.postgresql.org",
+        "https://www.postgresql.org/message-id/flat/20210318025228.GE11765@telsasoft.com",
+        "https://www.postgresql.org/message-id/flat/CAA4eK1K-cW7svLC2D7DHoGHxdAdg3P37BLgebqBOC2ZLc9a6QQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAJcOf-cXnB5cnMKqWEp2E2z7Mvcd04iLVmV=qpFJrR3AcrTS3g@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/2309260.1615485644@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CAJcOf-fAdj=nDKMsRhQzndm-O13NY4dL6xGcEvdX5Xvbbi0V7g@mail.gmail.com"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Revert \"Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".\"\nReverted commit(s): Doc: Update description for parallel insert reloption.; Add a new GUC and a reloption to enable inserts in parallel-mode.; Improve FK trigger parallel-safety check added by 05c8482f7f.; Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".; Fix use of relcache TriggerDesc field introduced by commit 05c8482f7f.",
+      "objection": "To allow inserts in parallel-mode this feature has to ensure that all the\nconstraints, triggers, etc. are parallel-safe for the partition hierarchy\nwhich is costly and we need to find a better way to do that. Additionally,\nwe could have used existing cached information in some cases like indexes,\ndomains, etc. to determine the parallel-safety.\n\nList of commits reverted, in reverse chronological order:\n\ned62d3737c Doc: Update description for parallel insert reloption.\nc8f78b6161 Add a new GUC and a reloption to enable inserts in parallel-mode.\nc5be48f092 Improve FK trigger parallel-safety check added by 05c8482f7f.\ne2cda3c20a Fix use of relcache TriggerDesc field introduced by commit 05c8482f7f.\ne4e87a32cc Fix valgrind issue in commit 05c8482f7f.\n05c8482f7f Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "pgWalUsage parallel leader accumulate"
+      ],
+      "from_hint": false,
+      "score": 0.101,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 7,
+    "new_calls": 1,
+    "failed": 0,
+    "quotes_verified": 1,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 3
+  },
+  "precedent_cutoff": "2026-10-29",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "For back branches no precedent argues against approach (1), and message #17 sees no alternative there. The one objection above concerns HEAD only."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 1,
+      "note": "pg_stat_wal and pg_stat_statements semantics stay as users expect, and pgWalUsage keeps its meaning for extensions. From this angle, only the per-backend attribution change in back branches raises a concern."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The fix changes only backend-local instrumentation counters and the values flushed to cumulative stats. It changes no on-disk format, stats file layout, WAL record, catalog, or wire protocol. The back-branch ABI risk is small: v1 adds two exported globals and keeps the meaning of pgWalUsage and the signature of InstrAccumParallelQuery. Bertrand suggests making the globals static, which removes even that risk."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal has no privilege or exposure aspect. It changes how a leader subtracts worker WAL counts before flushing to pg_stat_wal and pg_stat_get_backend_wal(), and it adds no new view, function, role check or data path, so no user can see or do anything new. Whether the new exported globals affect ABI belongs to other angles."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "The bug is real and the fix is cheap at flush time, so the objections are about long-run upkeep and the shape of master."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "This is a bugfix for wrong numbers in pg_stat_wal and pg_stat_get_backend_wal(). No existing feature, setting or extension stops the double counting. Users can only compare pg_current_wal_lsn() deltas by hand, and that does not fix the cumulative view. A second mechanism (rubric item 12) is out of scope here because the patch fixes an existing mechanism, and the design dispute between the in-thread alternatives belongs to another angle."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "This is a bug fix. pg_stat_wal reports about 131% of the WAL that parallel VACUUM writes, and both message #1 and message #22 reproduce it. Every user who reads pg_stat_wal while parallel vacuum or parallel scans run sees the wrong totals, so the demand angle has nothing to object to. Design disputes, such as whether pgWalUsage should hold worker data (messages #6 and #13), belong to other angles."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 4,
+      "new_survived": 3,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 69,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 12,
+    "wall_ms": 98854,
+    "cost_usd": 2.177555,
+    "dry_run": false
+  }
+}

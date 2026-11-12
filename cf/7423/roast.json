@@ -1,0 +1,1345 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:53:53.414Z",
+  "input": {
+    "arg": "7423",
+    "cf": {
+      "id": 7423,
+      "url": "https://commitfest.postgresql.org/patch/7423/",
+      "title": "Detoast a column once per row instead of once per reference",
+      "status": "Needs review",
+      "authors": "Johannes Edmeier (jedmeier)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAHYEV2s-5Vn6aPWrtkOGu7MMrwaido-wVeAZg-gqE9LSYj%2Bhjw%40mail.gmail.com",
+    "subject": "Detoast a column once per row instead of once per reference",
+    "thread_start": "2026-09-30T15:47:45Z",
+    "messages_read": 3,
+    "messages_total": 3,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v2-0002-Decide-at-plan-time-which-columns-to-detoast-once.patch",
+      "v2-0001-Executor-support-for-detoasting-a-column-once-per.patch",
+      "v2-0004-Test-once-per-row-detoasting.patch",
+      "v2-0003-Share-detoasted-values-with-subplan-and-nestloop-.patch",
+      "v1-0001-Executor-support-for-detoasting-a-column-once-per.patch",
+      "v1-0003-Share-detoasted-values-with-subplan-and-nestloop-.patch",
+      "v1-0002-Decide-at-plan-time-which-columns-to-detoast-once.patch",
+      "v1-0004-Test-once-per-row-detoasting.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The problem is clear and demand is shown, so levels 1a and 1b pass. Message #3 reports wrong results on default settings in two cases, and the author has not yet replied. A custom scan returns 529 rows instead of 500 (replication-ondisk-1), and pg_column_size in a LATERAL call returns 320004 instead of 3679 (standards-compat-1). Both concern the safety rule the design rests on, and maintenance-fit-1 shows the hardcoded lists make such misses silent.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Detoast a TOASTed column once per row, chosen at plan time",
+    "problem": "Each function or operator applied to a TOASTed column fetches and decompresses it again, so a query naming a wide jsonb or text column in several predicates pays several times. The plan does not show this and no query rewrite avoids it. Users with wide out-of-line columns and repeated references are affected.",
+    "proposed_design": "The planner marks, per plan node, the toastable columns that two or more argument positions read, counting across one node boundary. The executor keeps one detoasted copy beside the slot in tts_detoasted for as long as the slot holds the row, and only argument positions read it; tts_values keeps the stored datum. 0003 lets subplan and nestloop parameters find the copy through a back-reference to the source slot.",
+    "user_visible_surface": [
+      "New GUC detoast_reuse (boolean, default on, developer option), read at plan time.",
+      "New C API field TupleTableSlotOps.resets_detoasted; slot implementations that leave it false keep no copies.",
+      "New TupleTableSlot field tts_detoasted and new fields on Plan, PlannedStmt and ParamExecData.",
+      "pg_column_size, pg_column_compression and pg_column_toast_chunk_id keep seeing the stored form only when applied to the column directly.",
+      "New injection points in detoast_attr() and a new test module detoast_reuse."
+    ],
+    "author_claims": [
+      "Buffer reads drop about 50% to 75% on queries reading a column two to four times; instruction counts drop up to 55%.",
+      "Worst measured overhead is +0.22% on JSONBench, and +0.5% for a plan-cached statement in a loop with nothing to share.",
+      "A second-hand application workload ran 3.31x faster with 7.48x fewer buffer accesses.",
+      "Planner decisions cannot affect results; a wrong decision costs only a detoast.",
+      "No catalog version bump is needed, because the new fields live only on plan nodes."
+    ],
+    "thread_state": "Denis Smirnov tested v2 and asks for three changes: slice-reading functions must not force a full copy, pg_column_size in a LATERAL FROM call returns a wrong value, and extensions refilling a virtual slot in place get stale copies. The author has not replied, and CFbot reports the patch needs a rebase.",
+    "unclear": [
+      "The proposal does not show results for the reviewer's cases: wrong pg_column_size and pg_column_compression in FROM, and 529 rows instead of 500 from a custom scan.",
+      "Extensions cannot declare functions that must see the stored form; the author proposes a pg_proc flag or support request but has not written it.",
+      "The proposal gives no memory numbers for copies held in slots longer than the per-tuple context would hold them.",
+      "The proposal does not say why detoast_reuse defaults to on while documented as a developer option.",
+      "The proposal does not say how slot implementations outside core learn about resets_detoasted, or how the hardcoded function lists are kept current."
+    ],
+    "search_queries": [
+      "shared detoast datum",
+      "repeat detoasting overhead",
+      "detoast once per row",
+      "cache detoasted values executor",
+      "pre-detoast planner toast",
+      "toast slot detoasted copy",
+      "jsonb repeated decompression performance",
+      "expression evaluation detoast reuse"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "In-tree slots promise copy resets that extensions refilling slots in place break",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension's custom scan uses the in-tree virtual slot ops and rewrites tts_values in place for each row, as was legal before. The four in-tree slot implementations declare resets_detoasted, so later rows read the first row's detoasted copy. Users get wrong query results in release builds and see no error.",
+      "argument": "Message #3 shows this case: 529 rows instead of 500 from a custom scan in a release build, and an assert failure in an assert build. The slot's promise is made by core, but extension code that never opted in decides whether it holds, and no current API forbids in-place refills. The reviewer's fix keeps tts_detoast_src in all builds and compares one pointer. The v1-0001 commit message says a matching address proves nothing because addresses are reused, so a buffer reused at the same address would still yield a stale copy.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3
+      ],
+      "author_must_show": "What check, valid in release builds, makes a stale copy impossible when out-of-tree code refills an in-tree slot in place and reuses the same datum address?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Johannes Edmeier",
+          "date": "2026-09-30T15:47:45Z",
+          "url": "https://www.postgresql.org/message-id/CAHYEV2s-5Vn6aPWrtkOGu7MMrwaido-wVeAZg-gqE9LSYj%2Bhjw%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Denis Smirnov",
+          "date": "2026-11-08T07:03:57Z",
+          "url": "https://www.postgresql.org/message-id/71CC110B-6BDB-4CF5-B0D4-13378FCB8DFA%40gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #3 reports 529 rows instead of 500 in a release build from code that was legal before. The 0001 commit message itself says a matching address proves nothing, so the pointer compare suggested in message #3 is not yet shown to be enough.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Stored-form functions return different values depending on call position",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "sql_standard_syntax",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA runs a monitoring query with `lateral pg_column_size(t.col)` or wraps pg_column_compression in an extension function. After upgrade, with the default settings, it reports 320004 instead of 3679 and NULL compression. Nothing in the plan shows the change, so the DBA finds out only by comparing with a direct call.",
+      "argument": "Message #3 shows the LATERAL FROM case returning the decompressed size and a NULL compression method on v2 defaults. The config.sgml hunk documents that a function receiving the column as an argument now sees the fetched value. So whether a function sees the stored form depends on syntax, which no existing function contract has had. Open question 1 in message #1 says extensions cannot declare such functions, and the pg_proc flag or support request is not written.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3
+      ],
+      "author_must_show": "Will one check at every place that compiles function arguments, plus a declarable property for extension functions, be part of the series before it is committed?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Johannes Edmeier",
+          "date": "2026-09-30T15:47:45Z",
+          "url": "https://www.postgresql.org/message-id/CAHYEV2s-5Vn6aPWrtkOGu7MMrwaido-wVeAZg-gqE9LSYj%2Bhjw%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Denis Smirnov",
+          "date": "2026-11-08T07:03:57Z",
+          "url": "https://www.postgresql.org/message-id/71CC110B-6BDB-4CF5-B0D4-13378FCB8DFA%40gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #3 reproduces the wrong pg_column_size and pg_column_compression results for a LATERAL call on default settings, and the author has not replied. Message #1 confirms that extensions cannot declare a stored-form function.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Hardcoded function lists turn omissions into wrong answers and slower plans",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later release adds a function that reports the stored form, or one that reads only a slice, and no one adds it to ExecFuncReadsStoredForm() or ExecFuncReadsSliceOrSize(). The first returns a wrong value with detoast_reuse on. The second reads whole values where it read a few chunks. Users find out from wrong numbers or slower queries, and no test fails.",
+      "argument": "Message #1 admits that a function missing from the stored-form list silently returns a wrong answer, and that extensions cannot declare one. Message #3 shows the check is already bypassed for a LATERAL call, where pg_column_size returns 320004 instead of 3679. It also shows that slice readers such as \"=\" on text read 1843 buffers instead of 3. A second copy of the argument-position list in the planner is kept in step only by a comment, so each new expression node becomes a chore that reviewers are likely to miss.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3
+      ],
+      "author_must_show": "Can the stored-form and slice rules live in pg_proc or a support request, checked in one place, before this goes in?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Johannes Edmeier",
+          "date": "2026-09-30T15:47:45Z",
+          "url": "https://www.postgresql.org/message-id/CAHYEV2s-5Vn6aPWrtkOGu7MMrwaido-wVeAZg-gqE9LSYj%2Bhjw%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Denis Smirnov",
+          "date": "2026-11-08T07:03:57Z",
+          "url": "https://www.postgresql.org/message-id/71CC110B-6BDB-4CF5-B0D4-13378FCB8DFA%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #1 states that a function missing from the stored-form list silently returns a wrong answer. Message #3 measures 1843 buffer hits instead of 3 for slice readers, so a miss in the slice list costs more than a lost optimization.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Developer option defaults on and is read only at plan time",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "new_guc",
+      "touch_points": [
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user hits a wrong pg_column_size result or a slice-read regression and sets detoast_reuse = off as the documented escape. Prepared statements and cached PL/pgSQL plans keep the old plans and the old behaviour. The user concludes the setting does nothing.",
+      "argument": "Developer options are normally hidden debugging switches whose default is the plain behaviour. This one defaults on, changes what some functions return (message #3), and is the only user control. The config.sgml hunk says it applies only to plans made after the change. Message #1 does not say why a developer option is the right category for a default-on feature.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3
+      ],
+      "author_must_show": "Why is a default-on developer option the right category, and how does a user with cached plans turn the behaviour off?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Johannes Edmeier",
+          "date": "2026-09-30T15:47:45Z",
+          "url": "https://www.postgresql.org/message-id/CAHYEV2s-5Vn6aPWrtkOGu7MMrwaido-wVeAZg-gqE9LSYj%2Bhjw%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Denis Smirnov",
+          "date": "2026-11-08T07:03:57Z",
+          "url": "https://www.postgresql.org/message-id/71CC110B-6BDB-4CF5-B0D4-13378FCB8DFA%40gmail.com"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The proposal does not say why a default-on feature is filed as a developer option. The plan-time part should carry less weight, because the hunk documents it and enable_* settings behave the same way with cached plans.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "In-place refill of TTSOpsVirtual slots now gives wrong results",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension custom scan fills a virtual slot in place and calls ExecQual() per row, which works today. After upgrade, rows reuse the first row's detoasted copy and the scan returns 529 rows instead of 500 in a release build. The user finds out from wrong query results.",
+      "argument": "The in-tree virtual slot sets resets_detoasted, so every extension using TTSOpsVirtual takes on the reset promise without knowing it. Message #3 reports the wrong count and the Assert hit. It also reports that a plan changed after set_plan_references() can leave a mark on a non-varlena column. The opt-out flag protects only new slot implementations. Existing callers of in-tree slot types get no protection.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3
+      ],
+      "author_must_show": "Will the copy be checked against the current tts_values datum, and the column against typlen, in all builds, so that existing extension code cannot see a stale copy?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Denis Smirnov",
+          "date": "2026-11-08T07:03:57Z",
+          "url": "https://www.postgresql.org/message-id/71CC110B-6BDB-4CF5-B0D4-13378FCB8DFA%40gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1, which covers the same in-place refill failure and also asks whether the proposed pointer compare is sufficient. The typlen point from message #3 is a cheap check that belongs with that objection.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Stale detoasted copy can let a row pass an RLS or barrier qual",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A table has an RLS policy that reads a jsonb column twice, such as a tenant key and a status flag. A custom scan refills its virtual slot in place, so the policy quals for later rows run against the first row's detoasted copy. Rows from another tenant pass the policy, and nobody notices until an audit.",
+      "argument": "Message #3 shows that a custom scan refilling a virtual slot in place gets stale copies: 529 rows instead of 500 in a release build. Policy and security-barrier quals are argument positions, so they are compiled to read the copy. Message #3 suggests comparing pointers in all builds, but the 0001 commit message says a matching address proves nothing, since addresses are reused. That reuse is likely when a slot is refilled in place. The author has not replied, so the safety rule still depends on every slot implementation keeping its promise.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3
+      ],
+      "author_must_show": "What check makes a copy safe to use in RLS and security-barrier quals when an extension refills a slot in place and the datum address is reused?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Denis Smirnov",
+          "date": "2026-11-08T07:03:57Z",
+          "url": "https://www.postgresql.org/message-id/71CC110B-6BDB-4CF5-B0D4-13378FCB8DFA%40gmail.com"
+        }
+      ],
+      "id": "security-1",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1. The RLS case is one consequence of the same stale copy after an in-place refill, with no separate mechanism, and the same fix closes it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "New slot contract gives wrong results in release builds when broken",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension's custom scan refills a virtual slot in place and calls ExecQual() per row, as was harmless before. With the patch, later rows reuse the first row's detoasted copy. Message #3 reports 529 rows instead of 500 in a release build.",
+      "argument": "Correctness now depends on every refill going through ExecClearTuple() or ExecStore*(). This is a promise of the in-tree slot types, so the resets_detoasted opt-out does not protect extensions that use those types. The only check, tts_detoast_src, exists in assert builds alone. Extension authors rarely test with assertions, so the failure shows up as wrong query results in production.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3
+      ],
+      "author_must_show": "Will the copy be validated against its source datum in all builds, and what does that cost on the measured workloads?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Johannes Edmeier",
+          "date": "2026-09-30T15:47:45Z",
+          "url": "https://www.postgresql.org/message-id/CAHYEV2s-5Vn6aPWrtkOGu7MMrwaido-wVeAZg-gqE9LSYj%2Bhjw%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Denis Smirnov",
+          "date": "2026-11-08T07:03:57Z",
+          "url": "https://www.postgresql.org/message-id/71CC110B-6BDB-4CF5-B0D4-13378FCB8DFA%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1, which describes the same custom scan failure and the same assert-only check. Its question about the cost of an all-build check fits under that objection.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Per-execution cost paid by every query, including those with nothing to share",
+      "level": "1b",
+      "rubric_item": 5,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An OLTP application runs short plan-cached statements on narrow tables. Each execution compiles expressions and tests every argument position, which message #1 measures at +0.5%. The user gets no benefit and sees no setting meant for users to disable it.",
+      "argument": "Message #1 states the test runs at every argument position of every expression compiled, and compilation happens per execution. The author weighed this and found it small, but ten such patches per release would add about 5% to short statements. The off switch is a developer option that defaults to on, so the cost lands on everyone by default.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "Can a plan that marks no columns skip the per-position test entirely, so short statements with nothing to share pay nothing?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Johannes Edmeier",
+          "date": "2026-09-30T15:47:45Z",
+          "url": "https://www.postgresql.org/message-id/CAHYEV2s-5Vn6aPWrtkOGu7MMrwaido-wVeAZg-gqE9LSYj%2Bhjw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "Message #1 measures the cost on the path in question (+0.22% worst case, +0.5% for a short cached statement) and says a node that marks nothing settles each position in three null tests. The author also built the alternative design and withdrew it at about 2%.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "Open question 1 proposes a pg_proc flag or support request for stored-form functions; the series does not include it yet."
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "New fields on TupleTableSlot, TupleTableSlotOps, Plan, PlannedStmt and ParamExecData, plus a reset promise that in-tree slot types make for extensions."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": true,
+      "reason": "see objection standards-compat-1: Stored-form functions return different values depending on call position"
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": true,
+      "reason": "Adds detoast_reuse, a boolean developer option that defaults to on and is read at plan time."
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": true,
+      "reason": "set_plan_detoast_reuse() in setrefs.c marks columns per plan node; the plan shape does not change."
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "RLS and security-barrier quals are argument positions, so a stale copy after an in-place slot refill could reach them."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Three hardcoded lists, a planner copy of the argument-position list, and new expression steps in the interpreter and JIT."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "A test runs at every argument position of every compiled expression; message #1 measures +0.22% to +0.5%."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "What check, valid in release builds, prevents a stale copy when extension code refills an in-tree slot in place and the datum address is reused?",
+    "Will one stored-form check cover every place that compiles function arguments, including calls in FROM, and can extension functions declare this property before commit?",
+    "Will functions that read only a slice or the size get the stored datum unless a copy already exists, as message #3 asks?",
+    "Why is detoast_reuse a developer option when it defaults to on and is the only way for a user to turn the behaviour off?",
+    "How much more memory does a plan hold when several slots keep copies of wide values until the slot is refilled?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "It needs a committer who knows expression evaluation, the JIT expression code and the TupleTableSlot API. The visible thread has the author and one reviewer.",
+    "liability": "The owner signs for a correctness rule that depends on every slot refill path, every argument position and three function lists staying complete, in core and in extensions, with no end date.",
+    "author_follow_up": "The author rebased within two weeks and says the design and measurements are his to answer for. Message #3 has no reply yet and CFbot reports that a rebase is needed."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "high",
+    "review_cost": "high",
+    "recommended_action": "fix design first",
+    "reason": "Users with wide jsonb or text columns read several times per row gain 50% to 75% fewer buffer reads. The four-patch series, about 165 KiB, touches the executor, JIT and planner, and the wrong results in message #3 need a design answer first."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, nobody could check that the executor's argument-position list is complete or that the JIT steps match the interpreter. The same holds for whether a parallel worker can follow the ParamExecData slot back-reference.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:6546",
+      "kind": "cf",
+      "title": "Fix slotsync worker busy loop causing repeated log messages",
+      "status": "Withdrawn",
+      "date": "2026-05-01",
+      "first_date": "2026-02-27",
+      "url": "https://commitfest.postgresql.org/patch/6546/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHGQGwF6zG9Z8ws1yb3hY1VqV-WT7hR0qyXCn2HdbjvZQKufDw@mail.gmail.com"
+      ],
+      "authors": "Fujii Masao (masaofujii)",
+      "objectors": "",
+      "summary": "The patch fixes a slotsync worker loop that logs four logical decoding messages every 200 ms when confirmed_flush_lsn matches the primary but restart_lsn does not. update_local_synced_slot() would report \"no update\" in that case so the worker uses the normal sleep interval, and a second patch lowered the logical decoding messages from LOG to DEBUG1.",
+      "objection": "The visible messages do not show why. Amit Kapila questioned how 0001 detected an update and opposed the log-level change in 0002. The thread then settled on a simpler patch by Zhijie Hou that compares the slot's old and new LSN/xmin, and Hou posted it for HEAD and back branches.",
+      "touch_points": [],
+      "matched_queries": [
+        "repeat detoasting overhead",
+        "jsonb repeated decompression performance"
+      ],
+      "from_hint": false,
+      "score": 0.272,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:5830",
+      "kind": "cf",
+      "title": "Support for 8-byte TOAST values (aka the TOAST infinite loop problem)",
+      "status": "Returned with feedback",
+      "date": "2026-02-10",
+      "first_date": "2025-06-19",
+      "url": "https://commitfest.postgresql.org/patch/5830/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/aFOnKHG7Wn-Srnpv@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Tom Lane",
+      "summary": "The patch set lets TOAST tables use 8-byte value IDs (a new oid8 type, a wider OID counter, a reloption and a new on-disk vartag) so that TOAST tables are no longer limited to about 4 billion values. It also adds a toast_external layer that converts on-disk external TOAST pointers to an in-memory struct through per-vartag callbacks, so that more vartags, such as for zstd, can be added later.",
+      "objection": "The toast_external layer with function pointer redirection got no support. Tom Lane questioned its run-time cost and called it overdesigned, and the author later said the design had not received a single +1. Only the oid8 data type was committed. The author then dropped the rest from the v19 cycle, planning a v20 rework without the redirections.",
+      "touch_points": [],
+      "matched_queries": [
+        "pre-detoast planner toast",
+        "toast slot detoasted copy"
+      ],
+      "from_hint": false,
+      "score": 0.258,
+      "enriched": true,
+      "key_quote": "Anyway, as far as things stand today on this thread, I have not been able to get even a single +1 for this design.",
+      "quote_message_url": "https://www.postgresql.org/message-id/aTn4aS32O4lmaPnj%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:1486",
+      "kind": "cf",
+      "title": "Refuse setting toast.* reloptions when TOAST relation does not exist",
+      "status": "Returned with feedback",
+      "date": "2018-04-10",
+      "first_date": "2018-01-17",
+      "url": "https://commitfest.postgresql.org/patch/1486/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3413542.LWpeoxCNq5@x200m"
+      ],
+      "authors": "Nikolay Shaplov (nataraj)",
+      "objectors": "Robert Haas, Tom Lane",
+      "summary": "The patch makes setting or changing a toast.* reloption raise an error when the table has no TOAST relation. Today such a value is accepted and then lost, so pg_dump does not keep it and it has no effect if toastable columns are added later.",
+      "objection": "Robert Haas pointed out that the rules for whether a table gets a TOAST table can change between major releases, so a pg_dump and restore of a table with a toast.* option could fail after an upgrade. Tom Lane added that the choice can differ on different hardware and opposed a hard error, though a warning might be acceptable. The CF manager returned the patch because there was no consensus on whether it was useful or correct; alternatives such as creating the TOAST relation when a toast.* option is set were left for a new patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "pre-detoast planner toast",
+        "toast slot detoasted copy"
+      ],
+      "from_hint": false,
+      "score": 0.232,
+      "enriched": true,
+      "key_quote": "If a table with that\ndefinition has a toast.* option set, then upgrading from release X to\nrelease X+1 via pg_dump and restore will fail.  That's bad.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoYTnV-2aVkAcpp7T5b%2Bq0w6s2saYiR-SD8maPxDVOyyAA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:3490",
+      "kind": "cf",
+      "title": "Pluggable toaster",
+      "status": "Rejected",
+      "date": "2023-04-03",
+      "first_date": "2021-12-30",
+      "url": "https://commitfest.postgresql.org/patch/3490/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/224711f9-83b7-a307-b17f-4457ab73aa0a@sigaev.ru"
+      ],
+      "authors": "Fedor Sigaev (sigaev), Nikita Glukhov (n.glukhov), Oleg Bartunov (oleg), Nikita Malakhov (nmalakh)",
+      "objectors": "Andres Freund, Matthias van de Meent, Aleksander Alekseev",
+      "summary": "The patch set adds a toaster API, like the table AM API, so extensions can plug in custom toasters per column, with new SQL syntax and a custom toast pointer format, and routes the built-in toaster through it. Later revisions moved toaster assignments into a new catalog pg_toastrel, added DROP TOASTER, and planned a hooks-based extension version.",
+      "objection": "Andres Freund objected that the patches add a lot of code and complexity without fixing any TOAST problem, and said he would not accept the planned hooks either. Matthias van de Meent and Aleksander Alekseev said a complex design was posted before there was community agreement on how type-aware TOAST should work, and asked for that design discussion first. Aleksander Alekseev also cited maintenance cost and benchmarks that others could not reproduce, and moved the discussion to the compression dictionaries thread.",
+      "touch_points": [],
+      "matched_queries": [
+        "pre-detoast planner toast",
+        "toast slot detoasted copy"
+      ],
+      "from_hint": false,
+      "score": 0.199,
+      "enriched": true,
+      "key_quote": "The problem for me is that what you've been posting doesn't actually fix any problem, but instead introduces lots of new code and complexity.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20230205223313.4dwhlddzg6uhaztg%40alap3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:dca369320f6023b55feb49f281d394181fc57903",
+      "kind": "revert",
+      "title": "Revert \"isolationtester: don't repeat the is-it-waiting query when retrying a step.\"",
+      "status": "Reverted",
+      "date": "2016-02-12",
+      "first_date": "2016-02-12",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=dca369320f6023b55feb49f281d394181fc57903",
+      "thread_urls": [],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"isolationtester: don't repeat the is-it-waiting query when retrying a step.\"\nReverted commit(s): isolationtester: don't repeat the is-it-waiting query when retrying a step.",
+      "objection": "This mostly reverts commit 9c9782f066e0ce5424b8706df2cce147cb78170f.\nI left in the parts that rearranged removal of completed waiting steps;\nbut the idea of not rechecking a step's blocked-ness isn't working.",
+      "touch_points": [],
+      "matched_queries": [
+        "repeat detoasting overhead",
+        "jsonb repeated decompression performance"
+      ],
+      "from_hint": false,
+      "score": 0.192,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:3457",
+      "kind": "cf",
+      "title": "pg_stat_toast",
+      "status": "Withdrawn",
+      "date": "2022-07-01",
+      "first_date": "2021-12-12",
+      "url": "https://commitfest.postgresql.org/patch/3457/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/a08b54fa-7b13-9531-6233-33a3d23773a8@pro-open.de"
+      ],
+      "authors": "Gunnar \"Nick\" Bluth (bluthg)",
+      "objectors": "Robert Haas, Andres Freund",
+      "summary": "The patch adds per-column TOAST statistics: counts of externalizations, compressions and successful compressions, and size before and after compression, shown in a pg_stat_toast view. Hooks in toast_helper.c report to pgstat at database level, modelled on function statistics, and a track_toast GUC turns them on.",
+      "objection": "Reviewers doubted the data was worth its cost in the statistics system, which is already a known pain point for clusters with many tables. Robert Haas said compression effect can be read from on-disk state, through the TOAST table and pg_column_size(), without new instrumentation. Andres Freund suggested a pgstattuple function that scans the relation instead of a new stats view. The visible messages do not show the author's stated reason for withdrawing.",
+      "touch_points": [],
+      "matched_queries": [
+        "pre-detoast planner toast",
+        "toast slot detoasted copy"
+      ],
+      "from_hint": false,
+      "score": 0.182,
+      "enriched": true,
+      "key_quote": "On the other hand, you CAN find out how effective compression is, at least in terms of space, without instrumentation, because it leaves state on disk that you can examine whenever you like.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmobwt6TNyi_g1OwwD20DkyQasM5ftD0qUZTkreqbUoUHNg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:3102",
+      "kind": "cf",
+      "title": "Toast compression method options",
+      "status": "Withdrawn",
+      "date": "2021-10-01",
+      "first_date": "2021-05-03",
+      "url": "https://commitfest.postgresql.org/patch/3102/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFiTN-vMHU_yakMgNo90SUih_6LtvmqZ5hpQb2iTgQtVyOjyFA@mail.gmail.com"
+      ],
+      "authors": "Dilip Kumar (dilip.kumar)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch lets users set per-column options for the TOAST compression method, such as the LZ4 acceleration level, through a new pg_attribute attribute and ALTER TABLE support. It rebases an earlier patch from the custom compression thread onto the committed lz4 TOAST compression design.",
+      "objection": "Michael Paquier saw no practical use case. Nobody had asked to tune pglz, LZ4 is already cheap in CPU, and users who want to avoid compression cost can store values externally. He also objected that the patch adds a pg_attribute column and complexity to the ALTER TABLE code paths in tablecmds.c. The author withdrew the patch, citing that objection and little interest from other hackers.",
+      "touch_points": [],
+      "matched_queries": [
+        "pre-detoast planner toast",
+        "toast slot detoasted copy"
+      ],
+      "from_hint": false,
+      "score": 0.167,
+      "enriched": true,
+      "key_quote": "I don't recall seeing much on\nthis list that users would like to have such a level of tuning for\npglz, while lz4 only offers the option to reduce the compression rate\nwhile being already very cheap in CPU so the impact is limited.",
+      "quote_message_url": "https://www.postgresql.org/message-id/YVa028Lj99Eqtckt%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:5165",
+      "kind": "cf",
+      "title": "format_datum debugging function",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2024-08-09",
+      "url": "https://commitfest.postgresql.org/patch/5165/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/286814e4-46d4-44d6-be45-c2ee979021e1@illuminatedcomputing.com"
+      ],
+      "authors": "Paul Jungwirth (pjungwir)",
+      "objectors": "Peter Eisentraut, Tom Lane",
+      "summary": "Add a debugging function, format_datum, that takes a Datum and its type's output function and returns the text form as a char *. Developers could then print non-trivial values such as ranges from gdb, where the inline functions and macros are not available.",
+      "objection": "Peter Eisentraut said calling output functions at arbitrary points from a debugger is unsafe, and that OidOutputFunctionCall with the function's OID already works. Tom Lane accepted the idea but asked for the function to be renamed DirectOutputFunctionCall, moved into fmgr.c and written like the existing DirectFunctionCall functions. The visible messages show no revised patch after that review.",
+      "touch_points": [],
+      "matched_queries": [
+        "shared detoast datum"
+      ],
+      "from_hint": false,
+      "score": 0.143,
+      "enriched": true,
+      "key_quote": "However, I would\ncall the result DirectOutputFunctionCall and put it near\nOidOutputFunctionCall in fmgr.c.",
+      "quote_message_url": "https://www.postgresql.org/message-id/451803.1723730707%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "revert:ddfc556a644404a8942e77651f75f09aa5188782",
+      "kind": "revert",
+      "title": "Revert \"Optimize pg_visibility with read streams.\"",
+      "status": "Reverted",
+      "date": "2024-09-04",
+      "first_date": "2024-09-03",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ddfc556a644404a8942e77651f75f09aa5188782",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAN55FZ1_Ru3XpMgTwsU67FTH2fs_FrRROmb7x6zs+F44QBEiww@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAEudQAozv3wTY5TV2t29JcwPydbmKbiWQkZD42S2OgzdixPMDQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20240903192030.1e@rfd.leadboat.com"
+      ],
+      "authors": "Noah Misch",
+      "objectors": "",
+      "summary": "Revert \"Optimize pg_visibility with read streams.\"\nReverted commit(s): Optimize pg_visibility with read streams.; Fix stack variable scope from previous commit.",
+      "objection": "This reverts commit ed1b1ee59fb3792baa32f669333b75024ef01bcc and its\nfollowup 1c61fd8b527954f0ec522e5e60a11ce82628b681.  They rendered\ncollect_corrupt_items() unable to detect corruption.",
+      "touch_points": [],
+      "matched_queries": [
+        "pre-detoast planner toast"
+      ],
+      "from_hint": false,
+      "score": 0.143,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:6651",
+      "kind": "cf",
+      "title": "Optimize numeric comparison and aggregation via packed-datum extraction",
+      "status": "Rejected",
+      "date": "2026-05-10",
+      "first_date": "2026-04-04",
+      "url": "https://commitfest.postgresql.org/patch/6651/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/tencent_D999DB30A62C6B4D956CA9BADF35CFE91408@qq.com"
+      ],
+      "authors": "Chenhui Mo (littleganyu)",
+      "objectors": "",
+      "summary": "The patch speeds up numeric min, max, sum, avg and variance by reading numeric fields directly from packed (1-byte header) datums, so that each row no longer needs a detoast with palloc and memcpy. min and max return the original input Datum, and the accumulation functions use a new init_var_from_packed().",
+      "objection": "The visible messages do not show why. Only the author posted: a v2 patch fixed a CFBot alignment failure on strict architectures, and no reviewer reply appears in the thread.",
+      "touch_points": [],
+      "matched_queries": [
+        "shared detoast datum"
+      ],
+      "from_hint": false,
+      "score": 0.135,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:6343",
+      "kind": "cf",
+      "title": "Reuse data from readRecordBuf in XLogDecodeNextRecord",
+      "status": "Withdrawn",
+      "date": "2026-02-09",
+      "first_date": "2025-12-15",
+      "url": "https://commitfest.postgresql.org/patch/6343/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJLmdKyC3iq-UjYDG0S0rLQfRxfhcctWNcN-i3=3t6ceaUu1oA@mail.gmail.com"
+      ],
+      "authors": "Sonya Valchuk (pyos)",
+      "objectors": "",
+      "summary": "Reuse data from readRecordBuf in XLogDecodeNextRecord\nThreads: Reuse data from readRecordBuf in XLogDecodeNextRecord",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "expression evaluation detoast reuse"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:6086",
+      "kind": "cf",
+      "title": "Add jsonb_translate(jsonb, from, to)",
+      "status": "Withdrawn",
+      "date": "2026-01-25",
+      "first_date": "2025-09-27",
+      "url": "https://commitfest.postgresql.org/patch/6086/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+v5N41RzrpHVSkeN9EOey0JZbhfS3LB4OsRUD7bzTxrbBAszA@mail.gmail.com"
+      ],
+      "authors": "Florents Tselai (florentst)",
+      "objectors": "",
+      "summary": "Add jsonb_translate(jsonb, from, to)\nThreads: Add jsonb_translate(jsonb, from, to)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "jsonb repeated decompression performance"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:2501",
+      "kind": "cf",
+      "title": "JIT expression evaluation improvements",
+      "status": "Returned with feedback",
+      "date": "2020-09-30",
+      "first_date": "2019-10-23",
+      "url": "https://commitfest.postgresql.org/patch/2501/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20191023163849.sosqbfs5yenocez3@alap3.anarazel.de"
+      ],
+      "authors": "Andres Freund (andresfreund)",
+      "objectors": "",
+      "summary": "JIT expression evaluation improvements\nThreads: WIP: expression evaluation improvements",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "expression evaluation detoast reuse"
+      ],
+      "from_hint": false,
+      "score": 0.13,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "revert:38f60f174e3279069b5547b5f4015eb4a8492037",
+      "kind": "revert",
+      "title": "Revert \"Fix corner case with PGP decompression in pgcrypto\"",
+      "status": "Reverted",
+      "date": "2020-07-22",
+      "first_date": "2020-07-22",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=38f60f174e3279069b5547b5f4015eb4a8492037",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200722093749.GA2564@paquier.xyz",
+        "https://www.postgresql.org/message-id/flat/16476-692ef7b84e5fb893@postgresql.org"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Fix corner case with PGP decompression in pgcrypto\"\nReverted commit(s): Fix corner case with PGP decompression in pgcrypto",
+      "objection": "This reverts commit 9e10898, after finding out that buildfarm members\nrunning SLES 15 on z390 complain on the compression and decompression\nlogic of the new test: pipistrelles, barbthroat and steamerduck.\n\nThose hosts are visibly using hardware-specific changes to improve zlib\nperformance, requiring more investigation.\n\nThanks to Tom Lane for the discussion.",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "jsonb repeated decompression performance"
+      ],
+      "from_hint": false,
+      "score": 0.129,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:2038",
+      "kind": "cf",
+      "title": "Row Level Security, leakproof-ness, and performance implications",
+      "status": "Rejected",
+      "date": "2019-03-19",
+      "first_date": "2019-02-19",
+      "url": "https://commitfest.postgresql.org/patch/2038/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2811772.0XtDgEdalL@peanuts2"
+      ],
+      "authors": "Joe Conway (jconway)",
+      "objectors": "",
+      "summary": "Row Level Security, leakproof-ness, and performance implications\nThreads: Row Level Security − leakproof-ness and performance implications",
+      "objection": "",
+      "touch_points": [
+        "security / privileges",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "detoast once per row"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:3445",
+      "kind": "cf",
+      "title": "Error \"initial slot snapshot too large\" in create replication slot",
+      "status": "Withdrawn",
+      "date": "2024-01-16",
+      "first_date": "2021-10-11",
+      "url": "https://commitfest.postgresql.org/patch/3445/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFiTN-tqopqpfS6HHug2nnOGieJJ_nm-Nvy0WBZ=Zpo-LqtSJA@mail.gmail.com"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti), Dilip Kumar (dilip.kumar)",
+      "objectors": "",
+      "summary": "Error \"initial slot snapshot too large\" in create replication slot\nThreads: Error \"initial slot snapshot too large\" in create replication slot",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "toast slot detoasted copy"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:3784",
+      "kind": "cf",
+      "title": "Reuse Workers and Replication Slots during Logical Replication",
+      "status": "Returned with feedback",
+      "date": "2024-01-10",
+      "first_date": "2022-07-05",
+      "url": "https://commitfest.postgresql.org/patch/3784/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGPVpCTq=rUDd4JUdaRc1XUWf4BrH2gdSNf3rtOMUGj9rPpfzQ@mail.gmail.com"
+      ],
+      "authors": "Melih Mutlu (melihmutlu)",
+      "objectors": "",
+      "summary": "Reuse Workers and Replication Slots during Logical Replication\nThreads: [PATCH] Reuse Workers and Replication Slots during Logical Replication",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "expression evaluation detoast reuse"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "revert:e8d78581bb864369035c736a82ecfb57482a1a09",
+      "kind": "revert",
+      "title": "Revert \"Convert *GetDatum() and DatumGet*() macros to inline functions\"",
+      "status": "Reverted",
+      "date": "2022-09-12",
+      "first_date": "2022-09-12",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e8d78581bb864369035c736a82ecfb57482a1a09",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/8528fb7e-0aa2-6b54-85fb-0c0886dbd6ed@enterprisedb.com"
+      ],
+      "authors": "Peter Eisentraut",
+      "objectors": "",
+      "summary": "Revert \"Convert *GetDatum() and DatumGet*() macros to inline functions\"\nReverted commit(s): Convert *GetDatum() and DatumGet*() macros to inline functions",
+      "objection": "This reverts commit 595836e99bf1ee6d43405b885fb69bb8c6d3ee23.\n\nIt has problems when USE_FLOAT8_BYVAL is off.",
+      "touch_points": [],
+      "matched_queries": [
+        "shared detoast datum"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:2027",
+      "kind": "cf",
+      "title": "Document the limitations of row-level security",
+      "status": "Returned with feedback",
+      "date": "2019-04-04",
+      "first_date": "2019-02-19",
+      "url": "https://commitfest.postgresql.org/patch/2027/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2811772.0XtDgEdalL@peanuts2"
+      ],
+      "authors": "Pierre Ducroquet (pinaraf)",
+      "objectors": "",
+      "summary": "Document the limitations of row-level security\nThreads: Row Level Security − leakproof-ness and performance implications",
+      "objection": "",
+      "touch_points": [
+        "security / privileges",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "detoast once per row"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:2654",
+      "kind": "cf",
+      "title": "Add a feature that enables row-wise comparison partition pruning",
+      "status": "Returned with feedback",
+      "date": "2021-04-08",
+      "first_date": "2020-07-06",
+      "url": "https://commitfest.postgresql.org/patch/2654/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/OSBPR01MB5126B798138635061D63355A9F690@OSBPR01MB5126.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "sho kato (kato-sho)",
+      "objectors": "",
+      "summary": "Add a feature that enables row-wise comparison partition pruning\nThreads: Performing partition pruning using row value",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "detoast once per row"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:3751",
+      "kind": "cf",
+      "title": "Reduce timing overhead of EXPLAIN ANALYZE using rdtsc",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2020-06-12",
+      "url": "https://commitfest.postgresql.org/patch/3751/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200612232810.f46nbqkdhbutzqdg@alap3.anarazel.de"
+      ],
+      "authors": "Andres Freund (andresfreund), Lukas Fittl (lfittl), David Geier (geidav)",
+      "objectors": "",
+      "summary": "Reduce timing overhead of EXPLAIN ANALYZE using rdtsc\nThreads: Reduce timing overhead of EXPLAIN ANALYZE using rdtsc?",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "repeat detoasting overhead"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "revert:151c22deee66a3390ca9a1c3675e29de54ae73fc",
+      "kind": "revert",
+      "title": "Revert MAINTAIN privilege and pg_maintain predefined role.",
+      "status": "Reverted",
+      "date": "2023-07-07",
+      "first_date": "2023-01-14",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=151c22deee66a3390ca9a1c3675e29de54ae73fc",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/E1q7j7Y-000z1H-Hr@gemulon.postgresql.org",
+        "https://www.postgresql.org/message-id/flat/20230613211246.GA219055@nathanxps13",
+        "https://www.postgresql.org/message-id/flat/20230615041044.GA736001@nathanxps13",
+        "https://www.postgresql.org/message-id/flat/ZIj4v1CwqlDVJZfB@paquier.xyz",
+        "https://www.postgresql.org/message-id/flat/6afe7712991882a864d6d10003264e7c@oss.nttdata.com",
+        "https://www.postgresql.org/message-id/flat/20230113231339.GA2422750@nathanxps13"
+      ],
+      "authors": "Nathan Bossart, Tom Lane, Jeff Davis",
+      "objectors": "",
+      "summary": "Revert MAINTAIN privilege and pg_maintain predefined role.\nReverted commit(s): Fix cache lookup hazards introduced by ff9618e82a.; Improve privilege documentation for maintenance commands.; Move bool parameter for vacuum_rel() to option bits.; Add missed case for tab completion of GRANT/REVOKE MAINTAIN.; Fix MAINTAIN privileges for toast tables and partitions.",
+      "objection": "This reverts the following commits: 4dbdb82513, c2122aae63,\n5b1a879943, 9e1e9d6560, ff9618e82a, 60684dd834, 4441fc704d,\nand b5d6382496.  A role with the MAINTAIN privilege may be able to\nuse search_path tricks to escalate privileges to the table owner.\nUnfortunately, it is too late in the v16 development cycle to apply\nthe proposed fix, i.e., restricting search_path when running\nmaintenance commands.\n\nBumps catversion.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "pre-detoast planner toast"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "revert:7ca548f23a60887541493b2da47f2b2720c35ee3",
+      "kind": "revert",
+      "title": "Revert non-text output formats for pg_dumpall",
+      "status": "Reverted",
+      "date": "2026-06-18",
+      "first_date": "2026-02-26",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=7ca548f23a60887541493b2da47f2b2720c35ee3",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20260607000218.96.noahmisch@microsoft.com",
+        "https://www.postgresql.org/message-id/flat/cb103623-8ee6-4ba5-a2c9-f32e3a4933fa@dunslane.net",
+        "https://www.postgresql.org/message-id/flat/740033.1772142754@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/016819c0-666e-42a8-bfc8-2b93fd8d0176@eisentraut.org",
+        "https://www.postgresql.org/message-id/flat/CAKYtNArdcc5kx1MdTtTKFNYiauo3=zCA-NB0LmBCW-RU_kSb3A@mail.gmail.com"
+      ],
+      "authors": "Andrew Dunstan",
+      "objectors": "",
+      "summary": "Revert non-text output formats for pg_dumpall\nReverted commit(s): Add non-text output formats to pg_dumpall; Clean up nodes that  are no longer of use in 007_pgdumpall.pl; Fix casting away const-ness in pg_restore.c; Improve writing map.dat preamble; pg_restore: add --no-globals option to skip globals",
+      "objection": "This reverts the non-text (custom/directory/tar) output format support\nfor pg_dumpall added by 763aaa06f03 and its feature-specific follow-ups,\nin line with Noah Misch's post-commit review which recommends reverting\nand finishing the work through the commitfest.\n\nScope is deliberately minimal: only the feature itself is removed.\nIndependent improvements that merely touched the same files, or that were\ncommitted alongside the feature but do not depend on its design, are\npreserved.\n\nReverted (the feature):\n\n  763aaa06f03  Add non-text output formats to pg_dumpall\n  d6d9b96b404  Clean up nodes that are no longer of use in 007_pgdumpall.pl\n  01c729e0c7a  Fix casting away const-ness in pg_restore.c\n  c7572cd48d3  Improve writing map.dat preamble\n  3c19983cc08  pg_restore: add --no-globals option to skip globals\n  abff4492d02  Fix options listing of pg_restore --no-globals\n  bb53b8d359d  Fix small memory leak in get_dbname_oid_list_from_mfile()\n  a793677e57b  pg_restore: Remove dead code in restore_all_databases()\n  a198c26dede  pg_dumpall: simplify coding of dropDBs()\n  ec80215c033  pg_restore: Remove unnecessary strlen() calls in options parsing\n\nPreserved (independent of the feature):\n\n  b2898baaf7e  the check_mut_excl_opts() helper in src/fe_utils/option_utils.c\n               and its use in pg_dump\n  7c8280eeb58  pg_dump's conflicting-option refactor (and tests 002/005)\n  be0d0b457cb  pg_dumpall's rejection of --clean together with --data-only\n               (re-expressed directly, since pg_dumpall.c is otherwise\n               returned to its pre-feature state)\n  74b4438a70b  the dangling-grantor-OID GRANT fix (back-patched through 16)\n  273d26b75e7, d4cb9c37765  independent pg_restore.sgml clarifications\n\nBecause the feature restructured pg_dumpall.c and pg_restore.c (pg_restore's\nmain() was split into restore_one_database() plus a dispatcher) and\ninterleaved its option checks with the conflicting-option refactor in the\nsame regions, the cosmetic check_mut_excl_opts() reflow of those two files'\noption blocks is inseparable from the feature and comes out with it; the\nbehavior is unchanged.  The reusable helper and pg_dump's use of it are\nunaffected.",
+      "touch_points": [
+        "pg_dump / restore",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "expression evaluation detoast reuse"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:2092",
+      "kind": "cf",
+      "title": "minimizing pg_stat_statements.track='none' performance overhead",
+      "status": "Withdrawn",
+      "date": "2019-04-15",
+      "first_date": "2019-03-27",
+      "url": "https://commitfest.postgresql.org/patch/2092/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/BN8PR21MB1217B003C4F79DE230AA36B9B1580@BN8PR21MB1217.namprd21.prod.outlook.com"
+      ],
+      "authors": "Raymond Martin (ramarti)",
+      "objectors": "",
+      "summary": "minimizing pg_stat_statements.track='none' performance overhead\nThreads: minimizing pg_stat_statements performance overhead",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "repeat detoasting overhead"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 6,
+    "new_calls": 2,
+    "failed": 0,
+    "quotes_verified": 2,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2026-09-30",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "The only listed precedent, [P10], covers numeric packed-datum extraction and records no reason, so it does not match. In message #1 the author reports that \"Shared detoast Datum\" stalled because a query-lifespan cache was \"likely never going to be committed\" and a planner-level decision was preferred; this series makes that decision at plan time and keeps no cache, so the reported reason does not carry over."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "Three objections raised. pg_dump, catalog and SQL syntax are not touched, and the author's view that no catalog version bump is needed fits plan-only fields."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "There is no on-disk, WAL, catalog or wire-protocol change. The new Plan and PlannedStmt fields reach only parallel workers of the same server version, so no catversion bump is needed. Without the code, I could not check that parallel workers never follow the ParamExecData slot back-reference across processes."
+    },
+    {
+      "angle": "security",
+      "objections": 1,
+      "note": "Apart from the stale-copy case, the design does not change who can read which values. The copy holds the same value that functions already receive, and no new privilege is involved. Memory held longer in slots is bounded by values the user can already detoast."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "Not applicable; three objections raised."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing feature, GUC or extension gives one detoast per row for repeated references; ALTER COLUMN SET STORAGE and materialized CTEs keep or store the stored datum. Query rewrites that force a copy are uncertain and need application changes, and expression evaluation and slots have no hook that an extension could use for this."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "The material shows lasting, independent demand. Message #1 cites Tom Lane's 2008 and 2016 work on this, Andy Fan's ten-revision patch, and Oleg Bartunov's \"curse of TOAST\" tests, plus a second-hand production workload that ran 3.31x faster. The cost on queries with nothing to share is measured at +0.22% to +0.5%, so the trade-off is on the table; whether it is acceptable belongs to the performance angle."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 8,
+      "new_survived": 4,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 88,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 13,
+    "wall_ms": 164791,
+    "cost_usd": 2.8846028,
+    "dry_run": false
+  }
+}

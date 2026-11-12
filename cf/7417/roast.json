@@ -1,0 +1,1140 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:53:20.072Z",
+  "input": {
+    "arg": "7417",
+    "cf": {
+      "id": 7417,
+      "url": "https://commitfest.postgresql.org/patch/7417/",
+      "title": "pgcrypto crypt() can return text with invalid encoding",
+      "status": "Needs review",
+      "authors": "Andrey Rachitskiy (a.rachitskiy)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/19600-e5fb479f50f5022d%40postgresql.org",
+    "subject": "BUG #19600: pgcrypto crypt() can return text with invalid encoding",
+    "thread_start": "2026-08-03T05:25:56Z",
+    "messages_read": 3,
+    "messages_total": 3,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "0001-pgcrypto-Reject-crypt-results-invalid-in-database-encoding-BUG-19600.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "The goal and the design copy what pgp_*_decrypt_text already do, and no objection survived at levels 1a or 1b. The one surviving objection, standards-compat-1, is a fixable back-branch question: crypt(pw, stored_hash) starts to raise an error for stored hashes that hold invalid encoding. A committer who knows pgcrypto has to decide between master only and back branches.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "pgcrypto: reject crypt() results that are invalid in the database encoding",
+    "problem": "crypt() copies a fixed number of salt bytes into its text result, so a multibyte character that straddles the cut leaves a truncated sequence in the output. The server stores that text, but upper() then fails on it and COPY cannot reload it. Any user can trigger this, because crypt() is executable by PUBLIC; the documented gen_salt() idiom cannot, since gen_salt() emits ASCII only.",
+    "proposed_design": "pg_crypt() calls pg_verifymbstr() on the result before it returns it, as pgp_sym_decrypt_text and pgp_pub_decrypt_text already do. A truncated result now raises \"invalid byte sequence for encoding\". The patch adds a crypt-utf8 regression test that non-UTF8 databases skip.",
+    "user_visible_surface": [
+      "crypt() raises \"invalid byte sequence for encoding\" when its result would hold a truncated multibyte sequence.",
+      "crypt(pw, stored_hash) raises an error for stored hashes that already hold invalid encoding, for the right password and for a wrong one."
+    ],
+    "author_claims": [
+      "The reporter says this is the same class of bug the earlier pgp_*_decrypt_text fix covered, but crypt() has no bytea variant to fall back on.",
+      "The reporter says traditional DES copies 2 salt bytes, xDES copies 9 and MD5 copies up to 8, so the cut point differs by algorithm.",
+      "The reviewer reports that ASCII salts and valid multibyte salts return the same hashes as before the patch.",
+      "The reviewer reports that SHA-crypt and Blowfish already reject non-ASCII salts.",
+      "The reviewer reports the patch applies cleanly to REL_18 and REL_19, and to REL_14 through REL_17 with Makefile adjustments, but did not build them."
+    ],
+    "thread_state": "The reporter, the author and one reviewer took part, and the reviewer tested the patch and called it good. The reviewer asked for xDES and MD5 test cases and a release-note mention of stored hashes that will now fail; the author has not replied.",
+    "unclear": [
+      "The material does not say whether the fix goes to back branches, given that existing stored hashes start to raise errors after a minor upgrade.",
+      "The material does not say how users with affected stored hashes should find or repair them.",
+      "The material does not say whether gen_salt() or the pgcrypto documentation changes; no documentation hunk is attached.",
+      "The material does not say whether rejecting non-ASCII salts up front, as SHA-crypt and Blowfish do, was considered."
+    ],
+    "search_queries": [
+      "pgcrypto crypt invalid encoding",
+      "pgcrypto pg_verifymbstr",
+      "crypt salt multibyte character",
+      "pgcrypto encoding protection text",
+      "crypt DES salt non-ASCII",
+      "contrib function returns invalid UTF8",
+      "text result encoding validation",
+      "pgcrypto crypt bytea variant"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P2",
+      "source_id": "cf:4809",
+      "title": "Encoding protection for pgcrypto",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/4809/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGRkXqRZyo0gLxPJqUsDqtWYBbgM14betsHiLRPj9mo2=z9VvA@mail.gmail.com"
+      ],
+      "date": "2024-10-07",
+      "first_date": "2024-02-05",
+      "who_objected": "",
+      "quote": null,
+      "quote_url": null,
+      "enriched": true,
+      "reason": "The visible messages do not show why. Cary Huang reported failing tests and questioned aborting the transaction instead of issuing a warning. The author posted v2 and argued that callers who want no encoding check can use the bytea variants, and no later message follows.",
+      "relation": "similar_idea",
+      "what_is_different": "P2 added pg_verifymbstr() to pgp_sym_decrypt_text and pgp_pub_decrypt_text; this proposal adds the same check to crypt(), which has no bytea variant. Message #3 reports that this check later went in as d536aee5566."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Back-patching turns working password checks into errors after minor upgrade",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "sql_standard_syntax"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site stored DES or MD5 hashes made with a hand-written non-ASCII salt. After a minor upgrade, `where pwhash = crypt($1, pwhash)` raises an error instead of returning false, so those users cannot log in. Any query that evaluates crypt() over several rows fails as a whole if one row holds such a hash.",
+      "argument": "Message #3 says these hashes stop working for the right password and for a wrong one, and that crypt() has no bytea variant to fall back on. Message #3 also checked that the patch applies to REL_14 through REL_19, but the thread has not decided whether to back-patch. Committers usually keep minor releases free of changes that make working queries fail. The proposal also gives no way to find or rehash affected rows before upgrading, and the author has not replied to the release-note request.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        3
+      ],
+      "author_must_show": "Will this go to master only, and if back-patched, what query lets users find affected stored hashes before the upgrade, and how do they rehash them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Andrey Rachitskiy",
+          "date": "2026-08-03T15:26:07Z",
+          "url": "https://www.postgresql.org/message-id/CAB8bMivmoRuUcNF1pEFx%3DTr2Q_b31VwtJse4P22pTMgoG_uC1w%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Ishjaap Singh",
+          "date": "2026-10-28T09:08:52Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BY2BmeT0uQBP5ewhSqxTOAx6COr0uEYuLpiBfeyFRxD5e3ZDw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #3 confirms that stored invalid hashes raise an error for right and wrong passwords, and it calls the trade-off acceptable. The thread does not decide on back-patching or give a way to find affected rows, so the objection stands as fixable.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Back-patch turns already stored hashes into errors at minor upgrade",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An application stores crypt(pw, salt) hashes built from a non-ASCII salt, and those rows survive through pg_upgrade or physical replicas. After a minor release with this fix, every login check calls crypt(pw, stored_hash), which now raises an error for these users. The operator finds out when those logins start failing in production.",
+      "argument": "Message #3 confirms that stored invalid hashes raise an error for both right and wrong passwords, and that the patch applies to REL_14 through REL_19. COPY cannot reload such rows, but pg_upgrade and physical standbys copy relation files unchanged, so the data can exist today. The reviewer judged the trade-off acceptable and asked for a release-note mention, but the author has not answered. The proposal does not say whether it goes to back branches or how users can find affected rows before they upgrade.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        3
+      ],
+      "author_must_show": "Will this go only to master, or, if back-patched, what query lets users find and rehash affected stored hashes before the minor upgrade?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Andrey Rachitskiy",
+          "date": "2026-08-03T15:26:07Z",
+          "url": "https://www.postgresql.org/message-id/CAB8bMivmoRuUcNF1pEFx%3DTr2Q_b31VwtJse4P22pTMgoG_uC1w%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Ishjaap Singh",
+          "date": "2026-10-28T09:08:52Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BY2BmeT0uQBP5ewhSqxTOAx6COr0uEYuLpiBfeyFRxD5e3ZDw%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1. Its point that pg_upgrade and physical standbys keep such rows alive supports that objection but is not a separate one.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Back-patching turns unrestorable hashes into failed logins after a minor update",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An application stored crypt() hashes built from a hand-written non-ASCII salt and checks passwords with crypt(pw, stored_hash). After a minor update that carries this fix, every check for those users raises an error, even with the right password. Users cannot log in, and the release notes give no query to find or repair the affected rows.",
+      "argument": "Message #3 shows the patch applies to REL_14 through REL_19 but was not built there, and it confirms that existing invalid hashes stop working. Before the fix, these rows fail only on logical dump and restore or on text functions. Many sites use physical backups and never hit that failure. Back branches usually avoid behaviour changes that break working applications, and the thread does not discuss a master-only fix or a detection query.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        3
+      ],
+      "author_must_show": "Will this go to master only, or to back branches with a release-note query that finds stored hashes holding invalid encoding?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Andrey Rachitskiy",
+          "date": "2026-08-03T15:26:07Z",
+          "url": "https://www.postgresql.org/message-id/CAB8bMivmoRuUcNF1pEFx%3DTr2Q_b31VwtJse4P22pTMgoG_uC1w%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Ishjaap Singh",
+          "date": "2026-10-28T09:08:52Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BY2BmeT0uQBP5ewhSqxTOAx6COr0uEYuLpiBfeyFRxD5e3ZDw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1. It describes the same failed logins after a minor update and asks the same question about master-only versus back branches.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "No format change, but stored hashes with invalid encoding survive pg_upgrade and then make crypt() raise an error."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": true,
+      "reason": "see objection standards-compat-1: Back-patching turns working password checks into errors after minor upgrade"
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": true,
+      "reason": "The fix stops crypt() from producing text that COPY cannot reload; rows already stored stay unrestorable."
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "crypt() is executable by PUBLIC, so any user can store invalid text today; the patch closes that path."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "Message #3 checked REL_14 through REL_19; a back-patch makes existing password checks raise an error after a minor upgrade."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Small: one pg_verifymbstr() call in pg_crypt() and one regression test with an alternative expected file for non-UTF8 databases."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Should this fix go to master only, or also to REL_14 through REL_19, where existing stored hashes start to raise errors after a minor upgrade?",
+    "What query lets users find stored crypt() hashes that hold invalid encoding before they upgrade?",
+    "How should a user rehash an affected row, given that crypt(pw, stored_hash) now raises an error even for the right password?",
+    "Was rejecting non-ASCII salts up front for DES, xDES and MD5 considered, as SHA-crypt and Blowfish already do?",
+    "Will the next version add the xDES and MD5 test cases and the release-note text that message #3 asked for?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "No committer has spoken in the thread. It needs someone who knows pgcrypto and the back-branch policy for behaviour changes.",
+    "liability": "The owner signs for the back-branch decision: failed logins on sites with affected stored hashes after a minor upgrade, and the release-note text. The code itself is one check that copies existing pgcrypto practice.",
+    "author_follow_up": "The author posted the patch on the day of the report but has not answered the review in message #3, about two weeks old at the review date."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "low",
+    "review_cost": "low",
+    "recommended_action": "needs champion",
+    "reason": "Only callers who pass a hand-written non-ASCII salt to DES, xDES or MD5 crypt() are affected, and the 4.3 KB patch touches pgcrypto only. One reviewer tested it and called it good; what remains is a committer's decision on back branches."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read. The claim that the check reads only the finished result, and so leaves valid hashes unchanged, rests on message #3; the back branches were checked for applicability but not built.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:3338",
+      "kind": "cf",
+      "title": "Upgrade pgcrypto to crypt_blowfish 1.3",
+      "status": "Returned with feedback",
+      "date": "2022-08-01",
+      "first_date": "2021-09-24",
+      "url": "https://commitfest.postgresql.org/patch/3338/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/5B221EBB-03D5-4C3E-BD00-CF0FB4256825@fone.net.nz"
+      ],
+      "authors": "Daniel Fone (daniel.fone)",
+      "objectors": "",
+      "summary": "The patch ports upstream crypt_blowfish 1.3 into pgcrypto so that crypt() recognizes bcrypt hashes with the $2b$ prefix (and $2y$), keeping the Postgres-specific local changes. An earlier version only mapped $2b$ to the $2a$ code path, which Daniel Gustafsson rejected because the two variants handle the old bug differently.",
+      "objection": "No reviewer took up the patch after it was added to the commitfest. After a cursory review and a fix for gcc warnings, it was returned in a batch of entries that lacked reviewer interest, with no objection to the patch itself.",
+      "touch_points": [],
+      "matched_queries": [
+        "pgcrypto crypt invalid encoding",
+        "pgcrypto pg_verifymbstr",
+        "crypt salt multibyte character",
+        "pgcrypto encoding protection text",
+        "crypt DES salt non-ASCII",
+        "pgcrypto crypt bytea variant"
+      ],
+      "from_hint": false,
+      "score": 0.762,
+      "enriched": true,
+      "key_quote": "Rather than code changes, what this patch needs is more\ncommunity interest.",
+      "quote_message_url": "https://www.postgresql.org/message-id/7f976dfb-a738-bd6c-d2e2-ef7ea4ba3e8b%40timescale.com",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:4809",
+      "kind": "cf",
+      "title": "Encoding protection for pgcrypto",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2024-02-05",
+      "url": "https://commitfest.postgresql.org/patch/4809/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGRkXqRZyo0gLxPJqUsDqtWYBbgM14betsHiLRPj9mo2=z9VvA@mail.gmail.com"
+      ],
+      "authors": "shihao zhong (zhong950419)",
+      "objectors": "",
+      "summary": "The patch makes pgp_sym_decrypt_text and pgp_pub_decrypt_text check that the decrypted result is valid in the database encoding, and raise an error if it is not. It adds regression tests for this and moves some existing tests that failed under some encodings.",
+      "objection": "The visible messages do not show why. Cary Huang reported failing tests and questioned aborting the transaction instead of issuing a warning. The author posted v2 and argued that callers who want no encoding check can use the bytea variants, and no later message follows.",
+      "touch_points": [],
+      "matched_queries": [
+        "pgcrypto crypt invalid encoding",
+        "pgcrypto pg_verifymbstr",
+        "pgcrypto encoding protection text",
+        "text result encoding validation",
+        "pgcrypto crypt bytea variant"
+      ],
+      "from_hint": false,
+      "score": 0.66,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:3860",
+      "kind": "cf",
+      "title": "(DUPLICATE) Removing dead code in pgcrypto",
+      "status": "Withdrawn",
+      "date": "2022-08-30",
+      "first_date": "2022-08-30",
+      "url": "https://commitfest.postgresql.org/patch/3860/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/FCF3F14E-17D5-41F2-AC58-0A97B341193A@yesql.se"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "Remove unused functions from pgcrypto in v16: mbuf_tell and mbuf_rewind, added in commit e94dd6ab91, and pgp_get_cipher_name. None of them is called in the tree, and pgp_get_cipher_name does not turn up in a search of extensions.",
+      "objection": "The patch drew no objections, and the reviewer said the change looked good. The entry was withdrawn as a duplicate commitfest entry: the author and the reviewer both registered the patch at about the same time.",
+      "touch_points": [],
+      "matched_queries": [
+        "pgcrypto crypt invalid encoding",
+        "pgcrypto pg_verifymbstr",
+        "pgcrypto encoding protection text",
+        "pgcrypto crypt bytea variant"
+      ],
+      "from_hint": false,
+      "score": 0.477,
+      "enriched": true,
+      "key_quote": "I see a little race condition happen :) Sorry for this.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAJ7c6TNuULGXnkVfFbFoeeYBDJU92S%2BeNU7qEyWTcBwf_Du9PQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "revert:f5aabe6d58e08179cc656539c4bd0145525bf22f",
+      "kind": "revert",
+      "title": "Revert \"Make some use of anonymous unions [pgcrypto]\"",
+      "status": "Reverted",
+      "date": "2025-09-30",
+      "first_date": "2025-09-30",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f5aabe6d58e08179cc656539c4bd0145525bf22f",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/f00a9968-388e-4f8c-b5ef-5102e962d997@eisentraut.org"
+      ],
+      "authors": "Peter Eisentraut",
+      "objectors": "",
+      "summary": "Revert \"Make some use of anonymous unions [pgcrypto]\"\nReverted commit(s): Make some use of anonymous unions [pgcrypto]",
+      "objection": "This reverts commit efcd5199d8cb8e5098f79b38d0c46004e69d1a46.\n\nI rebased my patch series incorrectly.  This patch contained unrelated\nparts from another patch, which made the overall build fail.  Revert\nfor now and reconsider.",
+      "touch_points": [],
+      "matched_queries": [
+        "pgcrypto crypt invalid encoding",
+        "pgcrypto pg_verifymbstr",
+        "pgcrypto encoding protection text",
+        "pgcrypto crypt bytea variant"
+      ],
+      "from_hint": false,
+      "score": 0.453,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:38f60f174e3279069b5547b5f4015eb4a8492037",
+      "kind": "revert",
+      "title": "Revert \"Fix corner case with PGP decompression in pgcrypto\"",
+      "status": "Reverted",
+      "date": "2020-07-22",
+      "first_date": "2020-07-22",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=38f60f174e3279069b5547b5f4015eb4a8492037",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200722093749.GA2564@paquier.xyz",
+        "https://www.postgresql.org/message-id/flat/16476-692ef7b84e5fb893@postgresql.org"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Fix corner case with PGP decompression in pgcrypto\"\nReverted commit(s): Fix corner case with PGP decompression in pgcrypto",
+      "objection": "This reverts commit 9e10898, after finding out that buildfarm members\nrunning SLES 15 on z390 complain on the compression and decompression\nlogic of the new test: pipistrelles, barbthroat and steamerduck.\n\nThose hosts are visibly using hardware-specific changes to improve zlib\nperformance, requiring more investigation.\n\nThanks to Tom Lane for the discussion.",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "pgcrypto crypt invalid encoding",
+        "pgcrypto pg_verifymbstr",
+        "pgcrypto encoding protection text",
+        "pgcrypto crypt bytea variant"
+      ],
+      "from_hint": false,
+      "score": 0.371,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:7024",
+      "kind": "cf",
+      "title": "Rename \"getdatabaseencoding()\" to \"pg_database_encoding()\", and document",
+      "status": "Withdrawn",
+      "date": "2026-07-18",
+      "first_date": "2026-07-17",
+      "url": "https://commitfest.postgresql.org/patch/7024/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB8KJ=iQQ3j1ZzJkgF_CGF5TvJsugp6JFOrS-LB7kT=XivV_Vg@mail.gmail.com"
+      ],
+      "authors": "Ian Barwick (barwick)",
+      "objectors": "Daniel Gustafsson, Tom Lane",
+      "summary": "Rename the undocumented SQL function getdatabaseencoding() to pg_database_encoding(), to match pg_client_encoding(), and document it. psql tab completion would switch to current_setting('server_encoding').",
+      "objection": "Daniel Gustafsson noted that extensions call the function, and Tom Lane said the old name would not be removed without a multi-year deprecation period. Tom Lane also judged a cosmetic rename not worth the effort. The author dropped the rename and offered a documentation-only patch, which Thom Brown questioned because he would rather deprecate the function.",
+      "touch_points": [],
+      "matched_queries": [
+        "pgcrypto crypt invalid encoding",
+        "text result encoding validation"
+      ],
+      "from_hint": false,
+      "score": 0.182,
+      "enriched": true,
+      "key_quote": "There are plenty of ugly and inconsistent names in Postgres,\nand an enormous amount of more-valuable work to do.",
+      "quote_message_url": "https://www.postgresql.org/message-id/3880199.1784298573%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:3820",
+      "kind": "cf",
+      "title": "Clarify the comments about varlena header encoding",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-08-17",
+      "url": "https://commitfest.postgresql.org/patch/3820/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJ7c6TOY_-mew61g4okz7H6+09JrwmTZEn3JnwVyeWhRXNzZGA@mail.gmail.com"
+      ],
+      "authors": "Aleksander Alekseev (a.alekseev)",
+      "objectors": "John Naylor",
+      "summary": "The patch rewrites the comments in postgres.h that describe the bit layouts of varlena headers, so readers do not misread the length word, the alignment notes or the size of a TOAST pointer. Version 2 adds a 0b prefix to the bit patterns and mentions the type tag next to the TOAST pointer layout.",
+      "objection": "John Naylor found that both versions made the comments harder to read. In his view, adding the type tag pulls the comment away from its purpose, which is to show how the first byte tells what kind of varlena follows. He judged the current text a local maximum that small edits would likely make worse, and doubted that any change was needed. The author did not reply for four weeks, so Michael Paquier marked the entry returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "pgcrypto crypt invalid encoding",
+        "text result encoding validation"
+      ],
+      "from_hint": false,
+      "score": 0.177,
+      "enriched": true,
+      "key_quote": "More broadly, I think the description of varlenas in this header is at\na kind of \"local maximum\" -- minor adjustments are more likely to make\nit worse.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAFBsxsGb6NwkYFLdGLRfMAf7CwROSx%3Dyj23j0-9WFG_wsR_RnA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "revert:a63b63ff96293e153d25e8e054a830d70f69938a",
+      "kind": "revert",
+      "title": "Revert COPY OUT to follow the pre-8.3 handling of ASCII control characters, namely that \\r, \\n, \\t, \\b, \\f, \\v are dumped as those two-character...",
+      "status": "Reverted",
+      "date": "2007-12-03",
+      "first_date": "2007-12-03",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=a63b63ff96293e153d25e8e054a830d70f69938a",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert COPY OUT to follow the pre-8.3 handling of ASCII control characters, namely that \\r, \\n, \\t, \\b, \\f, \\v are dumped as those two-character representations rather than a backslash and the literal control character. I had made it do the other to save some code, but this was ill-advised, because dump files in which these characters appear literally are prone to newline mangling.  Fortunately, doing it the old way should only cost a few more lines of code, and not slow down the copy loop materially. Per bug #3795 from Lou Duchez.",
+      "objection": "Revert COPY OUT to follow the pre-8.3 handling of ASCII control characters,\nnamely that \\r, \\n, \\t, \\b, \\f, \\v are dumped as those two-character\nrepresentations rather than a backslash and the literal control character.\nI had made it do the other to save some code, but this was ill-advised,\nbecause dump files in which these characters appear literally are prone to\nnewline mangling.  Fortunately, doing it the old way should only cost a few\nmore lines of code, and not slow down the copy loop materially.\nPer bug #3795 from Lou Duchez.",
+      "touch_points": [
+        "pg_dump / restore",
+        "planner"
+      ],
+      "matched_queries": [
+        "crypt salt multibyte character",
+        "crypt DES salt non-ASCII"
+      ],
+      "from_hint": false,
+      "score": 0.168,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "revert:7ca548f23a60887541493b2da47f2b2720c35ee3",
+      "kind": "revert",
+      "title": "Revert non-text output formats for pg_dumpall",
+      "status": "Reverted",
+      "date": "2026-06-18",
+      "first_date": "2026-02-26",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=7ca548f23a60887541493b2da47f2b2720c35ee3",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20260607000218.96.noahmisch@microsoft.com",
+        "https://www.postgresql.org/message-id/flat/cb103623-8ee6-4ba5-a2c9-f32e3a4933fa@dunslane.net",
+        "https://www.postgresql.org/message-id/flat/740033.1772142754@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/016819c0-666e-42a8-bfc8-2b93fd8d0176@eisentraut.org",
+        "https://www.postgresql.org/message-id/flat/CAKYtNArdcc5kx1MdTtTKFNYiauo3=zCA-NB0LmBCW-RU_kSb3A@mail.gmail.com"
+      ],
+      "authors": "Andrew Dunstan",
+      "objectors": "",
+      "summary": "Revert non-text output formats for pg_dumpall\nReverted commit(s): Add non-text output formats to pg_dumpall; Clean up nodes that  are no longer of use in 007_pgdumpall.pl; Fix casting away const-ness in pg_restore.c; Improve writing map.dat preamble; pg_restore: add --no-globals option to skip globals",
+      "objection": "This reverts the non-text (custom/directory/tar) output format support\nfor pg_dumpall added by 763aaa06f03 and its feature-specific follow-ups,\nin line with Noah Misch's post-commit review which recommends reverting\nand finishing the work through the commitfest.\n\nScope is deliberately minimal: only the feature itself is removed.\nIndependent improvements that merely touched the same files, or that were\ncommitted alongside the feature but do not depend on its design, are\npreserved.\n\nReverted (the feature):\n\n  763aaa06f03  Add non-text output formats to pg_dumpall\n  d6d9b96b404  Clean up nodes that are no longer of use in 007_pgdumpall.pl\n  01c729e0c7a  Fix casting away const-ness in pg_restore.c\n  c7572cd48d3  Improve writing map.dat preamble\n  3c19983cc08  pg_restore: add --no-globals option to skip globals\n  abff4492d02  Fix options listing of pg_restore --no-globals\n  bb53b8d359d  Fix small memory leak in get_dbname_oid_list_from_mfile()\n  a793677e57b  pg_restore: Remove dead code in restore_all_databases()\n  a198c26dede  pg_dumpall: simplify coding of dropDBs()\n  ec80215c033  pg_restore: Remove unnecessary strlen() calls in options parsing\n\nPreserved (independent of the feature):\n\n  b2898baaf7e  the check_mut_excl_opts() helper in src/fe_utils/option_utils.c\n               and its use in pg_dump\n  7c8280eeb58  pg_dump's conflicting-option refactor (and tests 002/005)\n  be0d0b457cb  pg_dumpall's rejection of --clean together with --data-only\n               (re-expressed directly, since pg_dumpall.c is otherwise\n               returned to its pre-feature state)\n  74b4438a70b  the dangling-grantor-OID GRANT fix (back-patched through 16)\n  273d26b75e7, d4cb9c37765  independent pg_restore.sgml clarifications\n\nBecause the feature restructured pg_dumpall.c and pg_restore.c (pg_restore's\nmain() was split into restore_one_database() plus a dispatcher) and\ninterleaved its option checks with the conflicting-option refactor in the\nsame regions, the cosmetic check_mut_excl_opts() reflow of those two files'\noption blocks is inseparable from the feature and comes out with it; the\nbehavior is unchanged.  The reusable helper and pg_dump's use of it are\nunaffected.",
+      "touch_points": [
+        "pg_dump / restore",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "crypt DES salt non-ASCII"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:6263",
+      "kind": "cf",
+      "title": "Remove unused function parameters, part 1: contrib",
+      "status": "Withdrawn",
+      "date": "2026-02-13",
+      "first_date": "2025-11-27",
+      "url": "https://commitfest.postgresql.org/patch/6263/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/aSgSi1Ut8yjPohYB@ip-10-97-1-34.eu-west-3.compute.internal"
+      ],
+      "authors": "Bertrand Drouvot (bertranddrouvot.pg)",
+      "objectors": "",
+      "summary": "The patch set removes unused function parameters across contrib modules, split per module and found with a coccinelle script. For citext, v1 made internal_citext_pattern_cmp() use its unused collid argument, and v2 removed the argument.",
+      "objection": "The visible messages do not show why. Reviewers built and tested the patches and Jacob Champion found v2-0005 more correct, with no objection raised. The thread ends on 2025-12-01, and the entry was withdrawn on 2026-02-13 with no message explaining it.",
+      "touch_points": [],
+      "matched_queries": [
+        "contrib function returns invalid UTF8"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:6407",
+      "kind": "cf",
+      "title": "Missing dependency on oauth_validator test",
+      "status": "Withdrawn",
+      "date": "2026-01-19",
+      "first_date": "2026-01-17",
+      "url": "https://commitfest.postgresql.org/patch/6407/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6e8f4f7c23faf77c4b6564c4b7dc5d3de64aa491.camel@gmail.com"
+      ],
+      "authors": "Jonathan Gonzalez V. (sxd)",
+      "objectors": "",
+      "summary": "The patch adds the `oauth_hook_client` binary as a test dependency in the oauth_validator meson.build file, so the binary is built before the test runs. Without it, `meson test --suite oauth_validator` failed when the build did not enable the OAuth test through `PG_EXTRA_TEST`.",
+      "objection": "The visible messages do not show why. The only message is the author's proposal, and there are no replies.",
+      "touch_points": [],
+      "matched_queries": [
+        "text result encoding validation"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:2937",
+      "kind": "cf",
+      "title": "NOT VALID for Unique Indexes",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-01-14",
+      "url": "https://commitfest.postgresql.org/patch/2937/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANbhV-H35fJsKnLoZJuhkYqg2MO4XLjR57Qwf=3-xOvG2+2UEg@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon)",
+      "objectors": "",
+      "summary": "Simon Riggs proposed allowing an existing index to be switched between unique and non-unique via ALTER INDEX SET [NOT] UNIQUE [NOT VALID] and ALTER INDEX VALIDATE UNIQUE, so uniqueness could be added without a long write-excluding scan and validated later in a separate transaction. The WIP patch added a new pg_index column (induniquevalid) and did not yet implement the index validation scan.",
+      "objection": "No deciding objection was raised; reviewers were positive and asked only design questions. The author said he could not finish the patch for the next commitfest and would complete it later, and a later message noted the patch no longer applied to HEAD and asked for an updated version, with no reply shown. The entry was left incomplete with no updated version posted.",
+      "touch_points": [],
+      "matched_queries": [
+        "text result encoding validation"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": true,
+      "key_quote": "I won't be able to finish this patch in time for this next CF, but\nthanks for your interest, I will complete for PG15 later this year.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CANbhV-Fojuat5Ot%3Dg4KG0dgV-SHwR0Xz4k1fyoT-26vphA2HTA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:3074",
+      "kind": "cf",
+      "title": "Convert contrib SQL functions to new style",
+      "status": "Returned with feedback",
+      "date": "2021-09-01",
+      "first_date": "2021-04-13",
+      "url": "https://commitfest.postgresql.org/patch/3074/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3395418.1618352794@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane (tgl)",
+      "objectors": "",
+      "summary": "Convert contrib SQL functions to new style\nThreads: Converting contrib SQL functions to new style",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "contrib function returns invalid UTF8"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:662",
+      "kind": "cf",
+      "title": "to_date_valid()",
+      "status": "Returned with feedback",
+      "date": "2016-09-29",
+      "first_date": "2016-07-05",
+      "url": "https://commitfest.postgresql.org/patch/662/",
+      "thread_urls": [],
+      "authors": "Andreas 'ads' Scherbaum (ads)",
+      "objectors": "",
+      "summary": "to_date_valid()",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "text result encoding validation"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "revert:f050423052bc9265d4cd27555058435edd4bef87",
+      "kind": "revert",
+      "title": "Revert \"Convert contrib/seg's bool-returning SQL functions to V1 call convention.\"",
+      "status": "Reverted",
+      "date": "2016-04-28",
+      "first_date": "2016-04-22",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f050423052bc9265d4cd27555058435edd4bef87",
+      "thread_urls": [],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Convert contrib/seg's bool-returning SQL functions to V1 call convention.\"\nReverted commit(s): Convert contrib/seg's bool-returning SQL functions to V1 call convention.",
+      "objection": "This reverts commit c8e81afc60093b199a128ccdfbb692ced8e0c9cd.\nThat turns out to have been based on a faulty diagnosis of why the\nVS2015 build was misbehaving.  Instead, we need to fix DatumGetBool().",
+      "touch_points": [],
+      "matched_queries": [
+        "contrib function returns invalid UTF8"
+      ],
+      "from_hint": false,
+      "score": 0.116,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:491",
+      "kind": "cf",
+      "title": "Prevent multibyte characters from being quoted in format() and quote_ident()",
+      "status": "Rejected",
+      "date": "2016-01-28",
+      "first_date": "2016-01-24",
+      "url": "https://commitfest.postgresql.org/patch/491/",
+      "thread_urls": [],
+      "authors": "Tatsuo Ishii (ishii)",
+      "objectors": "",
+      "summary": "Prevent multibyte characters from being quoted in format() and quote_ident()",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "crypt salt multibyte character"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:6744",
+      "kind": "cf",
+      "title": "COPY: validate option presence rather than option values",
+      "status": "Withdrawn",
+      "date": "2026-06-29",
+      "first_date": "2026-05-06",
+      "url": "https://commitfest.postgresql.org/patch/6744/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/C1D2509E-E5D1-46B0-932C-B57AA7B963A1@gmail.com"
+      ],
+      "authors": "Chao Li (chaol)",
+      "objectors": "",
+      "summary": "COPY: validate option presence rather than option values\nThreads: COPY: validate option presence rather than option values",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "text result encoding validation"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:2274",
+      "kind": "cf",
+      "title": "Invalid permission check in pg_stats for functional indexes",
+      "status": "Returned with feedback",
+      "date": "2020-07-05",
+      "first_date": "2019-04-06",
+      "url": "https://commitfest.postgresql.org/patch/2274/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6369212.CF36pTLAQO@peanuts2"
+      ],
+      "authors": "Pierre Ducroquet (pinaraf)",
+      "objectors": "",
+      "summary": "Invalid permission check in pg_stats for functional indexes\nThreads: [Patch] Invalid permission check in pg_stats for functional indexes",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "contrib function returns invalid UTF8"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:6596",
+      "kind": "cf",
+      "title": "Validate user-supplied c_args in meson builds",
+      "status": "Withdrawn",
+      "date": "2026-06-10",
+      "first_date": "2026-03-18",
+      "url": "https://commitfest.postgresql.org/patch/6596/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/abp4EVdVJU2sMbbh@ip-10-97-1-34.eu-west-3.compute.internal"
+      ],
+      "authors": "Bertrand Drouvot (bertranddrouvot.pg)",
+      "objectors": "",
+      "summary": "Validate user-supplied c_args in meson builds\nThreads: Validate user-supplied c_args in meson builds",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "text result encoding validation"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:3631",
+      "kind": "cf",
+      "title": "Completed unaccent dictionary with many missing characters",
+      "status": "Returned with feedback",
+      "date": "2023-01-31",
+      "first_date": "2022-04-28",
+      "url": "https://commitfest.postgresql.org/patch/3631/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/8478da0d-3b61-d24f-80b4-ce2f5e971c60@sztoch.pl"
+      ],
+      "authors": "Przemysław Sztoch (psztoch)",
+      "objectors": "",
+      "summary": "Completed unaccent dictionary with many missing characters\nThreads: [PATCH] Completed unaccent dictionary with many missing characters",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "crypt salt multibyte character"
+      ],
+      "from_hint": false,
+      "score": 0.099,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "revert:c114229ca2519620703a4be4e38181290cad8c0a",
+      "kind": "revert",
+      "title": "Revert part of commit dddf4cdc3.",
+      "status": "Reverted",
+      "date": "2019-10-25",
+      "first_date": "2019-10-25",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=c114229ca2519620703a4be4e38181290cad8c0a",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/E1iNpHW-000855-1u@gemulon.postgresql.org",
+        "https://www.postgresql.org/message-id/flat/CALDaNm2Sznv8RR6Ex-iJO6xAdsxgWhCoETkaYX=+9DW3q0QCfA@mail.gmail.com"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Revert part of commit dddf4cdc3.\nReverted commit(s): Make the order of the header file includes consistent in non-backend modules.",
+      "objection": "The commit dddf4cdc3 tries to ensure that the Postgres header file\ninclusions are in order based on their ASCII value.  However, in one of\nthe case there is a header file dependency due to which we can't maintain\nsuch order.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "crypt DES salt non-ASCII"
+      ],
+      "from_hint": false,
+      "score": 0.098,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:4252",
+      "kind": "cf",
+      "title": "bytea PL/Perl transform",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-03-18",
+      "url": "https://commitfest.postgresql.org/patch/4252/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1679178327.555465221@f141.i.mail.ru"
+      ],
+      "authors": "Ivan Panchenko (wao)",
+      "objectors": "",
+      "summary": "bytea PL/Perl transform\nThreads: Bytea PL/Perl transform",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pgcrypto crypt bytea variant"
+      ],
+      "from_hint": false,
+      "score": 0.096,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "revert:ad2e233385ee3e441454f20a02ac0f68f7873bc2",
+      "kind": "revert",
+      "title": "Revert \"Fix broken multibyte regression tests.\"",
+      "status": "Reverted",
+      "date": "2016-01-25",
+      "first_date": "2015-08-09",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ad2e233385ee3e441454f20a02ac0f68f7873bc2",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/27771.1448736909@sss.pgh.pa.us"
+      ],
+      "authors": "Tatsuo Ishii",
+      "objectors": "",
+      "summary": "Revert \"Fix broken multibyte regression tests.\"\nReverted commit(s): Fix broken multibyte regression tests.",
+      "objection": "This reverts commit efc1610b64b04e7cf08cc1d6c608ede8b7d5ff07.\nThe commit was plain wrong as pointed out in:\nhttp://www.postgresql.org/message-id/27771.1448736909@sss.pgh.pa.us",
+      "touch_points": [],
+      "matched_queries": [
+        "crypt salt multibyte character"
+      ],
+      "from_hint": false,
+      "score": 0.096,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:2615",
+      "kind": "cf",
+      "title": "Non-volatile WAL buffer",
+      "status": "Withdrawn",
+      "date": "2021-06-18",
+      "first_date": "2020-01-24",
+      "url": "https://commitfest.postgresql.org/patch/2615/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/002f01d5d28d$23c01430$6b403c90$@hco.ntt.co.jp_1"
+      ],
+      "authors": "Takashi Menjo (tmenjo)",
+      "objectors": "",
+      "summary": "Non-volatile WAL buffer\nThreads: [PoC] Non-volatile WAL buffer",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "crypt DES salt non-ASCII"
+      ],
+      "from_hint": false,
+      "score": 0.095,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 5,
+    "new_calls": 3,
+    "failed": 0,
+    "quotes_verified": 3,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2026-08-03",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "The only precedent, [P2], is the same check on other pgcrypto functions, and its reason is recorded only as an AI summary. That summary names two concerns: tests failing under some encodings, and raising an error where a warning might do. This patch adds a skip file and was tested in UTF8, LATIN1 and SQL_ASCII databases. Message #3 weighed the error-versus-warning trade-off for crypt(), which has no bytea fallback, and judged it acceptable. Whether the fix should go to back branches, given that stored hashes start to fail after a minor upgrade, falls under the backpatchability angle, not prior attempts."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 1,
+      "note": "The contract change itself fits existing practice: pgp_*_decrypt_text already validates its text result. No new syntax, GUC or catalog object is added. The fix also restores the pg_dump and COPY round-trip."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "Apart from existing stored data, the patch changes no on-disk format, WAL record, catalog, wire protocol or extension ABI. Standbys and subscribers are not affected differently from the primary."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "From the security angle there is nothing to object to. The patch removes the one case where an unprivileged user can store text that is invalid in the database encoding through crypt(), and it adds no new privilege, exposure or default. The new error shows only bytes the caller would have received anyway, and the lockout of already-stored invalid hashes is an upgrade and back-branch question for other angles."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 1,
+      "note": "Beyond the back-branch question, the maintenance and fit cost is small. The check copies an existing pgcrypto practice, adds negligible work to a function that is slow by design, and adds no API or new mechanism."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing feature does this job. The gen_salt() idiom avoids the bug only when callers use it, and crypt() has no bytea variant, so nothing stops invalid text reaching a table. The patch reuses pg_verifymbstr(), the check pgp_*_decrypt_text already use, so it extends an existing mechanism and does not add a second one."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "This is a bug fix. crypt() stores text that is invalid in the database encoding, and then upper() and COPY reload fail on it, so demand needs no proof from field reports. The cost falls only on callers who pass non-ASCII salts. The real question is the effect on already stored hashes in back branches, which belongs to the compatibility angle."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 3,
+      "new_survived": 1,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 62,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 14,
+    "wall_ms": 88960,
+    "cost_usd": 1.0522506,
+    "dry_run": false
+  }
+}

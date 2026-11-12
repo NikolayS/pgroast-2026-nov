@@ -1,0 +1,1383 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T04:07:21.638Z",
+  "input": {
+    "arg": "7542",
+    "cf": {
+      "id": 7542,
+      "url": "https://commitfest.postgresql.org/patch/7542/",
+      "title": "Reject unassigned bytes in single-byte encodings",
+      "status": "Needs review",
+      "authors": "shihao zhong (zhong950419)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAGRkXqTdQ5Zin7Ayw-QY2pjnWvVOrm8x6%2B0ruSrKsT2FguRBaQ%40mail.gmail.com",
+    "subject": "Reject unassigned bytes in single-byte encodings",
+    "thread_start": "2026-10-26T04:57:45Z",
+    "messages_read": 1,
+    "messages_total": 1,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v1-0002-Add-tests-for-unassigned-bytes-in-single-byte-enc.patch",
+      "v1-0001-Reject-unassigned-bytes-in-single-byte-encodings.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The goal is reasonable, and the design questions rest on facts the author states in message #1. Existing data stops restoring and pg_upgrade keeps it with no check (replication-ondisk-1). Input that works today starts to error (standards-compat-2). The mapping alternative is left open (standards-compat-3), and COPY slows by about 20% (maintenance-fit-1). The list needs to agree on reject versus map, and on the upgrade path, before code review.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Reject unassigned bytes in single-byte encodings",
+    "problem": "Thirteen single-byte encodings, WIN1252 among them, accept bytes that have no character, and these bytes then fail to convert to any other encoding. Bug #14197 is one report. The author cites Tom saying the real fix for an earlier psql problem was the WIN1252 validator.",
+    "proposed_design": "The verifystr functions reject the unassigned bytes, taken from each *_to_utf8.map file. chr() now validates its result, since it skipped the validator. The LATIN2 to WIN1250 table no longer maps five bytes into WIN1250 holes, so those conversions now fail.",
+    "user_visible_surface": [
+      "Input in 13 encodings (ISO_8859_6, ISO_8859_7, ISO_8859_8, LATIN3, WIN874, WIN1250-1255, WIN1257, WIN1258) now errors on unassigned bytes, for example 0x81 in WIN1252.",
+      "chr() errors when the result is an unassigned byte in the database encoding, for example chr(129) in WIN1252.",
+      "LATIN2 to WIN1250 conversion fails for five bytes it used to map into WIN1250 holes.",
+      "A dump of a database that holds such bytes fails on restore at COPY for that table."
+    ],
+    "author_claims": [
+      "The unassigned bytes are accepted today and then fail to convert, as in bug #14197.",
+      "COPY of 1M 60-byte rows: no change for ASCII only, about 20% slower for WIN1252 with 50% non-ASCII, about 23% slower for ISO 8859-6 all non-ASCII.",
+      "UTF8 databases do not pay for the extra check.",
+      "pg_upgrade keeps existing bytes as they are, and the author suggests it may need a check for them.",
+      "Mapping holes to characters (0x81 to U+0081) costs nothing but breaks match with Unicode.org files and fits only 5 of 13 encodings."
+    ],
+    "thread_state": "Only the first message is visible, and nobody has replied. The author leaves open a pg_upgrade check and the alternative of mapping holes to code points.",
+    "unclear": [
+      "The proposal does not name the earlier psql problem or link the thread behind reference [1].",
+      "The proposal does not say whether this is meant for back branches or for master only.",
+      "The proposal does not say what tool or advice users get to find or fix existing unassigned bytes before upgrade or restore.",
+      "The proposal does not say how other conversion paths, such as convert_from() or client_encoding conversion, behave after the change.",
+      "The proposal does not list the five LATIN2 bytes or say what they mapped to before.",
+      "The proposal does not say whether release notes or docs will describe the compatibility break."
+    ],
+    "search_queries": [
+      "WIN1252 unassigned bytes validation",
+      "single-byte encoding verify invalid characters",
+      "reject undefined bytes win1252",
+      "encoding verifier pg_verifymbstr single byte",
+      "chr function invalid character encoding",
+      "LATIN2 WIN1250 conversion mapping",
+      "map unassigned bytes to C1 control characters",
+      "character with byte sequence has no equivalent"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "pg_upgrade carries forward bytes that dump and restore will then reject",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "pg_dump_round_trip"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A WIN1252 cluster holds 0x81 in a text column, perhaps from earlier LATIN2 to WIN1250 conversions. The admin runs pg_upgrade to the new release, which succeeds. Months later a pg_dump restore or a migration fails at COPY, or at a function body or column default that holds the byte, long after the old cluster is gone.",
+      "argument": "Message #1 says pg_upgrade keeps the bytes and the restore fails, and it leaves a pg_upgrade check as a maybe. Without a check or a scan tool, the upgraded cluster holds data the server itself now calls invalid, and nothing tells the user until a restore. The same bytes in catalogs, such as function bodies, defaults or comments, break the schema part of the restore. That is a larger failure than the per-table COPY failure the message describes.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "What will pg_upgrade --check, or a shipped query, report for unassigned bytes in user tables and catalogs before the upgrade commits the user to the new rules?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "shihao zhong",
+          "date": "2026-10-26T04:57:45Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTdQ5Zin7Ayw-QY2pjnWvVOrm8x6%2B0ruSrKsT2FguRBaQ%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #1 itself says pg_upgrade keeps the bytes and restore fails, and it leaves the pg_upgrade check as a maybe. The proposal names no way to find affected rows or catalog text before upgrade.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Mapping holes to C1 code points is dismissed too fast",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "sql_standard_syntax"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After the patch, a WIN1252 user with 0x81 in the data has no conversion path left, so the data cannot be read through a UTF8 client and cannot be moved to a UTF8 database. With a hole-to-C1 mapping for the five 0x80-0x9F encodings, the same data would convert with no runtime cost and no input break.",
+      "argument": "Message #1 rejects the mapping because the maps would no longer match the Unicode.org files, and because it covers only 5 of 13 encodings. Common Windows converters map these holes to U+0081 and similar code points, so a mixed design may fit what clients send better. Using the mapping for 5 encodings and rejection for the other 8 would shrink the compatibility break.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "Why is matching Unicode.org files worth more than readable old data, and why not map the 0x80-0x9F holes and reject only the rest?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "shihao zhong",
+          "date": "2026-10-26T04:57:45Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTdQ5Zin7Ayw-QY2pjnWvVOrm8x6%2B0ruSrKsT2FguRBaQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #1 gives two short reasons against mapping but does not weigh a mixed design, and it leaves the question open. The scenario's first sentence describes today's behaviour, so only the comparison with the alternative stands.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "About 20% slower COPY for every user of 13 single-byte encodings",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site with a WIN1252 database loads data with COPY and never converts it to another encoding. After upgrade its bulk loads of mostly non-ASCII text run about 20% slower. Its data was never at risk from the bug being fixed.",
+      "argument": "Message #1 measures +20% for WIN1252 at 50% non-ASCII and +23% for ISO 8859-6. The failure in bug #14197 only appears when bytes are converted to another encoding, yet every input in these encodings pays the check. A committer would likely ask for a check that costs no more than the existing per-byte loop, such as a 256-entry lookup per encoding. The proposal does not show that the cost was weighed against that option.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "Can the check run as a per-encoding 256-byte table lookup with no measurable COPY cost, and what do the numbers look like then?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "shihao zhong",
+          "date": "2026-10-26T04:57:45Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTdQ5Zin7Ayw-QY2pjnWvVOrm8x6%2B0ruSrKsT2FguRBaQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The 20% and 23% figures are the author's own, and the cost falls on all non-ASCII input in these encodings. Message #1 does not say whether a cheaper form of the check was tried.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Logical replication from an older publisher stops on unassigned bytes",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An admin upgrades a WIN1252 database to the new release by logical replication from the old server. The old publisher sends a row that holds 0x81. The new subscriber's apply worker rejects the text, errors, restarts and fails on the same change again, so replication stalls until someone finds and fixes the row on the publisher.",
+      "argument": "Logical replication is a common way to upgrade across major versions, and the subscriber validates incoming text in its own encoding. The old publisher accepts the bytes, so the change is a rule mismatch between the two nodes. Message #1 does not cover replication or mixed-version setups. This is the same pre-upgrade detection gap as the pg_upgrade case, but here it shows up as a stuck slot and growing WAL on the publisher.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "How should a user upgrading a WIN1252 database by logical replication find and clean unassigned bytes on the old publisher before the subscriber stops on them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "shihao zhong",
+          "date": "2026-10-26T04:57:45Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTdQ5Zin7Ayw-QY2pjnWvVOrm8x6%2B0ruSrKsT2FguRBaQ%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The initial table sync uses COPY, which validates input, so a row with 0x81 would stop the sync. Whether the apply worker also validates streamed changes cannot be confirmed without the code, but the gap in message #1 is real.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Client input that works today errors after upgrade",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "desirability",
+      "touch_points": [
+        "sql_standard_syntax",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An application with client_encoding=WIN1252, or one that calls chr(129) in a WIN1252 database, stores these bytes and reads them back unchanged. After upgrade, its INSERT, COPY or chr() call raises an error. Nothing in the application changed, and the failure comes only when such a byte appears in production data.",
+      "argument": "Bug #14197 shows that conversion fails later. That harms users who convert, but users who store and read back in the same encoding see no failure today. The patch moves the error from conversion to input for every user, including users who never convert. Message #1 gives no evidence that this second group is small, and it does not say whether the change targets master only.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "What evidence shows that users who store these bytes and never convert them are few enough to justify breaking their input path?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "shihao zhong",
+          "date": "2026-10-26T04:57:45Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTdQ5Zin7Ayw-QY2pjnWvVOrm8x6%2B0ruSrKsT2FguRBaQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #1 confirms that input and chr() now raise errors, and it shows no evidence about users who store these bytes and never convert them. It also does not say how such users learn of the change.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Existing data stops round-tripping through dump, restore and logical replication",
+      "level": "2",
+      "rubric_item": 13,
+      "category": "pg_dump_round_trip",
+      "touch_points": [
+        "pg_dump_round_trip",
+        "wal_replication",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A WIN1252 database holds 0x81 in a text column today. After upgrade, pg_dump succeeds but restore fails at COPY for that table, and a new-version logical replication subscriber stops applying changes on the first such row. The user finds out during a migration or failover, not at upgrade time.",
+      "argument": "Message #1 states that restore fails and that pg_upgrade keeps the bytes. It leaves a pg_upgrade check as \"maybe\". The result is two kinds of cluster: pg_upgraded clusters that hold bytes the server now rejects, and restored clusters that cannot load the same data. The proposal names no tool or query that finds affected rows before upgrade, and says nothing about release notes.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "How does a user find and fix affected rows before upgrade, and what happens to logical replication and dump of pg_upgraded clusters that still hold them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "shihao zhong",
+          "date": "2026-10-26T04:57:45Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTdQ5Zin7Ayw-QY2pjnWvVOrm8x6%2B0ruSrKsT2FguRBaQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1 for the pg_upgrade and restore part, and of replication-ondisk-2 for the logical replication part. Those two state each case more exactly.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Existing data becomes a delayed dump/restore failure",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "pg_dump_round_trip",
+      "touch_points": [
+        "pg_dump_round_trip",
+        "on_disk_pg_upgrade",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A WIN1252 cluster holding 0x81 bytes is moved to the new release with pg_upgrade, which passes. Months later the operator restores a pg_dump of it to recover from a failure or for a migration. The restore stops at COPY for that table, at the worst possible time.",
+      "argument": "Message #1 says restore fails and pg_upgrade keeps the bytes, and leaves the pg_upgrade check as a question. The project would then support databases that cannot be restored by its own tools, with no tool for finding the rows. [P1] shows that data carried forward by pg_upgrade keeps coming back as a cost after commit. A committer would likely want the pg_upgrade check and a detection query in the same release.",
+      "precedent_ids": [
+        "P1"
+      ],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "What will pg_upgrade or a documented query do to find unassigned bytes before upgrade, and what is a user told to do with them?",
+      "precedents": [
+        {
+          "id": "P1",
+          "title": "Bug: Reading from single byte character column type may cause out of bounds memory reads",
+          "url": "https://commitfest.postgresql.org/patch/3767/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CAFM5RapGbBQm+dH=7K80HcvBvEWiV5Tm7N=NRaYURfm98YWc8A@mail.gmail.com"
+          ],
+          "date": "2022-09-08",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "shihao zhong",
+          "date": "2026-10-26T04:57:45Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTdQ5Zin7Ayw-QY2pjnWvVOrm8x6%2B0ruSrKsT2FguRBaQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1. [P1] is about out-of-bounds reads in text functions and was rejected as unnecessary, so it does not support this point.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Hand-copied reject lists can drift from the map files",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch regenerates a *_to_utf8.map file or fills a hole, as the WIN1250 table change in this patch does. The reject list in wchar.c is not updated. The validator then accepts bytes that do not convert, or rejects bytes that do, and no test fails.",
+      "argument": "Message #1 says the lists were taken from each *_to_utf8.map, and the touched files show a change to src/common/wchar.c but no change to the map generator scripts. That puts the same fact in two places with nothing tying them together. A committer would likely ask for the tables to be generated from the maps, or for a test that compares them.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "Is the reject table generated from the map files, or is there a test that fails when the two disagree?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "shihao zhong",
+          "date": "2026-10-26T04:57:45Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTdQ5Zin7Ayw-QY2pjnWvVOrm8x6%2B0ruSrKsT2FguRBaQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The *_to_utf8.map files for these encodings come from Unicode.org tables that are frozen, so the drift scenario needs a change nobody expects. How the reject lists are built cannot be judged without the code.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "One bug report set against a break for every database in 13 encodings",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit",
+        "pg_dump_round_trip"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site runs a WIN1252 database that has held 0x81 bytes for years and never converts them. After upgrading, a dump of that database no longer restores, and new input of those bytes errors. The site gets nothing back for this, because it never hit a conversion failure.",
+      "argument": "Message #1 cites one report, bug #14197, plus a remark from Tom in a thread that is not shown. It reports no field cases, -general threads or users who asked for stricter validation. The change hits every database in 13 encodings, including ones that store these bytes on purpose and never convert them. A committer would likely want to see that the conversion failure is common enough to justify breaking restores for this group.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "Apart from bug #14197, which reports show users hitting conversion failures on unassigned bytes, and how many users store such bytes on purpose?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "shihao zhong",
+          "date": "2026-10-26T04:57:45Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTdQ5Zin7Ayw-QY2pjnWvVOrm8x6%2B0ruSrKsT2FguRBaQ%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-2, which asks the same question about users who store these bytes on purpose. The entry is tagged as a bug fix, so a count of users asking for it fits poorly as a separate test.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Every user of these encodings pays about 20% on COPY",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A WIN1252 or ISO 8859-6 site that bulk-loads non-ASCII text with COPY sees loads take about 20% longer after upgrade. Its data never had unassigned bytes and is never converted. The site finds the slowdown in its nightly load times.",
+      "argument": "Message #1 measures +20% for WIN1252 at 50% non-ASCII and +23% for ISO 8859-6. That cost lands on all input in these encodings. The gain goes only to the users who would later convert data that holds unassigned bytes. Message #1 names a hole-mapping alternative with no cost but does not weigh how many users each approach serves.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "How many users hit the conversion failure, compared with the users of these encodings who would pay the COPY slowdown?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "shihao zhong",
+          "date": "2026-10-26T04:57:45Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTdQ5Zin7Ayw-QY2pjnWvVOrm8x6%2B0ruSrKsT2FguRBaQ%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1, which uses the same numbers and adds a concrete request for a cheaper check.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "pg_upgrade keeps existing unassigned bytes that the new server rejects on input."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "A new subscriber may reject rows with unassigned bytes sent by an older publisher."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": true,
+      "reason": "see objection standards-compat-3: Mapping holes to C1 code points is dismissed too fast"
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": true,
+      "reason": "Message #1 says a dump of a database with such bytes fails on restore at COPY."
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The entry is tagged Bugfix, but the change breaks input, chr() and one conversion; the proposal targets master only."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Reject lists for 13 encodings in wchar.c must stay equal to the *_to_utf8.map files."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "The author measures COPY about 20% to 23% slower for non-ASCII input in these encodings."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "What will pg_upgrade --check, or a shipped query, report for unassigned bytes in user tables and catalog text before the upgrade?",
+    "Why not map the 0x80-0x9F holes to code points for the five encodings where that works, and reject only in the other eight?",
+    "What evidence shows that few users store these bytes and read them back in the same encoding without conversion?",
+    "Can the check be a 256-entry lookup per encoding inside the existing per-byte loop, and what are the COPY numbers then?",
+    "How does a user who upgrades by logical replication find and fix unassigned bytes on the old publisher before the subscriber stops?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "Someone who knows the encoding verifiers and conversion maps, and who is willing to own a compatibility break in pg_upgrade and restore behaviour. Nobody has replied to message #1.",
+    "liability": "The owner signs for restore failures, input errors and replication stalls on existing data in 13 encodings, for as long as old clusters with such bytes are upgraded.",
+    "author_follow_up": "No sign either way; the thread has only the first message."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "low",
+    "review_cost": "medium",
+    "recommended_action": "fix design first",
+    "reason": "The patch is small and affects only databases in 13 single-byte encodings. The open choice between reject and map, and the missing pg_upgrade check, need an answer before line-by-line review is useful."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, nobody can judge how the reject lists are built, whether the apply worker validates streamed changes, or which paths besides verifystr, chr() and the LATIN2 to WIN1250 table still let these bytes in.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:3767",
+      "kind": "cf",
+      "title": "Bug: Reading from single byte character column type may cause out of bounds memory reads",
+      "status": "Returned with feedback",
+      "date": "2022-09-08",
+      "first_date": "2022-07-13",
+      "url": "https://commitfest.postgresql.org/patch/3767/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFM5RapGbBQm+dH=7K80HcvBvEWiV5Tm7N=NRaYURfm98YWc8A@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "Tom Lane",
+      "summary": "The patch changes text_substring() so that it never copies more bytes than the input string holds, even when the last character is wrongly encoded. This stops the out-of-bounds read seen when left() runs on a \"char\" value that holds the first byte of a multibyte character.",
+      "objection": "Commit ec62ce55a, from a separate thread, fixed the conversion from \"char\" to text in HEAD and v15, so that case can no longer be reached. Tom Lane said the patch is therefore unnecessary, and that a fix in text_substring() alone is not enough because many other text functions assume valid encoding. Noah Misch argued that text functions should be safe on invalid text carried forward by pg_upgrade, but Tom Lane said the effort and performance cost were not justified.",
+      "touch_points": [],
+      "matched_queries": [
+        "single-byte encoding verify invalid characters",
+        "reject undefined bytes win1252",
+        "encoding verifier pg_verifymbstr single byte",
+        "map unassigned bytes to C1 control characters",
+        "character with byte sequence has no equivalent"
+      ],
+      "from_hint": false,
+      "score": 0.625,
+      "enriched": true,
+      "key_quote": "I think we should reject Aleksander's patch, on the grounds that\nit's now unnecessary --- or if you want to argue that it's still\nnecessary, then it's woefully inadequate, because there are surely\na bunch of other text-processing functions that will also misbehave\non wrongly-encoded data.",
+      "quote_message_url": "https://www.postgresql.org/message-id/591018.1662060952%40sss.pgh.pa.us",
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:7359",
+      "kind": "cf",
+      "title": "addFkRecurseReferencing use unassigned fkconstraint->fk_with_period value",
+      "status": "Withdrawn",
+      "date": "2026-10-02",
+      "first_date": "2026-08-10",
+      "url": "https://commitfest.postgresql.org/patch/7359/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CACJufxHnEu9UfoZsVN2v8FrKopDG+PKCfAGU6fpx7GhGcOa3xg@mail.gmail.com"
+      ],
+      "authors": "Haibo Yan (billyean)",
+      "objectors": "",
+      "summary": "CloneFkReferencing() builds a Constraint node without setting fk_with_period, so phase 3 validation treats PERIOD foreign keys as ordinary ones and uses the RI_Initial_Check() fast path, which accepts rows that the referenced periods do not cover. The patch sets conwithperiod from the with_period argument in addFkRecurseReferencing() and from pg_constraint.conperiod in QueueFKConstraintValidation() and ATExecAlterFKConstrEnforceability(), and adds regression tests.",
+      "objection": "The visible messages do not show why. A reviewer tested the patch, found it correct and called it ready for a committer, and the author posted v2 with test-only changes; the entry was withdrawn after that with no further messages.",
+      "touch_points": [],
+      "matched_queries": [
+        "WIN1252 unassigned bytes validation",
+        "map unassigned bytes to C1 control characters"
+      ],
+      "from_hint": false,
+      "score": 0.275,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "revert:a63b63ff96293e153d25e8e054a830d70f69938a",
+      "kind": "revert",
+      "title": "Revert COPY OUT to follow the pre-8.3 handling of ASCII control characters, namely that \\r, \\n, \\t, \\b, \\f, \\v are dumped as those two-character...",
+      "status": "Reverted",
+      "date": "2007-12-03",
+      "first_date": "2007-12-03",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=a63b63ff96293e153d25e8e054a830d70f69938a",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert COPY OUT to follow the pre-8.3 handling of ASCII control characters, namely that \\r, \\n, \\t, \\b, \\f, \\v are dumped as those two-character representations rather than a backslash and the literal control character. I had made it do the other to save some code, but this was ill-advised, because dump files in which these characters appear literally are prone to newline mangling.  Fortunately, doing it the old way should only cost a few more lines of code, and not slow down the copy loop materially. Per bug #3795 from Lou Duchez.",
+      "objection": "Revert COPY OUT to follow the pre-8.3 handling of ASCII control characters,\nnamely that \\r, \\n, \\t, \\b, \\f, \\v are dumped as those two-character\nrepresentations rather than a backslash and the literal control character.\nI had made it do the other to save some code, but this was ill-advised,\nbecause dump files in which these characters appear literally are prone to\nnewline mangling.  Fortunately, doing it the old way should only cost a few\nmore lines of code, and not slow down the copy loop materially.\nPer bug #3795 from Lou Duchez.",
+      "touch_points": [
+        "pg_dump / restore",
+        "planner"
+      ],
+      "matched_queries": [
+        "chr function invalid character encoding",
+        "map unassigned bytes to C1 control characters",
+        "character with byte sequence has no equivalent"
+      ],
+      "from_hint": false,
+      "score": 0.22,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "revert:dde9a87d4d02a67a5bd459045f03a6f467a00a80",
+      "kind": "revert",
+      "title": "Revert \"Reject concurrent sequence refreshes\".",
+      "status": "Reverted",
+      "date": "2026-07-18",
+      "first_date": "2026-07-15",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=dde9a87d4d02a67a5bd459045f03a6f467a00a80",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3614163.1784163070@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20260710045217.f0.noahmisch@microsoft.com"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Revert \"Reject concurrent sequence refreshes\".\nReverted commit(s): Reject concurrent sequence refreshes.",
+      "objection": "This reverts commit f38afa4abb04e85530c94b88daf11c089375daca.\n\nThat commit fixed a race that could leave stale sequence values on the\nsubscriber after 'ALTER SUBSCRIPTION ... REFRESH SEQUENCES'. It did so by\nraising an ERROR during 'ALTER SUBSCRIPTION ... REFRESH SEQUENCES'\nwhenever a sequence synchronization worker was already running for the\nsubscription.\n\nThat approach caused intermittent buildfarm failures, because the existing\ntests did not ensure the sequencesync worker had stopped before executing\n'ALTER SUBSCRIPTION ... REFRESH SEQUENCES'. While discussing how to fix\nthe tests, we concluded that blocking the command while a sequencesync\nworker is running is inconvenient for users. So we will fix the original\nrace differently in a follow-up commit.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "reject undefined bytes win1252",
+        "character with byte sequence has no equivalent"
+      ],
+      "from_hint": false,
+      "score": 0.212,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:4823",
+      "kind": "cf",
+      "title": "Add test module for verifying backtrace functionality",
+      "status": "Withdrawn",
+      "date": "2024-08-24",
+      "first_date": "2024-02-12",
+      "url": "https://commitfest.postgresql.org/patch/4823/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACXsPaQmmTx4vT1LwhyU-oFsnoZn-xtq3=3kMDt0O1vEug@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "Peter Eisentraut",
+      "summary": "The patch adds TAP tests that check the backtrace code in elog.c (backtrace_functions, backtrace_on_internal_error, errbacktrace) by looking for \"BACKTRACE: \" and the failing function name in the server log. It first used a new module, src/test/modules/test_backtrace, and later moved the test to src/test/modules/test_misc.",
+      "objection": "Peter Eisentraut noted that backtrace_on_internal_error had been removed, so the patch needed changes, and suggested joining a separate thread about its replacement. The thread shows no reply or new version after that, and the entry was withdrawn. The visible messages do not show why it was withdrawn.",
+      "touch_points": [],
+      "matched_queries": [
+        "single-byte encoding verify invalid characters",
+        "encoding verifier pg_verifymbstr single byte"
+      ],
+      "from_hint": false,
+      "score": 0.208,
+      "enriched": true,
+      "key_quote": "Note that backtrace_on_internal_error has been removed, so this patch\nwill need to be adjusted for that.",
+      "quote_message_url": "https://www.postgresql.org/message-id/86ebc1d3-b1fc-4ad3-a976-2eb79d9bd424%40eisentraut.org",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:2418",
+      "kind": "cf",
+      "title": "Verify true root on replicas with amcheck",
+      "status": "Returned with feedback",
+      "date": "2020-04-08",
+      "first_date": "2020-01-09",
+      "url": "https://commitfest.postgresql.org/patch/2418/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/AAF5CE5C-5152-44D8-B437-A0784697DBA5@gmail.com"
+      ],
+      "authors": "Georgy Rylov (godjan)",
+      "objectors": "Peter Geoghegan",
+      "summary": "The patch lets the regular bt_check_index() function in amcheck verify the true root of a B-Tree index, so the check also works on replicas. It does this by locking the metapage and the potential root page at the same time.",
+      "objection": "The author stopped responding. Peter Geoghegan asked what true root corruption meant and what symptom it caused, and he did not want to commit a patch that holds multiple buffer locks without a strong justification. The patch also stopped applying, and David Steele returned it after no reply from the author.",
+      "touch_points": [],
+      "matched_queries": [
+        "single-byte encoding verify invalid characters",
+        "encoding verifier pg_verifymbstr single byte"
+      ],
+      "from_hint": false,
+      "score": 0.202,
+      "enriched": true,
+      "key_quote": "Your patch looks like it gets it right (it won't deadlock with other\nsessions that access the metapage), but I hesitate to commit it\nwithout a strong justification.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAH2-WzkxnA39Rzad%2BM7DJOQ3Up%3D_7dTE-6jXmx%2B4mp%2B5v%2BKWzw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "wiki:Server-Side_Languages:1",
+      "kind": "do_not_want",
+      "title": "Allow regex operations in PL/Perl using UTF8 characters in non-UTF8 encoded databases",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Server-Side_Languages",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Allow regex operations in PL/Perl using UTF8 characters in non-UTF8 encoded databases\nSection: Server-Side Languages",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "single-byte encoding verify invalid characters",
+        "chr function invalid character encoding"
+      ],
+      "from_hint": false,
+      "score": 0.191,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:2381",
+      "kind": "cf",
+      "title": "remove single character literal tokens from the core grammar",
+      "status": "Rejected",
+      "date": "2020-01-18",
+      "first_date": "2019-12-16",
+      "url": "https://commitfest.postgresql.org/patch/2381/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CACPNZCvG3rYfw-L-b9eaxtdDvgkOwz4U3TFriUVBOhKcuOBRkw@mail.gmail.com"
+      ],
+      "authors": "John Naylor (john.naylor)",
+      "objectors": "Tom Lane",
+      "summary": "Replace all single character literal tokens in the core, PL/pgSQL and ECPG grammars with named tokens, so the grammar can later use Bison 3.5's \"%define api.token.raw\" and skip the yytranslate[] lookup. The author measured about 1.7-1.9% faster raw parsing with the option enabled.",
+      "objection": "Tom Lane argued that the patch only moves the character-to-token mapping from the parser into the lexer, so it may not be an improvement. He also judged the patch too invasive for a small gain that needs Bison 3.5, a version the project would not require for a long time. The visible messages show no further discussion before the rejection.",
+      "touch_points": [
+        "SQL syntax / standard"
+      ],
+      "matched_queries": [
+        "single-byte encoding verify invalid characters",
+        "map unassigned bytes to C1 control characters"
+      ],
+      "from_hint": false,
+      "score": 0.186,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:4809",
+      "kind": "cf",
+      "title": "Encoding protection for pgcrypto",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2024-02-05",
+      "url": "https://commitfest.postgresql.org/patch/4809/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGRkXqRZyo0gLxPJqUsDqtWYBbgM14betsHiLRPj9mo2=z9VvA@mail.gmail.com"
+      ],
+      "authors": "shihao zhong (zhong950419)",
+      "objectors": "",
+      "summary": "The patch makes pgp_sym_decrypt_text and pgp_pub_decrypt_text check that the decrypted result is valid in the database encoding, and raise an error if it is not. It adds regression tests for this and moves some existing tests that failed under some encodings.",
+      "objection": "The visible messages do not show why. Cary Huang reported failing tests and questioned aborting the transaction instead of issuing a warning. The author posted v2 and argued that callers who want no encoding check can use the bytea variants, and no later message follows.",
+      "touch_points": [],
+      "matched_queries": [
+        "encoding verifier pg_verifymbstr single byte",
+        "chr function invalid character encoding"
+      ],
+      "from_hint": false,
+      "score": 0.179,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:1782",
+      "kind": "cf",
+      "title": "Allow pg_verify_checksums to specify a database to scan",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2018-08-24",
+      "url": "https://commitfest.postgresql.org/patch/1782/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/7d5d3f34-ec64-602a-d7af-858eb686c86d@2ndquadrant.com"
+      ],
+      "authors": "Yugo Nagata (yugo.nagata)",
+      "objectors": "Fabien COELHO",
+      "summary": "Add options to pg_verify_checksums to limit checksum verification to one database, given by OID with -d/--dboid, or to shared relations only with -g/--global-only. This follows a discussion that the existing -r RELFILENODE option had no way to say which database it referred to.",
+      "objection": "Fabien COELHO's review asked for several changes: TAP tests (the command had none), stricter parsing of the OID argument, handling of -d and -g given together (that combination succeeded while checking nothing), and documentation fixes. Masahiko Sawada suggested allowing several database OIDs. The thread ends with these review comments and shows no revised patch before the entry was returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "single-byte encoding verify invalid characters",
+        "encoding verifier pg_verifymbstr single byte"
+      ],
+      "from_hint": false,
+      "score": 0.167,
+      "enriched": true,
+      "key_quote": "When the command is started with both \"-d 1 -g\", it succeeds by checking nothing, which is quite misleading. Probably it should complain that these options are mutually exclusive, or it should check both under -g AND -d 1?",
+      "quote_message_url": "https://www.postgresql.org/message-id/alpine.DEB.2.21.1809031717240.5293%40lancre",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:3820",
+      "kind": "cf",
+      "title": "Clarify the comments about varlena header encoding",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-08-17",
+      "url": "https://commitfest.postgresql.org/patch/3820/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJ7c6TOY_-mew61g4okz7H6+09JrwmTZEn3JnwVyeWhRXNzZGA@mail.gmail.com"
+      ],
+      "authors": "Aleksander Alekseev (a.alekseev)",
+      "objectors": "John Naylor",
+      "summary": "The patch rewrites the comments in postgres.h that describe the bit layouts of varlena headers, so readers do not misread the length word, the alignment notes or the size of a TOAST pointer. Version 2 adds a 0b prefix to the bit patterns and mentions the type tag next to the TOAST pointer layout.",
+      "objection": "John Naylor found that both versions made the comments harder to read. In his view, adding the type tag pulls the comment away from its purpose, which is to show how the first byte tells what kind of varlena follows. He judged the current text a local maximum that small edits would likely make worse, and doubted that any change was needed. The author did not reply for four weeks, so Michael Paquier marked the entry returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "encoding verifier pg_verifymbstr single byte",
+        "chr function invalid character encoding"
+      ],
+      "from_hint": false,
+      "score": 0.161,
+      "enriched": true,
+      "key_quote": "More broadly, I think the description of varlenas in this header is at\na kind of \"local maximum\" -- minor adjustments are more likely to make\nit worse.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAFBsxsGb6NwkYFLdGLRfMAf7CwROSx%3Dyj23j0-9WFG_wsR_RnA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:4754",
+      "kind": "cf",
+      "title": "Add LSN <-> time conversion facility",
+      "status": "Withdrawn",
+      "date": "2024-10-22",
+      "first_date": "2023-12-27",
+      "url": "https://commitfest.postgresql.org/patch/4754/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAKRu_Z7tR7D1=DR=xWQDefYk_nu_gxgW88X0HtxN6AsK-8_gA@mail.gmail.com"
+      ],
+      "authors": "Melanie Plageman (melanieplageman)",
+      "objectors": "",
+      "summary": "Add LSN <-> time conversion facility\nThreads: Add LSN <-> time conversion functionality",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "LATIN2 WIN1250 conversion mapping"
+      ],
+      "from_hint": false,
+      "score": 0.143,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:0392fb900eb89f52988cccd33046443c39c70d1c",
+      "kind": "revert",
+      "title": "Revert \"Reject degenerate SPLIT PARTITION with DEFAULT partition\"",
+      "status": "Reverted",
+      "date": "2026-05-20",
+      "first_date": "2026-05-20",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=0392fb900eb89f52988cccd33046443c39c70d1c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/C18878AB-DEB2-4A61-9995-A035DD644B81@gmail.com"
+      ],
+      "authors": "Alexander Korotkov",
+      "objectors": "",
+      "summary": "Revert \"Reject degenerate SPLIT PARTITION with DEFAULT partition\"\nReverted commit(s): Reject degenerate SPLIT PARTITION with DEFAULT partition",
+      "objection": "This reverts commit d8af73010033cb8ad6c941942d6b03d74d7e4f7e.  Per buildfarm\nfailures.",
+      "touch_points": [],
+      "matched_queries": [
+        "reject undefined bytes win1252"
+      ],
+      "from_hint": false,
+      "score": 0.135,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:5474",
+      "kind": "cf",
+      "title": "Speed up ICU case conversions",
+      "status": "Returned with feedback",
+      "date": "2025-03-30",
+      "first_date": "2024-12-20",
+      "url": "https://commitfest.postgresql.org/patch/5474/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/167986ff-afcf-4542-94c6-61ee8474e138@proxel.se"
+      ],
+      "authors": "Andreas Karlsson (kandreas)",
+      "objectors": "",
+      "summary": "Speed up ICU case conversions\nThreads: Speed up ICU case conversion by using ucasemap_utf8To*()",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "LATIN2 WIN1250 conversion mapping"
+      ],
+      "from_hint": false,
+      "score": 0.132,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:2144",
+      "kind": "cf",
+      "title": "Fix runtime errors from -fsanitize=undefined",
+      "status": "Rejected",
+      "date": "2019-08-13",
+      "first_date": "2019-06-03",
+      "url": "https://commitfest.postgresql.org/patch/2144/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/e1a26ece-7057-a234-d87e-4ce1cdc9eaa0@2ndquadrant.com"
+      ],
+      "authors": "Peter Eisentraut (petere)",
+      "objectors": "",
+      "summary": "Fix runtime errors from -fsanitize=undefined\nThreads: Fix runtime errors from -fsanitize=undefined",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "reject undefined bytes win1252"
+      ],
+      "from_hint": false,
+      "score": 0.126,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:3524",
+      "kind": "cf",
+      "title": "[PATCH] Equivalence Class Filters",
+      "status": "Returned with feedback",
+      "date": "2022-12-17",
+      "first_date": "2015-12-05",
+      "url": "https://commitfest.postgresql.org/patch/3524/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKJS1f9FK_X_5HKcPcSeimy16Owe3EmPmmGsGWLcKkj_rW9s6A@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAFQUnFhqkWuPCwQ1NmHYrisHJhYx4DoJak-dV+FcjyY6scooYA@mail.gmail.com"
+      ],
+      "authors": "David Rowley (davidrowley), Andy Fan (andyf)",
+      "objectors": "",
+      "summary": "[PATCH] Equivalence Class Filters\nThreads: [PATCH] Equivalence Class Filters; Condition pushdown: why (=) is pushed down into join, but BETWEEN or\n>= is not?",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "character with byte sequence has no equivalent"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:2274",
+      "kind": "cf",
+      "title": "Invalid permission check in pg_stats for functional indexes",
+      "status": "Returned with feedback",
+      "date": "2020-07-05",
+      "first_date": "2019-04-06",
+      "url": "https://commitfest.postgresql.org/patch/2274/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6369212.CF36pTLAQO@peanuts2"
+      ],
+      "authors": "Pierre Ducroquet (pinaraf)",
+      "objectors": "",
+      "summary": "Invalid permission check in pg_stats for functional indexes\nThreads: [Patch] Invalid permission check in pg_stats for functional indexes",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "chr function invalid character encoding"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:7204",
+      "kind": "cf",
+      "title": "libpq: add portaddr, the port equivalent of hostaddr",
+      "status": "Withdrawn",
+      "date": "2026-08-28",
+      "first_date": "2026-08-13",
+      "url": "https://commitfest.postgresql.org/patch/7204/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/70436540-9d77-4014-89af-462881ed18d9@gmail.com"
+      ],
+      "authors": "Diego - (galponcio)",
+      "objectors": "",
+      "summary": "libpq: add portaddr, the port equivalent of hostaddr\nThreads: [Proposal] add portaddr like hostaddr",
+      "objection": "",
+      "touch_points": [
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "character with byte sequence has no equivalent"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:6453",
+      "kind": "cf",
+      "title": "Get rid of the pre-C11 _Alignof define in zic.c",
+      "status": "Withdrawn",
+      "date": "2026-02-13",
+      "first_date": "2026-02-03",
+      "url": "https://commitfest.postgresql.org/patch/6453/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/aYHEtSK44CcZxTLG@ip-10-97-1-34.eu-west-3.compute.internal"
+      ],
+      "authors": "Bertrand Drouvot (bertranddrouvot.pg)",
+      "objectors": "",
+      "summary": "Get rid of the pre-C11 _Alignof define in zic.c\nThreads: Get rid of the pre-C11 _Alignof define in zic.c",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "map unassigned bytes to C1 control characters"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:6407",
+      "kind": "cf",
+      "title": "Missing dependency on oauth_validator test",
+      "status": "Withdrawn",
+      "date": "2026-01-19",
+      "first_date": "2026-01-17",
+      "url": "https://commitfest.postgresql.org/patch/6407/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6e8f4f7c23faf77c4b6564c4b7dc5d3de64aa491.camel@gmail.com"
+      ],
+      "authors": "Jonathan Gonzalez V. (sxd)",
+      "objectors": "",
+      "summary": "Missing dependency on oauth_validator test\nThreads: [OAuth] Missing dependency on oauth_validator test",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "WIN1252 unassigned bytes validation"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:2937",
+      "kind": "cf",
+      "title": "NOT VALID for Unique Indexes",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-01-14",
+      "url": "https://commitfest.postgresql.org/patch/2937/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANbhV-H35fJsKnLoZJuhkYqg2MO4XLjR57Qwf=3-xOvG2+2UEg@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon)",
+      "objectors": "",
+      "summary": "NOT VALID for Unique Indexes\nThreads: NOT VALID for Unique Indexes",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "WIN1252 unassigned bytes validation"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:5403",
+      "kind": "cf",
+      "title": "Windows pg_basebackup unable to create >2GB pg_wal.tar tarballs (\"could not close file: Invalid argument\" when creating pg_wal.tar of size ~ 2^31 bytes)",
+      "status": "Withdrawn",
+      "date": "2024-11-25",
+      "first_date": "2024-11-21",
+      "url": "https://commitfest.postgresql.org/patch/5403/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKZiRmyM4YnokK6Oenw5JKwAQ3rhP0YTz2T-tiw5dAQjGRXE3Q@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice), Jakub Wartak (jakub.wartak.tomtom)",
+      "objectors": "",
+      "summary": "Windows pg_basebackup unable to create >2GB pg_wal.tar tarballs (\"could not close file: Invalid argument\" when creating pg_wal.tar of size ~ 2^31 bytes)\nThreads: Windows pg_basebackup unable to create >2GB pg_wal.tar tarballs\n(\"could not close file: Invalid argument\" when creating pg_wal.tar of size ~\n2^31 bytes)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "single-byte encoding verify invalid characters"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:4252",
+      "kind": "cf",
+      "title": "bytea PL/Perl transform",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-03-18",
+      "url": "https://commitfest.postgresql.org/patch/4252/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1679178327.555465221@f141.i.mail.ru"
+      ],
+      "authors": "Ivan Panchenko (wao)",
+      "objectors": "",
+      "summary": "bytea PL/Perl transform\nThreads: Bytea PL/Perl transform",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "reject undefined bytes win1252"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:6744",
+      "kind": "cf",
+      "title": "COPY: validate option presence rather than option values",
+      "status": "Withdrawn",
+      "date": "2026-06-29",
+      "first_date": "2026-05-06",
+      "url": "https://commitfest.postgresql.org/patch/6744/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/C1D2509E-E5D1-46B0-932C-B57AA7B963A1@gmail.com"
+      ],
+      "authors": "Chao Li (chaol)",
+      "objectors": "",
+      "summary": "COPY: validate option presence rather than option values\nThreads: COPY: validate option presence rather than option values",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "WIN1252 unassigned bytes validation"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 7,
+    "new_calls": 1,
+    "failed": 0,
+    "quotes_verified": 0,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 2
+  },
+  "precedent_cutoff": "2026-10-26",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent shows this idea rejected before. Message #1 cites an earlier thread where Tom called the WIN1252 validator the real fix, but that thread is not in the material. [P1] repaired one text function after bad bytes got in; this patch rejects them at input, so P1's reason does not apply. [P9]'s rejection reason is unknown."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "Objections found; see list."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 2,
+      "note": "The patch does not change any on-disk format, WAL record, catalog or wire message. Both objections are about existing data that the new validation rules no longer accept."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "No security objection. The patch narrows what the server accepts: verifystr, chr() and one conversion table reject bytes that no other encoding can represent, and nothing here adds a privilege, a new capability, or new information exposure. The restore failure for old data and the COPY slowdown are compatibility and performance questions for other angles. The extra check is linear per byte, so it gives an unprivileged user no new way to cause a denial of service."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "Not applicable."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing feature, extension or hook does what the patch does. The input verifier and chr() are inside core, and an extension cannot tighten them. Per-column workarounds such as a check constraint that calls convert_to() do not cover client input or chr(), and choosing a UTF8 database does not help existing databases. The patch also extends the existing verifystr functions and adds no second mechanism."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "The problem is real but shown by one bug report. Both objections ask for evidence of demand, so the fitting outcome is \"not now, show demand\", not a rejection."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 10,
+      "new_survived": 5,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "review angle \"standards-compat\" returned prior attempts; ignored (only the prior-attempts angle may)"
+  ],
+  "tone_lint": {
+    "fields_checked": 97,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 13,
+    "wall_ms": 172222,
+    "cost_usd": 1.140576,
+    "dry_run": false
+  }
+}

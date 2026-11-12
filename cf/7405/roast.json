@@ -1,0 +1,1500 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:51:08.431Z",
+  "input": {
+    "arg": "7405",
+    "cf": {
+      "id": 7405,
+      "url": "https://commitfest.postgresql.org/patch/7405/",
+      "title": "Expand OR clauses in joins to UNION ALL paths",
+      "status": "Needs review",
+      "authors": "Ayoub Kazar (kaz)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/d606f08e-3a56-409f-8591-ccdbb3379b0e%40data-bene.io",
+    "subject": "[PROPOSAL] Expand OR clauses in joins to UNION ALL paths",
+    "thread_start": "2026-10-07T11:02:23Z",
+    "messages_read": 14,
+    "messages_total": 14,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v6-0001-Expand-OR-clauses-in-joins-to-UNION-ALL-Append-paths.patch",
+      "0001-Expand-OR-clauses-in-joins-to-UNION-ALL-Append-paths.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "Demand is shown and the goal has support in messages #2 and #14, so levels 1a and 1b pass. Level 2 fails on open design points: prior-attempts-1 (no written correctness argument, the gap that stopped P4), standards-compat-1 (a query that works on master fails with the patch, deferred in message #10), and maintenance-fit-1 with standards-compat-2 (planning cost and the hard cutoff). The list needs answers to these before code review is useful.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Planner expands cross-relation OR clauses into UNION ALL append paths",
+    "problem": "An OR that spans relations cannot be a hash or merge join clause, and BitmapOr only combines indexes of one relation. So such queries end up as nested loops with per-row inner scans or join filters. The author hit this with SQL/PGQ undirected edges and cites star-schema queries with an OR over two dimension tables.",
+    "proposed_design": "For a top-level WHERE OR with arms C1..Cn, the planner plans one copy of the query per arm, with Ck plus \"(Cj) IS NOT TRUE\" for every earlier arm, so no deduplication is needed. In v6 each arm is a synthetic subquery scan, and the arms go into an Append on an UPPERREL_SETOP rel that is added to the join rel's path list. Normal costing decides whether the Append is used.",
+    "user_visible_surface": [
+      "New GUC or_expansion_limit (default 8, 0 disables) caps the number of OR arms considered.",
+      "New plan shape: Append over per-arm subquery scans in place of a join, visible in EXPLAIN and to pg_plan_advice.",
+      "Queries that rely on OR short-circuit evaluation can now raise errors, for example a cast that fails in an arm not evaluated on master."
+    ],
+    "author_claims": [
+      "The SQL/PGQ case on LSQB SF 0.1 went from 91.7 s to 1.6 s when written by hand as UNION ALL, and up to 4610x faster at larger scale factors.",
+      "Star schema with a 20M row fact table: 1893 ms to 148 ms, with planning time 0.26 ms to 0.52 ms.",
+      "OR join condition on two 2M row tables: 1520 ms to 435 ms, with about 300 times fewer buffer hits.",
+      "Original plans are kept when arms are not selective (about 20% of rows each).",
+      "Negated earlier arms give the same rows and multiplicity as the original query, which is simpler than Tom Lane's 2017 CTID-based deduplication."
+    ],
+    "thread_state": "David Geier supports the idea and Zsolt Parragi reported test failures, an unhandled subplan case, exponential planning time with nested subqueries, and short-circuit errors, so the patch went through v6. Robert Haas said the work is about 1% done and asked for passing tests, fuzz testing, graceful handling of planning cost, and fewer arbitrary exclusions.",
+    "unclear": [
+      "The proposal does not give a correctness argument for the IS NOT TRUE exclusion with NULLs, outer join reduction, and multiplicity across all allowed RTE kinds.",
+      "The material does not show planning time or memory for queries near or_expansion_limit, nor a plan for degrading gracefully instead of a hard cutoff.",
+      "The author has not decided how to handle the short-circuit behavior change Zsolt reported.",
+      "The proposal does not say how pg_plan_advice will cover the new Append shape or set operation paths.",
+      "The material gives no benchmarks for v6, and the cited numbers come from the first version.",
+      "Partitioned tables, inheritance, ORs in JOIN ON clauses, subqueries and parallel query are excluded with no plan for them."
+    ],
+    "search_queries": [
+      "OR expansion UNION ALL",
+      "or clause join union rewrite",
+      "OR to UNION transformation planner",
+      "disjunction join append path",
+      "or_expansion_limit",
+      "OR join condition nested loop",
+      "union all rewrite ctid unique",
+      "star schema OR dimension tables"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P4",
+      "source_id": "cf:1001",
+      "title": "Convert join OR clauses into UNION queries",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/1001/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/7f70bd5a-5d16-e05c-f0b4-2fdfc8873489@BlueTreble.com"
+      ],
+      "date": "2018-10-02",
+      "first_date": "2017-02-08",
+      "who_objected": "Tom Lane, Noah Misch",
+      "quote": "FWIW, my problem with this patch is that I remain unconvinced of the basic correctness of the transform (specifically the unique-ification approach).",
+      "quote_url": "https://www.postgresql.org/message-id/7872.1538443930%40sss.pgh.pa.us",
+      "enriched": true,
+      "reason": "Tom Lane, the patch author, said he was still not convinced that the unique-ification step is correct, and he would not work on it further without a proof. Noah Misch's review, with assertion failures and a case where planning was 170 times slower and the chosen plan 4.5 times slower, got no reply for a month, so the entry was returned with feedback.",
+      "relation": "same_idea",
+      "what_is_different": "Duplicate rows are avoided by adding IS NOT TRUE on earlier arms, so no CTID sort/unique step is needed. Non-table RTEs are allowed, and the arms are wrapped as subquery scans under an UPPERREL_SETOP Append."
+    },
+    {
+      "precedent_id": "P3",
+      "source_id": "cf:7034",
+      "title": "Rewrite undirected edge patterns in GRAPH_TABLE using UNION ALL",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/7034/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/c172f9dd5704b5d32c1f573f6ac33566@data-bene.io"
+      ],
+      "date": "2026-09-10",
+      "first_date": "2026-07-16",
+      "who_objected": "Ashutosh Bapat",
+      "quote": "If OR transformation is implemented in the query optimizer, the implementation in graph query is useless and, more seriously, misleading if the correct statistics were to favour retaining OR.",
+      "quote_url": "https://www.postgresql.org/message-id/CAExHW5tbzsgykWN3j2qtny7HpXxAWzPDY_yq_Wzcub-ZLyHXcA%40mail.gmail.com",
+      "enriched": true,
+      "reason": "Ashutosh Bapat argued that the OR-to-UNION transformation belongs in the planner, where it would help all join-with-OR queries and could be cost based. An unconditional rewrite in the graph query rewriter would be redundant once the planner does it, and misleading when statistics favour keeping the OR. The author agreed the work should move to the optimizer as a separate patch. SQL/PGQ was also reverted from master, leaving the patch nothing to apply against.",
+      "relation": "similar_idea",
+      "what_is_different": "The same author moved the OR-to-UNION ALL rewrite from the GRAPH_TABLE rewriter into the planner and made it cost based. That is what the earlier objection asked for."
+    }
+  ],
+  "objections": [
+    {
+      "title": "No written correctness proof, the gap that stopped the 2017 patch",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "prior_rejection",
+      "touch_points": [
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user runs a query with an OR over a left join's nullable side and arms that can be NULL. One branch reduces the outer join or excludes rows differently from the original filter. The query silently returns extra or missing rows, and nobody notices until results are compared by hand.",
+      "argument": "The precedent's author stopped work because he was not convinced the transform was correct and wanted a proof. This proposal replaces CTID unique-ification with IS NOT TRUE exclusion, which removes that specific step. Message #1 points to the old thread's last message for the proof but does not restate it, and it adds per-branch outer join reduction and more RTE kinds (message #10). The thread contains no argument covering those cases.",
+      "precedent_ids": [
+        "P4"
+      ],
+      "thread_message_refs": [
+        1,
+        10
+      ],
+      "author_must_show": "Where is a written argument that per-branch outer join reduction and IS NOT TRUE exclusion keep rows and multiplicity identical for every RTE kind the v6 guards allow?",
+      "precedents": [
+        {
+          "id": "P4",
+          "title": "Convert join OR clauses into UNION queries",
+          "url": "https://commitfest.postgresql.org/patch/1001/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/7f70bd5a-5d16-e05c-f0b4-2fdfc8873489@BlueTreble.com"
+          ],
+          "date": "2018-10-02",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Ayoub Kazar",
+          "date": "2026-10-07T11:02:23Z",
+          "url": "https://www.postgresql.org/message-id/d606f08e-3a56-409f-8591-ccdbb3379b0e%40data-bene.io"
+        },
+        {
+          "index": 10,
+          "from": "Ayoub Kazar",
+          "date": "2026-10-27T15:52:04Z",
+          "url": "https://www.postgresql.org/message-id/f84fdea1-a0b9-4162-97b1-435992ff3b02%40data-bene.io"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #1 points to the old thread for the proof and does not restate it. No message argues correctness for per-branch outer join reduction or the RTE kinds added in message #10, so P4's recorded reason still applies.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "OR expansion makes queries that work today raise errors after upgrade",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "design",
+      "touch_points": [
+        "planner_behaviour",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An application runs `where i.kind = 'txt' or (a.val::int = 7 and a.tag = 7)` without error on the current release. After upgrade, the planner picks the Append, the second arm evaluates the cast for 'txt' rows, and the query fails with an invalid input error. The user finds out in production when a cost change flips the plan.",
+      "argument": "Message #9 shows such a query that works on master and fails with the patch. Message #10 defers it as \"noted to be discussed later\", and no version says how it will be handled. The docs do not guarantee evaluation order, but in practice the executor evaluates OR arms left to right and stops early, and existing code depends on that. Because the choice is cost based, the same query can work on one day and fail on the next, so a committer would likely ask for a policy before review continues.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        9,
+        10
+      ],
+      "author_must_show": "How will the patch avoid new errors in arms or negated predicates that the current executor never evaluates, for example by excluding arms with expressions that can fail?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 9,
+          "from": "Zsolt Parragi",
+          "date": "2026-10-12T22:13:11Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFOPWhh11CD8koPZ9NndemDY2og5qZeMMxmNvvUg6L5uMg%40mail.gmail.com"
+        },
+        {
+          "index": 10,
+          "from": "Ayoub Kazar",
+          "date": "2026-10-27T15:52:04Z",
+          "url": "https://www.postgresql.org/message-id/f84fdea1-a0b9-4162-97b1-435992ff3b02%40data-bene.io"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #9 gives a query that works on master and fails with the patch, and message #10 defers it. The documentation does not guarantee evaluation order, which lowers the weight, but the thread still has no stated policy.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Extra planner runs for every eligible query, with a hard arm cutoff",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "planner_behaviour",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An OLTP application runs many short joins with an OR over two tables. After upgrade, each query runs one extra query_planner() per arm, and planning time roughly doubles even when the plain join wins. The user sees this as higher latency, and the only remedy is a server-wide GUC.",
+      "argument": "Message #1 reports planning going from 0.26 ms to 0.52 ms and from 1.6 ms to 3.0 ms, and that cost is paid whether or not the Append is picked. Message #5 showed exponential planning time with nesting, and subqueries are now skipped to avoid it. Message #14 asks for graceful degradation in place of or_expansion_limit, and no answer is given. [P4] also recorded a case with planning 170 times slower.",
+      "precedent_ids": [
+        "P4"
+      ],
+      "thread_message_refs": [
+        1,
+        5,
+        14
+      ],
+      "author_must_show": "What planning time and memory do v6 queries show near or_expansion_limit when the Append loses, and how is that cost bounded without a hard cutoff?",
+      "precedents": [
+        {
+          "id": "P4",
+          "title": "Convert join OR clauses into UNION queries",
+          "url": "https://commitfest.postgresql.org/patch/1001/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/7f70bd5a-5d16-e05c-f0b4-2fdfc8873489@BlueTreble.com"
+          ],
+          "date": "2018-10-02",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Ayoub Kazar",
+          "date": "2026-10-07T11:02:23Z",
+          "url": "https://www.postgresql.org/message-id/d606f08e-3a56-409f-8591-ccdbb3379b0e%40data-bene.io"
+        },
+        {
+          "index": 5,
+          "from": "Zsolt Parragi",
+          "date": "2026-10-07T21:44:35Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFOFjDo-ACBCNuriV290%2B2kFDuUisMy10KQx71GB_t16Fw%40mail.gmail.com"
+        },
+        {
+          "index": 14,
+          "from": "Robert Haas",
+          "date": "2026-11-06T16:28:48Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmoY0vDEwDc7B9vbum_RXbeFh7OkhuyCJ3kAbkXdht49auw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #1 shows planning time about doubling, and that cost is paid even when the Append loses. It falls only on queries with a cross-relation OR, but the thread has no v6 measurements near the limit.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "or_expansion_limit is a hard cutoff that hides a design decision",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "new_guc",
+      "touch_points": [
+        "new_guc",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A report query has eight OR arms and gets the fast Append plan. A developer adds a ninth arm, expansion is silently skipped, and runtime goes back to the nested loop, which can be hundreds of times slower. The user sees only the slowdown and has no hint that a GUC caused it.",
+      "argument": "Message #1 picks the default of 8 as \"a nice guess\" and also calls the GUC an off switch for before/after comparisons, which is a development aid. Message #14 asks for graceful degradation in place of a sharp edge, and v6 does not answer. Message #5 shows planning cost growing exponentially with nesting, so the GUC limits only the number of arms and does not bound the cost it was added to control.",
+      "precedent_ids": [
+        "P4"
+      ],
+      "thread_message_refs": [
+        1,
+        5,
+        14
+      ],
+      "author_must_show": "Can the cost of expansion be bounded by a planner-internal measure so that adding one OR arm does not abruptly turn off the plan?",
+      "precedents": [
+        {
+          "id": "P4",
+          "title": "Convert join OR clauses into UNION queries",
+          "url": "https://commitfest.postgresql.org/patch/1001/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/7f70bd5a-5d16-e05c-f0b4-2fdfc8873489@BlueTreble.com"
+          ],
+          "date": "2018-10-02",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Ayoub Kazar",
+          "date": "2026-10-07T11:02:23Z",
+          "url": "https://www.postgresql.org/message-id/d606f08e-3a56-409f-8591-ccdbb3379b0e%40data-bene.io"
+        },
+        {
+          "index": 5,
+          "from": "Zsolt Parragi",
+          "date": "2026-10-07T21:44:35Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFOFjDo-ACBCNuriV290%2B2kFDuUisMy10KQx71GB_t16Fw%40mail.gmail.com"
+        },
+        {
+          "index": 14,
+          "from": "Robert Haas",
+          "date": "2026-11-06T16:28:48Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmoY0vDEwDc7B9vbum_RXbeFh7OkhuyCJ3kAbkXdht49auw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #14 describes the same abrupt regression when one arm is added, and v6 keeps the cutoff. The nesting point is outdated, because v2 limits expansion to top-level queries, but the objection stands without it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Cloned per-arm planner state must track every future PlannerInfo field",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds state that query_planner() fills in on the PlannerInfo and that setrefs or createplan reads from the top-level root. Nobody updates planorexpand.c, and the per-arm copy loses it. A user's query fails at execution with an internal error long after release.",
+      "argument": "Message #6 describes this happening already: minmax_aggs lived in the arm's subroot, setrefs looked in the top root, and the result was \"Aggref found in non-Agg plan node\". Message #12 found a second case, with processed_tlist out of sync with the arm's output. Each was fixed with a guard or a resync, and nothing makes the next missed field fail at plan time.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        6,
+        12
+      ],
+      "author_must_show": "What mechanism, beyond case-by-case guards, makes a new PlannerInfo field that the per-arm copy does not handle fail loudly in tests?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 6,
+          "from": "Ayoub Kazar",
+          "date": "2026-10-08T20:39:10Z",
+          "url": "https://www.postgresql.org/message-id/f5ac4d86-76a2-4a5d-bf5d-3be211463d84%40data-bene.io"
+        },
+        {
+          "index": 12,
+          "from": "Ayoub Kazar",
+          "date": "2026-10-28T01:32:38Z",
+          "url": "https://www.postgresql.org/message-id/0605f7a2-9b26-4125-bbf0-40ecfc007ce1%40data-bene.io"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #6 and #12 each report a case where per-arm planner state and the top-level root disagreed, and each was fixed with a guard or a resync. The thread shows no general mechanism that catches the next such field.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "New Append plan shape is not covered by pg_plan_advice",
+      "level": "2",
+      "rubric_item": 13,
+      "category": "design",
+      "touch_points": [
+        "planner_behaviour",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user pins plans with pg_plan_advice. After upgrade, a query gets the OR-expanded Append, and the generated advice cannot describe or enforce the set operation node or the synthetic orexpand subqueries. Replay gives a different plan, and the user finds out when plan stability breaks.",
+      "argument": "Message #14 says pg_plan_advice does not cover set operation planning because it has no enforcement hooks. It also says the patch uses set operation constructs where the planner does not use them today. Messages #10 and #12 show earlier versions that emitted conflicting advice and an rtekind mismatch error, and v6 moved to UPPERREL_SETOP mainly to get past those failures. The proposal does not say whether expansion is excluded from advice scope or how advice will control it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        10,
+        12,
+        14
+      ],
+      "author_must_show": "Will advice be able to request or forbid OR expansion and control each arm, or will expansion be kept out of pg_plan_advice scope?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 10,
+          "from": "Ayoub Kazar",
+          "date": "2026-10-27T15:52:04Z",
+          "url": "https://www.postgresql.org/message-id/f84fdea1-a0b9-4162-97b1-435992ff3b02%40data-bene.io"
+        },
+        {
+          "index": 12,
+          "from": "Ayoub Kazar",
+          "date": "2026-10-28T01:32:38Z",
+          "url": "https://www.postgresql.org/message-id/0605f7a2-9b26-4125-bbf0-40ecfc007ce1%40data-bene.io"
+        },
+        {
+          "index": 14,
+          "from": "Robert Haas",
+          "date": "2026-11-06T16:28:48Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmoY0vDEwDc7B9vbum_RXbeFh7OkhuyCJ3kAbkXdht49auw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #14 says new plan shapes must extend pg_plan_advice or be excluded from its scope, and that set operation planning has no advice hooks. v6 makes the tests pass but does not say which of the two it does.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Planning-time blowup recurs as in the earlier attempt",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "new_guc",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An application issues a query with several cross-relation OR arms over many joined tables. Every arm triggers a full query_planner() run with growing negated quals, so planning time and memory jump. The user sees slow or memory-heavy planning without any change in the chosen plan.",
+      "argument": "The AI summary of [P4] reports a review case with planning about 170 times slower, which got no answer. Message #5 shows a 153-second plan for nested subqueries here. v2 answered by expanding top-level queries only (message #6), and the GUC cutoff remains. Message #14 asks for graceful degradation, and the thread does not yet propose one or show planning cost near the limit.",
+      "precedent_ids": [
+        "P4"
+      ],
+      "thread_message_refs": [
+        5,
+        6,
+        14
+      ],
+      "author_must_show": "What planning time and memory does v6 show for top-level queries with 6 to 8 arms over many relations, and how does it avoid a sharp cutoff?",
+      "precedents": [
+        {
+          "id": "P4",
+          "title": "Convert join OR clauses into UNION queries",
+          "url": "https://commitfest.postgresql.org/patch/1001/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/7f70bd5a-5d16-e05c-f0b4-2fdfc8873489@BlueTreble.com"
+          ],
+          "date": "2018-10-02",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Zsolt Parragi",
+          "date": "2026-10-07T21:44:35Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFOFjDo-ACBCNuriV290%2B2kFDuUisMy10KQx71GB_t16Fw%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Ayoub Kazar",
+          "date": "2026-10-08T20:39:10Z",
+          "url": "https://www.postgresql.org/message-id/f5ac4d86-76a2-4a5d-bf5d-3be211463d84%40data-bene.io"
+        },
+        {
+          "index": 14,
+          "from": "Robert Haas",
+          "date": "2026-11-06T16:28:48Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmoY0vDEwDc7B9vbum_RXbeFh7OkhuyCJ3kAbkXdht49auw%40mail.gmail.com"
+        }
+      ],
+      "id": "prior-attempts-2",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1, which makes the same planning-cost point with the numbers from message #1 and asks for the same measurements near or_expansion_limit.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Set operation paths inside a join rel break assumptions elsewhere",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension or later planner feature walks a join rel's pathlist or the final plan and expects join paths, or Append nodes that come from partitions or UNION. It finds an UPPERREL_SETOP Append over synthetic subquery scans, and mislabels or rejects it. Users find out through wrong advice or errors such as the \"rtekind mismatch\" in message #12.",
+      "argument": "Message #12 says this transform \"has never been done in any other place\" and happens mid-planning. Message #14 says pg_plan_advice does not cover set operation planning at all, and that using set operation constructs in new places complicates it. v4 and v5 each fixed one consumer only after a test broke, which suggests other consumers will fail quietly.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        10,
+        12,
+        14
+      ],
+      "author_must_show": "Which planner components and hooks inspect join rel paths or Append nodes, and how does each one handle the new shape without breaking?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 10,
+          "from": "Ayoub Kazar",
+          "date": "2026-10-27T15:52:04Z",
+          "url": "https://www.postgresql.org/message-id/f84fdea1-a0b9-4162-97b1-435992ff3b02%40data-bene.io"
+        },
+        {
+          "index": 12,
+          "from": "Ayoub Kazar",
+          "date": "2026-10-28T01:32:38Z",
+          "url": "https://www.postgresql.org/message-id/0605f7a2-9b26-4125-bbf0-40ecfc007ce1%40data-bene.io"
+        },
+        {
+          "index": 14,
+          "from": "Robert Haas",
+          "date": "2026-11-06T16:28:48Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmoY0vDEwDc7B9vbum_RXbeFh7OkhuyCJ3kAbkXdht49auw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-3: the only consumer it names is pg_plan_advice, and the rtekind mismatch it cites was a v5 error that v6 removed. It names no other component that would break.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "Extensions that walk plan trees, such as pg_plan_advice, see an UPPERREL_SETOP Append over synthetic subquery scans in a join rel's path list."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": true,
+      "reason": "The patch adds or_expansion_limit (default 8, 0 disables)."
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": true,
+      "reason": "The planner adds an Append of per-arm plans as a competing path for queries with a cross-relation OR."
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "The patch skips expansion when security quals are present, so RLS and security barrier views are a stated exclusion."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "A query that runs on master can raise an error after upgrade when the planner picks the Append (message #9)."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "planorexpand.c clones planner state per arm and must stay in sync with PlannerInfo and with pg_plan_advice."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Each OR arm costs one extra query_planner() run, paid even when the Append is not chosen."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Where is a written argument that IS NOT TRUE exclusion and per-branch outer join reduction keep rows and multiplicity identical for every RTE kind the v6 guards allow?",
+    "How will the patch avoid new errors from arms or negated predicates that the executor does not evaluate today, such as the failing cast in message #9?",
+    "What planning time and memory does v6 show for queries with 6 to 8 arms over many relations when the Append loses?",
+    "Can a planner-internal measure bound the expansion cost, so that adding a ninth OR arm does not silently turn the plan off?",
+    "Will pg_plan_advice be able to request or forbid OR expansion and control each arm, or is expansion kept out of its scope?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Robert Haas commented in message #14 on test status, planning cost and pg_plan_advice, but has not offered to commit. The owner needs to know join planning, outer join reduction and set operation paths.",
+    "liability": "The owner signs for wrong-result risk in a new query transform, planning-time regressions, new runtime errors in existing queries, and keeping the per-arm planner copy and pg_plan_advice in sync with later planner changes, with no end date.",
+    "author_follow_up": "The author posted six versions in about five weeks in response to review, which suggests active follow-up."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "high",
+    "review_cost": "high",
+    "recommended_action": "fix design first",
+    "reason": "Message #2 says such queries are frequent and the measured gains are large, so the goal is worth reviewer time. The v6 patch is about 100 KiB in the core planner, and correctness, error behaviour and planning cost are still open, so line-by-line review is premature."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read, so the correctness of the IS NOT TRUE exclusion, the outer join reduction per arm, and the v6 guards could not be checked. Only 3 of 14 messages were shown in full; later messages are known through the brief and the objections.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:2787",
+      "kind": "cf",
+      "title": "allow partial union-all and improve parallel subquery costing",
+      "status": "Returned with feedback",
+      "date": "2021-04-08",
+      "first_date": "2020-10-13",
+      "url": "https://commitfest.postgresql.org/patch/2787/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/FRXPR01MB09021F98988B057A636AA4EEB7040@FRXPR01MB0902.DEUPRD01.PROD.OUTLOOK.DE"
+      ],
+      "authors": "Luc Vlaming (luc.vlaming)",
+      "objectors": "",
+      "summary": "The patch lets the planner build partial paths for UNION ALL so the branches can run under a parallel plan. It also changes subquery costing to account for parallelism, with a regression test and before/after plans for TPC-DS query 5.",
+      "objection": "No reviewer took up the patch during the commitfests. In March 2021 the patch no longer applied, and the entry was set to Waiting for Author. The author sent no rebased patch, so the entry was returned with feedback.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "OR expansion UNION ALL",
+        "or clause join union rewrite",
+        "OR to UNION transformation planner",
+        "union all rewrite ctid unique"
+      ],
+      "from_hint": false,
+      "score": 0.443,
+      "enriched": true,
+      "key_quote": "Since no new patch has been provided, marking this Returned with Feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/e57cbf67-cbda-831f-3e62-bbef88a831da%40pgmasters.net",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:3070",
+      "kind": "cf",
+      "title": "add explicit partial union-all and improve parallel subquery costing",
+      "status": "Returned with feedback",
+      "date": "2021-12-02",
+      "first_date": "2020-10-13",
+      "url": "https://commitfest.postgresql.org/patch/3070/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/FRXPR01MB09021F98988B057A636AA4EEB7040@FRXPR01MB0902.DEUPRD01.PROD.OUTLOOK.DE"
+      ],
+      "authors": "Luc Vlaming (luc.vlaming)",
+      "objectors": "Ronan Dunklau",
+      "summary": "The patch lets the planner build partial Append paths for UNION ALL subqueries so their branches can run in parallel. It also changes subquery scan costing to take parallel workers into account in the row estimate.",
+      "objection": "The author stopped responding after Ronan Dunklau's review asked for a regression test of the new partial append path and questioned the subquery scan row estimate change. Daniel Gustafsson closed the entry because the thread stalled with these requests unanswered. An earlier round was also closed after the patch needed a rebase and no new version came in time.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "OR expansion UNION ALL",
+        "or clause join union rewrite",
+        "OR to UNION transformation planner",
+        "union all rewrite ctid unique"
+      ],
+      "from_hint": false,
+      "score": 0.415,
+      "enriched": true,
+      "key_quote": "With the thread stalled and requests for a test (documentation really?) not\nresponded to I'm marking this patch Returned with Feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/E33DCE99-3887-479D-9D9F-8F133F98917B%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:7034",
+      "kind": "cf",
+      "title": "Rewrite undirected edge patterns in GRAPH_TABLE using UNION ALL",
+      "status": "Returned with feedback",
+      "date": "2026-09-10",
+      "first_date": "2026-07-16",
+      "url": "https://commitfest.postgresql.org/patch/7034/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/c172f9dd5704b5d32c1f573f6ac33566@data-bene.io"
+      ],
+      "authors": "Ayoub Kazar (kaz)",
+      "objectors": "Ashutosh Bapat",
+      "summary": "The patch changes the GRAPH_TABLE rewrite of undirected edge patterns (-[e]-) between the same vertex table from one OR join qual over both directions to a UNION ALL subquery on the edge table. The backward branch filters out self-loops so each edge appears once, and benchmarks showed large speedups over BitmapOr plans.",
+      "objection": "Ashutosh Bapat argued that the OR-to-UNION transformation belongs in the planner, where it would help all join-with-OR queries and could be cost based. An unconditional rewrite in the graph query rewriter would be useless once the planner does it, and misleading when statistics favour keeping the OR. The author agreed the work should move to the optimizer as a separate patch. SQL/PGQ was also reverted from master, leaving the patch nothing to apply against.",
+      "touch_points": [],
+      "matched_queries": [
+        "OR expansion UNION ALL",
+        "or clause join union rewrite",
+        "union all rewrite ctid unique"
+      ],
+      "from_hint": false,
+      "score": 0.411,
+      "enriched": true,
+      "key_quote": "If OR transformation is implemented in the query optimizer, the\nimplementation in graph query is useless and, more seriously, misleading if\nthe correct statistics were to favour retaining OR.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAExHW5tbzsgykWN3j2qtny7HpXxAWzPDY_yq_Wzcub-ZLyHXcA%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:1001",
+      "kind": "cf",
+      "title": "Convert join OR clauses into UNION queries",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2017-02-08",
+      "url": "https://commitfest.postgresql.org/patch/1001/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/7f70bd5a-5d16-e05c-f0b4-2fdfc8873489@BlueTreble.com"
+      ],
+      "authors": "Tom Lane (tgl)",
+      "objectors": "Tom Lane, Noah Misch",
+      "summary": "The planner would rewrite a query whose WHERE clause has an OR with arms that each reference a different joined relation into a UNION with one arm per relation. It removes duplicate rows by sort/unique on the CTIDs of the base relations, and it builds this as an extra path that competes on cost with the normal plan.",
+      "objection": "Tom Lane, the patch author, said he was still not convinced that the unique-ification step is correct, and he would not work on it further without a proof. Noah Misch's review, with assertion failures and a case where planning was 170 times slower and the chosen plan 4.5 times slower, got no reply for a month, so the entry was returned with feedback.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "OR expansion UNION ALL",
+        "or clause join union rewrite",
+        "OR join condition nested loop"
+      ],
+      "from_hint": false,
+      "score": 0.291,
+      "enriched": true,
+      "key_quote": "FWIW, my problem with this patch is that I remain unconvinced of the basic\ncorrectness of the transform (specifically the unique-ification approach).",
+      "quote_message_url": "https://www.postgresql.org/message-id/7872.1538443930%40sss.pgh.pa.us",
+      "relevant": true
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:5674",
+      "kind": "cf",
+      "title": "Add \"\\gi file\" to psql to allow COPY with variable expansion",
+      "status": "Returned with feedback",
+      "date": "2025-06-17",
+      "first_date": "2025-03-31",
+      "url": "https://commitfest.postgresql.org/patch/5674/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/PR0P264MB43008330C5069ED01C89DBE7ABAD2@PR0P264MB4300.FRAP264.PROD.OUTLOOK.COM"
+      ],
+      "authors": "Fabien Coelho (calvin)",
+      "objectors": "Andres Freund",
+      "summary": "The patch first let psql's \\copy expand :-variables in table and file names. After Tom Lane objected to the implementation, it became a new \\gi file (or \\gi command|) meta-command that sends a SQL COPY ... FROM STDIN with input from a file or program, and \\copy was rewritten on top of the \\g and \\gi code.",
+      "objection": "The cfbot tests for the \\gi patch failed for weeks, and the cfbot log included a core dump. Andres Freund reported this on 2025-05-13, and no fixed version was posted. He marked the entry returned with feedback on 2025-06-17.",
+      "touch_points": [
+        "psql"
+      ],
+      "matched_queries": [
+        "OR expansion UNION ALL",
+        "or_expansion_limit"
+      ],
+      "from_hint": false,
+      "score": 0.236,
+      "enriched": true,
+      "key_quote": "However, the tests have not passed in quite a while:",
+      "quote_message_url": "https://www.postgresql.org/message-id/xewvihwpatqsijvhwmn4rhv7tkhwybclv3nzumznakvgvddzzw%40nayo5gkfuugv",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:2614",
+      "kind": "cf",
+      "title": "Add table expansion hook",
+      "status": "Returned with feedback",
+      "date": "2021-09-13",
+      "first_date": "2020-05-07",
+      "url": "https://commitfest.postgresql.org/patch/2614/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CACAa4VJ_DG3jHCRo8vvrB+9bT+SQ1szobD3NseFniURQM25HSg@mail.gmail.com"
+      ],
+      "authors": "Erik Nordström (enordstr)",
+      "objectors": "Tom Lane, Amit Langote",
+      "summary": "Add a planner hook that lets an extension replace or wrap expand_inherited_rtentry(), so it can do its own table expansion and partition pruning. TimescaleDB and HypoPG wanted it because Postgres 12 moved expansion to a later point, where the get_relation_info hook could no longer control it.",
+      "objection": "Tom Lane doubted that an extension could replace expand_inherited_rtentry() without copying large parts of the mostly static code in inherit.c, and he asked for a worked-out example of the hook in use. Amit Langote added that the v12 and later expansion code adds row identity and junk columns, which a replacement would also have to reproduce. No example arrived and the thread was inactive after May 2021, so Jaime Casanova returned the entry with feedback.",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "OR expansion UNION ALL",
+        "or_expansion_limit"
+      ],
+      "from_hint": false,
+      "score": 0.236,
+      "enriched": true,
+      "key_quote": "Would it be unreasonable of us to ask for a worked-out example making\nuse of the proposed hook?  That'd go a long way towards resolving the\nquestion of whether you can do anything useful without duplicating\nlots of code.",
+      "quote_message_url": "https://www.postgresql.org/message-id/1570777.1615054150%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:4715",
+      "kind": "cf",
+      "title": "Union Replacement of OR logic",
+      "status": "Rejected",
+      "date": "2024-07-24",
+      "first_date": "2023-07-03",
+      "url": "https://commitfest.postgresql.org/patch/4715/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAE-ML+9r2=aO1wwji1sBN9gvPz2xRAtFUGfnffpd0ZqyuzjamA@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "The entry title names a replacement of OR logic with UNION, but the shown messages belong to a different thread, \"brininsert optimization opportunity\". That thread proposes keeping the BRIN revmap access struct across inserts and cleaning it up through a new aminsertcleanup callback, and the shown messages do not describe the OR proposal.",
+      "objection": "The visible messages do not show why. The shown thread ends with Tomas Vondra pushing the brininsert fix patches, and none of the messages discuss the OR-to-UNION proposal or its rejection.",
+      "touch_points": [],
+      "matched_queries": [
+        "OR expansion UNION ALL",
+        "OR to UNION transformation planner"
+      ],
+      "from_hint": false,
+      "score": 0.225,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:4320",
+      "kind": "cf",
+      "title": "doc: Add some OID/TOAST-related limitations to the limits appendix.",
+      "status": "Withdrawn",
+      "date": "2023-06-13",
+      "first_date": "2023-04-21",
+      "url": "https://commitfest.postgresql.org/patch/4320/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKZiRmwWhp2yxjqJLwbBjHdfbJBcUmmKMNAZyBjjtpgM9AMatQ@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "John Naylor",
+      "summary": "The patch adds a note to the limits appendix that a table can hold at most 4,294,967,296 out-of-line TOAST values, and that OID searches slow down inserts as the OID space fills. It also adds rows on the size and number of large objects in pg_largeobject.",
+      "objection": "The visible messages do not show why it was withdrawn. The last message is a second review from John Naylor that asks for more edits, and no author reply follows. He found the large object rows wrong (OIDs limit the number of large objects, not table size) and wanted the vacuum and partitioning advice removed.",
+      "touch_points": [],
+      "matched_queries": [
+        "disjunction join append path",
+        "or_expansion_limit"
+      ],
+      "from_hint": false,
+      "score": 0.194,
+      "enriched": true,
+      "key_quote": "We don't need to tell people to vacuum, and we don't need to tell them about partitioning as a workaround -- it's a workaround for the table size limit, too, but we are just documenting the limits here.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAFBsxsEACdLoxS72TVfwd239ePymMTBmdJ3J%2BSO706fU9YqbZg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:2769",
+      "kind": "cf",
+      "title": "parallel distinct union and aggregate support patch",
+      "status": "Returned with feedback",
+      "date": "2021-11-08",
+      "first_date": "2020-10-19",
+      "url": "https://commitfest.postgresql.org/patch/2769/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2020101922424962544053@sohu.com"
+      ],
+      "authors": "bucoo hsiao (bucoo)",
+      "objectors": "",
+      "summary": "parallel distinct union and aggregate support patch\nThreads: parallel distinct union and aggregate support patch",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "OR expansion UNION ALL",
+        "union all rewrite ctid unique"
+      ],
+      "from_hint": false,
+      "score": 0.162,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:4929",
+      "kind": "cf",
+      "title": "apply_scanjoin_target_to_paths and partitionwise join",
+      "status": "Returned with feedback",
+      "date": "2025-01-13",
+      "first_date": "2024-04-11",
+      "url": "https://commitfest.postgresql.org/patch/4929/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAExHW5toze58+jL-454J3ty11sqJyU13Sz5rJPQZDmASwZgWiA@mail.gmail.com"
+      ],
+      "authors": "Ashutosh Bapat (ashutoshbapat)",
+      "objectors": "",
+      "summary": "apply_scanjoin_target_to_paths and partitionwise join\nThreads: apply_scanjoin_target_to_paths and partitionwise join",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "disjunction join append path"
+      ],
+      "from_hint": false,
+      "score": 0.144,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:4253",
+      "kind": "cf",
+      "title": "Improve the performance of nested loop join in the case of partitioned inner table",
+      "status": "Returned with feedback",
+      "date": "2023-08-01",
+      "first_date": "2023-03-23",
+      "url": "https://commitfest.postgresql.org/patch/4253/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHdr9ueefdCCCq1mXAYfLmRgEKfhWQDCU7=XmureEAzJcOwfag@mail.gmail.com"
+      ],
+      "authors": "Alexandr Nikulin (anikulin)",
+      "objectors": "",
+      "summary": "Improve the performance of nested loop join in the case of partitioned inner table\nThreads: Improve the performance of nested loop join in the case of\npartitioned inner table",
+      "objection": "",
+      "touch_points": [
+        "planner",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "OR join condition nested loop"
+      ],
+      "from_hint": false,
+      "score": 0.139,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:3811",
+      "kind": "cf",
+      "title": "pg_get_constraintdef: Schema qualify foreign tables unless pretty printing is enabled",
+      "status": "Returned with feedback",
+      "date": "2022-11-30",
+      "first_date": "2022-08-10",
+      "url": "https://commitfest.postgresql.org/patch/3811/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAP53PkyRA9z5Sg2WKgTZ1NmTLcqA5VR_MRAWFcUWrjAjMwwcmw@mail.gmail.com"
+      ],
+      "authors": "Lukas Fittl (lfittl)",
+      "objectors": "",
+      "summary": "pg_get_constraintdef: Schema qualify foreign tables unless pretty printing is enabled\nThreads: pg_get_constraintdef: Schema qualify foreign tables unless pretty\nprinting is enabled",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "star schema OR dimension tables"
+      ],
+      "from_hint": false,
+      "score": 0.137,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:6820",
+      "kind": "cf",
+      "title": "pg_stat_lock: add blocker mode dimension",
+      "status": "Withdrawn",
+      "date": "2026-08-13",
+      "first_date": "2026-05-31",
+      "url": "https://commitfest.postgresql.org/patch/6820/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHza6qcu797ENAGFQftdTzYKMHdD7CktaVptc+Ex4xg_4F7HkA@mail.gmail.com"
+      ],
+      "authors": "Tatsuya Kawata (croissant)",
+      "objectors": "",
+      "summary": "pg_stat_lock: add blocker mode dimension\nThreads: [PATCH] pg_stat_lock: add blocker mode dimension",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "star schema OR dimension tables"
+      ],
+      "from_hint": false,
+      "score": 0.136,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:2023",
+      "kind": "cf",
+      "title": "NOT IN to ANTI JOIN transformation",
+      "status": "Returned with feedback",
+      "date": "2020-04-08",
+      "first_date": "2019-02-20",
+      "url": "https://commitfest.postgresql.org/patch/2023/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1550706289606-0.post@n3.nabble.com",
+        "https://www.postgresql.org/message-id/flat/61BFFE8C-F884-4936-BB28-0098283F4719@amazon.com"
+      ],
+      "authors": "James Finnerty (jimfinnerty), Zheng Li (zhengli)",
+      "objectors": "",
+      "summary": "NOT IN to ANTI JOIN transformation\nThreads: NOT IN subquery optimization; Re: NOT IN subquery optimization",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "OR to UNION transformation planner"
+      ],
+      "from_hint": false,
+      "score": 0.128,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:6602",
+      "kind": "cf",
+      "title": "rewriteGraphTable: Fix missing RTEs in FROM clause by setting inFromCl=true",
+      "status": "Withdrawn",
+      "date": "2026-09-10",
+      "first_date": "2026-03-20",
+      "url": "https://commitfest.postgresql.org/patch/6602/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/tencent_04E75647691D8F0F4B9561B1@qq.com"
+      ],
+      "authors": "Man Zeng (zengman)",
+      "objectors": "",
+      "summary": "rewriteGraphTable: Fix missing RTEs in FROM clause by setting inFromCl=true\nThreads: rewriteGraphTable: Fix missing RTEs in FROM clause by setting inFromCl=true",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "or clause join union rewrite"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:2765",
+      "kind": "cf",
+      "title": "Add extra statistics to explain for Nested Loop",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2020-10-16",
+      "url": "https://commitfest.postgresql.org/patch/2765/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/f6490a9dec1b97118ac5a8509f095877@postgrespro.ru",
+        "https://www.postgresql.org/message-id/flat/ae576cac3f451d318374f2a2e494aab1@postgrespro.ru"
+      ],
+      "authors": "Justin Pryzby (justinpryzby), Ekaterina Sokolova (e.sokolova)",
+      "objectors": "",
+      "summary": "Add extra statistics to explain for Nested Loop\nThreads: [PATCH] Add extra statistics to explain for Nested Loop; Re: [PATCH] Add extra statistics to explain for Nested Loop",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "OR join condition nested loop"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:2588",
+      "kind": "cf",
+      "title": "Hashjoin fall back to block nested hashloop join",
+      "status": "Withdrawn",
+      "date": "2020-11-10",
+      "first_date": "2019-05-16",
+      "url": "https://commitfest.postgresql.org/patch/2588/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGKWWmf=WELLG=aUGbcugRaSQbtm0tKYiBut-B2rVKX63g@mail.gmail.com"
+      ],
+      "authors": "Melanie Plageman (melanieplageman), Soumyadeep Chakraborty (soumyadeep2007), Jesse Zhang (essej), David Kimura (dgkimura)",
+      "objectors": "",
+      "summary": "Hashjoin fall back to block nested hashloop join\nThreads: Avoiding hash join batch explosions with extreme skew and weird stats",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "OR join condition nested loop"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:929",
+      "kind": "cf",
+      "title": "Parallel Append implementation",
+      "status": "Returned with feedback",
+      "date": "2017-02-01",
+      "first_date": "2016-12-23",
+      "url": "https://commitfest.postgresql.org/patch/929/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJ3gD9dy0K_E8r727heqXoBmWZ83HwLFwdcaSSmBQ1+S+vRuUQ@mail.gmail.com"
+      ],
+      "authors": "Amit Khandekar (amitdkhan)",
+      "objectors": "",
+      "summary": "Parallel Append implementation\nThreads: Parallel Append implementation",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "disjunction join append path"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:2241",
+      "kind": "cf",
+      "title": "New GUC prepared_statement_limit to limit memory used by prepared statements",
+      "status": "Returned with feedback",
+      "date": "2019-11-28",
+      "first_date": "2019-08-17",
+      "url": "https://commitfest.postgresql.org/patch/2241/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ed51c14c-b3ff-5e2e-962c-69ac3ccb2c07@ikoffice.de"
+      ],
+      "authors": "Daniel Migowski (dmigowski)",
+      "objectors": "",
+      "summary": "New GUC prepared_statement_limit to limit memory used by prepared statements\nThreads: Patch: New GUC prepared_statement_limit to limit memory used by\nprepared statements",
+      "objection": "",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "or_expansion_limit"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:6246",
+      "kind": "cf",
+      "title": "Remove ctid from self-join examples in UPDATE and DELETE docs",
+      "status": "Withdrawn",
+      "date": "2026-01-16",
+      "first_date": "2025-11-20",
+      "url": "https://commitfest.postgresql.org/patch/6246/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEDh4nzmurbfsgznkpTGhi=A9jHbamrxWwekD5v0u8-o5phfww@mail.gmail.com"
+      ],
+      "authors": "Bernice Southey (fyrefreez)",
+      "objectors": "",
+      "summary": "Remove ctid from self-join examples in UPDATE and DELETE docs\nThreads: [PATCH] Remove ctid from self-join examples in UPDATE and DELETE docs",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "union all rewrite ctid unique"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:5422",
+      "kind": "cf",
+      "title": "[PERF] Improve Cardinality Estimation for Joins with GROUP BY Having Single Clause",
+      "status": "Withdrawn",
+      "date": "2025-04-06",
+      "first_date": "2024-11-27",
+      "url": "https://commitfest.postgresql.org/patch/5422/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1936dbf4b8d.b32ac0029858.4190526705225323910@zohocorp.com"
+      ],
+      "authors": "Ravi Revathy (revathyraavi)",
+      "objectors": "",
+      "summary": "[PERF] Improve Cardinality Estimation for Joins with GROUP BY Having Single Clause\nThreads: [PERF] Improve Cardinality Estimation for Joins with GROUP BY\nHaving Single Clause",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "or clause join union rewrite"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:2829",
+      "kind": "cf",
+      "title": "Make Append Cost aware of some run time partition prune case",
+      "status": "Returned with feedback",
+      "date": "2021-11-04",
+      "first_date": "2020-11-10",
+      "url": "https://commitfest.postgresql.org/patch/2829/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKU4AWp6Z087YCQj4uN69Ct61arCtcABYNgU_7Mv1Gu-grVjHw@mail.gmail.com"
+      ],
+      "authors": "Andy Fan (andyf)",
+      "objectors": "",
+      "summary": "Make Append Cost aware of some run time partition prune case\nThreads: Make Append Cost aware of some run time partition prune case",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "disjunction join append path"
+      ],
+      "from_hint": false,
+      "score": 0.103,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:1621",
+      "kind": "cf",
+      "title": "ALTER TABLE - check for column existence before starting operations",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2018-03-02",
+      "url": "https://commitfest.postgresql.org/patch/1621/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1897070.0DItnajBuJ@pierred-pdoc"
+      ],
+      "authors": "Pierre Ducroquet (pinaraf)",
+      "objectors": "",
+      "summary": "ALTER TABLE - check for column existence before starting operations\nThreads: ALTER TABLE does not check for column existence before starting operations",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "star schema OR dimension tables"
+      ],
+      "from_hint": false,
+      "score": 0.103,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:1752",
+      "kind": "cf",
+      "title": "libpq should append error messages, not overwrite",
+      "status": "Returned with feedback",
+      "date": "2018-10-01",
+      "first_date": "2018-08-09",
+      "url": "https://commitfest.postgresql.org/patch/1752/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6700.1533829467@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane (tgl)",
+      "objectors": "",
+      "summary": "libpq should append error messages, not overwrite\nThreads: libpq should append auth failures, not overwrite",
+      "objection": "",
+      "touch_points": [
+        "wire protocol / libpq",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "disjunction join append path"
+      ],
+      "from_hint": false,
+      "score": 0.103,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 6,
+    "new_calls": 2,
+    "failed": 0,
+    "quotes_verified": 2,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 3
+  },
+  "precedent_cutoff": "2026-10-07",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 2,
+      "note": "[P7] gives no usable reason, so it is not used. The [P3] reason is resolved by this proposal."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "Three objections found within the standards and compatibility angle."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The proposal changes only planning: it adds a GUC and a new Append path shape built inside one backend. It touches no on-disk format, WAL record, catalog, or wire protocol message, and the file list shows no struct change in the extension API, so this angle has no objection. Extensions that walk plan trees, such as pg_plan_advice, may see a new plan shape. Other panel members cover that."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal skips security quals, so RLS tables and security barrier views keep the normal plan, and arms only see columns the user may already read. Planning cost is a resource issue already reachable through join_collapse_limit, and the short-circuit errors involve only data the user can read."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "Objections listed above."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "Hand-written UNION ALL with IS NOT TRUE guards is the only existing alternative, and generated SQL such as SQL/PGQ undirected edges and ORMs cannot use it. A cost-based choice also needs the planner; [P3] moved the work out of the rewriter for that reason, and messages #2 and #14 welcome the feature. BitmapOr and the OR-to-ANY conversion cover only single-relation ORs."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "The material shows real demand: Tom Lane wrote a patch for the same transform in 2017 [P4], David Geier reports such queries occur frequently (message #2), and Robert Haas says he would like the feature (message #14). The SQL/PGQ undirected-edge case and the star-schema case are concrete workloads with large measured gains, so the open problems belong to design and correctness, not demand."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 8,
+      "new_survived": 6,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 91,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 14,
+    "wall_ms": 144596,
+    "cost_usd": 2.1664318000000002,
+    "dry_run": false
+  }
+}

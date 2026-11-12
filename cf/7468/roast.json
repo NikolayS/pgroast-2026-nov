@@ -1,0 +1,1031 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:58:37.609Z",
+  "input": {
+    "arg": "7468",
+    "cf": {
+      "id": 7468,
+      "url": "https://commitfest.postgresql.org/patch/7468/",
+      "title": "Perf: Specialize ExecIndexOnlyScan() like ExecSeqScan()",
+      "status": "Needs review",
+      "authors": "Matthias Dötsch (brain.exe)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/3684e94b-3077-4430-94d9-e5411aa5f110%40mdoetsch.de",
+    "subject": "Perf: Specialize ExecIndexOnlyScan() like ExecSeqScan()",
+    "thread_start": "2026-10-14T10:36:49Z",
+    "messages_read": 7,
+    "messages_total": 7,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v3-0001-Add-isolation-test-for-an-index-only-scan-under-E.patch",
+      "v3-0002-Specialize-ExecIndexOnlyScan-like-ExecSeqScan.patch",
+      "v2-0001-Specialize-ExecIndexOnlyScan-like-ExecSeqScan.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NO-FUNDAMENTAL-OBJECTION",
+  "confidence": "medium",
+  "verdict_reasoning": "No objection survived the critic. The only one raised, maintenance-fit-1, was refuted: the EPQ, qual and projection logic stays in the shared ExecScanExtended(), and the patch adds one copy of the committed SeqScan pattern in one file. The problem is stated with measurements, and the cost falls only on nodeIndexonlyscan.c. Confidence is medium because the code was not read and wall-clock gains depend on code layout.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Specialize ExecIndexOnlyScan() into per-case variants like ExecSeqScan()",
+    "problem": "Each tuple of an index-only scan goes through the out-of-line ExecScan(). It pays for an indirect call to IndexOnlyNext() and for runtime EPQ, qual and projection checks. The author saw this cost in perf profiles of a workload heavy in index-only scans.",
+    "proposed_design": "The patch adds ExecIndexOnlyScan variants for no qual or projection, qual, projection, both, and EPQ, and ExecInitIndexOnlyScan() picks one. Each variant passes const NULLs to the inline ExecScanExtended(), and IndexOnlyNext() becomes pg_always_inline; the EPQ variant still calls ExecScan(). A separate patch adds an isolation test for an index-only scan under EPQ.",
+    "user_visible_surface": [],
+    "author_claims": [
+      "Callgrind shows about 5 to 6% fewer executed instructions on a 1M-row index-only range scan, with and without qual or projection.",
+      "Wall-clock time drops by about 3 to 11%, but code layout alone moves it by several percent.",
+      "With LTO the patch still saves about 5% instructions on top of the LTO gain.",
+      "With JIT the instruction savings are the same as without JIT.",
+      "For a nested loop with an inner index-only scan the gain is under 1% instructions, within noise on wall-clock."
+    ],
+    "thread_state": "Andres Freund argued that LTO, PGO and batching cannot replace the specialization, and Haibo Yan withdrew his concerns after his own tests and contributed the EPQ test. David Geier supports the change and asks to extend it to other scan nodes, possibly with a shared abstraction.",
+    "unclear": [
+      "The proposal does not say whether IndexScan and BitmapHeapScan will get the same treatment, or whether the boilerplate should be shared.",
+      "Haibo Yan saw the qual-case latency gain vanish with 64-byte function alignment; no one has shown which layout represents real builds.",
+      "Benchmarks cover only gcc on x86-64; clang and ARM results are missing.",
+      "The EPQ isolation test author line is still open, since Haibo Yan declined credit but v3-0001 names him."
+    ],
+    "search_queries": [
+      "specialize ExecScan executor node",
+      "ExecSeqScan specialization variants",
+      "index only scan executor performance",
+      "ExecScanExtended inline qual projection",
+      "avoid indirect call executor scan",
+      "IndexOnlyNext inline",
+      "executor per-tuple overhead specialization",
+      "EvalPlanQual index only scan test"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Per-node copies of scan variants before a shared pattern is agreed",
+      "level": "2",
+      "rubric_item": 5,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After IndexOnlyScan, the same five-variant block is copied into IndexScan, BitmapHeapScan and other ExecScan() users, as message #7 suggests. A later patch that changes how scan nodes check EPQ, quals or runtime keys must then update each copy and each init-time choice. A missed copy builds and passes the tests, and the result is either a silent loss of the gain or a variant whose pg_assume() no longer holds.",
+      "argument": "The patch copies the SeqScan precedent, which counts in its favour, but it makes that precedent a pattern with two users and no shared helper. Message #1 shows that the pattern carries a non-obvious ordering rule: runtime-key setup must come before pg_assume(), and getting it wrong only duplicates code, so nothing fails loudly. Message #7 asks for a shared abstraction and nobody in the thread has answered it. Settling this before a second copy lands is cheaper than refactoring three copies later.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        7
+      ],
+      "author_must_show": "Can the variant selection and pg_assume() setup be put in a shared macro or helper that IndexScan and BitmapHeapScan could reuse, or why should IndexOnlyScan go in first without one?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Matthias Dötsch",
+          "date": "2026-10-14T10:36:49Z",
+          "url": "https://www.postgresql.org/message-id/3684e94b-3077-4430-94d9-e5411aa5f110%40mdoetsch.de"
+        },
+        {
+          "index": 7,
+          "from": "David Geier",
+          "date": "2026-10-16T11:37:40Z",
+          "url": "https://www.postgresql.org/message-id/15c1a75f-36dc-411e-b5b6-93ebce0a35e6%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The EPQ, qual and projection logic stays in the shared ExecScanExtended(), and a false pg_assume() trips an assertion in cassert builds. The scenario depends on later patches for other nodes; this patch adds one copy of the committed SeqScan pattern, and a missed ordering rule only loses the gain.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "The patch adds five ExecIndexOnlyScan variants and an ordering rule between runtime-key setup and pg_assume() in nodeIndexonlyscan.c."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "The patch changes the per-tuple path of every index-only scan and grows its code from about 0.6 kB to 3.5 kB."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Does the instruction and wall-clock gain hold with clang and on ARM, since the benchmarks cover only gcc on x86-64?",
+    "Which function alignment represents real builds, given that the qual-case latency gain vanished with 64-byte alignment in Haibo Yan's test?",
+    "Is this patch meant to stand alone, or will IndexScan and BitmapHeapScan follow, and if so with a shared helper as message #7 asks?",
+    "What is the gain on the production workload that showed ExecScan() in the perf profiles?",
+    "Who should the author line of the EPQ isolation test in v3-0001 name?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Andres Freund defended the specialization against the LTO, PGO and batching concerns in message #3; an executor committer would have to own the commit.",
+    "liability": "The owner signs for correct variant selection in ExecInitIndexOnlyScan(), for pg_assume() calls that stay true, and for the EPQ path, for as long as the SeqScan pattern exists.",
+    "author_follow_up": "The author offered to write the EPQ isolation test in message #1 and posted v3 with further measurements; this is a first patch, so there is no longer record."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "low",
+    "review_cost": "low",
+    "recommended_action": "proceed",
+    "reason": "Index-only scans are common, but the gain is about 5% of instructions on long range scans and under 1% for a nested loop with an inner index-only scan. The patch is 7.8 KB in one executor file, copies committed SeqScan practice, and adds an EPQ isolation test."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, nobody here checked that each variant evaluates the quals and projection it must, or that every pg_assume() holds after the runtime-key setup. The new EPQ isolation test's coverage of the variant selection was also not checked.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:3672",
+      "kind": "cf",
+      "title": "nbtree performance improvements through specialization on key shape",
+      "status": "Withdrawn",
+      "date": "2026-10-01",
+      "first_date": "2022-06-05",
+      "url": "https://commitfest.postgresql.org/patch/3672/",
+      "thread_urls": [],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "",
+      "summary": "nbtree performance improvements through specialization on key shape",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "specialize ExecScan executor node",
+        "ExecSeqScan specialization variants",
+        "executor per-tuple overhead specialization"
+      ],
+      "from_hint": false,
+      "score": 0.38,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "revert:9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "kind": "revert",
+      "title": "Fix index-only scan plans, take 2.",
+      "status": "Partially reverted",
+      "date": "2022-01-03",
+      "first_date": "2022-01-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3179992.1641150853@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/17350-b5bdcf476e5badbb@postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Fix index-only scan plans, take 2.\nReverted commit(s): Fix index-only scan plans when not all index columns can be returned.",
+      "objection": "Commit 4ace45677 failed to fix the problem fully, because the\nsame issue of attempting to fetch a non-returnable index column\ncan occur when rechecking the indexqual after using a lossy index\noperator.  Moreover, it broke EXPLAIN for such indexquals (which\nindicates a gap in our test cases :-().\n\nRevert the code changes of 4ace45677 in favor of adding a new field\nto struct IndexOnlyScan, containing a version of the indexqual that\ncan be executed against the index-returned tuple without using any\nnon-returnable columns.  (The restrictions imposed by check_index_only\nguarantee this is possible, although we may have to recompute indexed\nexpressions.)  Support construction of that during setrefs.c\nprocessing by marking IndexOnlyScan.indextlist entries as resjunk\nif they can't be returned, rather than removing them entirely.\n(We could alternatively require setrefs.c to look up the IndexOptInfo\nagain, but abusing resjunk this way seems like a reasonably safe way\nto avoid needing to do that.)\n\nThis solution isn't great from an API-stability standpoint: if there\nare any extensions out there that build IndexOnlyScan structs directly,\nthey'll be broken in the next minor releases.  However, only a very\ninvasive extension would be likely to do such a thing.  There's no\nchange in the Path representation, so typical planner extensions\nshouldn't have a problem.\n\nAs before, back-patch to all supported branches.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "index only scan executor performance",
+        "avoid indirect call executor scan",
+        "EvalPlanQual index only scan test"
+      ],
+      "from_hint": false,
+      "score": 0.335,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:6255",
+      "kind": "cf",
+      "title": "Minor refactor of ExecScanExtended()",
+      "status": "Withdrawn",
+      "date": "2026-04-01",
+      "first_date": "2025-11-07",
+      "url": "https://commitfest.postgresql.org/patch/6255/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/tencent_521639454FA60ECFE200D82E2F54AAB0BA05@qq.com"
+      ],
+      "authors": "ChangAo Chen (chenchangao)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch moves the ResetExprContext() call in ExecScanExtended() ahead of the early return taken when there is no qual and no projection. This removes one duplicated call and changes no behaviour.",
+      "objection": "Michael Paquier said the change brings no benefit and the current code is fine, though two other posters gave +1. The entry was withdrawn the following week, and no later message is shown.",
+      "touch_points": [],
+      "matched_queries": [
+        "specialize ExecScan executor node",
+        "ExecScanExtended inline qual projection"
+      ],
+      "from_hint": false,
+      "score": 0.296,
+      "enriched": true,
+      "key_quote": "There is no benefit in this change: the current code is fine.",
+      "quote_message_url": "https://www.postgresql.org/message-id/acNBP8uT8tMWz5mu%40paquier.xyz",
+      "relevant": true
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:3543",
+      "kind": "cf",
+      "title": "Preventing indirection for IndexPageGetOpaque for known-size page special areas",
+      "status": "Rejected",
+      "date": "2022-11-30",
+      "first_date": "2022-02-16",
+      "url": "https://commitfest.postgresql.org/patch/3543/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2WjE3+tGO9Fs9+iZMU+z6mMZKo54W1Zt98WKqbEUHbHOBg@mail.gmail.com"
+      ],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "Tom Lane, Michael Paquier",
+      "summary": "The patch set adds a macro PageGetSpecialOpaque that finds an index page's opaque struct at a fixed offset from the page end, computed from BLCKSZ and the struct size, instead of reading pd_special. It also adds typed accessor macros for the btree and hash opaque areas, like those in GIN and GiST.",
+      "objection": "Tom Lane, siding with Robert Haas, rejected the remaining fixed-offset part because it gives up page layout flexibility that may be needed later, for example for a per-page nonce. He also saw no hard evidence of a performance gain. Michael Paquier no longer wanted to switch from the page header to the opaque struct size, and Tom Lane rejected an alternative assertion-only check as redundant with _bt_checkpage.",
+      "touch_points": [],
+      "matched_queries": [
+        "specialize ExecScan executor node",
+        "ExecSeqScan specialization variants",
+        "avoid indirect call executor scan"
+      ],
+      "from_hint": false,
+      "score": 0.269,
+      "enriched": true,
+      "key_quote": "It gives up page layout flexibility that\nwe might want back someday.  Moreover, I didn't see any hard evidence\noffered that there's any actual performance gain, let alone such a\ncompelling gain that we should give up that flexibility for it.",
+      "quote_message_url": "https://www.postgresql.org/message-id/765514.1669674710%40sss.pgh.pa.us",
+      "relevant": true
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:2fd6a44ad5744905e9ceacef7aaf698f608e6adb",
+      "kind": "revert",
+      "title": "Revert \"Specialize MemoryContextMemAllocated().\"",
+      "status": "Reverted",
+      "date": "2020-03-19",
+      "first_date": "2020-03-18",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=2fd6a44ad5744905e9ceacef7aaf698f608e6adb",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ec63d70b668818255486a83ffadc3aec492c1f57.camel@j-davis.com"
+      ],
+      "authors": "Jeff Davis",
+      "objectors": "",
+      "summary": "Revert \"Specialize MemoryContextMemAllocated().\"\nReverted commit(s): Specialize MemoryContextMemAllocated().",
+      "objection": "This reverts commit e00912e11a9ec2d29274ed8a6465e81385906dc2.",
+      "touch_points": [],
+      "matched_queries": [
+        "specialize ExecScan executor node",
+        "ExecSeqScan specialization variants"
+      ],
+      "from_hint": false,
+      "score": 0.235,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:4313",
+      "kind": "cf",
+      "title": "Allow direct lookups of SpecialJoinInfo by ojrelid",
+      "status": "Withdrawn",
+      "date": "2023-09-06",
+      "first_date": "2023-05-04",
+      "url": "https://commitfest.postgresql.org/patch/4313/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMbWs4_EyKimsqkkBAddEW8n1YyPjQd4gmnwYqqHHAUjKkBVQw@mail.gmail.com"
+      ],
+      "authors": "Richard Guo (richardguo)",
+      "objectors": "",
+      "summary": "The patch adds join_info_array to PlannerInfo so the planner can look up a SpecialJoinInfo directly by its outer-join relid instead of scanning join_info_list. It uses the lookup in clause_is_computable_at(), have_unsafe_outer_join_ref(), make_outerjoininfo(), check_redundant_nullability_qual() and get_join_domain_min_rels().",
+      "objection": "The author withdrew the patch because he could not build a test case that shows a performance gain. He judged that cases helped by direct lookups are rare and the code is not on a critical path. No reviewer replied in the thread.",
+      "touch_points": [],
+      "matched_queries": [
+        "specialize ExecScan executor node",
+        "ExecSeqScan specialization variants"
+      ],
+      "from_hint": false,
+      "score": 0.224,
+      "enriched": true,
+      "key_quote": "My best guess is that situations that can benefit from direct lookups of\nSpecialJoinInfo are pretty rare, and the related codes are not in the\ncritical path.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAMbWs49rGgCwEdLSjUJ6eOt6CUsq9weHQ8bo0%2BTQFNjmxobprQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:738",
+      "kind": "cf",
+      "title": "Index Only Scan for index expressions",
+      "status": "Returned with feedback",
+      "date": "2016-09-28",
+      "first_date": "2016-08-15",
+      "url": "https://commitfest.postgresql.org/patch/738/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/57B23C4F.7000304@postgrespro.ru"
+      ],
+      "authors": "Ildar Musin (i.musin)",
+      "objectors": "Vladimir Sitnikov, Robert Haas",
+      "summary": "The patch extends the planner so that index-only scans can be used when a query's target list or restriction clauses contain expressions that exactly match index expression columns, not only plain attribute columns. Matching requires the expression tree (or a subtree) to be identical to the index expression; no normalization of commutative or associative operators is attempted.",
+      "objection": "Testing of the sixth patch version by Vladimir Sitnikov found an error (\"variable not found in subplan target list\") when queries access non-indexed columns alongside an expression index. Robert Haas marked the entry Returned with Feedback because these bugs precluded committing it before the CommitFest ended, while inviting resubmission and saying the effort was good.",
+      "touch_points": [],
+      "matched_queries": [
+        "index only scan executor performance",
+        "EvalPlanQual index only scan test"
+      ],
+      "from_hint": false,
+      "score": 0.222,
+      "enriched": true,
+      "key_quote": "Based on this report, this patch appears to have bugs that would\npreclude committing it, so I'm marking it \"Returned with Feedback\" for\nthis CommitFest, which is due to end shortly.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoaiYuarPYv2BWrXG-7XZ1EX75guirx2kTXQY0HxtD%3DWuw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:5542",
+      "kind": "cf",
+      "title": "Fix buffer pinning logic/visibility bugs in [SP-]Gist Index-Only Scans",
+      "status": "Withdrawn",
+      "date": "2026-06-08",
+      "first_date": "2021-11-03",
+      "url": "https://commitfest.postgresql.org/patch/5542/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAH2-Wz=PqOziyRSrnN5jAtfXWXY7-BJcHz9S355LH8Dt=5qxWQ@mail.gmail.com"
+      ],
+      "authors": "Peter Geoghegan (pgeoghegan), Michail Nikolaev (nkey), Matthias van de Meent (mmeent), Mihail Nikalayeu (mihailnikalayeu)",
+      "objectors": "",
+      "summary": "The patch fixes a race in GiST and SP-GiST index-only scans, where concurrent VACUUM can remove a TID and set the visibility map bit before the scan checks it, so a dead tuple is returned. Later versions drop the idea of holding pins on index pages: they add a table AM API (table_index_vischeck_tuples) so the index AM checks the visibility map while it still holds the page pin, and they also change nbtree to use it.",
+      "objection": "The visible messages do not show why. The last visible message (v14, December 2025) only fixes a CFBot failure, and the entry was withdrawn about six months later with no visible objection or explanation. The author had moved a backpatchable version of the fix to a separate thread.",
+      "touch_points": [],
+      "matched_queries": [
+        "index only scan executor performance",
+        "EvalPlanQual index only scan test"
+      ],
+      "from_hint": false,
+      "score": 0.213,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:3163",
+      "kind": "cf",
+      "title": "Use tuple-level SIREAD locks for index-only scans",
+      "status": "Returned with feedback",
+      "date": "2021-12-02",
+      "first_date": "2018-05-13",
+      "url": "https://commitfest.postgresql.org/patch/3163/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEepm=2GK3FVdnt5V3d+h9njWipCv_fNL=wjxyUhzsF=0PcbNg@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Index-only scans that skip the heap would take tuple-level SIREAD locks instead of locking the whole heap page, with a fix to the outdated comment in nodeIndexonlyscan.c. A later experimental patch also skipped the btree page lock when the scan uses equality quals on all key columns of a unique index.",
+      "objection": "The patch stopped applying after a collision in the test files, and Daniel Gustafsson asked for a rebased version. No new version appears in the visible messages, so the entry was returned with feedback. Earlier, David Rowley found that deferrable unique constraints broke the btree lock skip, and Thomas Munro fixed that case in v4. Thomas Munro was still unsure the fix covered every case.",
+      "touch_points": [],
+      "matched_queries": [
+        "index only scan executor performance",
+        "EvalPlanQual index only scan test"
+      ],
+      "from_hint": false,
+      "score": 0.206,
+      "enriched": true,
+      "key_quote": "This patch now fails to apply, probably due to a mostly trivial collision with fdd88571454e2b00dbe446e8609c6e4294ca89ae in the test files.",
+      "quote_message_url": "https://www.postgresql.org/message-id/09E64F5F-76E9-4AE4-9ACF-7C899F69358C%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:1146",
+      "kind": "cf",
+      "title": "Index Only Scan support for cube",
+      "status": "Rejected",
+      "date": "2017-09-20",
+      "first_date": "2017-05-23",
+      "url": "https://commitfest.postgresql.org/patch/1146/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJEAwVEmONZo_h8Gv4JFeYTtuca1BTvxsQosz6HTaWJx_O0Q-w@mail.gmail.com"
+      ],
+      "authors": "Andrey Borodin (x4m)",
+      "objectors": "",
+      "summary": "The patch adds a GiST fetch function for the cube extension so that queries on cube columns can use Index Only Scans. It reuses g_cube_decompress() as the fetch function, since both only need to detoast the key.",
+      "objection": "The author withdrew it as obsolete after commit d3a4f89 (Allow no-op GiST support functions to be omitted). He said he would work on a broader patch for contrib modules to support GiST Index Only Scans and remove no-op support functions.",
+      "touch_points": [],
+      "matched_queries": [
+        "index only scan executor performance",
+        "EvalPlanQual index only scan test"
+      ],
+      "from_hint": false,
+      "score": 0.2,
+      "enriched": true,
+      "key_quote": "Index Only Scan support for cube\" patch now is obsolete.",
+      "quote_message_url": "https://www.postgresql.org/message-id/355A43F4-46F2-49CC-B7E5-E5D4890C57A9%40yandex-team.ru",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:1965",
+      "kind": "cf",
+      "title": "SQL Inlining Behavior",
+      "status": "Returned with feedback",
+      "date": "2019-02-03",
+      "first_date": "2018-11-09",
+      "url": "https://commitfest.postgresql.org/patch/1965/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CACowWR0TXXL0NfPMW2afCKzX++nHHBZLW3-BLusu_B0WjBB1=A@mail.gmail.com"
+      ],
+      "authors": "Adam Brightwell (abrightwell)",
+      "objectors": "Tom Lane",
+      "summary": "Change the SQL function inlining rule so that a wrapper function such as PostGIS ST_Intersects() is still inlined when its parameters are expensive and used more than once. The patch compares the function's own cost with the added cost of evaluating its parameters several times, so extensions can force inlining by giving the wrapper a high COST.",
+      "objection": "Tom Lane found that the cost rule offers no reliable way to ensure inlining, and that a very high procost can hurt plans where inlining fails or start functions out-costing each other. He proposed instead to let extensions supply planner support functions that add a lossy indexable clause only when an index scan can use it. Once that design reached a feature-complete state in another thread, he closed this entry in favour of it.",
+      "touch_points": [],
+      "matched_queries": [
+        "ExecScanExtended inline qual projection",
+        "IndexOnlyNext inline"
+      ],
+      "from_hint": false,
+      "score": 0.198,
+      "enriched": true,
+      "key_quote": "While there's a nontrivial amount of work needed to make that happen,\nI think it's doable, and it would lead to a significantly better\nsolution than proceeding along the inlining path could do.  My\ncurrent feeling, therefore, is that we should reject this patch\n(or at least stick it in the deep freeze) and go work on that plan.",
+      "quote_message_url": "https://www.postgresql.org/message-id/15978.1548029291%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:4180",
+      "kind": "cf",
+      "title": "Support SK_SEARCHNULL / SK_SEARCHNOTNULL for heap-only scans",
+      "status": "Returned with feedback",
+      "date": "2023-12-02",
+      "first_date": "2023-02-13",
+      "url": "https://commitfest.postgresql.org/patch/4180/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJ7c6TPKeh7UwEN9ORqP_dmR8uxiFhxT8Pecq01zw1HKpTBMBg@mail.gmail.com"
+      ],
+      "authors": "Aleksander Alekseev (a.alekseev), Jacob Champion (jchampion)",
+      "objectors": "",
+      "summary": "Support SK_SEARCHNULL / SK_SEARCHNOTNULL for heap-only scans\nThreads: [PATCH] Support SK_SEARCHNULL / SK_SEARCHNOTNULL for heap-only scans",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "index only scan executor performance",
+        "EvalPlanQual index only scan test"
+      ],
+      "from_hint": false,
+      "score": 0.187,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:2666",
+      "kind": "cf",
+      "title": "Remove special case which avoided %*s format strings..",
+      "status": "Returned with feedback",
+      "date": "2020-09-17",
+      "first_date": "2020-08-03",
+      "url": "https://commitfest.postgresql.org/patch/2666/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200803045948.GB27754@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "",
+      "summary": "Remove special case which avoided %*s format strings..\nThreads: [PATCH v1] elog.c: Remove special case which avoided %*s format\nstrings..",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "specialize ExecScan executor node",
+        "ExecSeqScan specialization variants"
+      ],
+      "from_hint": false,
+      "score": 0.186,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:5199",
+      "kind": "cf",
+      "title": "Fix standby may crash when switching-over in certain special cases",
+      "status": "Withdrawn",
+      "date": "2026-09-07",
+      "first_date": "2024-08-19",
+      "url": "https://commitfest.postgresql.org/patch/5199/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAccyYKrRojjO-weeXFs1EqLFHWSBfjBzObwVDv4u-ZxmU=7Rg@mail.gmail.com"
+      ],
+      "authors": "pixian shi (pxshi)",
+      "objectors": "",
+      "summary": "Fix standby may crash when switching-over in certain special cases\nThreads: [Bug Fix]standby may crash when switching-over in certain special cases",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "specialize ExecScan executor node",
+        "ExecSeqScan specialization variants"
+      ],
+      "from_hint": false,
+      "score": 0.182,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:5238",
+      "kind": "cf",
+      "title": "Add parallel columns for seq scan and index scan on pg_stat_all_tables and _indexes",
+      "status": "Returned with feedback",
+      "date": "2024-12-11",
+      "first_date": "2024-08-29",
+      "url": "https://commitfest.postgresql.org/patch/5238/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAECtzeXXuMkw-RVGTWvHGOJsmFdsRY+jK0ndQa80sw46y2uvVQ@mail.gmail.com"
+      ],
+      "authors": "Guillaume Lelarge (gleu)",
+      "objectors": "",
+      "summary": "Add parallel columns for seq scan and index scan on pg_stat_all_tables and _indexes\nThreads: Add parallel columns for seq scan and index scan on\npg_stat_all_tables and _indexes",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "index only scan executor performance",
+        "EvalPlanQual index only scan test"
+      ],
+      "from_hint": false,
+      "score": 0.18,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "revert:6719b238e8f0ea83c39d2b1728c7670cdaa34e06",
+      "kind": "revert",
+      "title": "Rearrange execution of PARAM_EXTERN Params for plpgsql's benefit.",
+      "status": "Partially reverted",
+      "date": "2017-12-21",
+      "first_date": "2015-07-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6719b238e8f0ea83c39d2b1728c7670cdaa34e06",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/32589.1513706441@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Rearrange execution of PARAM_EXTERN Params for plpgsql's benefit.\nReverted commit(s): Further reduce overhead for passing plpgsql variables to the executor.",
+      "objection": "This patch does three interrelated things:\n\n* Create a new expression execution step type EEOP_PARAM_CALLBACK\nand add the infrastructure needed for add-on modules to generate that.\nAs discussed, the best control mechanism for that seems to be to add\nanother hook function to ParamListInfo, which will be called by\nExecInitExpr if it's supplied and a PARAM_EXTERN Param is found.\nFor stand-alone expressions, we add a new entry point to allow the\nParamListInfo to be specified directly, since it can't be retrieved\nfrom the parent plan node's EState.\n\n* Redesign the API for the ParamListInfo paramFetch hook so that the\nParamExternData array can be entirely virtual.  This also lets us get rid\nof ParamListInfo.paramMask, instead leaving it to the paramFetch hook to\ndecide which param IDs should be accessible or not.  plpgsql_param_fetch\nwas already doing the identical masking check, so having callers do it too\nseemed redundant.  While I was at it, I added a \"speculative\" flag to\nparamFetch that the planner can specify as TRUE to avoid unwanted failures.\nThis solves an ancient problem for plpgsql that it couldn't provide values\nof non-DTYPE_VAR variables to the planner for fear of triggering premature\n\"record not assigned yet\" or \"field not found\" errors during planning.\n\n* Rework plpgsql to get rid of the need for \"unshared\" parameter lists,\nby dint of turning the single ParamListInfo per estate into a nearly\nread-only data structure that doesn't instantiate any per-variable data.\nInstead, the paramFetch hook controls access to per-variable data and can\nmake the right decisions on the fly, replacing the cases that we used to\nneed multiple ParamListInfos for.  This might perhaps have been a\nperformance loss on its own, but by using a paramCompile hook we can\nbypass plpgsql_param_fetch entirely during normal query execution.\n(It's now only called when, eg, we copy the ParamListInfo into a cursor\nportal.  copyParamList() or SerializeParamList() effectively instantiate\nthe virtual parameter array as a simple physical array without a\nparamFetch hook, which is what we want in those cases.)  This allows\nreverting most of commit 6c82d8d1f, though I kept the cosmetic\ncode-consolidation aspects of that (eg the assign_simple_var function).\n\nPerformance testing shows this to be at worst a break-even change,\nand it can provide wins ranging up to 20% in test cases involving\naccesses to fields of \"record\" variables.  The fact that values of\nsuch variables can now be exposed to the planner might produce wins\nin some situations, too, but I've not pursued that angle.\n\nIn passing, remove the \"parent\" pointer from the arguments to\nExecInitExprRec and related functions, instead storing that pointer in a\ntransient field in ExprState.  The ParamListInfo pointer for a stand-alone\nexpression is handled the same way; we'd otherwise have had to add\nyet another recursively-passed-down argument in expression compilation.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "avoid indirect call executor scan",
+        "executor per-tuple overhead specialization"
+      ],
+      "from_hint": false,
+      "score": 0.173,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:1741",
+      "kind": "cf",
+      "title": "Index Skip Scan",
+      "status": "Returned with feedback",
+      "date": "2022-03-24",
+      "first_date": "2018-06-18",
+      "url": "https://commitfest.postgresql.org/patch/1741/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/707b6f68-16fa-7aa7-96e5-eeb4865e6a30@redhat.com",
+        "https://www.postgresql.org/message-id/flat/1e59d800b38141c5af2ad3a64cf9758e@opammb0562.comp.optiver.com",
+        "https://www.postgresql.org/message-id/flat/20200609102247.jdlatmfyeecg52fi@localhost",
+        "https://www.postgresql.org/message-id/flat/CAH2-WzmUscvoxVkokHxP=uPTDjSi0tJkFpUPD-CeA35dvn-CMw@mail.gmail.com"
+      ],
+      "authors": "Dmitry Dolgov (erthalion), Thomas Munro (macdice), Jesper Pedersen (jpedersen)",
+      "objectors": "",
+      "summary": "Index Skip Scan\nThreads: Index Skip Scan; RE: Index Skip Scan; Index Skip Scan (new UniqueKeys); MDAM techniques and Index Skip Scan patch",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "index only scan executor performance",
+        "EvalPlanQual index only scan test"
+      ],
+      "from_hint": false,
+      "score": 0.159,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:874",
+      "kind": "cf",
+      "title": "indirect indexes",
+      "status": "Returned with feedback",
+      "date": "2017-04-01",
+      "first_date": "2016-10-18",
+      "url": "https://commitfest.postgresql.org/patch/874/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20161018182843.xczrxsa2yd47pnru@alvherre.pgsql"
+      ],
+      "authors": "Álvaro Herrera (alvherre)",
+      "objectors": "",
+      "summary": "indirect indexes\nThreads: Indirect indexes",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "avoid indirect call executor scan",
+        "IndexOnlyNext inline"
+      ],
+      "from_hint": false,
+      "score": 0.154,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:3329",
+      "kind": "cf",
+      "title": "Document atthasmissing default optimization avoids verification table scan",
+      "status": "Withdrawn",
+      "date": "2022-03-29",
+      "first_date": "2021-09-24",
+      "url": "https://commitfest.postgresql.org/patch/3329/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAaqYe8EgO-f_MAz3PyyeeK=20U-GG4+WtM-Q5qcn0XOvuR5Qg@mail.gmail.com"
+      ],
+      "authors": "James Coleman (jcole1989)",
+      "objectors": "",
+      "summary": "Document atthasmissing default optimization avoids verification table scan\nThreads: Document atthasmissing default optimization avoids verification table scan",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "avoid indirect call executor scan"
+      ],
+      "from_hint": false,
+      "score": 0.135,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:4546",
+      "kind": "cf",
+      "title": "Add inline comments to the pg_hba_file_rules view",
+      "status": "Withdrawn",
+      "date": "2023-10-10",
+      "first_date": "2023-09-04",
+      "url": "https://commitfest.postgresql.org/patch/4546/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/4d623899-36ac-71b5-311d-2a4672d75736@uni-muenster.de"
+      ],
+      "authors": "Jim Jones (jimus)",
+      "objectors": "",
+      "summary": "Add inline comments to the pg_hba_file_rules view\nThreads: [PATCH] Add inline comments to the pg_hba_file_rules view",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "IndexOnlyNext inline"
+      ],
+      "from_hint": false,
+      "score": 0.127,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:2092",
+      "kind": "cf",
+      "title": "minimizing pg_stat_statements.track='none' performance overhead",
+      "status": "Withdrawn",
+      "date": "2019-04-15",
+      "first_date": "2019-03-27",
+      "url": "https://commitfest.postgresql.org/patch/2092/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/BN8PR21MB1217B003C4F79DE230AA36B9B1580@BN8PR21MB1217.namprd21.prod.outlook.com"
+      ],
+      "authors": "Raymond Martin (ramarti)",
+      "objectors": "",
+      "summary": "minimizing pg_stat_statements.track='none' performance overhead\nThreads: minimizing pg_stat_statements performance overhead",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "executor per-tuple overhead specialization"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:7127",
+      "kind": "cf",
+      "title": "Redundant qualifier elimination",
+      "status": "Returned with feedback",
+      "date": "2026-08-14",
+      "first_date": "2026-07-30",
+      "url": "https://commitfest.postgresql.org/patch/7127/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/DKBX1KUW8KUW.2DU5RD192DHIQ@gmail.com"
+      ],
+      "authors": "Matheus Alcantara (matheus.alcantara)",
+      "objectors": "",
+      "summary": "Redundant qualifier elimination\nThreads: Redundant qualifier elimination",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "ExecScanExtended inline qual projection"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:6586",
+      "kind": "cf",
+      "title": "Avoid multiple calls to memcpy (src/backend/access/index/genam.c)",
+      "status": "Withdrawn",
+      "date": "2026-03-25",
+      "first_date": "2026-03-09",
+      "url": "https://commitfest.postgresql.org/patch/6586/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEudQApbWon+3Eb9x4WW_D-JkSt2mvfx99dXu9VZ4AeCuTh=fw@mail.gmail.com"
+      ],
+      "authors": "Ranier Vilela (raniervilela)",
+      "objectors": "",
+      "summary": "Avoid multiple calls to memcpy (src/backend/access/index/genam.c)\nThreads: Avoid multiple calls to memcpy (src/backend/access/index/genam.c)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "avoid indirect call executor scan"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:2922",
+      "kind": "cf",
+      "title": "Table AM modifications to accept column projection lists",
+      "status": "Withdrawn",
+      "date": "2021-06-30",
+      "first_date": "2020-11-13",
+      "url": "https://commitfest.postgresql.org/patch/2922/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAE-ML+9RmTNzKCNTZPQf8O3b-UjHWGFbSoXpQa3Wvuc8YBbEQw@mail.gmail.com"
+      ],
+      "authors": "Jacob Champion (jchampion), Soumyadeep Chakraborty (soumyadeepc)",
+      "objectors": "",
+      "summary": "Table AM modifications to accept column projection lists\nThreads: Table AM modifications to accept column projection lists",
+      "objection": "",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "ExecScanExtended inline qual projection"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 5,
+    "new_calls": 3,
+    "failed": 0,
+    "quotes_verified": 3,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 3
+  },
+  "precedent_cutoff": "2026-10-14",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found that is the same idea; message #1 cites the committed SeqScan specialization as its model. [P3] and [P4] failed for lack of benefit or evidence, but this proposal shows callgrind gains on two machines; [P1] has no recorded reason."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 0,
+      "note": "The patch is internal to nodeIndexonlyscan.c and adds no syntax, GUC, catalog object, psql change or client-visible behaviour, so nothing needs a pg_dump round-trip. Query results and plans stay the same, and EPQ semantics are kept through ExecScan(), with a new isolation test in message #4."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The patch changes only executor code in nodeIndexonlyscan.c and adds an isolation test. It touches no on-disk format, WAL record, catalog, wire protocol or replication path. The new ExecIndexOnlyScan variants are static functions picked at node init, so extension ABI is not affected. ExecIndexOnlyScan reached through the node's ExecProcNode pointer is executor-internal, not an extension API."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal changes only how the executor dispatches index-only scan tuples. It adds no SQL, GUC, privilege, catalog entry or view, and it does not change what any role can run or see. RLS quals and security barrier quals are still evaluated as node quals in the qual variants, and EPQ still goes through ExecScan(), so no privilege or exposure aspect is visible. Whether a variant skips a qual it should evaluate can only be checked in the code."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 1,
+      "note": "The objection is minor. The design copies committed SeqScan practice, a committer who knows the executor took part in the thread (message #3), the cost falls only on the patched node, and no change to an API or on-disk format is involved."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing feature or extension meets this need. The patch reuses ExecScanExtended() and the SeqScan pattern rather than adding a new mechanism. Message #5 shows LTO and JIT keep the ExecScan() overhead, and executor dispatch cannot move to an extension or hook. Whether the per-node boilerplate should be shared, as message #7 asks, is a design question for another angle."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "Demand looks real. Index-only scans are a common plan node; the author found the cost in perf profiles of a production workload (message #1), Andres Freund and David Geier support the change (messages #3, #7), and Haibo Yan withdrew his concerns (message #6). The patch copies the accepted ExecSeqScan specialization, and its cost stays in nodeIndexonlyscan.c. The gain is under 1% for nested loops with an inner index-only scan, which may be the most common use (message #5). That narrows the benefit to long range scans, but a committer would likely not reject a cheap, contained change for that reason. The material does not show the gain on the author's own production workload."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 1,
+      "new_survived": 0,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 48,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 14,
+    "wall_ms": 85334,
+    "cost_usd": 1.3594146,
+    "dry_run": false
+  }
+}

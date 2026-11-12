@@ -1,0 +1,1391 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:58:46.847Z",
+  "input": {
+    "arg": "7470",
+    "cf": {
+      "id": 7470,
+      "url": "https://commitfest.postgresql.org/patch/7470/",
+      "title": "Use a bulk-write buffer access strategy for TOAST inserts",
+      "status": "Needs review",
+      "authors": "Bertrand Drouvot (bertranddrouvot.pg)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/atHWFmxAz1KuKzqm%40bdtpg",
+    "subject": "Use a bulk-write buffer access strategy for TOAST inserts",
+    "thread_start": "2026-10-16T07:45:26Z",
+    "messages_read": 2,
+    "messages_total": 2,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v1-0001-Move-buffer-strategy-ownership-out-of-BulkInsertS.patch",
+      "v1-0002-Bind-BulkInsertState-to-one-relation.patch",
+      "v1-0003-Use-bulk-write-strategy-for-TOAST-inserts.patch",
+      "v1-0004-Use-bulk-write-strategy-for-TOAST-during-heap-rew.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "demand-1 is decisive: the thread shows one earlier report and no numbers for the eviction today or for the effect of the patch. In message #2 a committer who knows the buffer code says TOAST inserts should not use strategies, because later reads of the evicted TOAST data are random IO. That claim has no reply yet. The list has to agree that the change is wanted before the design of the four patches is reviewed.",
+  "failing_level": "1b",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "failed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "not_evaluated"
+    }
+  ],
+  "brief": {
+    "title": "Use a bulk-write buffer ring for TOAST inserts",
+    "problem": "Bulk inserts use a BAS_BULKWRITE ring for the main relation but not for its TOAST relation, so large TOAST writes can evict useful shared buffers. This affects COPY, CREATE TABLE AS, materialized view refresh, table rewrites and VACUUM FULL. Justin Pryzby reported it in an earlier thread.",
+    "proposed_design": "The caller, instead of BulkInsertState, now owns the buffer access strategy, and each BulkInsertState is bound to one relation; partitioned COPY keeps one state per leaf. Each BulkInsertState gets a second state for its TOAST relation that shares the same ring. Heap rewrites create a BAS_BULKWRITE ring and BulkInsertState for TOAST when they first need it.",
+    "user_visible_surface": [
+      "C API: GetBulkInsertState() takes a caller-provided strategy and a relation; the caller allocates and frees the strategy.",
+      "C API: a BulkInsertState may only be used with the relation it was created for.",
+      "pg_stat_io: TOAST writes from bulk inserts and VACUUM FULL now count in the bulkwrite context."
+    ],
+    "author_claims": [
+      "TOAST data from bulk operations can evict useful shared buffers today.",
+      "Binding BulkInsertState to one relation removes a source of bugs like those fixed in b1ecb9b3fcf and 22655aa2313.",
+      "0002 implements the medium-term fix Andres suggested in 22655aa2313.",
+      "TOAST relations skip bulk extension ranges to avoid reserving unused space in small TOAST tables.",
+      "The read path is out of scope because TOAST reads can happen outside the producing scan."
+    ],
+    "thread_state": "Andres Freund objects to using strategies for TOAST inserts because evicting just-toasted data causes costly random IO later. He suggests that tableam create the bulk state and reuse it across all DML; no reply yet, and CFbot reports the patch needs a rebase.",
+    "unclear": [
+      "No benchmark shows the buffer eviction today or the effect of the patch.",
+      "The author does not answer the claim that a small ring makes later random reads of TOAST data more expensive.",
+      "The CF entry is tagged Bugfix, but the thread does not say whether a backpatch is intended.",
+      "The proposal does not say how out-of-core table AMs and extensions calling GetBulkInsertState() must adapt.",
+      "The proposal does not say whether the TOAST ring size or behaviour can be tuned."
+    ],
+    "search_queries": [
+      "toast bulk insert buffer strategy",
+      "BAS_BULKWRITE toast relation",
+      "BulkInsertState reuse across relations",
+      "COPY toast shared buffers eviction",
+      "buffer access strategy toast",
+      "ring buffer bulk write toast",
+      "tableam bulk insert state DML",
+      "VACUUM FULL toast buffer ring"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P2",
+      "source_id": "cf:2553",
+      "title": "INSERT SELECT: BulkInsertState and table_multi_insert",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/2553/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200508072545.GA9701@telsasoft.com"
+      ],
+      "date": "2021-11-24",
+      "first_date": "2020-05-08",
+      "who_objected": "",
+      "quote": "Since the thread has stalled, maybe that's the best course of action here.",
+      "quote_url": "https://www.postgresql.org/message-id/AF742DB8-2992-4826-B85B-1FC36BBEF3A9%40yesql.se",
+      "enriched": true,
+      "reason": "The thread stalled. The multi-insert part became complex: it cannot handle volatile column defaults, and the author proposed leaving it to the separate \"New Table Access Methods for Multi and Single Inserts\" patch. The author split off the simple BulkInsertState patch and said to close the entry if no one was interested in it alone. No reviewer took that patch up, so the commitfest manager proposed closing it.",
+      "relation": "related_only",
+      "what_is_different": "P2 extended BulkInsertState rings to INSERT and INSERT SELECT. This proposal adds a ring for TOAST inserts in paths that already use a bulk state."
+    }
+  ],
+  "objections": [
+    {
+      "title": "No measurement shows the TOAST eviction problem in practice",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer weighs a four-patch series that changes GetBulkInsertState() for every caller. The only evidence of harm is one 2022 report with no numbers. If the eviction is rare or small, the project takes on the API churn and the new strategy path for little gain.",
+      "argument": "Message #1 cites a single earlier report from Justin Pryzby and gives no workload, buffer-hit figures or pg_stat_io numbers. No other user in the thread asks for the change. Using BAS_BULKWRITE for the main relation is established practice, so the idea is plausible. But the gain for TOAST-heavy loads has not been shown against a workload where it matters.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "On a realistic COPY or VACUUM FULL of TOAST-heavy data, how much of shared_buffers is evicted today, and how much does the patch change it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Bertrand Drouvot",
+          "date": "2026-10-16T07:45:26Z",
+          "url": "https://www.postgresql.org/message-id/atHWFmxAz1KuKzqm%40bdtpg"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The material shows one earlier report and no numbers for the eviction or for the patch. The main relation already uses the ring, which makes the idea plausible, but message #2 disputes that this carries over to TOAST.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "API reshaping may conflict with a tableam-owned bulk state",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "0001 and 0002 change the GetBulkInsertState() signature, so extensions and table AMs adapt to the new caller-owned form. If the tableam-owned, DML-wide bulk state from message #2 is adopted later, the same callers have to change again. A committer would find out only when that second design is reviewed.",
+      "argument": "Message #2 proposes moving bulk state creation into tableam, reused across all DML, and mentions earlier patches in that direction. Message #1 cites an earlier discussion of the TOAST problem but does not say what it concluded, and it does not place 0001/0002 relative to a tableam-level state. Neither message says whether the new signature is a step toward that design or an alternative to it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "Is the caller-owned strategy in 0001/0002 compatible with a tableam-owned bulk state reused across DML, or would adopting that design undo this API change?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Bertrand Drouvot",
+          "date": "2026-10-16T07:45:26Z",
+          "url": "https://www.postgresql.org/message-id/atHWFmxAz1KuKzqm%40bdtpg"
+        },
+        {
+          "index": 2,
+          "from": "Andres Freund",
+          "date": "2026-10-21T12:31:09Z",
+          "url": "https://www.postgresql.org/message-id/wvvawftvpcatdeze5rviq4xqcvfhy6euqze2tpcytek33q7q7i%40qcwvycc5xsff"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #2, from a committer who knows this area, proposes that tableam create the bulk state. The thread has no reply saying whether 0001 and 0002 lead toward that design or replace it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "TOAST ring changes every bulk load, with no measurement or opt-out",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user loads a table with large text or jsonb columns via COPY and then queries it. With the patch, freshly written TOAST chunks have left shared buffers through the ring. Later reads fetch them by random IO, and the user sees slower queries after upgrading, with no setting to restore the old behaviour.",
+      "argument": "The change applies to COPY, CREATE TABLE AS, REFRESH MATERIALIZED VIEW, table rewrites and VACUUM FULL, with no switch. Message #2 argues that evicting just-toasted data costs more than evicting heap data, because TOAST access is random. Message #1 does not answer this and gives no benchmark of the current eviction or of the patch.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "Which benchmark shows that the ring helps a concurrent workload more than it slows later reads of the loaded TOAST data?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Bertrand Drouvot",
+          "date": "2026-10-16T07:45:26Z",
+          "url": "https://www.postgresql.org/message-id/atHWFmxAz1KuKzqm%40bdtpg"
+        },
+        {
+          "index": 2,
+          "from": "Andres Freund",
+          "date": "2026-10-21T12:31:09Z",
+          "url": "https://www.postgresql.org/message-id/wvvawftvpcatdeze5rviq4xqcvfhy6euqze2tpcytek33q7q7i%40qcwvycc5xsff"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #2 says evicting just-toasted data leads to costly random IO later. The thread has no reply and no benchmark, and the change applies to every bulk load with no switch.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "GetBulkInsertState() contract changes twice if tableam direction follows",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension that bulk-loads into several tables uses one BulkInsertState for all of them, as the current API allows. After upgrade it must pass a strategy and a relation, and its reuse across tables now breaks the new binding rule. If the state later moves into tableam, as message #2 suggests, the same code has to be rewritten again.",
+      "argument": "0001 and 0002 change the signature of an exported heapam.h function and add a usage rule: one state per relation. The proposal does not say how the rule is enforced, whether by an error, an assertion or only a comment. It also gives no guidance for out-of-core table AMs or extensions. Message #2 proposes a different owner for the bulk state, so a committer would likely ask that the API be settled once rather than changed in two releases.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "How is the one-relation rule enforced for extension callers, and does the API still fit if tableam owns the bulk state as message #2 proposes?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Bertrand Drouvot",
+          "date": "2026-10-16T07:45:26Z",
+          "url": "https://www.postgresql.org/message-id/atHWFmxAz1KuKzqm%40bdtpg"
+        },
+        {
+          "index": 2,
+          "from": "Andres Freund",
+          "date": "2026-10-21T12:31:09Z",
+          "url": "https://www.postgresql.org/message-id/wvvawftvpcatdeze5rviq4xqcvfhy6euqze2tpcytek33q7q7i%40qcwvycc5xsff"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of prior-attempts-1. The extra point about enforcement is a code-level question, and the 0002 commit message says the patch ensures the state is used only with its relation.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Bugfix tag conflicts with an API change that cannot be backpatched",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A reader takes the CommitFest Bugfix tag at face value and expects the TOAST fix in a minor release. A backpatch would change the signature of GetBulkInsertState() in a stable branch. Extensions built against the earlier minor release would then call it with the wrong arguments and crash or misbehave.",
+      "argument": "The CommitFest entry is tagged Bugfix but targets version 20, and the thread does not say whether a backpatch is intended. The series changes exported functions in heapam.h and hio.h, and it changes the bulkwrite counts in pg_stat_io. Both changes are unsuitable for stable branches. If this is master-only behaviour work, the tag and the reported problem from the earlier thread should say so.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "Is this series meant for master only, and if a stable-branch fix is wanted, what change would leave the exported API intact?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Bertrand Drouvot",
+          "date": "2026-10-16T07:45:26Z",
+          "url": "https://www.postgresql.org/message-id/atHWFmxAz1KuKzqm%40bdtpg"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "The CommitFest entry sets target version 20, and no message proposes a backpatch. The scenario depends on a backpatch nobody asked for, so the tag is a labelling matter.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "API change conflicts with the tableam-owned bulk state direction",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Extensions and out-of-core table AMs that call GetBulkInsertState() adapt to the new strategy and relation arguments in release 20. A later patch moves bulk state creation into tableam, as message #2 suggests, and their callers break a second time. Authors find out at each major-version rebuild.",
+      "argument": "Patches 0001 and 0002 change GetBulkInsertState() so the caller owns the strategy and binds the state to one relation. Message #2 proposes the opposite ownership: tableam creates an AM-extensible bulk state and reuses it across all DML. Nothing in the thread reconciles the two designs, so the project may ship an interface it soon replaces. The signature change also rules out a backpatch, though the CF entry is tagged Bugfix.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "How do 0001 and 0002 fit a later move of bulk state creation into tableam, without breaking GetBulkInsertState() callers twice?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Bertrand Drouvot",
+          "date": "2026-10-16T07:45:26Z",
+          "url": "https://www.postgresql.org/message-id/atHWFmxAz1KuKzqm%40bdtpg"
+        },
+        {
+          "index": 2,
+          "from": "Andres Freund",
+          "date": "2026-10-21T12:31:09Z",
+          "url": "https://www.postgresql.org/message-id/wvvawftvpcatdeze5rviq4xqcvfhy6euqze2tpcytek33q7q7i%40qcwvycc5xsff"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of prior-attempts-1. The added backpatch remark fails for the same reason as standards-compat-2, because the entry targets version 20.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Heap rewrites would mix two write mechanisms in one operation",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A developer changes how BulkWriteState or BulkInsertState handles extension, WAL or pg_stat_io accounting. They update the main-relation path in rewriteheap.c and miss the lazily created TOAST BulkInsertState. VACUUM FULL then behaves differently for heap and TOAST, and nothing fails until someone looks at the statistics.",
+      "argument": "Patch 0004 keeps BulkWriteState for the main relation and adds a BAS_BULKWRITE strategy plus a BulkInsertState for TOAST, created on first use. The rewrite path then carries two buffer-management models with separate lifetimes and cleanup. The commit message does not say why TOAST cannot use the same bulk write path as the main relation.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "Why can TOAST writes during a rewrite not use the same BulkWriteState path as the main relation?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Bertrand Drouvot",
+          "date": "2026-10-16T07:45:26Z",
+          "url": "https://www.postgresql.org/message-id/atHWFmxAz1KuKzqm%40bdtpg"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "wrong_facts",
+        "reasoning": "Heap rewrites already use two write paths today. The main relation goes through BulkWriteState, and TOAST chunks go through heap_insert and shared buffers because the TOAST index must be maintained. 0004 only adds a ring to the existing TOAST path.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Rewrite TOAST path adds a buffer ring next to existing bulk_write",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After 0004, VACUUM FULL writes the new main relfilenode through BulkWriteState, which bypasses shared buffers. It writes the new TOAST relfilenode through a BAS_BULKWRITE ring in shared buffers. Later changes to WAL logging or sync for rewrites must then be made and reviewed in two separate write paths for the same operation.",
+      "argument": "The 0004 commit message says the rewrite keeps the existing BulkWriteState for the main relation and adds a ring and a BulkInsertState only for TOAST. The new TOAST relation in a rewrite is also a fresh relfilenode, the case that BulkWriteState already serves. Adding a second mechanism where one exists needs a reason under rubric item 12, and the proposal does not give one. Message #2 also prefers a different design for this layer, a reusable bulk state created by the tableam.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "Why can rewrite TOAST writes not go through the existing BulkWriteState facility for the new TOAST relfilenode, instead of a separate buffer ring?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Bertrand Drouvot",
+          "date": "2026-10-16T07:45:26Z",
+          "url": "https://www.postgresql.org/message-id/atHWFmxAz1KuKzqm%40bdtpg"
+        },
+        {
+          "index": 2,
+          "from": "Andres Freund",
+          "date": "2026-10-21T12:31:09Z",
+          "url": "https://www.postgresql.org/message-id/wvvawftvpcatdeze5rviq4xqcvfhy6euqze2tpcytek33q7q7i%40qcwvycc5xsff"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "wrong_facts",
+        "reasoning": "The rewrite TOAST path already writes through shared buffers with its own WAL logging, separate from BulkWriteState. 0004 does not create the split in write paths that the scenario describes.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "The gain may be offset by costlier later reads of TOAST data",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "desirability",
+      "touch_points": [
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user bulk-loads a table with large text values and then queries it. With a small ring, the just-written TOAST pages are no longer cached, so each detoast causes random reads. The user finds the queries slower than before the upgrade, while the cache saving went to other workloads.",
+      "argument": "Message #2 argues that TOAST access is random, so evicting just-toasted data costs more than evicting heap data. Message #1 does not answer this, and there is no benchmark of read-after-load. Without numbers, a committer cannot tell whether the change is a net benefit for the common load-then-query pattern.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "For a load-then-query workload, does the patch lower total I/O, or do the later random TOAST reads cost more than the cache it saves?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Bertrand Drouvot",
+          "date": "2026-10-16T07:45:26Z",
+          "url": "https://www.postgresql.org/message-id/atHWFmxAz1KuKzqm%40bdtpg"
+        },
+        {
+          "index": 2,
+          "from": "Andres Freund",
+          "date": "2026-10-21T12:31:09Z",
+          "url": "https://www.postgresql.org/message-id/wvvawftvpcatdeze5rviq4xqcvfhy6euqze2tpcytek33q7q7i%40qcwvycc5xsff"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-2, which raises the same load-then-query cost from message #2 and asks for the same benchmark.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "0001 and 0002 change the GetBulkInsertState() signature in heapam.h and bind each state to one relation."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The CommitFest entry is tagged Bugfix, but the series changes exported functions and targets version 20."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Each BulkInsertState gains a TOAST state, and heap rewrites create a ring and state for TOAST on first use."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "TOAST writes in COPY, CREATE TABLE AS, matview refresh, table rewrites and VACUUM FULL move to a small ring, with no switch."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "see objection demand-1: No measurement shows the TOAST eviction problem in practice"
+    }
+  ],
+  "questions": [
+    "On a COPY or VACUUM FULL of TOAST-heavy data, how much of shared_buffers is evicted today, and how much does the patch change that?",
+    "For a load-then-query workload, do the later random reads of TOAST data cost more than the cache the ring saves for other sessions?",
+    "Are 0001 and 0002 a step toward the tableam-owned bulk state proposed in message #2, or would that design undo this API change?",
+    "Is the series meant for master only, given that the CommitFest entry is tagged Bugfix?",
+    "How must out-of-core table AMs and extensions that call GetBulkInsertState() adapt to the caller-owned strategy and the one-relation rule?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Andres Freund takes part in message #2 and disagrees with both the TOAST ring and the API direction. The owner must know buffer access strategies and the tableam insert API.",
+    "liability": "The owner signs for the read performance of bulk-loaded TOAST data in every release from 20 on, and for a changed GetBulkInsertState() contract that extensions must follow.",
+    "author_follow_up": "The author plans follow-up work on the read path once this series goes in. There is no reply to message #2 yet, and the patch needs a rebase."
+  },
+  "not_now": {
+    "applies": true,
+    "evidence_that_would_change_it": "A benchmark of a TOAST-heavy bulk load that shows the eviction of other sessions' buffers today, the effect of the patch, and the cost of reading the loaded TOAST data afterwards. More than one field report of the eviction would also help."
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "needs design rethink",
+    "reason": "Bulk loads of wide values are common, but the benefit is not measured and message #2 disputes it. The four patches, about 60 KiB, touch heapam, COPY, the executor and TOAST code, and message #2 prefers a tableam-owned bulk state."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read, so how the one-relation rule is enforced and how the TOAST state is cleaned up on error could not be checked. The design level was not evaluated, because the review stopped at level 1b.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:5919",
+      "kind": "cf",
+      "title": "Eagerly evict bulkwrite strategy ring",
+      "status": "Withdrawn",
+      "date": "2026-02-19",
+      "first_date": "2025-07-15",
+      "url": "https://commitfest.postgresql.org/patch/5919/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAKRu_Yjn4mvN9NBxtmsCQSGwup45CoA4e05nhR7ADP-v0WCig@mail.gmail.com"
+      ],
+      "authors": "Melanie Plageman (melanieplageman)",
+      "objectors": "",
+      "summary": "Make the BAS_BULKWRITE buffer access strategy flush several dirty buffers in its ring at once, skipping buffers whose flush would require a WAL flush. This was meant as a first step toward combining writes and issuing them asynchronously, and gave about 15-20% faster parallel COPY FROM.",
+      "objection": "The author withdrew the entry after moving all of its patches into the patch set in the separate write combining thread, so the work continues there. No reviewer objected to the design; reviews found only code issues, which the author fixed. Earlier the author noted that the gain from this patch alone might not justify committing it.",
+      "touch_points": [],
+      "matched_queries": [
+        "toast bulk insert buffer strategy",
+        "BAS_BULKWRITE toast relation",
+        "COPY toast shared buffers eviction",
+        "buffer access strategy toast",
+        "ring buffer bulk write toast",
+        "tableam bulk insert state DML",
+        "VACUUM FULL toast buffer ring"
+      ],
+      "from_hint": false,
+      "score": 0.82,
+      "enriched": true,
+      "key_quote": "All of the patches that implement the bulkwrite eager flush functionality are included in the patch set being actively updated in this thread [1] on write combining.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAAKRu_YkuDZAAk7LBQ8Pn7xfw2JKncpNQk71Ay5-jiHh6UmZWA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:2553",
+      "kind": "cf",
+      "title": "INSERT SELECT: BulkInsertState and table_multi_insert",
+      "status": "Returned with feedback",
+      "date": "2021-11-24",
+      "first_date": "2020-05-08",
+      "url": "https://commitfest.postgresql.org/patch/2553/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200508072545.GA9701@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "",
+      "summary": "Make INSERT, including INSERT SELECT and INSERT ... ON CONFLICT, use a BulkInsertState ring buffer as COPY does, so data loaders do not leave many dirty buffers in shared buffers. Later versions added a GUC to opt in, and switched to table_multi_insert after a set number of tuples.",
+      "objection": "The thread stalled. The multi-insert part became complex: it cannot handle volatile column defaults, and the author proposed leaving it to the separate \"New Table Access Methods for Multi and Single Inserts\" patch. The author split off the simple BulkInsertState patch and said to close the entry if no one was interested in it alone. No reviewer took that patch up, so the commitfest manager proposed closing it.",
+      "touch_points": [],
+      "matched_queries": [
+        "toast bulk insert buffer strategy",
+        "BulkInsertState reuse across relations",
+        "ring buffer bulk write toast",
+        "tableam bulk insert state DML"
+      ],
+      "from_hint": false,
+      "score": 0.492,
+      "enriched": true,
+      "key_quote": "Since the thread has stalled, maybe that's the best course of action here.",
+      "quote_message_url": "https://www.postgresql.org/message-id/AF742DB8-2992-4826-B85B-1FC36BBEF3A9%40yesql.se",
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:1486",
+      "kind": "cf",
+      "title": "Refuse setting toast.* reloptions when TOAST relation does not exist",
+      "status": "Returned with feedback",
+      "date": "2018-04-10",
+      "first_date": "2018-01-17",
+      "url": "https://commitfest.postgresql.org/patch/1486/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3413542.LWpeoxCNq5@x200m"
+      ],
+      "authors": "Nikolay Shaplov (nataraj)",
+      "objectors": "Robert Haas, Tom Lane",
+      "summary": "The patch makes setting or changing a toast.* reloption raise an error when the table has no TOAST relation. Today such a value is accepted and then lost, so pg_dump does not keep it and it has no effect if toastable columns are added later.",
+      "objection": "Robert Haas pointed out that the rules for whether a table gets a TOAST table can change between major releases, so a pg_dump and restore of a table with a toast.* option could fail after an upgrade. Tom Lane added that the choice can differ on different hardware and opposed a hard error, though a warning might be acceptable. The CF manager returned the patch because there was no consensus on whether it was useful or correct; alternatives such as creating the TOAST relation when a toast.* option is set were left for a new patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "BAS_BULKWRITE toast relation",
+        "COPY toast shared buffers eviction",
+        "buffer access strategy toast",
+        "ring buffer bulk write toast"
+      ],
+      "from_hint": false,
+      "score": 0.35,
+      "enriched": true,
+      "key_quote": "If a table with that\ndefinition has a toast.* option set, then upgrading from release X to\nrelease X+1 via pg_dump and restore will fail.  That's bad.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoYTnV-2aVkAcpp7T5b%2Bq0w6s2saYiR-SD8maPxDVOyyAA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:4891",
+      "kind": "cf",
+      "title": "Vectored I/O in bulk_write.c",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2024-03-10",
+      "url": "https://commitfest.postgresql.org/patch/4891/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGLx5bLwezZKAYB2O_qHj=ov10RpgRVY7e8TSJVE74oVjg@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "The patch makes bulk_write.c issue vectored writes, so CREATE INDEX writes 128kB pwritev() calls instead of 8kB pwrite() calls. It also merges smgrextend() into smgrwritev() with flags such as _EXTEND and _SKIP_FSYNC, so no separate smgrextendv() is needed.",
+      "objection": "The author decided not to commit it for v17. He chose to try a broader design that would use streaming writes for this path and for the main writeback paths. Andres Freund's objection to merging smgrzeroextend() into the same interface was settled by dropping that part, so it did not decide the outcome. Noah Misch later asked whether the CF entry was obsolete, and the visible messages show no reply.",
+      "touch_points": [],
+      "matched_queries": [
+        "toast bulk insert buffer strategy",
+        "ring buffer bulk write toast",
+        "tableam bulk insert state DML"
+      ],
+      "from_hint": false,
+      "score": 0.321,
+      "enriched": true,
+      "key_quote": "I'd like to try something more ambitious that streamifies this and also the \"main\" writeback paths.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BhUKGJRJk06OnLPV2GHmJg2vRx%2B4OXKr_5pFX3Dk%3DqMGXWtPw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:f5db56fc4d6e95c582b61c99328ea0702b869fa0",
+      "kind": "revert",
+      "title": "Revert fix missing call to table_finish_bulk_insert during COPY",
+      "status": "Reverted",
+      "date": "2019-07-01",
+      "first_date": "2019-07-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f5db56fc4d6e95c582b61c99328ea0702b869fa0",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+TgmoYK=6BpxiJ0tN-p9wtH0BTAfbdxzHhwou0mdud4+BkYuQ@mail.gmail.com"
+      ],
+      "authors": "David Rowley",
+      "objectors": "",
+      "summary": "Revert fix missing call to table_finish_bulk_insert during COPY\nReverted commit(s): Fix missing call to table_finish_bulk_insert during COPY; Remove surplus call to table_finish_bulk_insert",
+      "objection": "This reverts commits 4de60244e and b2d69806d. Further thought is\nrequired to make this work properly.",
+      "touch_points": [],
+      "matched_queries": [
+        "toast bulk insert buffer strategy",
+        "ring buffer bulk write toast",
+        "tableam bulk insert state DML"
+      ],
+      "from_hint": false,
+      "score": 0.309,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:5830",
+      "kind": "cf",
+      "title": "Support for 8-byte TOAST values (aka the TOAST infinite loop problem)",
+      "status": "Returned with feedback",
+      "date": "2026-02-10",
+      "first_date": "2025-06-19",
+      "url": "https://commitfest.postgresql.org/patch/5830/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/aFOnKHG7Wn-Srnpv@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Tom Lane",
+      "summary": "The patch set lets TOAST tables use 8-byte value IDs (a new oid8 type, a wider OID counter, a reloption and a new on-disk vartag) so that TOAST tables are no longer limited to about 4 billion values. It also adds a toast_external layer that converts on-disk external TOAST pointers to an in-memory struct through per-vartag callbacks, so that more vartags, such as for zstd, can be added later.",
+      "objection": "The toast_external layer with function pointer redirection got no support. Tom Lane questioned its run-time cost and called it overdesigned, and the author later said the design had not received a single +1. Only the oid8 data type was committed. The author then dropped the rest from the v19 cycle, planning a v20 rework without the redirections.",
+      "touch_points": [],
+      "matched_queries": [
+        "BAS_BULKWRITE toast relation",
+        "COPY toast shared buffers eviction",
+        "ring buffer bulk write toast"
+      ],
+      "from_hint": false,
+      "score": 0.266,
+      "enriched": true,
+      "key_quote": "Anyway, as far as things stand today on this thread, I have not been able to get even a single +1 for this design.",
+      "quote_message_url": "https://www.postgresql.org/message-id/aTn4aS32O4lmaPnj%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:2426",
+      "kind": "cf",
+      "title": "Add MAIN_RELATION_CLEANUP and TOAST_TABLE_CLEANUP options to VACUUM",
+      "status": "Returned with feedback",
+      "date": "2020-09-17",
+      "first_date": "2020-01-21",
+      "url": "https://commitfest.postgresql.org/patch/2426/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/BA8951E9-1524-48C5-94AF-73B1F0D7857F@amazon.com"
+      ],
+      "authors": "Nathan Bossart (bossartn)",
+      "objectors": "Michael Paquier, Masahiko Sawada",
+      "summary": "The patch adds two VACUUM options, MAIN_RELATION_CLEANUP and TOAST_TABLE_CLEANUP (first named SECONDARY_RELATION_CLEANUP), so a table owner can vacuum only the main relation or only its TOAST table. It reuses VACOPT_SKIPTOAST, adds a flag to vacuum_rel() to skip the main relation, and adds matching vacuumdb support.",
+      "objection": "Reviewers questioned whether the use case justifies new options and more complex vacuum code. A TOAST table can already be vacuumed directly by name, with GRANT USAGE ON pg_toast for unprivileged roles, or through a script or SQL function. Michael Paquier suggested exposing only VACOPT_SKIPTOAST to users, and the entry was returned with feedback after no further activity.",
+      "touch_points": [],
+      "matched_queries": [
+        "BAS_BULKWRITE toast relation",
+        "VACUUM FULL toast buffer ring"
+      ],
+      "from_hint": false,
+      "score": 0.236,
+      "enriched": true,
+      "key_quote": "I am not sure that this use-case justifies a new option and more complications in the code paths of vacuum though.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20200806025006.GC16470%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:1765",
+      "kind": "cf",
+      "title": "Detect shared buffer access violations using mprotect()",
+      "status": "Returned with feedback",
+      "date": "2019-02-03",
+      "first_date": "2018-07-11",
+      "url": "https://commitfest.postgresql.org/patch/1765/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANXE4Te4G0TGq6cr0-TvwP0H4BNiK_-hB5gHe8mF+nz0mcYfMQ@mail.gmail.com"
+      ],
+      "authors": "Asim Rama Praveen (apraveen)",
+      "objectors": "Tom Lane",
+      "summary": "Add a compile-time option (-DMPROTECT_BUFFER) that uses mprotect() to mark shared buffers read-only or read-write according to pin and content-lock state, so that violations of shared buffer access rules are caught. The patch came out of a discussion of places that modify shared buffers without holding the content lock.",
+      "objection": "Tom Lane asked that the patch be restructured so that bad accesses can be caught with either Valgrind or mprotect depending on compile options, using macros such as ProtectBuffer() that expand to nothing when the feature is disabled instead of inline #ifdef blocks. He also raised the concern that buffers are not reliably aligned on system page boundaries. The author did not address this feedback before the commitfest ended, so Andres Freund marked the entry returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "COPY toast shared buffers eviction",
+        "buffer access strategy toast"
+      ],
+      "from_hint": false,
+      "score": 0.228,
+      "enriched": true,
+      "key_quote": "It'd be better to\nset things up so that the patch adds support for catching bad accesses\nwith either valgrind or mprotect, according to compile options.",
+      "quote_message_url": "https://www.postgresql.org/message-id/22918.1547427152%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "revert:9cf6033281fdaf938b826545a643f951086d8671",
+      "kind": "revert",
+      "title": "Revert unintentional change in increasing usage count during pin of buffers, this makes buffer access strategy have no effect.",
+      "status": "Reverted",
+      "date": "2017-03-20",
+      "first_date": "2016-04-11",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9cf6033281fdaf938b826545a643f951086d8671",
+      "thread_urls": [],
+      "authors": "Andres Freund",
+      "objectors": "",
+      "summary": "Revert unintentional change in increasing usage count during pin of buffers, this makes buffer access strategy have no effect. Change was a part of commit 48354581a49c30f5757c203415aa8412d85b0f70 during 9.6 release cycle, so backpath to 9.6\nReverted commit(s): Allow Pin/UnpinBuffer to operate in a lockfree manner.",
+      "objection": "Revert unintentional change in increasing usage count during pin of buffers,\nthis makes buffer access strategy have no effect.\nChange was a part of commit 48354581a49c30f5757c203415aa8412d85b0f70 during 9.6\nrelease cycle, so backpath to 9.6\n\n\nhttps://commitfest.postgresql.org/13/1029/",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "toast bulk insert buffer strategy",
+        "buffer access strategy toast"
+      ],
+      "from_hint": false,
+      "score": 0.202,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:7152",
+      "kind": "cf",
+      "title": "Implement TODOs for index operator strategy number validation",
+      "status": "Withdrawn",
+      "date": "2026-09-09",
+      "first_date": "2026-08-03",
+      "url": "https://commitfest.postgresql.org/patch/7152/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+Db6gb2-r2+PcuStf3Y7oviS9t7eTxDHisXLer4mtupqkXcqg@mail.gmail.com"
+      ],
+      "authors": "Priyanka Sangam (arcticwolf)",
+      "objectors": "Jinqing Kuang",
+      "summary": "The patch adds strategy number bounds checks to operator class validation for BRIN, GIN, GiST and SP-GiST, implementing TODOs in that code. BRIN and SP-GiST use RTMaxStrategyNumber as the upper limit, GiST uses a limit computed from the Geo* constants, and GIN keeps its existing limit of 63.",
+      "objection": "GiST, SP-GiST and BRIN set amstrategies = 0, so strategy numbers are defined by each opclass, and the new checks would make amvalidate() reject valid custom opclasses. RTMaxStrategyNumber is not a general limit for these access methods, and the Geo* constants apply only to the built-in GiST point implementation. The author withdrew the patch for rework.",
+      "touch_points": [],
+      "matched_queries": [
+        "toast bulk insert buffer strategy",
+        "buffer access strategy toast"
+      ],
+      "from_hint": false,
+      "score": 0.193,
+      "enriched": true,
+      "key_quote": "For example, a custom SP-GiST opclass can use strategy 31 if its support\nfunctions understand it, but this patch would make amvalidate() reject\nit.",
+      "quote_message_url": "https://www.postgresql.org/message-id/14FB7D28-9BEE-4FFE-9FB8-A75BF97D4C11%40gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:3843",
+      "kind": "cf",
+      "title": "New strategies for freezing, advancing relfrozenxid early",
+      "status": "Withdrawn",
+      "date": "2023-01-26",
+      "first_date": "2022-08-25",
+      "url": "https://commitfest.postgresql.org/patch/3843/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAH2-WzkFok_6EAHuK39GaW4FjEFQsY=3J0AAd6FXk93u-Xq3Fg@mail.gmail.com"
+      ],
+      "authors": "Peter Geoghegan (pgeoghegan)",
+      "objectors": "",
+      "summary": "New strategies for freezing, advancing relfrozenxid early\nThreads: New strategies for freezing, advancing relfrozenxid early",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "toast bulk insert buffer strategy",
+        "buffer access strategy toast"
+      ],
+      "from_hint": false,
+      "score": 0.179,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "revert:229bffedbc52f12aadb95ca2ee24d5bef36b7c7d",
+      "kind": "revert",
+      "title": "Revert the default toast compression strategy to the former behavior where there's no limit on the size of datum we'll try to compress.",
+      "status": "Reverted",
+      "date": "2009-01-06",
+      "first_date": "2009-01-06",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=229bffedbc52f12aadb95ca2ee24d5bef36b7c7d",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert the default toast compression strategy to the former behavior where there's no limit on the size of datum we'll try to compress. Other 8.4 tweaks to the behavior remain in place.  Per discussion.",
+      "objection": "Revert the default toast compression strategy to the former behavior\nwhere there's no limit on the size of datum we'll try to compress.\nOther 8.4 tweaks to the behavior remain in place.  Per discussion.",
+      "touch_points": [],
+      "matched_queries": [
+        "toast bulk insert buffer strategy",
+        "buffer access strategy toast"
+      ],
+      "from_hint": false,
+      "score": 0.168,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:a16d421ca4fc639929bc964b2585e8382cf16e33",
+      "kind": "revert",
+      "title": "Revert \"Auto-tune effective_cache size to be 4x shared buffers\"",
+      "status": "Reverted",
+      "date": "2014-05-09",
+      "first_date": "2013-10-08",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=a16d421ca4fc639929bc964b2585e8382cf16e33",
+      "thread_urls": [],
+      "authors": "Bruce Momjian",
+      "objectors": "",
+      "summary": "Revert \"Auto-tune effective_cache size to be 4x shared buffers\"\nReverted commit(s): Auto-tune effective_cache size to be 4x shared buffers",
+      "objection": "This reverts commit ee1e5662d8d8330726eaef7d3110cb7add24d058, as well as\na remarkably large number of followup commits, which were mostly concerned\nwith the fact that the implementation didn't work terribly well.  It still\ndoesn't: we probably need some rather basic work in the GUC infrastructure\nif we want to fully support GUCs whose default varies depending on the\nvalue of another GUC.  Meanwhile, it also emerged that there wasn't really\nconsensus in favor of the definition the patch tried to implement (ie,\neffective_cache_size should default to 4 times shared_buffers).  So whack\nit all back to where it was.  In a followup commit, I'll do what was\nrecently agreed to, which is to simply change the default to a higher\nvalue.",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "COPY toast shared buffers eviction",
+        "VACUUM FULL toast buffer ring"
+      ],
+      "from_hint": false,
+      "score": 0.155,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "wiki:Vacuum:1",
+      "kind": "do_not_want",
+      "title": "Auto-fill the free space map by scanning the buffer cache or by checking pages written by the background writer",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Vacuum",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Auto-fill the free space map by scanning the buffer cache or by checking pages written by the background writer\nSection: Vacuum\nLinked: Dead Space Map; Re: Automatic free space map filling",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "ring buffer bulk write toast",
+        "VACUUM FULL toast buffer ring"
+      ],
+      "from_hint": false,
+      "score": 0.146,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:6343",
+      "kind": "cf",
+      "title": "Reuse data from readRecordBuf in XLogDecodeNextRecord",
+      "status": "Withdrawn",
+      "date": "2026-02-09",
+      "first_date": "2025-12-15",
+      "url": "https://commitfest.postgresql.org/patch/6343/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJLmdKyC3iq-UjYDG0S0rLQfRxfhcctWNcN-i3=3t6ceaUu1oA@mail.gmail.com"
+      ],
+      "authors": "Sonya Valchuk (pyos)",
+      "objectors": "",
+      "summary": "Reuse data from readRecordBuf in XLogDecodeNextRecord\nThreads: Reuse data from readRecordBuf in XLogDecodeNextRecord",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "BulkInsertState reuse across relations"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:2412",
+      "kind": "cf",
+      "title": "[doc] vacuum full, fillfactor, and \"extra space\"",
+      "status": "Returned with feedback",
+      "date": "2020-08-02",
+      "first_date": "2019-12-27",
+      "url": "https://commitfest.postgresql.org/patch/2412/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20191227023134.GC12890@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "",
+      "summary": "[doc] vacuum full, fillfactor, and \"extra space\"\nThreads: doc: vacuum full, fillfactor, and \"extra space\"",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "VACUUM FULL toast buffer ring"
+      ],
+      "from_hint": false,
+      "score": 0.129,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:6427",
+      "kind": "cf",
+      "title": "Auto-tune shared_buffers to use available huge pages",
+      "status": "Withdrawn",
+      "date": "2026-06-24",
+      "first_date": "2026-01-23",
+      "url": "https://commitfest.postgresql.org/patch/6427/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAO6_Xqq6w5hTY_W+gJWp29t15NRtNLSTzD6khDC=Xy2P0BWPTQ@mail.gmail.com"
+      ],
+      "authors": "Anthonin Bonnefoy (bonnefoa)",
+      "objectors": "",
+      "summary": "Auto-tune shared_buffers to use available huge pages\nThreads: Auto-tune shared_buffers to use available huge pages",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "COPY toast shared buffers eviction"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:3784",
+      "kind": "cf",
+      "title": "Reuse Workers and Replication Slots during Logical Replication",
+      "status": "Returned with feedback",
+      "date": "2024-01-10",
+      "first_date": "2022-07-05",
+      "url": "https://commitfest.postgresql.org/patch/3784/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGPVpCTq=rUDd4JUdaRc1XUWf4BrH2gdSNf3rtOMUGj9rPpfzQ@mail.gmail.com"
+      ],
+      "authors": "Melih Mutlu (melihmutlu)",
+      "objectors": "",
+      "summary": "Reuse Workers and Replication Slots during Logical Replication\nThreads: [PATCH] Reuse Workers and Replication Slots during Logical Replication",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "BulkInsertState reuse across relations"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:5731",
+      "kind": "cf",
+      "title": "Persist injection points across server restarts",
+      "status": "Returned with feedback",
+      "date": "2025-07-02",
+      "first_date": "2025-04-30",
+      "url": "https://commitfest.postgresql.org/patch/5731/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/aBG2rPwl3GE7m1-Q@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Persist injection points across server restarts\nThreads: Persist injection points across server restarts",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "BulkInsertState reuse across relations"
+      ],
+      "from_hint": false,
+      "score": 0.112,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:1247",
+      "kind": "cf",
+      "title": "Push aggregation down to base relations and joins",
+      "status": "Withdrawn",
+      "date": "2021-03-11",
+      "first_date": "2017-04-04",
+      "url": "https://commitfest.postgresql.org/patch/1247/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/9666.1491295317@localhost"
+      ],
+      "authors": "Antonin Houska (a.houska)",
+      "objectors": "",
+      "summary": "Push aggregation down to base relations and joins\nThreads: WIP: Aggregation push-down",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "BAS_BULKWRITE toast relation"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:3764",
+      "kind": "cf",
+      "title": "Push aggregation down to base relations and joins",
+      "status": "Returned with feedback",
+      "date": "2024-01-22",
+      "first_date": "2022-04-15",
+      "url": "https://commitfest.postgresql.org/patch/3764/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/OS3PR01MB66609589B896FBDE190209F495EE9@OS3PR01MB6660.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "Yuki Fujii (fujiiyuki)",
+      "objectors": "",
+      "summary": "Push aggregation down to base relations and joins\nThreads: WIP: Aggregation push-down - take2",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "BAS_BULKWRITE toast relation"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:3495",
+      "kind": "cf",
+      "title": "Per-table storage parameters for TableAM/IndexAM extensions",
+      "status": "Returned with feedback",
+      "date": "2022-08-02",
+      "first_date": "2021-12-29",
+      "url": "https://commitfest.postgresql.org/patch/3495/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFF0-CG4KZHdtYHMsonWiXNzj16gWZpduXAn8yF7pDDub+GQMg@mail.gmail.com"
+      ],
+      "authors": "B Sadhu Prasad Patro (sadhuprasad)",
+      "objectors": "",
+      "summary": "Per-table storage parameters for TableAM/IndexAM extensions\nThreads: Per-table storage parameters for TableAM/IndexAM extensions",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "tableam bulk insert state DML"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:2083",
+      "kind": "cf",
+      "title": "Small typo fix on tableam documentation",
+      "status": "Rejected",
+      "date": "2019-04-05",
+      "first_date": "2019-04-05",
+      "url": "https://commitfest.postgresql.org/patch/2083/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/AM6PR01MB4534C66A4EB637C3F22E0FA08B510@AM6PR01MB4534.eurprd01.prod.exchangelabs.com"
+      ],
+      "authors": "Alexis Andrieu (aandrieu)",
+      "objectors": "",
+      "summary": "Small typo fix on tableam documentation\nThreads: Small typo fix on tableam documentation",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "tableam bulk insert state DML"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:286",
+      "kind": "cf",
+      "title": "drop/truncate table sucks for large values of shared buffers",
+      "status": "Returned with feedback",
+      "date": "2015-07-02",
+      "first_date": "2015-06-27",
+      "url": "https://commitfest.postgresql.org/patch/286/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAA4eK1JPLGjpMeJ5YLNE7bpNBhP2EQe_rDR+Aw3atNfj9WkAGg@mail.gmail.com"
+      ],
+      "authors": "Amit Kapila (amitkapila)",
+      "objectors": "",
+      "summary": "drop/truncate table sucks for large values of shared buffers\nThreads: drop/truncate table sucks for large values of shared buffers",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "COPY toast shared buffers eviction"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 8,
+    "new_calls": 0,
+    "failed": 0,
+    "quotes_verified": 0,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2026-10-16",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "No listed precedent was rejected for a reason that applies to TOAST ring use. Andres's random-IO objection in message #2 is new in this thread, not a prior rejection, so other angles cover it."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "There is no SQL syntax, GUC, catalog or pg_dump surface. The only change users see is TOAST bulk writes moving into the bulkwrite context of pg_stat_io, which is more accurate accounting."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The series changes how shared buffers are reused and adds no on-disk format, WAL record, catalog or wire protocol change, so pg_upgrade, standbys and subscribers see nothing new. The only cross-boundary item is the C API change to GetBulkInsertState(); it targets version 20 and breaks callers at compile time. That is normal for master and leaves no persistent or cross-node state to object to. If the Bugfix tag means a backpatch, a committer would likely ask how this API change fits back branches."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal has no privilege or exposure aspect: no new privilege, role, GUC, SQL surface or monitoring data. It changes only which buffer ring TOAST writes from existing bulk operations use, and the pg_stat_io change moves existing counts to another context without showing anything new."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "Objections are listed. P2 is related only: it extended BulkInsertState to INSERT and stalled for lack of review, which does not apply here."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "For COPY, CREATE TABLE AS and matview refresh, no existing option, GUC or extension keeps TOAST inserts out of shared buffers, so the main idea is not already implemented."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "Demand rests on one 2022 report with no numbers; the objections ask for measurements, not rejection."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 9,
+      "new_survived": 3,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 95,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 11,
+    "wall_ms": 114604,
+    "cost_usd": 1.2227192,
+    "dry_run": false
+  }
+}

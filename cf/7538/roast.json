@@ -1,0 +1,1107 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T04:07:06.709Z",
+  "input": {
+    "arg": "7538",
+    "cf": {
+      "id": 7538,
+      "url": "https://commitfest.postgresql.org/patch/7538/",
+      "title": "GIN index fast list search may become un-interruptible for long time",
+      "status": "Needs review",
+      "authors": "shihao zhong (zhong950419)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CALdSSPisYC-zHiWJU36AP-zrPN-im-gEZrK-QD8TPn3Vb8xMvw%40mail.gmail.com",
+    "subject": "GIN index fast list search may become un-interruptible for long time.",
+    "thread_start": "2026-07-04T17:38:54Z",
+    "messages_read": 4,
+    "messages_total": 4,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v1-0001-Make-GIN-scan-more-cancellable.patch",
+      "v1-0002-Move-CFI-check-before-break-condition.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "The problem is stated with a reproducer, and two independent production reports show demand. The surviving objections, maintenance-fit-1 and maintenance-fit-2, are fixable design points: v2 adds no interrupt check for a long pending list with few query entries, and the 64-entry cutoff has no measurements. Neither would stop a committer from reading on. v2-0002 changes when the consistent functions run relative to the lock, which needs a reviewer who knows GIN.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Make GIN pending list scans cancellable and faster for large scan keys",
+    "problem": "A query that searches a GIN index with a very large key array can ignore pg_cancel_backend and statement_timeout for minutes. The backend holds a pending list buffer lock while it looks up each key item one by one, and interrupts are held off during that time. Kirill Reshke and shihao zhong report this in production.",
+    "proposed_design": "v1 releases the pending list buffer lock and calls CHECK_FOR_INTERRUPTS() when an interrupt is pending, and moves a CFI in startScanKey() before a break. v2, by another author, sorts the query entries once and binary-searches each pending list row's keys in them, and calls the consistent functions after the lock is released. Queries with fewer than 64 entries keep the old path.",
+    "user_visible_surface": [],
+    "author_claims": [
+      "In Kirill's case, a 1s statement_timeout fires after 202s on master and after 1s with v2-0001.",
+      "With a default size pending list, queries with 1000 entries run 22x faster with v2-0001.",
+      "v2-0001 can be committed without v2-0002, and the locking is unchanged.",
+      "Large arrays are still slow in startScanKey(), but that code holds no lock.",
+      "Kirill wants a back-patchable fix and calls v1 uncommittable for master because of possible performance cost."
+    ],
+    "thread_state": "Heikki called the v1 locking broken, because CHECK_FOR_INTERRUPTS() may return and the scan then continues without the lock, and he suggested sorting the keys. shihao posted v2 along those lines, and nobody has replied to v2 yet.",
+    "unclear": [
+      "The material does not say whether v2 is meant for back branches, or what fix the back branches get.",
+      "The material does not say how the cutoff of 64 entries was chosen, or how small queries perform with v2.",
+      "v2 does not say how it handles interrupts if the pending list itself is very long but the query has few entries.",
+      "v2-0002 does not say how it keeps results correct once the pending list lock is released before the consistent functions run.",
+      "The material does not say whether the v1-0002 fix to the CFI in startScanKey() is still part of the plan."
+    ],
+    "search_queries": [
+      "GIN pending list scan cancel",
+      "GIN fast update pending list performance",
+      "uncancellable query buffer lock",
+      "CHECK_FOR_INTERRUPTS GIN scan",
+      "GIN large array query slow",
+      "scanPendingInsert collectMatchesForHeapRow",
+      "GIN sort scan keys binary search",
+      "query ignores statement_timeout index scan"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Speedup leaves the uncancellable loop in place for other workloads",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site raises gin_pending_list_limit so the pending list holds millions of rows, then runs a query with 50 entries. The query takes the old path, holds the pending list buffer lock with interrupts held off, and again ignores pg_cancel_backend and statement_timeout. The DBA finds out during an incident, after the bug was believed fixed.",
+      "argument": "The bug report in message #1 is that the scan cannot be interrupted while it holds the buffer lock. v2-0001 in message #4 makes one input shape faster but adds no interrupt check, and queries below 64 entries keep the old path. The time spent still grows with pending list length, so the fix depends on the workload, and a later regression in the fast path would bring the bug back without any test failing.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        4
+      ],
+      "author_must_show": "How does v2 keep a scan cancellable when the pending list is very long but the query has few entries, or when the fast path is not used?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Kirill Reshke",
+          "date": "2026-07-04T17:38:54Z",
+          "url": "https://www.postgresql.org/message-id/CALdSSPisYC-zHiWJU36AP-zrPN-im-gEZrK-QD8TPn3Vb8xMvw%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "Heikki Linnakangas",
+          "date": "2026-07-05T17:15:45Z",
+          "url": "https://www.postgresql.org/message-id/f7eeaba4-fa1d-4cfd-ab73-44ba393937b9%40iki.fi"
+        },
+        {
+          "index": 4,
+          "from": "shihao zhong",
+          "date": "2026-09-25T22:03:16Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTAf2ghC9hyc_NLx5oA0PP%3Dv3L8S8LMQRcDxbr9GJ6niQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #4 says the locking is unchanged and mentions no new interrupt check, so the original complaint is answered only for large scan keys. The 50-entry scenario may take seconds, not minutes, but the material gives no measurement to rule it out.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Two lookup paths behind an unexplained 64-entry cutoff",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch changes how pending list rows are matched, for example for partial match or a new strategy, and updates only the linear path. Most regression queries use few entries, so the sorted path is rarely run. Users with large arrays get wrong or missing rows, and the bug shows up only in the field.",
+      "argument": "Message #4 keeps the old per-key lookup below 64 entries and adds a sorted binary-search path above it. Both paths must return the same matches for every opclass, and nothing fails loudly if they drift apart. The material does not say how 64 was chosen or what small queries cost on the sorted path, so a committer cannot tell whether one path would be enough.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4
+      ],
+      "author_must_show": "What measurements justify keeping two lookup paths, and why would the sorted path alone not be acceptable for queries with few entries?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "shihao zhong",
+          "date": "2026-09-25T22:03:16Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTAf2ghC9hyc_NLx5oA0PP%3Dv3L8S8LMQRcDxbr9GJ6niQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Size cutoffs with two code paths exist elsewhere in Postgres, and v2-0003 adds tests for the sorted path, which weakens the drift scenario. But message #4 gives no reason for 64 and no numbers for small queries, so the request for measurements stands.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "No fix is proposed for released branches",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A production cluster on a supported release hits the case from message #1. v2 goes into master only, and v1 was found broken, so the cluster still has a backend that cannot be cancelled for minutes until a major upgrade.",
+      "argument": "The CommitFest entry is tagged Bugfix, and messages #1 and #3 report the problem in production. Heikki says in message #2 that the sorting approach is not backpatchable, and the v1 locking is broken. The thread does not yet say what back branches would get, nor whether v1-0002, which moves the CFI in startScanKey(), is still meant to go in.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "author_must_show": "What small change, such as a correct periodic interrupt check that keeps the lock, is proposed for back branches, and is v1-0002 still part of it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Kirill Reshke",
+          "date": "2026-07-04T17:38:54Z",
+          "url": "https://www.postgresql.org/message-id/CALdSSPisYC-zHiWJU36AP-zrPN-im-gEZrK-QD8TPn3Vb8xMvw%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "Heikki Linnakangas",
+          "date": "2026-07-05T17:15:45Z",
+          "url": "https://www.postgresql.org/message-id/f7eeaba4-fa1d-4cfd-ab73-44ba393937b9%40iki.fi"
+        },
+        {
+          "index": 3,
+          "from": "shihao zhong",
+          "date": "2026-09-15T03:45:28Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQzZZ%2BS-Lidf5VYnA4_b3y83M7Q%2BDhvE40uq5%2BJnizzag%40mail.gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "shihao zhong",
+          "date": "2026-09-25T22:03:16Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTAf2ghC9hyc_NLx5oA0PP%3Dv3L8S8LMQRcDxbr9GJ6niQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The scenario is what back branches do today, and v2 does not make it worse. Fixing master first when the change is too large to back-patch is normal practice, so this is an open scope question for the thread.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "Any user with SELECT on the table can start a scan that ignores cancel and statement_timeout; the patch narrows that."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The entry is tagged Bugfix, Kirill wants a back-patchable fix, and Heikki says the sorting approach is not backpatchable."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "v2 keeps the old lookup below 64 entries and adds a sorted binary-search path above it in ginget.c."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "The patches change the pending list scan in ginget.c, which every GIN scan of an index with pending entries runs."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "How does v2 keep a scan cancellable when the pending list is very long but the query has fewer than 64 entries?",
+    "What measurements led to the cutoff of 64 entries, and how do queries with few entries perform on the sorted path?",
+    "How does v2-0002 keep results correct when the consistent functions run after the pending list lock is released?",
+    "Is v2 meant for master only, and what change, if any, is proposed for back branches?",
+    "Is the v1-0002 change that moves the CFI in startScanKey() still part of the plan?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Heikki Linnakangas reviewed v1 in message #2 and suggested the sorting approach; he has not yet replied to v2. The owner needs to know GIN pending list scans and buffer locking.",
+    "liability": "Correct results from pending list scans for every GIN opclass, on both the linear and the sorted path, for as long as both exist. If v2-0002 goes in, also the correctness of running consistent functions after the lock is released.",
+    "author_follow_up": "shihao zhong offered in message #3 to review, test or write v2, then posted v2 and created the CommitFest entry. No sign yet about fixes after commit."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "low",
+    "review_cost": "medium",
+    "recommended_action": "proceed",
+    "reason": "Two production reports describe backends that ignore cancel and statement_timeout for minutes, and the change stays inside ginget.c with no user-visible surface. Review cost is medium because the sorted path and the lock change in v2-0002 need a careful read by someone who knows GIN."
+  },
+  "self_advice": [],
+  "provisional_note": "The v2 patches and message #4 were not shown, so this rests on the brief's summary of v2. The locking in v2-0002 and the mapping of sorted entries to consistent-function arguments could not be checked without the code.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:3060",
+      "kind": "cf",
+      "title": "use AV work items infrastructure for GIN pending list's cleanup",
+      "status": "Returned with feedback",
+      "date": "2021-09-08",
+      "first_date": "2021-04-05",
+      "url": "https://commitfest.postgresql.org/patch/3060/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210405063117.GA2478@ahch-to"
+      ],
+      "authors": "Jaime Casanova (jcasanov)",
+      "objectors": "Masahiko Sawada",
+      "summary": "The patch moves GIN pending list cleanup to an autovacuum work item, requested when the list reaches gin_pending_list_limit. Inserts and updates would then no longer pay for the cleanup.",
+      "objection": "Masahiko Sawada pointed out that work items run only after an autovacuum run, so the pending list could grow far past gin_pending_list_limit while the same work item is registered again and again. He suggested a soft limit and a hard limit, removal of duplicate work items, and skipping the item if autovacuum already cleaned the index. The author had no time to finish a revised version, so he marked the entry \"Returned with feedback\" and planned to resubmit.",
+      "touch_points": [],
+      "matched_queries": [
+        "GIN pending list scan cancel",
+        "GIN fast update pending list performance"
+      ],
+      "from_hint": false,
+      "score": 0.268,
+      "enriched": true,
+      "key_quote": "So if many insertions happen before executing the autovacuum\nwork item, we will end up greatly exceeding the threshold\n(gin_pending_list_limit) and registering the same work item again and\nagain.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAD21AoCq3JOFbDiBrWPF1oFsDp1bdURVqk6Lei9Gb3V_1jgijw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:157",
+      "kind": "cf",
+      "title": "GIN fillfactor",
+      "status": "Rejected",
+      "date": "2015-07-21",
+      "first_date": "2014-11-21",
+      "url": "https://commitfest.postgresql.org/patch/157/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB7nPqR36boo_qNnkGzq53vLwET5_E9bXJsusojGqN2TopXx9w@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun), Alexander Korotkov (smagen)",
+      "objectors": "Heikki Linnakangas",
+      "summary": "Add a fillfactor storage parameter to GIN indexes so that index build leaves free space on pages, and apply it to the page split ratio in dataPlaceToPageLeaf. The default was debated between 100, which matches the packed 9.4 indexes, and 90.",
+      "objection": "No benchmark showed that the option improves performance. Heikki Linnakangas tested random updates and found that GIN indexes do not bloat after build, because posting tree pages already keep some free space, so he concluded the option is not useful in practice. Alexander Korotkov showed one case with bloat but agreed it was probably not worth it without real use cases.",
+      "touch_points": [],
+      "matched_queries": [
+        "GIN pending list scan cancel",
+        "CHECK_FOR_INTERRUPTS GIN scan",
+        "GIN large array query slow"
+      ],
+      "from_hint": false,
+      "score": 0.204,
+      "enriched": true,
+      "key_quote": "Based on this, I think we should just drop this patch. It's not useful in\npractice.",
+      "quote_message_url": "https://www.postgresql.org/message-id/55AE1370.8090804%40iki.fi",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "revert:930fd68455576dada48521a6cef642caddea3c63",
+      "kind": "revert",
+      "title": "Revert the GinMaxItemSize calculation so that we fit 3 tuples per page.",
+      "status": "Reverted",
+      "date": "2014-12-30",
+      "first_date": "2014-01-22",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=930fd68455576dada48521a6cef642caddea3c63",
+      "thread_urls": [],
+      "authors": "Heikki Linnakangas",
+      "objectors": "",
+      "summary": "Revert the GinMaxItemSize calculation so that we fit 3 tuples per page.\nReverted commit(s): Compress GIN posting lists, for smaller index size.",
+      "objection": "Commit 36a35c55 changed the divisor from 3 to 6, for no apparent reason.\nReducing GinMaxItemSize like that created a dump/reload hazard: loading a\n9.3 database to 9.4 might fail with \"index row size XXX exceeds maximum 1352\nfor index ...\" error. Revert the change.\n\nWhile we're at it, make the calculation slightly more accurate. It used to\ndivide the available space on page by three, then subtract\nsizeof(ItemIdData), and finally round down. That's not totally accurate; the\nitem pointers for the three items are packed tight right after the page\nheader, but there is alignment padding after the item pointers. Change the\ncalculation to reflect that, like BTMaxItemSize does. I tested this with\ndifferent block sizes on systems with 4- and 8-byte alignment, and the value\nafter the final MAXALIGN_DOWN was the same with both methods on all\nconfigurations. So this does not make any difference currently, but let's be\ntidy.\n\nAlso add a comment explaining what the macro does.\n\nThis fixes bug #12292 reported by Robert Thaler. Backpatch to 9.4, where the\nbug was introduced.",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "GIN pending list scan cancel",
+        "GIN fast update pending list performance"
+      ],
+      "from_hint": false,
+      "score": 0.203,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "revert:9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "kind": "revert",
+      "title": "Fix index-only scan plans, take 2.",
+      "status": "Partially reverted",
+      "date": "2022-01-03",
+      "first_date": "2022-01-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3179992.1641150853@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/17350-b5bdcf476e5badbb@postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Fix index-only scan plans, take 2.\nReverted commit(s): Fix index-only scan plans when not all index columns can be returned.",
+      "objection": "Commit 4ace45677 failed to fix the problem fully, because the\nsame issue of attempting to fetch a non-returnable index column\ncan occur when rechecking the indexqual after using a lossy index\noperator.  Moreover, it broke EXPLAIN for such indexquals (which\nindicates a gap in our test cases :-().\n\nRevert the code changes of 4ace45677 in favor of adding a new field\nto struct IndexOnlyScan, containing a version of the indexqual that\ncan be executed against the index-returned tuple without using any\nnon-returnable columns.  (The restrictions imposed by check_index_only\nguarantee this is possible, although we may have to recompute indexed\nexpressions.)  Support construction of that during setrefs.c\nprocessing by marking IndexOnlyScan.indextlist entries as resjunk\nif they can't be returned, rather than removing them entirely.\n(We could alternatively require setrefs.c to look up the IndexOptInfo\nagain, but abusing resjunk this way seems like a reasonably safe way\nto avoid needing to do that.)\n\nThis solution isn't great from an API-stability standpoint: if there\nare any extensions out there that build IndexOnlyScan structs directly,\nthey'll be broken in the next minor releases.  However, only a very\ninvasive extension would be likely to do such a thing.  There's no\nchange in the Path representation, so typical planner extensions\nshouldn't have a problem.\n\nAs before, back-patch to all supported branches.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "CHECK_FOR_INTERRUPTS GIN scan",
+        "query ignores statement_timeout index scan"
+      ],
+      "from_hint": false,
+      "score": 0.174,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:0e20c485617c3bcde8d9f0759d5ee1ef1c442004",
+      "kind": "revert",
+      "title": "Revert FETCH/MOVE int64 patch.  Was using incorrect checks for fetch/move in scan.l.",
+      "status": "Reverted",
+      "date": "2006-09-03",
+      "first_date": "2006-09-03",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=0e20c485617c3bcde8d9f0759d5ee1ef1c442004",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert FETCH/MOVE int64 patch.  Was using incorrect checks for fetch/move in scan.l.",
+      "objection": "Revert FETCH/MOVE int64 patch.  Was using incorrect checks for\nfetch/move in scan.l.",
+      "touch_points": [],
+      "matched_queries": [
+        "CHECK_FOR_INTERRUPTS GIN scan",
+        "scanPendingInsert collectMatchesForHeapRow"
+      ],
+      "from_hint": false,
+      "score": 0.162,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:5413",
+      "kind": "cf",
+      "title": "INSERT ... ON CONFLICT DO SELECT [FOR ...]",
+      "status": "Returned with feedback",
+      "date": "2025-08-05",
+      "first_date": "2024-12-01",
+      "url": "https://commitfest.postgresql.org/patch/5413/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2b5db2e6-8ece-44d0-9890-f256fdca9f7e@proxel.se"
+      ],
+      "authors": "Andreas Karlsson (kandreas), Marko Tiikkaja (johto)",
+      "objectors": "Dean Rasheed",
+      "summary": "The patch adds ON CONFLICT DO SELECT to INSERT, which returns the conflicting row through RETURNING instead of updating it, with an optional row lock (DO SELECT FOR UPDATE and similar). It revives a 2017 patch by Marko and rebases it for table AMs, EXPLAIN, RLS and OLD/NEW in RETURNING.",
+      "objection": "Dean Rasheed found the patch not yet committable. Partitioned tables crashed with DO SELECT FOR UPDATE, the docs did not cover DO SELECT, and regression and isolation tests were missing. The author agreed and said a new version would follow, but none was posted before the entry was closed in August 2025.",
+      "touch_points": [],
+      "matched_queries": [
+        "scanPendingInsert collectMatchesForHeapRow"
+      ],
+      "from_hint": false,
+      "score": 0.147,
+      "enriched": true,
+      "key_quote": "I think there is still a fair bit more to do to get this into a\ncommittable state. The docs in particular need work.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAEZATCV_Urr7FO_xQ%2ByHyhssbJYwns%2Bpqg0j35eDajN2%2BzFBGw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:5072",
+      "kind": "cf",
+      "title": "Fix error message for statement_timeout and fix flaky test",
+      "status": "Withdrawn",
+      "date": "2024-06-25",
+      "first_date": "2022-01-12",
+      "url": "https://commitfest.postgresql.org/patch/5072/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/AM5PR83MB0178D3B31CA1B6EC4A8ECC42F7529@AM5PR83MB0178.EURPRD83.prod.outlook.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "The entry proposed a fix to the statement timeout logic, where a query that hit statement_timeout could report \"canceling statement due to user request\" instead of a timeout error. It also changed the flaky postgres_fdw cancel test by moving it before use_remote_estimate is enabled and raising its statement_timeout from 10ms to 100ms.",
+      "objection": "The visible messages do not show why. The last message, from the author on the day of the decision, posts the test fix and says the test should be removed if failures continue. No objection to either patch appears.",
+      "touch_points": [],
+      "matched_queries": [
+        "query ignores statement_timeout index scan"
+      ],
+      "from_hint": false,
+      "score": 0.143,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:4187",
+      "kind": "cf",
+      "title": "BRIN - SK_SEARCHARRAY and scan key preprocessing",
+      "status": "Returned with feedback",
+      "date": "2024-01-15",
+      "first_date": "2023-02-13",
+      "url": "https://commitfest.postgresql.org/patch/4187/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/f6aab55c-35eb-4118-a7ff-571c62e6cc39@enterprisedb.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "Heikki Linnakangas",
+      "summary": "The patch series lets BRIN opclasses handle SK_SEARCHARRAY scan keys (IN lists) in one index pass, instead of one pass per array value. A new optional \"preprocess\" support procedure, called from brinrescan(), would prepare each scan key once: minmax sorts the array for binary search and bloom precomputes the hashes.",
+      "objection": "Heikki Linnakangas found the preprocess procedure too inflexible. He proposed per-scankey scratch space, for example in BrinDesc, and a new amproc number for a consistent function that supports arrays, with a generic fallback in the BRIN AM. Tomas Vondra agreed but got stuck: BrinDesc is per attribute, and an old-style consistent function cannot tell which scan key's scratch space to use. No new patch came after July 2023, so the commitfest manager marked the entry returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "GIN sort scan keys binary search"
+      ],
+      "from_hint": false,
+      "score": 0.142,
+      "enriched": true,
+      "key_quote": "The new preprocess support function feels a bit too inflexible to me.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2484032b-3e6d-ae6a-61e5-732e2136ad18%40iki.fi",
+      "relevant": true
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:3483",
+      "kind": "cf",
+      "title": "BufferAlloc: don't take two simultaneous locks",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2021-10-01",
+      "url": "https://commitfest.postgresql.org/patch/3483/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1edbb61981fe1d99c3f20e3d56d6c88999f4227c.camel@postgrespro.ru"
+      ],
+      "authors": "Yura Sokolov (funny_falcon)",
+      "objectors": "Robert Haas, Michael Paquier",
+      "summary": "The patch changes BufferAlloc so that, when it evicts a valid buffer, it releases the old buffer-mapping partition lock before it takes the new one, so it never holds two partition locks at once. Later versions also let dynahash reuse the evicted entry, and a v12 variant inserts a placeholder entry and makes concurrent inserters of the same block wait on a per-backend ConditionVariable.",
+      "objection": "The entry was returned with feedback after the patch stopped applying and the author did not rebase it after the September 2022 notice. Earlier, Robert Haas objected to the HASH_REUSE design, which splits one dynahash operation across bufmgr and dynahash, so an ereport(ERROR) between HASH_REUSE and HASH_ENTER would corrupt state. He suggested a hash_replace() call, but the author rejected it because it would need both partition locks.",
+      "touch_points": [],
+      "matched_queries": [
+        "uncancellable query buffer lock"
+      ],
+      "from_hint": false,
+      "score": 0.138,
+      "enriched": true,
+      "key_quote": "With no rebase done since this notice, I have marked this entry as\nRwF.",
+      "quote_message_url": "https://www.postgresql.org/message-id/Y0Zw3Zs2MMi3r6ji%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "revert:782df58a1cafbef5defb329a7583dfa0154dfe72",
+      "kind": "revert",
+      "title": "Revert patch pending more discussion:",
+      "status": "Reverted",
+      "date": "2006-04-30",
+      "first_date": "2006-04-30",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=782df58a1cafbef5defb329a7583dfa0154dfe72",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert patch pending more discussion:",
+      "objection": "Disallow changing DEFAULT expression of a SERIAL column.",
+      "touch_points": [],
+      "matched_queries": [
+        "GIN pending list scan cancel",
+        "scanPendingInsert collectMatchesForHeapRow"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:5238",
+      "kind": "cf",
+      "title": "Add parallel columns for seq scan and index scan on pg_stat_all_tables and _indexes",
+      "status": "Returned with feedback",
+      "date": "2024-12-11",
+      "first_date": "2024-08-29",
+      "url": "https://commitfest.postgresql.org/patch/5238/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAECtzeXXuMkw-RVGTWvHGOJsmFdsRY+jK0ndQa80sw46y2uvVQ@mail.gmail.com"
+      ],
+      "authors": "Guillaume Lelarge (gleu)",
+      "objectors": "Michael Paquier, Robert Haas",
+      "summary": "The patch adds parallel_seq_scan, last_parallel_seq_scan, parallel_idx_scan and last_parallel_idx_scan columns to pg_stat_all_tables, and parallel_idx_scan and last_parallel_idx_scan to pg_stat_all_indexes. The goal is to help administrators judge how parallel workers are used and tune parallelism settings.",
+      "objection": "Reviewers doubted that per-table and per-index counts of parallel scans help with tuning, since parallel plans with Gather nodes are usually analyzed per statement. Michael Paquier added that the metrics committed in e7a9496de906 and 5d4298e75f25 may already cover the need. Robert Haas found no clear use case for these counters. The author agreed that the committed metrics were good enough for now.",
+      "touch_points": [],
+      "matched_queries": [
+        "query ignores statement_timeout index scan"
+      ],
+      "from_hint": false,
+      "score": 0.132,
+      "enriched": true,
+      "key_quote": "I think the question to which we don't have a clear answer is: for what purpose would you want to be able to distinguish parallel and non-parallel scans on a per-table basis?",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoZ5oiVFF1%3DAqmESrJo4YPbk9WO8n%2BNnLPCm6wNrnoEooQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:1782",
+      "kind": "cf",
+      "title": "Allow pg_verify_checksums to specify a database to scan",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2018-08-24",
+      "url": "https://commitfest.postgresql.org/patch/1782/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/7d5d3f34-ec64-602a-d7af-858eb686c86d@2ndquadrant.com"
+      ],
+      "authors": "Yugo Nagata (yugo.nagata)",
+      "objectors": "Fabien COELHO",
+      "summary": "Add options to pg_verify_checksums to limit checksum verification to one database, given by OID with -d/--dboid, or to shared relations only with -g/--global-only. This follows a discussion that the existing -r RELFILENODE option had no way to say which database it referred to.",
+      "objection": "Fabien COELHO's review asked for several changes: TAP tests (the command had none), stricter parsing of the OID argument, handling of -d and -g given together (that combination succeeded while checking nothing), and documentation fixes. Masahiko Sawada suggested allowing several database OIDs. The thread ends with these review comments and shows no revised patch before the entry was returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "CHECK_FOR_INTERRUPTS GIN scan"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": true,
+      "key_quote": "When the command is started with both \"-d 1 -g\", it succeeds by checking nothing, which is quite misleading. Probably it should complain that these options are mutually exclusive, or it should check both under -g AND -d 1?",
+      "quote_message_url": "https://www.postgresql.org/message-id/alpine.DEB.2.21.1809031717240.5293%40lancre",
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:4171c44c9b791da3c00386dc6d8e6b1842e3036b",
+      "kind": "revert",
+      "title": "Revert \"Introduce CompactAttribute array in TupleDesc\"",
+      "status": "Reverted",
+      "date": "2024-12-03",
+      "first_date": "2024-12-03",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=4171c44c9b791da3c00386dc6d8e6b1842e3036b",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAApHDvr9i6T5=iAwQCxFDgMsthr_obVxgwBaEJkC8KUH6yM3Hw@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAApHDvrBztXP3yx=NKNmo3xwFAFhEdyPnvrDg3=M0RhDs+4vYw@mail.gmail.com"
+      ],
+      "authors": "David Rowley",
+      "objectors": "",
+      "summary": "Revert \"Introduce CompactAttribute array in TupleDesc\"\nReverted commit(s): Introduce CompactAttribute array in TupleDesc",
+      "objection": "This reverts commit d28dff3f6cd6a7562fb2c211ac0fb74a33ffd032.\n\nQuite a large number of buildfarm members didn't like this commit and\nit's not yet clear why.  Reverting this before too many animals turn\nred.",
+      "touch_points": [],
+      "matched_queries": [
+        "GIN large array query slow"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:2731",
+      "kind": "cf",
+      "title": "_bt_binsrch* improvements - equal-prefix-skip binary search",
+      "status": "Withdrawn",
+      "date": "2020-09-15",
+      "first_date": "2020-09-11",
+      "url": "https://commitfest.postgresql.org/patch/2731/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2WjnrkzT9tfqFhSCPeH6LV-UUj5_oO5vX038dvfK7fDuyQ@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "_bt_binsrch* improvements - equal-prefix-skip binary search\nThreads: [patch] _bt_binsrch* improvements - equal-prefix-skip binary search",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "GIN sort scan keys binary search"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:687",
+      "kind": "cf",
+      "title": "Fix for PL/Python slow input arrays traversal issue",
+      "status": "Rejected",
+      "date": "2016-09-22",
+      "first_date": "2016-07-28",
+      "url": "https://commitfest.postgresql.org/patch/687/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAH38_tkwA5qgLV8zPN1OpPzhtkNKQb30n3xq-2NR9jUfv3qwHA@mail.gmail.com"
+      ],
+      "authors": "Alexey Grishchenko (0x0fff)",
+      "objectors": "",
+      "summary": "Fix for PL/Python slow input arrays traversal issue\nThreads: Fix for PL/Python slow input arrays traversal issue",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "GIN large array query slow"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:2897",
+      "kind": "cf",
+      "title": "Faster pglz compression",
+      "status": "Withdrawn",
+      "date": "2023-02-28",
+      "first_date": "2020-12-09",
+      "url": "https://commitfest.postgresql.org/patch/2897/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/FEF3DC5E-4BC4-44E1-8DEB-DADC67046FE3@yandex-team.ru"
+      ],
+      "authors": "Andrey Borodin (x4m), Владимир Лесков (tinsane)",
+      "objectors": "",
+      "summary": "Faster pglz compression\nThreads: pglz compression performance, take two",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "GIN fast update pending list performance"
+      ],
+      "from_hint": false,
+      "score": 0.116,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:5542",
+      "kind": "cf",
+      "title": "Fix buffer pinning logic/visibility bugs in [SP-]Gist Index-Only Scans",
+      "status": "Withdrawn",
+      "date": "2026-06-08",
+      "first_date": "2021-11-03",
+      "url": "https://commitfest.postgresql.org/patch/5542/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAH2-Wz=PqOziyRSrnN5jAtfXWXY7-BJcHz9S355LH8Dt=5qxWQ@mail.gmail.com"
+      ],
+      "authors": "Peter Geoghegan (pgeoghegan), Michail Nikolaev (nkey), Matthias van de Meent (mmeent), Mihail Nikalayeu (mihailnikalayeu)",
+      "objectors": "",
+      "summary": "Fix buffer pinning logic/visibility bugs in [SP-]Gist Index-Only Scans\nThreads: Why doesn't GiST VACUUM require a super-exclusive lock, like nbtree VACUUM?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "uncancellable query buffer lock"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:1897",
+      "kind": "cf",
+      "title": "Delay locking partitions during query execution",
+      "status": "Withdrawn",
+      "date": "2019-03-05",
+      "first_date": "2018-12-03",
+      "url": "https://commitfest.postgresql.org/patch/1897/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKJS1f_kfRQ3ZpjQyHC7=PK9vrhxiHBQFZ+hc0JCwwnRKkF3hg@mail.gmail.com"
+      ],
+      "authors": "David Rowley (davidrowley)",
+      "objectors": "",
+      "summary": "Delay locking partitions during query execution\nThreads: Delay locking partitions during query execution",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "uncancellable query buffer lock"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:1241",
+      "kind": "cf",
+      "title": "INSERT .. ON CONFLICT DO SELECT",
+      "status": "Returned with feedback",
+      "date": "2018-01-22",
+      "first_date": "2017-08-15",
+      "url": "https://commitfest.postgresql.org/patch/1241/",
+      "thread_urls": [],
+      "authors": "Marko Tiikkaja (johto)",
+      "objectors": "",
+      "summary": "INSERT .. ON CONFLICT DO SELECT",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "scanPendingInsert collectMatchesForHeapRow"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:5161",
+      "kind": "cf",
+      "title": "Restart pg_usleep when interrupted",
+      "status": "Withdrawn",
+      "date": "2024-09-04",
+      "first_date": "2024-06-28",
+      "url": "https://commitfest.postgresql.org/patch/5161/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/01000190606e3d2a-116ead16-84d2-4449-8d18-5053da66b1f4-000000@email.amazonses.com"
+      ],
+      "authors": "Sami Imseih (simseih)",
+      "objectors": "",
+      "summary": "Restart pg_usleep when interrupted\nThreads: Restart pg_usleep when interrupted",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "CHECK_FOR_INTERRUPTS GIN scan"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:2844",
+      "kind": "cf",
+      "title": "Parallel INSERT (INTO ... SELECT ...)",
+      "status": "Returned with feedback",
+      "date": "2021-04-01",
+      "first_date": "2020-09-22",
+      "url": "https://commitfest.postgresql.org/patch/2844/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJcOf-cXnB5cnMKqWEp2E2z7Mvcd04iLVmV=qpFJrR3AcrTS3g@mail.gmail.com"
+      ],
+      "authors": "Greg Nancarrow (gregn1234)",
+      "objectors": "",
+      "summary": "Parallel INSERT (INTO ... SELECT ...)\nThreads: Parallel INSERT (INTO ... SELECT ...)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "scanPendingInsert collectMatchesForHeapRow"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:4180",
+      "kind": "cf",
+      "title": "Support SK_SEARCHNULL / SK_SEARCHNOTNULL for heap-only scans",
+      "status": "Returned with feedback",
+      "date": "2023-12-02",
+      "first_date": "2023-02-13",
+      "url": "https://commitfest.postgresql.org/patch/4180/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJ7c6TPKeh7UwEN9ORqP_dmR8uxiFhxT8Pecq01zw1HKpTBMBg@mail.gmail.com"
+      ],
+      "authors": "Aleksander Alekseev (a.alekseev), Jacob Champion (jchampion)",
+      "objectors": "",
+      "summary": "Support SK_SEARCHNULL / SK_SEARCHNOTNULL for heap-only scans\nThreads: [PATCH] Support SK_SEARCHNULL / SK_SEARCHNOTNULL for heap-only scans",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "GIN sort scan keys binary search"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "revert:344c26915136fa54c4a1bf54074ba15090b32721",
+      "kind": "revert",
+      "title": "Revert copyright script changes to binary *.key files",
+      "status": "Reverted",
+      "date": "2020-01-14",
+      "first_date": "2020-01-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=344c26915136fa54c4a1bf54074ba15090b32721",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200102184059.GA25435@alvherre.pgsql"
+      ],
+      "authors": "Bruce Momjian",
+      "objectors": "",
+      "summary": "Revert copyright script changes to binary *.key files\nReverted commit(s): Update copyrights for 2020",
+      "objection": "This reverts part of commit 7559d8ebfa.  The copyright script has\nalready been updated to skip *.key files.",
+      "touch_points": [],
+      "matched_queries": [
+        "GIN sort scan keys binary search"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:3143",
+      "kind": "cf",
+      "title": "Parallel INSERT SELECT take 2",
+      "status": "Returned with feedback",
+      "date": "2022-07-28",
+      "first_date": "2021-04-12",
+      "url": "https://commitfest.postgresql.org/patch/3143/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/TYAPR01MB29905A9AB82CC8BA50AB0F80FE709@TYAPR01MB2990.jpnprd01.prod.outlook.com",
+        "https://www.postgresql.org/message-id/flat/TYAPR01MB29900259117BD4F1C36F0D5BFE489@TYAPR01MB2990.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "Greg Nancarrow (gregn1234), Zhijie Hou (houzj)",
+      "objectors": "",
+      "summary": "Parallel INSERT SELECT take 2\nThreads: Parallel INSERT SELECT take 2; [bug?] Missed parallel safety checks, and wrong parallel safety",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "scanPendingInsert collectMatchesForHeapRow"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 7,
+    "new_calls": 1,
+    "failed": 0,
+    "quotes_verified": 1,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2026-07-04",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found. [P8] is about BRIN array scan keys and rejected a new opclass preprocess support procedure; v2 adds no support procedure and changes only the GIN pending list scan, so that reason does not apply. The thread cites no earlier discussion of this idea; message #1 cites only the commit that added the CFI in startScanKey()."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 0,
+      "note": "From the standards and compatibility angle, nothing in the proposal is user-facing. It adds no syntax, GUC, catalog object, dump content, psql behaviour or protocol change, and query results should stay the same. Two points sit with other angles: which fix the back branches get, and whether v2 keeps the mapping between query entries and opclass consistent-function arguments after sorting. These are backpatch planning and implementation questions, and neither gives a compatibility failure scenario."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "From the replication and on-disk angle there is nothing to object to. v1 and v2 change only how a backend scans the GIN pending list in ginget.c. Neither version changes the index page format, the pending list layout, WAL records, the catalog, the wire protocol or a public extension API, so pg_upgrade, standbys and subscribers are not affected. The buffer locking question in v2-0002 is a concurrency question for the design reviewers, not a question of persistent state."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The patches add no privilege, role, GUC or user-visible surface, and no data becomes newly visible to any user. The behaviour they fix is a denial-of-service path that any user with SELECT on the table can trigger today, so the proposal shrinks the attack surface. Two questions are left for other angles: v2 does not say whether back branches get a fix, and correctness after v2-0002 releases the lock still needs to be shown."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "The fix stays inside ginget.c with no API, catalog or GUC change, and Heikki, who knows the area, is engaged. Concerns are limited to scope and two code paths."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "Existing settings only limit exposure to the bug: fastupdate = off, a smaller gin_pending_list_limit, or calling gin_clean_pending_list(). None of them makes a running pending list scan respond to pg_cancel_backend or statement_timeout, and no extension can fix locking inside ginget.c, so a committer would not send these as a reason to reject a fix for an uncancellable backend. [P8] covers BRIN array preprocessing and its support-procedure design, so it does not apply here."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "Demand is shown. Two independent reporters (message #1 and message #3) hit uncancellable GIN queries in production, and message #3 says it happened several times this year; the bug ignores pg_cancel_backend and statement_timeout, and the cost falls only on large-key GIN scans with a pending list."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 3,
+      "new_survived": 2,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 58,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 12,
+    "wall_ms": 139001,
+    "cost_usd": 1.065031,
+    "dry_run": false
+  }
+}

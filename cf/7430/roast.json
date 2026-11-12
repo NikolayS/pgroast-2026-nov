@@ -1,0 +1,1458 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:54:52.074Z",
+  "input": {
+    "arg": "7430",
+    "cf": {
+      "id": 7430,
+      "url": "https://commitfest.postgresql.org/patch/7430/",
+      "title": "bufmgr Half state CAS",
+      "status": "Needs review",
+      "authors": "Alexandre Felipe (afelipe)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAE8JnxN3SPJxvAQZ7doESAHrfayx%2BAXUVr4c3RadApPONz00zQ%40mail.gmail.com",
+    "subject": "[patch] bufmgr Half state CAS",
+    "thread_start": "2026-10-08T20:03:15Z",
+    "messages_read": 5,
+    "messages_total": 5,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v1-0002-Using-half-state-CAS.patch",
+      "v1-0001-half-compare-exchange.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "low",
+  "verdict_reasoning": "The proposal fails at level 1b on demand-1. The only evidence of a gain is one test on a one-page table on one Apple M2, and the author reports negligible difference for other queries. Two reviewers doubt the mechanism, and no profile or retry count ties the gain to fewer CAS retries. The surviving design objections were not evaluated, because the benefit has to be agreed first.",
+  "failing_level": "1b",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "failed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "not_evaluated"
+    }
+  ],
+  "brief": {
+    "title": "Compare-and-swap on 32-bit halves of the buffer header state",
+    "problem": "The buffer header state is a 64-bit word holding several bit fields, and its CAS loops retry when any bit changes, even bits the caller does not care about. The author targets contention between backends that pin or unpin a buffer and backends that lock or unlock the same buffer.",
+    "proposed_design": "Patch 0001 adds atomics that compare-and-swap only the low or the high 32-bit half of a pg_atomic_uint64. Patch 0002 moves the buffer manager CAS loops to the half that holds the bits each one changes, with a full-width CAS only in SharedBufferBeginSetHintBits. UnlockBufHdrExt picks fetch_and, a full CAS or a low-half CAS depending on which bits it changes.",
+    "user_visible_surface": [
+      "C API: new pg_atomic_compare_exchange_u64_lo and pg_atomic_compare_exchange_u64_hi in port/atomics.h, with fallback and generic versions.",
+      "C API: the return value of UnlockBufHdrExt no longer reflects updated high bits when only low bits change."
+    ],
+    "author_claims": [
+      "Changes to unrelated bits cause fewer CAS retries.",
+      "On an Apple M2, a read-only test with a one-page table shows about 60% more throughput at 8 clients and about 0.5% less at 1 client.",
+      "Other queries the author tried showed negligible difference.",
+      "The only slower path is UnlockBufHdrExt when the compiler cannot remove a branch, as in TerminateBufferIO.",
+      "TerminateBufferIO, the only caller using the UnlockBufHdrExt return value, reads only BM_PIN_COUNT_WAITER."
+    ],
+    "thread_state": "Heikki doubts any gain and suspects a slowdown, and Andres says such gains cannot appear at this concurrency. The author answered with an index-scan benchmark and script, and neither reviewer has replied to it.",
+    "unclear": [
+      "The patch shows no results on x86 or any hardware besides one Apple M2, and none at high client counts.",
+      "The material has no profile or retry count that ties the speedup to fewer CAS retries.",
+      "The material does not say whether mixing 32-bit and 64-bit atomics on one word is safe on every supported platform and in the fallback implementation.",
+      "The material does not say how the high half stays correct for later readers after a low-half CAS in UnlockBufHdrExt.",
+      "The benchmark includes no write workloads and no common read-only pgbench run."
+    ],
+    "search_queries": [
+      "buffer header state atomic",
+      "bufmgr CAS loop retry",
+      "pin count lock contention",
+      "compare exchange 32-bit half",
+      "pg_atomic_compare_exchange_u64",
+      "buffer header spinlock contention",
+      "PinBuffer atomic performance",
+      "atomics masked compare exchange"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P2",
+      "source_id": "cf:370",
+      "title": "Move PinBuffer and UnpinBuffer to atomics",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/370/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2400449.GjM57CE0Yg@dinodell"
+      ],
+      "date": "2015-12-16",
+      "first_date": "2015-09-11",
+      "who_objected": "Andres Freund",
+      "quote": "Which you made ineffective because PinBuffer() doesn't take a lock anymore. Mutual exclusion through locks only works if all participants take the locks.",
+      "quote_url": "https://www.postgresql.org/message-id/20150914154142.GB9666%40alap3.anarazel.de",
+      "enriched": true,
+      "reason": "Andres Freund judged the first patch incorrect. PinBuffer no longer took the header lock, but StrategyGetBuffer, SyncOneBuffer and BufferAlloc still relied on that lock for mutual exclusion. Work moved to the single atomic state version, which Alexander Korotkov refactored and others benchmarked, and it was still being cleaned up when the entry closed. No visible message states why the entry was returned.",
+      "relation": "related_only",
+      "what_is_different": "P2 moved pinning to a lock-free atomic state. This proposal narrows the existing state CAS loops to 32-bit halves, so the shared risk is only that one path stops observing bits another path relies on."
+    },
+    {
+      "precedent_id": "P1",
+      "source_id": "revert:87e9fae0696d9e3ff70a1438775ad9f786b854a5",
+      "title": "Revert \"For all ppc compilers, implement pg_atomic_fetch_add_ with inline asm.\"",
+      "kind": "revert",
+      "status": "Reverted",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=87e9fae0696d9e3ff70a1438775ad9f786b854a5",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/7517.1568470247@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20190831071157.GA3251746@rfd.leadboat.com"
+      ],
+      "date": "2019-09-15",
+      "first_date": "2019-09-14",
+      "who_objected": "",
+      "quote": null,
+      "quote_url": null,
+      "enriched": false,
+      "reason": "This reverts commit e7ff59686eacf5021fb84be921116986c3828d8a.  It\ndefined pg_atomic_fetch_add_u32_impl() without defining\npg_atomic_compare_exchange_u32_impl(), which is incompatible with\nsrc/include/port/atomics/fallback.h.  Per buildfarm member prairiedog.",
+      "relation": "related_only",
+      "what_is_different": "P1 added an inline-asm fetch_add for ppc that did not fit fallback.h. This proposal adds new compare-exchange variants that must also fit fallback.h and generic.h."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Targeted contention shown only on one synthetic single-page workload",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer adds new half-width atomics to port/atomics.h and branches in UnlockBufHdrExt for every build. Production workloads rarely mix pin/unpin and lock/unlock on one header within the CAS window, so most users see no gain. They still carry the 1-client slowdown and the TerminateBufferIO branch.",
+      "argument": "The only demand evidence is the author's own benchmark: a 10-row table on one page, forced index scans, eight clients, one Apple M2 (messages #3, #5). Message #5 says other queries showed negligible difference. Message #4 doubts the CAS window can be contended at this concurrency. The thread has no field report, -general or -bugs thread, or profile from a real system that shows this retry pattern.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        4,
+        5
+      ],
+      "author_must_show": "Which real workload or field report shows CAS retries on buffer header state between pinners and lockers, and does pgbench or an x86 many-core run show the gain?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Alexandre Felipe",
+          "date": "2026-10-14T20:53:21Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxPFpkXJxh7SBCmPxP%2BC%2BM-tf31C2m%3Dw7qs8_TAs0UKFCQ%40mail.gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "Andres Freund",
+          "date": "2026-10-14T21:07:29Z",
+          "url": "https://www.postgresql.org/message-id/fnrfw2no7hwa5pg24zfmljgz26ahmlufkq2ue365f7iy4amahw%40n42iohfhyuwi"
+        },
+        {
+          "index": 5,
+          "from": "Alexandre Felipe",
+          "date": "2026-10-15T09:17:26Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxP_Gbrv36r1VoVYJJrf41dKosm%3DnR0z41vXhHXFLfbGnQ%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The only evidence is one single-page test on one Apple M2, and message #5 says other queries showed negligible difference. No profile or retry count links the gain to fewer CAS retries, and two reviewers doubt the mechanism.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "Half-width CAS cannot enforce rules that span both state halves",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "design",
+      "touch_points": [],
+      "severity": "fixable",
+      "failure_scenario": "A backend holds the buffer header lock and assumes the whole state word is frozen. Another backend runs a high-half CAS in BufferLockAttempt that never sees the header lock bit if that bit sits in the low half. The lock bits change under the holder, and the result is a rare wrong-state bug found in the field.",
+      "argument": "[P2] failed because one path stopped taking the header lock that other paths relied on: \"Mutual exclusion through locks only works if all participants take the locks.\" This patch changes which bits each CAS can observe, which risks the same mistake in a different form. The commit message lists which CAS moves to which half, but it does not map bits to halves or say which cross-half condition each loop used to check. It also admits that a low-half CAS in UnlockBufHdrExt does not return current high bits.",
+      "precedent_ids": [
+        "P2"
+      ],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "Which state bits live in each half, and for every converted CAS loop, which cross-half condition it checked before and why that check is no longer needed?",
+      "precedents": [
+        {
+          "id": "P2",
+          "title": "Move PinBuffer and UnpinBuffer to atomics",
+          "url": "https://commitfest.postgresql.org/patch/370/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/2400449.GjM57CE0Yg@dinodell"
+          ],
+          "date": "2015-12-16",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Alexandre Felipe",
+          "date": "2026-10-08T20:03:15Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxN3SPJxvAQZ7doESAHrfayx%2BAXUVr4c3RadApPONz00zQ%40mail.gmail.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The failure scenario is weak: UnlockBufHdrExt already uses a CAS loop, so a header lock holder does not treat the word as frozen. The request still stands, because the prose gives no bit-to-half map or cross-half checks; [P2] is only a loose analogy.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "UnlockBufHdrExt return value changes meaning without any signal to callers",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later core patch or an extension that includes buf_internals.h reads a high-half bit, such as a lock bit, from the UnlockBufHdrExt return value after a low-only change. It gets a stale value, and nothing fails at compile time or in tests. The bug shows up only as a rare race under concurrency.",
+      "argument": "The 0002 commit message says that for low-only changes \"the high bits are not guaranteed to be updated\" in the returned state. It defends this by noting that TerminateBufferIO, the only current caller, reads only BM_PIN_COUNT_WAITER. That covers today's callers only. The function keeps its name and signature, so future callers have no reason to suspect that part of the returned word may be stale, and a reviewer would likely miss it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3
+      ],
+      "author_must_show": "How would a future caller that reads high-half bits from the UnlockBufHdrExt result be stopped, by the API or by an assertion, before the stale value causes a race?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Alexandre Felipe",
+          "date": "2026-10-08T20:03:15Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxN3SPJxvAQZ7doESAHrfayx%2BAXUVr4c3RadApPONz00zQ%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Alexandre Felipe",
+          "date": "2026-10-14T20:53:21Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxPFpkXJxh7SBCmPxP%2BC%2BM-tf31C2m%3Dw7qs8_TAs0UKFCQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The 0002 commit message itself says the returned high bits may be stale, and it argues only from today's single caller. buf_internals.h is an internal header, so the extension risk is small, but a later core caller could misread the value unnoticed.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "Half-word CAS on one shared 64-bit word needs a per-platform safety argument",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "design",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "On a platform where pg_atomic_uint64 is emulated with a spinlock, one backend pins a buffer with a 32-bit CAS on the low half while another updates the full word under the emulation lock. Unless both take the same lock, one update is lost, and the pin count or lock bits in the buffer header end up wrong. The likely symptoms are hangs or buffers that cannot be evicted, seen first on a rarely tested buildfarm member.",
+      "argument": "Patch 0001 adds pg_atomic_compare_exchange_u64_lo/hi to fallback.h and generic.h, but the commit message only argues linearisability for native 64-bit CAS. It does not say how the half CAS stays atomic with respect to emulated 64-bit operations, or which 32-bit half is addressed on big-endian machines. A similar gap in the atomics layer was reverted after a buildfarm failure [P1]. Every backend's buffer header state depends on this invariant.",
+      "precedent_ids": [
+        "P1"
+      ],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "On which platforms is a 32-bit CAS on half of a pg_atomic_uint64 atomic with respect to the 64-bit operations, including the spinlock fallback and big-endian layouts?",
+      "precedents": [
+        {
+          "id": "P1",
+          "title": "Revert \"For all ppc compilers, implement pg_atomic_fetch_add_ with inline asm.\"",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=87e9fae0696d9e3ff70a1438775ad9f786b854a5",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/7517.1568470247@sss.pgh.pa.us",
+            "https://www.postgresql.org/message-id/flat/20190831071157.GA3251746@rfd.leadboat.com"
+          ],
+          "date": "2019-09-15",
+          "status": "Reverted"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Alexandre Felipe",
+          "date": "2026-10-08T20:03:15Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxN3SPJxvAQZ7doESAHrfayx%2BAXUVr4c3RadApPONz00zQ%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Patch 0001 touches fallback.h and atomics.c, but the prose does not say whether the emulated half CAS takes the same lock as the 64-bit operations, or how the half is chosen on big-endian builds. The brief lists the same gap as unanswered.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "Low/high bit placement becomes a silent correctness rule",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds a buffer flag, or widens the refcount or the lock bits, so a field crosses the 32-bit boundary or moves halves. Each CAS site still compiles and runs, but a low-half CAS now changes or compares the wrong bits. Nothing fails until a race shows up under load.",
+      "argument": "The 0002 commit message assigns each CAS loop to a half by hand: low for PinBuffer, MarkBufferDirty and StrategyGetBuffer, high for BufferLockAttempt. That assignment holds only while the buf_internals.h layout stays as it is. The prose does not mention static assertions or any other check that ties each caller to its half.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "What compile-time check fails if a field used by a half CAS moves to the other half or crosses the 32-bit boundary?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Alexandre Felipe",
+          "date": "2026-10-08T20:03:15Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxN3SPJxvAQZ7doESAHrfayx%2BAXUVr4c3RadApPONz00zQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The commit message assigns each loop to a half by hand and names no check that ties the bit layout to that choice. The code is not shown, so a static assertion may exist, but the prose does not say so.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "New half-width atomics must fit the fallback and generic atomics layers",
+      "level": "2",
+      "rubric_item": 15,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "On a platform where 64-bit atomics are emulated with a spinlock in the fallback layer, a 32-bit CAS on one half skips that spinlock. A concurrent emulated full-width CAS then loses an update to the buffer state. Only rare buildfarm members or users on such hardware see it.",
+      "argument": "[P1] was reverted because a new atomic primitive did not fit fallback.h, and only one buildfarm member caught it. Patch 0001 changes fallback.h, generic.h and atomics.c. The proposal does not say how a half CAS stays atomic with respect to emulated 64-bit operations, or which half is \"low\" on big-endian builds. Mixing 32-bit and 64-bit atomic access to one word is also outside what C11 atomics define.",
+      "precedent_ids": [
+        "P1"
+      ],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "How do pg_atomic_compare_exchange_u64_lo and _hi stay atomic against full-width operations when 64-bit atomics are emulated, and on big-endian platforms?",
+      "precedents": [
+        {
+          "id": "P1",
+          "title": "Revert \"For all ppc compilers, implement pg_atomic_fetch_add_ with inline asm.\"",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=87e9fae0696d9e3ff70a1438775ad9f786b854a5",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/7517.1568470247@sss.pgh.pa.us",
+            "https://www.postgresql.org/message-id/flat/20190831071157.GA3251746@rfd.leadboat.com"
+          ],
+          "date": "2019-09-15",
+          "status": "Reverted"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Alexandre Felipe",
+          "date": "2026-10-08T20:03:15Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxN3SPJxvAQZ7doESAHrfayx%2BAXUVr4c3RadApPONz00zQ%40mail.gmail.com"
+        }
+      ],
+      "id": "prior-attempts-2",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1, which states the same fallback and byte-order gap as a safety question.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "UnlockBufHdrExt return value silently loses the high bits",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later core patch, or an extension that includes buf_internals.h, calls UnlockBufHdrExt and checks lock bits in the high half of the returned state. When only low bits change, the call returns a stale high half, and the caller makes a wrong decision about waiters. Nothing fails at compile time or in tests.",
+      "argument": "The 0002 commit message says that in case 3 \"the high bits are not guaranteed to be updated\". It justifies this by noting that TerminateBufferIO, the only current caller, reads only BM_PIN_COUNT_WAITER. That covers today's core callers only. The function keeps its signature while its contract weakens, so a future reviewer is likely to miss the change.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "Could the return value carry the weaker contract in its type or name, or return a full consistent state, so future callers cannot read stale high bits?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Alexandre Felipe",
+          "date": "2026-10-08T20:03:15Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxN3SPJxvAQZ7doESAHrfayx%2BAXUVr4c3RadApPONz00zQ%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Mixed-width atomics on one word add a new port-layer contract",
+      "level": "2",
+      "rubric_item": 15,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A platform or compiler port provides native 64-bit CAS but emulates the 32-bit half CAS, or uses the spinlock fallback for 64-bit only. A half CAS and a full CAS on the same pg_atomic_uint64 then do not exclude each other, so buffer state updates are lost. The first sign is a buildfarm member or a field report of buffer pin or lock corruption.",
+      "argument": "Patch 0001 touches atomics.c, atomics.h, fallback.h and generic.h. That creates a new rule: a 32-bit and a 64-bit atomic on the same address must be coherent, the half address must follow byte order, and emulated variants must share one lock. The prose states none of this. [P1] shows a revert of a ppc atomics change that broke fallback.h on one buildfarm member, so this layer is fragile.",
+      "precedent_ids": [
+        "P1"
+      ],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "On which supported platforms are mixed 32-bit and 64-bit atomics on one word guaranteed coherent, and how do the fallback and emulated paths keep them so?",
+      "precedents": [
+        {
+          "id": "P1",
+          "title": "Revert \"For all ppc compilers, implement pg_atomic_fetch_add_ with inline asm.\"",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=87e9fae0696d9e3ff70a1438775ad9f786b854a5",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/7517.1568470247@sss.pgh.pa.us",
+            "https://www.postgresql.org/message-id/flat/20190831071157.GA3251746@rfd.leadboat.com"
+          ],
+          "date": "2019-09-15",
+          "status": "Reverted"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Alexandre Felipe",
+          "date": "2026-10-08T20:03:15Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxN3SPJxvAQZ7doESAHrfayx%2BAXUVr4c3RadApPONz00zQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "UnlockBufHdrExt return value becomes partly stale",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A future caller, in core or in an extension, reads lock bits or another high-half field from the value UnlockBufHdrExt returns after a low-only change. It acts on a stale state, for example by missing a waiter. The bug shows up only under concurrency.",
+      "argument": "The 0002 commit message says that in case 3 the high bits are not guaranteed to be updated. It defends this because TerminateBufferIO, the only current caller, reads only BM_PIN_COUNT_WAITER. That argument covers today's callers only. The function's return contract becomes weaker, and nothing stops the next caller from relying on the full value.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "Why not keep a full, accurate return value, or remove the return value, so that later callers cannot read stale high bits?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Alexandre Felipe",
+          "date": "2026-10-08T20:03:15Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxN3SPJxvAQZ7doESAHrfayx%2BAXUVr4c3RadApPONz00zQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "Patch 0001 adds pg_atomic_compare_exchange_u64_lo and _hi to port/atomics.h, and 0002 weakens the UnlockBufHdrExt return value."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "The half-width atomics need fallback and generic versions, and each CAS site depends on the bit layout in buf_internals.h."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Patch 0002 changes the CAS loops in PinBuffer, MarkBufferDirty, BufferLockAttempt and UnlockBufHdrExt, which every backend runs."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "see objection demand-1: Targeted contention shown only on one synthetic single-page workload"
+    }
+  ],
+  "questions": [
+    "What do x86 and other many-core machines show at high client counts, for the one-page test and for a standard read-only pgbench run?",
+    "Does a profile or a CAS retry count, base against patched, show that the 8-client gain comes from fewer retries on the buffer header state?",
+    "Which real workload or field report shows pinners and lockers of one buffer causing each other's CAS loops to retry?",
+    "What do write workloads and single-client runs show, given the extra branch in UnlockBufHdrExt for callers such as TerminateBufferIO?",
+    "On which platforms is a 32-bit CAS on half of a pg_atomic_uint64 atomic with respect to 64-bit operations, including the spinlock fallback and big-endian layouts?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Heikki Linnakangas and Andres Freund replied in the thread, and both doubt the gain. The owner must know both the buffer manager and the port atomics layer.",
+    "liability": "The owner signs for mixed 32-bit and 64-bit atomic access to the buffer header state on every supported platform, including the fallback. That lasts as long as the state layout does.",
+    "author_follow_up": "The author answered the request for benchmarks within days, with numbers and a script (message #3)."
+  },
+  "not_now": {
+    "applies": true,
+    "evidence_that_would_change_it": "Benchmarks on x86 and at high client counts, including a standard pgbench run and write workloads, that show a gain and no single-client loss. A profile or retry count that ties the gain to fewer CAS retries would also be needed."
+  },
+  "priority": {
+    "audience": "unclear",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "park",
+    "reason": "The gain is shown on one single-page test on one machine, and other queries showed negligible difference. The patches are small, but they add port-layer atomics and change hot buffer manager paths, so review should wait for broader measurements."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, the review could not check how the fallback half CAS locks, how the half is chosen on big-endian builds, or whether static assertions tie the bit layout to each CAS site. The level 2 objections on these points were not evaluated.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "revert:87e9fae0696d9e3ff70a1438775ad9f786b854a5",
+      "kind": "revert",
+      "title": "Revert \"For all ppc compilers, implement pg_atomic_fetch_add_ with inline asm.\"",
+      "status": "Reverted",
+      "date": "2019-09-15",
+      "first_date": "2019-09-14",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=87e9fae0696d9e3ff70a1438775ad9f786b854a5",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/7517.1568470247@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20190831071157.GA3251746@rfd.leadboat.com"
+      ],
+      "authors": "Noah Misch",
+      "objectors": "",
+      "summary": "Revert \"For all ppc compilers, implement pg_atomic_fetch_add_ with inline asm.\"\nReverted commit(s): For all ppc compilers, implement pg_atomic_fetch_add_ with inline asm.",
+      "objection": "This reverts commit e7ff59686eacf5021fb84be921116986c3828d8a.  It\ndefined pg_atomic_fetch_add_u32_impl() without defining\npg_atomic_compare_exchange_u32_impl(), which is incompatible with\nsrc/include/port/atomics/fallback.h.  Per buildfarm member prairiedog.",
+      "touch_points": [],
+      "matched_queries": [
+        "buffer header state atomic",
+        "compare exchange 32-bit half",
+        "pg_atomic_compare_exchange_u64",
+        "PinBuffer atomic performance",
+        "atomics masked compare exchange"
+      ],
+      "from_hint": false,
+      "score": 0.537,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:370",
+      "kind": "cf",
+      "title": "Move PinBuffer and UnpinBuffer to atomics",
+      "status": "Returned with feedback",
+      "date": "2015-12-16",
+      "first_date": "2015-09-11",
+      "url": "https://commitfest.postgresql.org/patch/370/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2400449.GjM57CE0Yg@dinodell"
+      ],
+      "authors": "Uriy Zhuravlev (stalkerg)",
+      "objectors": "Andres Freund",
+      "summary": "The patch made the buffer descriptor fields refcount and usage_count atomic, so PinBuffer and UnpinBuffer no longer take the buffer header spinlock. Later in the thread it was replaced by a version from Andres Freund that packs flags, usage_count and refcount into one 32-bit atomic state, with a BM_LOCKED flag acting as the header lock.",
+      "objection": "Andres Freund judged the first patch incorrect. PinBuffer no longer took the header lock, but StrategyGetBuffer, SyncOneBuffer and BufferAlloc still relied on that lock for mutual exclusion. Work moved to the single atomic state version, which Alexander Korotkov refactored and others benchmarked, and it was still being cleaned up when the entry closed. No visible message states why the entry was returned.",
+      "touch_points": [],
+      "matched_queries": [
+        "buffer header state atomic",
+        "pin count lock contention",
+        "pg_atomic_compare_exchange_u64",
+        "PinBuffer atomic performance",
+        "atomics masked compare exchange"
+      ],
+      "from_hint": false,
+      "score": 0.453,
+      "enriched": true,
+      "key_quote": "Which you made ineffective because PinBuffer() doesn't take a lock\nanymore. Mutual exclusion through locks only works if all participants\ntake the locks.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20150914154142.GB9666%40alap3.anarazel.de",
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:1386",
+      "kind": "cf",
+      "title": "Atomic pgrename on Windows",
+      "status": "Returned with feedback",
+      "date": "2018-03-06",
+      "first_date": "2017-11-27",
+      "url": "https://commitfest.postgresql.org/patch/1386/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAPpHfds7dyuGZt+PF2GL9qSSVV0OZnjNwqiCPjN7mirDw882tA@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov (smagen)",
+      "objectors": "Andres Freund, Magnus Hagander, David Steele",
+      "summary": "The patch made pgrename() on Windows replace the target file atomically, even when another process has it open, by calling ReplaceFile() when the target exists and MoveFileEx() otherwise. It aimed to fix \"Permission denied\" errors seen when renaming the statistics temp file on loaded Windows servers.",
+      "objection": "Reviewers questioned the approach. Andres Freund asked why opening files with FILE_SHARE_DELETE does not already prevent the error, and suggested retry logic instead. Magnus Hagander proposed trying MoveFileEx() first and falling back to ReplaceFile() on a sharing violation, possibly with a retry loop. The commitfest manager marked it Returned with Feedback because a new patch was needed, and the author agreed both approaches still had to be implemented and tested.",
+      "touch_points": [],
+      "matched_queries": [
+        "buffer header state atomic",
+        "pg_atomic_compare_exchange_u64",
+        "PinBuffer atomic performance",
+        "atomics masked compare exchange"
+      ],
+      "from_hint": false,
+      "score": 0.424,
+      "enriched": true,
+      "key_quote": "Even so, it looks like the approach needs a rethink so better to wait for that.",
+      "quote_message_url": "https://www.postgresql.org/message-id/7c8d369e-a1c8-dc8b-bd45-6f32aa0fbd32%40pgmasters.net",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:6295",
+      "kind": "cf",
+      "title": "Fix typo 586/686 in atomics/arch-x86.h",
+      "status": "Returned with feedback",
+      "date": "2026-03-12",
+      "first_date": "2025-11-28",
+      "url": "https://commitfest.postgresql.org/patch/6295/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKZiRmycHOOJyEPc9FUss1_69_U62WoSx32jT7wyES-YkStZKA@mail.gmail.com"
+      ],
+      "authors": "Jakub Wartak (jakub.wartak.tomtom)",
+      "objectors": "Daniel Gustafsson, Andres Freund",
+      "summary": "The patch fixes misspelled macros in src/include/port/atomics/arch-x86.h, where `__i568__` and `__i668__` should be `__i586__` and `__i686__`. These checks select the x86 code paths for 8-byte atomic operations on 32-bit gcc builds.",
+      "objection": "Reviewers suggested removing the broken checks rather than fixing them, since no one had complained since 2017. Andres Freund is quoted saying the 32-bit special handling should be dropped instead of fixing the typos, and the author then returned the patch himself. His follow-up idea to drop 32-bit support entirely was opposed by Tom Lane, Nathan Bossart and Andres Freund.",
+      "touch_points": [],
+      "matched_queries": [
+        "buffer header state atomic",
+        "pg_atomic_compare_exchange_u64",
+        "PinBuffer atomic performance",
+        "atomics masked compare exchange"
+      ],
+      "from_hint": false,
+      "score": 0.417,
+      "enriched": true,
+      "key_quote": "That indeed looks like a clear typo, but if noone has complained since 2017 then maybe removing the checks is the right course of action?",
+      "quote_message_url": "https://www.postgresql.org/message-id/4FD9BE34-FDD1-4D4D-839F-B9D2596D6084%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:3347",
+      "kind": "cf",
+      "title": "Atomic rename feature for Windows",
+      "status": "Returned with feedback",
+      "date": "2022-11-30",
+      "first_date": "2021-07-05",
+      "url": "https://commitfest.postgresql.org/patch/3347/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/a529b660-da15-5b62-21a0-9936768210fd@postgrespro.ru"
+      ],
+      "authors": "Victor Spirin (v.spirin)",
+      "objectors": "Michael Paquier, Thomas Munro",
+      "summary": "The patch makes pgrename() on Windows use SetFileInformationByHandle with FILE_RENAME_FLAG_POSIX_SEMANTICS, so a rename can replace a file that is still open, as on POSIX. It raised _WIN32_WINNT to Windows 10 and added a manifest so IsWindows10OrGreater() works; a later version used the feature only on Windows build 17763 and up.",
+      "objection": "The entry closed because Thomas Munro rebased and simplified the patch and moved the work to a new thread and CommitFest entry. Earlier review had objected to raising the minimum Windows version and to the extra manifest files. Thomas Munro's open questions were behavior on non-NTFS filesystems and whether to require POSIX rename, since the non-POSIX fallback would likely go untested.",
+      "touch_points": [],
+      "matched_queries": [
+        "buffer header state atomic",
+        "pg_atomic_compare_exchange_u64",
+        "PinBuffer atomic performance",
+        "atomics masked compare exchange"
+      ],
+      "from_hint": false,
+      "score": 0.411,
+      "enriched": true,
+      "key_quote": "As Thomas has incorporated this patch into another CommitFest entry\n[1], we'll close\nthe entry for this thread [2].",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB8KJ%3DjHfC_tBi7JaV1wFW9Su41nkiRzU2bZZRT-sVVOR7nk2w%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:2429",
+      "kind": "cf",
+      "title": "Delaying/avoiding BTreeTupleGetNAtts() call within _bt_compare()",
+      "status": "Withdrawn",
+      "date": "2020-11-09",
+      "first_date": "2020-01-26",
+      "url": "https://commitfest.postgresql.org/patch/2429/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAH2-Wzngz5MrkiTaZNny0GzfTxNQE+QWPPaO-C390BgruhgjEw@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/2ca215d085a74e2eabd31b76e97cc9f3@opammb0561.comp.optiver.com",
+        "https://www.postgresql.org/message-id/flat/eca8c912f14c41e3955066281dcc6c5d@opammb0561.comp.optiver.com"
+      ],
+      "authors": "Peter Geoghegan (pgeoghegan)",
+      "objectors": "",
+      "summary": "The patches change _bt_compare() so it calls BTreeTupleGetNAtts() only after the first attribute compares equal to the insertion scankey, and they inline _bt_compare(). A separate patch moves the negative infinity check for internal pages from _bt_compare() to _bt_binsrch().",
+      "objection": "The visible messages do not show why. Andres Freund suggested loading ntupatts where the code loads it today and changing only the loop termination, because the delayed load and extra branches could add stalls. Peter Geoghegan agreed to rework the patch that way, and the thread has no later message before the November 2020 withdrawal.",
+      "touch_points": [],
+      "matched_queries": [
+        "compare exchange 32-bit half",
+        "pg_atomic_compare_exchange_u64",
+        "atomics masked compare exchange"
+      ],
+      "from_hint": false,
+      "score": 0.317,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:3514",
+      "kind": "cf",
+      "title": "Move SLRU data into the regular buffer pool",
+      "status": "Returned with feedback",
+      "date": "2023-09-04",
+      "first_date": "2022-01-13",
+      "url": "https://commitfest.postgresql.org/patch/3514/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGKAYze99B-jk9NoMp-2BDqAgiRC4oJv+bFxghNgdieq8Q@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/EFAAC0BE-27E9-4186-B925-79B7C696D5AC@amazon.com"
+      ],
+      "authors": "Heikki Linnakangas (heikki), Thomas Munro (macdice)",
+      "objectors": "Aleksander Alekseev",
+      "summary": "The patch moves SLRU data (pg_xact, multixact, subtrans, commit_ts, serial, notify) into the shared buffer pool as pseudo-relations in a pseudo-database, so that SLRU caches compete with relation pages and need no separate size settings. It replaces most per-SLRU locks with buffer pins and page content locks, and reuses the common buffer mapping, replacement and write-back code.",
+      "objection": "The patch set stopped applying after February 2023, and its second patch failed the pg_upgrade tests. In September 2023 it was marked Returned with feedback by consensus, because it was not in good shape and other patches had priority. The closer also asked that the competing SLRU threads agree on one design and work on a single patch set.",
+      "touch_points": [],
+      "matched_queries": [
+        "buffer header state atomic",
+        "buffer header spinlock contention"
+      ],
+      "from_hint": false,
+      "score": 0.247,
+      "enriched": true,
+      "key_quote": "There\nare many patches to be reviewed and this one doesn't seem to be in the\nbest shape, so we have to prioritise.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAJ7c6TN%3D1EF1bTA6w8W%3D0e_Bj%2B-jsiHK0ap1uC_ZUGjwu%2B4JGw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:2716",
+      "kind": "cf",
+      "title": "fix spinlock contention in LogwrtResult",
+      "status": "Withdrawn",
+      "date": "2022-09-23",
+      "first_date": "2020-08-31",
+      "url": "https://commitfest.postgresql.org/patch/2716/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200831182156.GA3983@alvherre.pgsql"
+      ],
+      "authors": "Álvaro Herrera (alvherre)",
+      "objectors": "",
+      "summary": "The patch removes contention on XLogCtl's info_lck spinlock, which backends take often to read LogwrtResult. The first version added an LWLock covering LogwrtResult and LogwrtRqst; later versions turned the shared LogwrtResult fields into 64-bit atomics, as Andres Freund suggested.",
+      "objection": "The author withdrew the patch himself. In April 2022 he held it back from that cycle because the memory barrier needs were hard to get right and he did not want subtle bugs in WAL. In September 2022 he withdrew it because commit e369f3708636 made the change less critical.",
+      "touch_points": [],
+      "matched_queries": [
+        "pin count lock contention",
+        "buffer header spinlock contention"
+      ],
+      "from_hint": false,
+      "score": 0.222,
+      "enriched": true,
+      "key_quote": "I realized that because of commit e369f3708636 this change is no longer\nas critical as it used to be, so I'm withdrawing this patch from the\ncommitfest.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20220923084941.g3756xqz6lwnqwso%40alvherre.pgsql",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:7000",
+      "kind": "cf",
+      "title": "Batched clock sweep to reduce cross-socket atomic contention",
+      "status": "Withdrawn",
+      "date": "2026-09-11",
+      "first_date": "2026-04-25",
+      "url": "https://commitfest.postgresql.org/patch/7000/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/79629577-3ad8-4b1c-a469-ebc2cb4c5104@app.fastmail.com"
+      ],
+      "authors": "Jim Mlodgenski (jimmy76), Greg Burd (gregburd)",
+      "objectors": "Andres Freund",
+      "summary": "The patch has each backend claim a batch of consecutive buffer IDs (up to 64) from nextVictimBuffer with one atomic fetch-add, then sweep them privately, to cut cross-socket contention on that cache line. Later versions sized the batch by CPU and NUMA topology, and added a separate patch that replaces the 0..5 usage_count with a 1-bit HOT/COOL evictor.",
+      "objection": "The author withdrew it after benchmarking Tomas Vondra's NUMA partitioned clock sweep patchset, which beat the batched sweep on both test machines. Andres Freund had argued from the start that a partitioned sweep was the better design. He also said batching that ignores per-backend replacement rates leaves batches held by slow backends undecremented, and that the benchmarks used an all-in-page-cache setup with no real IO. The HOT/COOL evictor moved to the NUMA thread.",
+      "touch_points": [],
+      "matched_queries": [
+        "buffer header state atomic",
+        "PinBuffer atomic performance"
+      ],
+      "from_hint": false,
+      "score": 0.2,
+      "enriched": true,
+      "key_quote": "It solves a problem that partitioning solves better and more generally, and I see no argument for carrying a second mechanism for the same cache line.",
+      "quote_message_url": "https://www.postgresql.org/message-id/bb80cc4b-21c1-4cab-91b3-9ee3623d6d1e%40app.fastmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:3144",
+      "kind": "cf",
+      "title": "postgres_fdw: Handle boolean comparison predicates",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-05-31",
+      "url": "https://commitfest.postgresql.org/patch/3144/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAE2gYzwD4m6PWn2iO=pXquZ61++axZYe2=UWbw44q4jbR6x-9A@mail.gmail.com"
+      ],
+      "authors": "Emre Hasegeli (hasegeli)",
+      "objectors": "",
+      "summary": "postgres_fdw: Handle boolean comparison predicates\nThreads: postgres_fdw: Handle boolean comparison predicates",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "compare exchange 32-bit half",
+        "pg_atomic_compare_exchange_u64"
+      ],
+      "from_hint": false,
+      "score": 0.178,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:442",
+      "kind": "cf",
+      "title": "Fix lock contention for HASHHDR.mutex",
+      "status": "Returned with feedback",
+      "date": "2016-02-08",
+      "first_date": "2015-12-11",
+      "url": "https://commitfest.postgresql.org/patch/442/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20151211170001.78ded9d7@fujitsu"
+      ],
+      "authors": "Aleksander Alekseev (a.alekseev)",
+      "objectors": "",
+      "summary": "Fix lock contention for HASHHDR.mutex\nThreads: Patch: fix lock contention for HASHHDR.mutex",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pin count lock contention",
+        "buffer header spinlock contention"
+      ],
+      "from_hint": false,
+      "score": 0.176,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:3500",
+      "kind": "cf",
+      "title": "Collecting statistics about contents of JSONB columns",
+      "status": "Returned with feedback",
+      "date": "2022-04-07",
+      "first_date": "2021-12-31",
+      "url": "https://commitfest.postgresql.org/patch/3500/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/c9c4bd20-996c-100e-25e7-27e27bb1da7c@enterprisedb.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz), Nikita Glukhov (n.glukhov)",
+      "objectors": "",
+      "summary": "Collecting statistics about contents of JSONB columns\nThreads: Collecting statistics about contents of JSONB columns",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pin count lock contention",
+        "buffer header spinlock contention"
+      ],
+      "from_hint": false,
+      "score": 0.159,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:2637",
+      "kind": "cf",
+      "title": "audo-detect and use -moutline-atomics compilation flag for aarch64",
+      "status": "Rejected",
+      "date": "2020-09-29",
+      "first_date": "2020-07-01",
+      "url": "https://commitfest.postgresql.org/patch/2637/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/099F69EE-51D3-4214-934A-1F28C0A1A7A7@amazon.com"
+      ],
+      "authors": "Tsahi Zidenberg (tsahee)",
+      "objectors": "",
+      "summary": "audo-detect and use -moutline-atomics compilation flag for aarch64\nThreads: [PATCH] audo-detect and use -moutline-atomics compilation flag for\naarch64",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "buffer header state atomic",
+        "PinBuffer atomic performance"
+      ],
+      "from_hint": false,
+      "score": 0.158,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:1141",
+      "kind": "cf",
+      "title": "Full merge join on comparison clause",
+      "status": "Rejected",
+      "date": "2018-11-21",
+      "first_date": "2017-05-16",
+      "url": "https://commitfest.postgresql.org/patch/1141/",
+      "thread_urls": [],
+      "authors": "Alexander Kuzmenkov (akuzmenkov)",
+      "objectors": "",
+      "summary": "Full merge join on comparison clause",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "compare exchange 32-bit half",
+        "atomics masked compare exchange"
+      ],
+      "from_hint": false,
+      "score": 0.155,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:679",
+      "kind": "cf",
+      "title": "Floating point comparison inconsistencies of the geometric types",
+      "status": "Returned with feedback",
+      "date": "2017-03-16",
+      "first_date": "2016-05-27",
+      "url": "https://commitfest.postgresql.org/patch/679/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAE2gYzwwxPWbzxY3mtN4WL7W0DCkWo8gnB2ThUHU2XQ9XwgHMg@mail.gmail.com"
+      ],
+      "authors": "Emre Hasegeli (hasegeli)",
+      "objectors": "",
+      "summary": "Floating point comparison inconsistencies of the geometric types\nThreads: Floating point comparison inconsistencies of the geometric types",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "compare exchange 32-bit half",
+        "pg_atomic_compare_exchange_u64"
+      ],
+      "from_hint": false,
+      "score": 0.143,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:4253",
+      "kind": "cf",
+      "title": "Improve the performance of nested loop join in the case of partitioned inner table",
+      "status": "Returned with feedback",
+      "date": "2023-08-01",
+      "first_date": "2023-03-23",
+      "url": "https://commitfest.postgresql.org/patch/4253/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHdr9ueefdCCCq1mXAYfLmRgEKfhWQDCU7=XmureEAzJcOwfag@mail.gmail.com"
+      ],
+      "authors": "Alexandr Nikulin (anikulin)",
+      "objectors": "",
+      "summary": "Improve the performance of nested loop join in the case of partitioned inner table\nThreads: Improve the performance of nested loop join in the case of\npartitioned inner table",
+      "objection": "",
+      "touch_points": [
+        "planner",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "bufmgr CAS loop retry"
+      ],
+      "from_hint": false,
+      "score": 0.139,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:3853",
+      "kind": "cf",
+      "title": "introduce bufmgr hooks",
+      "status": "Withdrawn",
+      "date": "2022-10-12",
+      "first_date": "2022-08-29",
+      "url": "https://commitfest.postgresql.org/patch/3853/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20220829222449.GA540837@nathanxps13"
+      ],
+      "authors": "Nathan Bossart (bossartn)",
+      "objectors": "",
+      "summary": "introduce bufmgr hooks\nThreads: introduce bufmgr hooks",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "bufmgr CAS loop retry"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:5542",
+      "kind": "cf",
+      "title": "Fix buffer pinning logic/visibility bugs in [SP-]Gist Index-Only Scans",
+      "status": "Withdrawn",
+      "date": "2026-06-08",
+      "first_date": "2021-11-03",
+      "url": "https://commitfest.postgresql.org/patch/5542/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAH2-Wz=PqOziyRSrnN5jAtfXWXY7-BJcHz9S355LH8Dt=5qxWQ@mail.gmail.com"
+      ],
+      "authors": "Peter Geoghegan (pgeoghegan), Michail Nikolaev (nkey), Matthias van de Meent (mmeent), Mihail Nikalayeu (mihailnikalayeu)",
+      "objectors": "",
+      "summary": "Fix buffer pinning logic/visibility bugs in [SP-]Gist Index-Only Scans\nThreads: Why doesn't GiST VACUUM require a super-exclusive lock, like nbtree VACUUM?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pin count lock contention"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "revert:2a41507dab0f293ff241fe8ae326065998668af8",
+      "kind": "revert",
+      "title": "Revert \"Do execGrouping.c via expression eval machinery.\"",
+      "status": "Reverted",
+      "date": "2018-02-16",
+      "first_date": "2018-02-16",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=2a41507dab0f293ff241fe8ae326065998668af8",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20171129080934.amqqkke2zjtekd4t@alap3.anarazel.de"
+      ],
+      "authors": "Andres Freund",
+      "objectors": "",
+      "summary": "Revert \"Do execGrouping.c via expression eval machinery.\"\nReverted commit(s): Do execGrouping.c via expression eval machinery.",
+      "objection": "This reverts commit 773aec7aa98abd38d6d9435913bb8e14e392c274.\n\nThere's an unresolved issue in the reverted commit: It only creates\none comparator function, but in for the nodeSubplan.c case we need\nmore (c.f. FindTupleHashEntry vs LookupTupleHashEntry calls in\nnodeSubplan.c).\n\nThis isn't too difficult to fix, but it's not entirely trivial\neither. The fact that the issue only causes breakage on 32bit systems\nshows that the current test coverage isn't that great.  To avoid\nturning half the buildfarm red till those two issues are addressed,\nrevert.",
+      "touch_points": [],
+      "matched_queries": [
+        "compare exchange 32-bit half"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "revert:9cf6033281fdaf938b826545a643f951086d8671",
+      "kind": "revert",
+      "title": "Revert unintentional change in increasing usage count during pin of buffers, this makes buffer access strategy have no effect.",
+      "status": "Reverted",
+      "date": "2017-03-20",
+      "first_date": "2016-04-11",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9cf6033281fdaf938b826545a643f951086d8671",
+      "thread_urls": [],
+      "authors": "Andres Freund",
+      "objectors": "",
+      "summary": "Revert unintentional change in increasing usage count during pin of buffers, this makes buffer access strategy have no effect. Change was a part of commit 48354581a49c30f5757c203415aa8412d85b0f70 during 9.6 release cycle, so backpath to 9.6\nReverted commit(s): Allow Pin/UnpinBuffer to operate in a lockfree manner.",
+      "objection": "Revert unintentional change in increasing usage count during pin of buffers,\nthis makes buffer access strategy have no effect.\nChange was a part of commit 48354581a49c30f5757c203415aa8412d85b0f70 during 9.6\nrelease cycle, so backpath to 9.6\n\n\nhttps://commitfest.postgresql.org/13/1029/",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "pin count lock contention"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:4634",
+      "kind": "cf",
+      "title": "always use runtime checks for CRC-32C instructions",
+      "status": "Withdrawn",
+      "date": "2023-10-31",
+      "first_date": "2023-10-30",
+      "url": "https://commitfest.postgresql.org/patch/4634/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20231030161706.GA3011@nathanxps13"
+      ],
+      "authors": "Nathan Bossart (bossartn), xiang gao (xiang.gao)",
+      "objectors": "",
+      "summary": "always use runtime checks for CRC-32C instructions\nThreads: always use runtime checks for CRC-32C instructions",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "compare exchange 32-bit half"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "revert:3f8148c256e067dc2e8929ed174671ba7dc3339c",
+      "kind": "revert",
+      "title": "Revert 019_replslot_limit.pl related debugging aids.",
+      "status": "Reverted",
+      "date": "2022-07-05",
+      "first_date": "2022-02-23",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=3f8148c256e067dc2e8929ed174671ba7dc3339c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20220530190155.47wr3x2prdwyciah@alap3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/20220327213219.smdvfkq2fl74flow@alap3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/3042597.1648148740@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20220225192941.hqnvefgdzaro6gzg@alap3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/20220218231415.c4plkp4i3reqcwip@alap3.anarazel.de"
+      ],
+      "authors": "Andres Freund",
+      "objectors": "",
+      "summary": "Revert 019_replslot_limit.pl related debugging aids.\nReverted commit(s): Don't fail for > 1 walsenders in 019_replslot_limit, add debug messages.; Add retries for further investigation of 019_replslot_limit.pl failures.; Add further debug info to help debug 019_replslot_limit.pl failures.; Add temporary debug info to help debug 019_replslot_limit.pl failures.",
+      "objection": "This reverts most of 91c0570a791, f28bf667f60, fe0972ee5e6, afdeff10526. The\nonly thing left is the retry loop in 019_replslot_limit.pl that avoids\nspurious failures by retrying a couple times.\n\nWe haven't seen any hard evidence that this is caused by anything but slow\nprocess shutdown. We did not find any cases where walsenders did not vanish\nafter waiting for longer. Therefore there's no reason for this debugging code\nto remain.",
+      "touch_points": [],
+      "matched_queries": [
+        "bufmgr CAS loop retry"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:1455",
+      "kind": "cf",
+      "title": "Changing WAL Header to reduce contention during ReserveXLogInsertLocation()",
+      "status": "Returned with feedback",
+      "date": "2018-07-09",
+      "first_date": "2017-12-30",
+      "url": "https://commitfest.postgresql.org/patch/1455/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANP8+jKZidkCLHg_6nUi4tLQTN=d6w+qd7H5DYqzYa3eU-6Hzw@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon), Pavan Deolasee (pavan)",
+      "objectors": "",
+      "summary": "Changing WAL Header to reduce contention during ReserveXLogInsertLocation()\nThreads: Changing WAL Header to reduce contention during ReserveXLogInsertLocation()",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "buffer header spinlock contention"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:1069",
+      "kind": "cf",
+      "title": "Configurable file mode mask",
+      "status": "Returned with feedback",
+      "date": "2017-03-21",
+      "first_date": "2017-03-01",
+      "url": "https://commitfest.postgresql.org/patch/1069/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ad346fe6-b23e-59f1-ecb7-0e08390ad629@pgmasters.net"
+      ],
+      "authors": "Stephen Frost (sfrost), Adam Brightwell (abrightwell), David Steele (dsteele)",
+      "objectors": "",
+      "summary": "Configurable file mode mask\nThreads: PATCH: Configurable file mode mask",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "atomics masked compare exchange"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 7,
+    "new_calls": 1,
+    "failed": 0,
+    "quotes_verified": 1,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 3
+  },
+  "precedent_cutoff": "2026-10-08",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 2,
+      "note": "No precedent proposes half-width CAS on the buffer state; the two objections rest on recorded reasons from related attempts."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 1,
+      "note": "The proposal has no SQL, GUC, catalog, pg_dump, psql or client-visible surface. My angle sees only the internal API contract change above."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 2,
+      "note": "The patch changes no on-disk format, WAL record, catalog or wire protocol. Buffer header state lives only in shared memory, so pg_upgrade, standbys and subscribers are unaffected."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal changes internal atomics and buffer manager CAS loops only. It adds no SQL surface, privilege, role, GUC, monitoring view or authentication path, and it lets no user do or see anything new. Correctness risks of mixed-width atomics are data-safety questions for the design angle, outside security."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "Not applicable. The open doubts about the benefit (one Apple M2, no x86, no high client counts) belong to the desirability and performance angles."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "Postgres has no existing feature, option or extension that lowers CAS retries on the buffer header state, and buffer manager internals cannot be replaced from an extension. Plain pg_atomic_compare_exchange_u32 on a separate field would need a different state layout, which is a design question for another angle."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "One objection: demand is shown only by a synthetic hot-page test; a broader benchmark or field evidence would settle it."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 9,
+      "new_survived": 5,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 97,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 12,
+    "wall_ms": 136593,
+    "cost_usd": 1.4798510000000002,
+    "dry_run": false
+  }
+}

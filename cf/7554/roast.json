@@ -1,0 +1,1355 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T04:09:35.199Z",
+  "input": {
+    "arg": "7554",
+    "cf": {
+      "id": 7554,
+      "url": "https://commitfest.postgresql.org/patch/7554/",
+      "title": "Assert failure in parallel query due to SubPlan double visit for hash join",
+      "status": "Needs review",
+      "authors": "Lukas Fittl (lfittl)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAP53PkzYGGESHX%2Bdsy04rcO-7PpBjGg-QNzfLcAC%2BagydukTcA%40mail.gmail.com",
+    "subject": "Assert failure in parallel query due to SubPlan double visit for hash join",
+    "thread_start": "2026-10-26T23:21:26Z",
+    "messages_read": 8,
+    "messages_total": 8,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v1-0001-Process-each-PlanState-only-once-during-parallel-.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "The bug is real: message #1 gives a reproducer and messages #2 and #3 confirm it. No objection survived at levels 1a or 1b. Two fixable design points remain at level 2: standards-compat-1 (no fix shape for the stable branches, where the bug has existed since Postgres 10) and maintenance-fit-2 (the Bitmapset-first context rule is not checked at compile time for out-of-core callers). Neither would stop the fix; both need a decision from someone who knows the executor.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Visit each PlanState once in parallel query setup and instrumentation",
+    "problem": "When one SubPlan has several SubPlanStates, parallel query walks its subtree once per reference. With hash joins, EXPLAIN ANALYZE then fails an assertion on a duplicate shm_toc key. Non-assert builds show inflated loop counts and lose per-worker details such as \"Sort Method\", and users have no easy way to notice.",
+    "proposed_design": "The patch adds planstate_tree_collect(), which returns the distinct PlanStates of a tree. The parallel DSM setup and instrumentation code then process each list entry once and no longer recurse per reference. ExecShutdownNode() is left unchanged.",
+    "user_visible_surface": [
+      "C API: new helper planstate_tree_collect() in nodes/nodeFuncs.h.",
+      "Changed exported functions in executor/execParallel.h; the prose does not say which signatures change.",
+      "EXPLAIN ANALYZE of affected parallel plans shows correct loop counts and per-worker Sort Method lines."
+    ],
+    "author_claims": [
+      "The bug dates from b8d7f053c5c (Postgres 10), where ExecInitHashJoin started creating a second SubPlanState; the author has not tested older branches.",
+      "The fix removes the assertion failure and corrects loops and Sort Method output, shown with a reproducer and a regression test.",
+      "All in-core shutdown callbacks are idempotent, so ExecShutdownNode() is not a practical problem today.",
+      "The affected plan shape is uncommon, and users of non-assert builds would rarely notice wrong output.",
+      "Dedup inside each existing walker would need context changes in four places."
+    ],
+    "thread_state": "Sami Imseih approved v1 with naming and comment notes. David Geier and the author now favor making planstate_tree_walker() skip visited nodes with a Bitmapset on plan_node_id carried in a common context struct, which would also fix ExecShutdownNode(); no new patch is posted yet.",
+    "unclear": [
+      "The thread does not say whether the fix should be back-patched, or how far.",
+      "No one has measured the walker cost of the Bitmapset, the collected list, or a per-node generation counter.",
+      "The Bitmapset design changes how planstate_tree_walker() callers pass context; the thread does not consider out-of-core and extension callers.",
+      "The proposal does not say whether a CustomScan shutdown callback that is not idempotent is a real risk worth fixing now.",
+      "Andres, the author of b8d7f053c5c, has not replied about avoiding the duplicate SubPlanState in ExecInitHashJoin."
+    ],
+    "search_queries": [
+      "planstate_tree_walker visit node once",
+      "parallel query subplan duplicate shm_toc key",
+      "hash join subplan initialized twice",
+      "EXPLAIN ANALYZE parallel worker loops wrong",
+      "shm_toc_insert assertion failure parallel",
+      "ExecShutdownNode called twice",
+      "parallel instrumentation SubPlan sort method missing",
+      "plan tree walker visited bitmapset"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Proposed walker change cannot reach the back branches that have the bug",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A packager ships a minor release with the fix after it is back-patched to stable branches. An extension that calls planstate_tree_walker() or the changed execParallel.h functions, built against the earlier minor release, now passes a context of the wrong shape. It misbehaves or crashes, and users find out only after the minor upgrade.",
+      "argument": "The bug dates from Postgres 10, so it is present in every supported branch (message #1). v1 changes exported signatures in execParallel.h. The design now favored in messages #7 and #8 changes the context contract of planstate_tree_walker(), which is part of the extension API. Neither version says whether there will be a separate fix for the back branches that keeps the ABI stable.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        7,
+        8
+      ],
+      "author_must_show": "What fix ships to the supported back branches, and does it leave the signatures of planstate_tree_walker() and the execParallel.h functions unchanged?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Lukas Fittl",
+          "date": "2026-10-26T23:21:26Z",
+          "url": "https://www.postgresql.org/message-id/CAP53PkzYGGESHX%2Bdsy04rcO-7PpBjGg-QNzfLcAC%2BagydukTcA%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Lukas Fittl",
+          "date": "2026-11-04T01:19:00Z",
+          "url": "https://www.postgresql.org/message-id/CAP53PkwgWzwBbY8mYmeqGqMSKURD07H_vQbqjkdtcROttBpn9w%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "David Geier",
+          "date": "2026-11-04T14:39:51Z",
+          "url": "https://www.postgresql.org/message-id/b0fa92db-7fc1-4452-9f5c-54fe721d331e%40gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The bug is in every supported branch, v1 changes exported execParallel.h functions, and the favored design changes the planstate_tree_walker() context contract. No message says which fix, if any, goes to stable branches.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Required Bitmapset-first context changes walker contract silently for extensions",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension calls planstate_tree_walker() with its own context struct, which has no Bitmapset as its first member. The code still compiles against the new release. On a production build the walker reads the first field as a Bitmapset and crashes or skips nodes. The Bitmapset node-tag assertion only catches this on assert builds.",
+      "argument": "Message #8 proposes requiring \"the first member of any context is a Bitmapset\" behind the existing void * context. That is a convention the compiler cannot check. Message #8 also counts only in-core call sites, while planstate_tree_walker() is exported and used by out-of-core code. Option 2 in message #7, an explicit extra argument, breaks callers at compile time, and message #8 rejects it only for convenience at the call sites.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        7,
+        8
+      ],
+      "author_must_show": "How will out-of-core callers of planstate_tree_walker() learn about the new context requirement at compile time rather than through a crash on non-assert builds?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "Lukas Fittl",
+          "date": "2026-11-04T01:19:00Z",
+          "url": "https://www.postgresql.org/message-id/CAP53PkwgWzwBbY8mYmeqGqMSKURD07H_vQbqjkdtcROttBpn9w%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "David Geier",
+          "date": "2026-11-04T14:39:51Z",
+          "url": "https://www.postgresql.org/message-id/b0fa92db-7fc1-4452-9f5c-54fe721d331e%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "planstate_tree_walker() is exported with a void pointer context, and message #8 lists only in-core call sites. An old extension context would still compile under option 1, and only an assertion would catch the mismatch.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "New walker context rule breaks extension callers without a compile error",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension author recompiles against the new major version. The extension's planstate_tree_walker() callback still passes its own context struct, which does not start with a Bitmapset. The code compiles cleanly, the walker reads the extension's first field as a visited set, and non-assert builds corrupt memory or skip nodes.",
+      "argument": "Message #8 proposes requiring the first member of every context to be a Bitmapset, checked only by an assertion. Message #8 also counts call sites only in core. The brief notes that the thread does not consider out-of-core callers. Option 2 in message #7, an explicit extra argument, would change the signature, so old callers would fail to compile. That trade-off is not yet weighed in the thread.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        7,
+        8
+      ],
+      "author_must_show": "How will an out-of-core caller of planstate_tree_walker() find out at compile time that its context must now carry the visited set?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "Lukas Fittl",
+          "date": "2026-11-04T01:19:00Z",
+          "url": "https://www.postgresql.org/message-id/CAP53PkwgWzwBbY8mYmeqGqMSKURD07H_vQbqjkdtcROttBpn9w%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "David Geier",
+          "date": "2026-11-04T14:39:51Z",
+          "url": "https://www.postgresql.org/message-id/b0fa92db-7fc1-4452-9f5c-54fe721d331e%40gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-2.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Bitmapset-first walker context breaks out-of-core planstate_tree_walker callers",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension calls planstate_tree_walker() with its own context struct whose first member is not a Bitmapset. After the change it still compiles, the walker treats that first field as the visited set, and a non-assert build corrupts memory or skips nodes during EXPLAIN or executor hooks. The extension's users find out from crashes or wrong output.",
+      "argument": "Message #8 favors requiring every walker context to start with a Bitmapset and checks only in-core call sites, with the type check enforced only by an assertion. planstate_tree_walker() is exported through nodes/nodeFuncs.h, and its context has been an opaque void pointer, so out-of-core callers can rely on that. Nothing in the thread makes the contract change fail at compile time, for example through a new signature or a renamed function.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        7,
+        8
+      ],
+      "author_must_show": "How does an out-of-core caller of planstate_tree_walker() fail at compile time, not at run time, when its context does not follow the new layout?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "Lukas Fittl",
+          "date": "2026-11-04T01:19:00Z",
+          "url": "https://www.postgresql.org/message-id/CAP53PkwgWzwBbY8mYmeqGqMSKURD07H_vQbqjkdtcROttBpn9w%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "David Geier",
+          "date": "2026-11-04T14:39:51Z",
+          "url": "https://www.postgresql.org/message-id/b0fa92db-7fc1-4452-9f5c-54fe721d331e%40gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-2.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Back-branch fix shape is undefined while exported signatures change",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The assertion failure and the wrong loop counts exist in every release since Postgres 10. If the master fix changes functions exported from execParallel.h or the walker contract, it cannot go into stable branches as is. Users of supported releases keep the wrong EXPLAIN ANALYZE output, or a back branch gets a different, untested fix.",
+      "argument": "The v1 commit message and the file list show changes to src/include/executor/execParallel.h, and the design favored in message #7 and message #8 changes the planstate_tree_walker() calling convention. Changing exported functions in a minor release can break extensions built against the earlier minor release. The thread does not say whether this bug fix will be back-patched, or which variant would keep the back-branch ABI stable.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        7,
+        8
+      ],
+      "author_must_show": "Which variant of the fix would go into the stable branches, and does it leave every exported executor and nodeFuncs signature unchanged there?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Lukas Fittl",
+          "date": "2026-10-26T23:21:26Z",
+          "url": "https://www.postgresql.org/message-id/CAP53PkzYGGESHX%2Bdsy04rcO-7PpBjGg-QNzfLcAC%2BagydukTcA%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Lukas Fittl",
+          "date": "2026-11-04T01:19:00Z",
+          "url": "https://www.postgresql.org/message-id/CAP53PkwgWzwBbY8mYmeqGqMSKURD07H_vQbqjkdtcROttBpn9w%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "David Geier",
+          "date": "2026-11-04T14:39:51Z",
+          "url": "https://www.postgresql.org/message-id/b0fa92db-7fc1-4452-9f5c-54fe721d331e%40gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Fix for a bug present since Postgres 10 has no back-patch shape",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer wants to fix the assertion failure and the wrong EXPLAIN ANALYZE output in supported branches. v1 adds a nodeFuncs.h helper and changes execParallel.h. The planned design changes the planstate_tree_walker() context contract. Neither can go into a stable branch, so 14 through 19 keep the wrong loop counts.",
+      "argument": "The commit message dates the bug to b8d7f053c5c, which is in every supported branch, and the CommitFest entry is tagged Bugfix. No message in the thread mentions back-patching. Message #6 and message #8 move toward a larger API change on master, which makes a stable-branch fix less likely. David's per-node guard (\"if (node->shared_info != NULL) return;\") was set aside in message #6 for readability, but it may be the only form that fits a back-patch.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3,
+        6,
+        8
+      ],
+      "author_must_show": "Which branches should get the fix, and what minimal ABI-preserving change would be used there while the walker redesign goes only into master?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Lukas Fittl",
+          "date": "2026-10-26T23:21:26Z",
+          "url": "https://www.postgresql.org/message-id/CAP53PkzYGGESHX%2Bdsy04rcO-7PpBjGg-QNzfLcAC%2BagydukTcA%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "David Geier",
+          "date": "2026-10-29T08:26:37Z",
+          "url": "https://www.postgresql.org/message-id/837d0e7e-29d1-4aea-9bf0-47269ef473fb%40gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "David Geier",
+          "date": "2026-11-02T20:18:46Z",
+          "url": "https://www.postgresql.org/message-id/c8ecc97a-ca78-4f5e-9c42-a41a77b9a9f4%40gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "David Geier",
+          "date": "2026-11-04T14:39:51Z",
+          "url": "https://www.postgresql.org/message-id/b0fa92db-7fc1-4452-9f5c-54fe721d331e%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1. Its claim that a new nodeFuncs.h helper cannot go into a stable branch is also too strong, because adding a function keeps the ABI.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "v1 fixes four callers and leaves the generic walker unsafe",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds a new per-node pass with planstate_tree_walker(), for example in the stack-based instrumentation series. It visits the shared SubPlan subtree twice and double-counts, the same bug again. Nothing fails unless a test uses this rare plan shape, so users see wrong numbers without noticing.",
+      "argument": "v1 adds planstate_tree_collect() and uses it only in execParallel.c. ExecShutdownNode() and future walkers keep the double visit, so the tree has two traversal semantics. Message #6 and message #7 agree the walker itself should dedupe. If v1 were committed first, its helper would become a second mechanism to maintain or remove. Message #3 notes it is easy for other plan nodes to create the same shape.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3,
+        6,
+        7
+      ],
+      "author_must_show": "Will the next version replace planstate_tree_collect() with a single walker-level guarantee, so that every planstate_tree_walker() caller, including ExecShutdownNode(), gets one visit per node?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Lukas Fittl",
+          "date": "2026-10-26T23:21:26Z",
+          "url": "https://www.postgresql.org/message-id/CAP53PkzYGGESHX%2Bdsy04rcO-7PpBjGg-QNzfLcAC%2BagydukTcA%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "David Geier",
+          "date": "2026-10-29T08:26:37Z",
+          "url": "https://www.postgresql.org/message-id/837d0e7e-29d1-4aea-9bf0-47269ef473fb%40gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "David Geier",
+          "date": "2026-11-02T20:18:46Z",
+          "url": "https://www.postgresql.org/message-id/c8ecc97a-ca78-4f5e-9c42-a41a77b9a9f4%40gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Lukas Fittl",
+          "date": "2026-11-04T01:19:00Z",
+          "url": "https://www.postgresql.org/message-id/CAP53PkwgWzwBbY8mYmeqGqMSKURD07H_vQbqjkdtcROttBpn9w%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "Message #3 and message #6 raise this point, and the author agrees in message #7 to move the dedup into planstate_tree_walker(), which covers ExecShutdownNode(). The thread has already set v1's collect helper aside.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "v1 adds planstate_tree_collect() to nodeFuncs.h and changes exported functions in execParallel.h; the favored design changes the planstate_tree_walker() context contract."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The bug dates from Postgres 10, and the thread does not say which fix goes to stable branches."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Every future planstate_tree_walker() caller must follow the new visit-once rule or context layout."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Dedup in planstate_tree_walker() adds a visited check to every PlanState walk; no one has measured it."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Which supported branches get the fix, and what change goes there that leaves planstate_tree_walker() and the execParallel.h functions unchanged?",
+    "How does an out-of-core caller of planstate_tree_walker() learn at compile time that its context must start with a Bitmapset?",
+    "Why is the Bitmapset-first context preferred over an explicit extra argument, which would make old callers fail to compile?",
+    "What does the visited check cost per walk for callers that never meet a shared SubPlan?",
+    "Is a CustomScan shutdown callback that is not idempotent a real case that the stable-branch fix must also cover?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "Needs a committer who knows the executor's parallel query setup (execParallel.c) and the nodeFuncs.c walkers. The visible thread shows the author and two reviewers; the author of b8d7f053c5c was CCed and has not replied.",
+    "liability": "The owner signs for a changed planstate_tree_walker() contract that every in-core and out-of-core caller must follow, and for a stable-branch fix that may differ from the master fix.",
+    "author_follow_up": "The author is engaged with reviewers and plans a reworked design per the brief; no new patch is posted yet. The fix also unblocks the author's stack-based instrumentation series."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "proceed",
+    "reason": "The plan shape is uncommon, but the assertion failure and the wrong EXPLAIN ANALYZE output are confirmed by two reviewers. The v1 patch is about 31 KiB in execParallel.c and nodeFuncs.c, and the walker contract change needs care for extension callers."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read, and the favored walker-level design has no posted patch. Messages #4 to #8 were not shown, so the context-struct details and the walker cost could not be checked.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:5996",
+      "kind": "cf",
+      "title": "Fixes a trivial bug in dumped parse/query/plan trees",
+      "status": "Withdrawn",
+      "date": "2025-09-02",
+      "first_date": "2025-08-25",
+      "url": "https://commitfest.postgresql.org/patch/5996/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6EE75DFB-F4FC-4EEE-BD49-786223E469FA@gmail.com"
+      ],
+      "authors": "Chao Li (chaol)",
+      "objectors": "Daniel Gustafsson, Tom Lane",
+      "summary": "The patch removes the leading space that the node output code writes after the opening parenthesis when it dumps an array field, so \"( 1 4)\" becomes \"(1 4)\". The author called the space a bug in the dumped parse, query and plan trees.",
+      "objection": "Daniel Gustafsson and Tom Lane said the format is intentional and that changing it could break external parsers of the node format. Tom Lane said the space is a skipped minor optimization and that a small saving in isolation does not justify the risk to third-party code. He would accept such breakage only for a large cut in stored parse tree size, about 2X or better.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "planstate_tree_walker visit node once",
+        "plan tree walker visited bitmapset"
+      ],
+      "from_hint": false,
+      "score": 0.268,
+      "enriched": true,
+      "key_quote": "While our existing nodeRead code wouldn't have a\nproblem with removing the extra whitespace, I share your fear that\nwe could introduce bugs into some third-party code somewhere.",
+      "quote_message_url": "https://www.postgresql.org/message-id/594270.1756829307%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:5987",
+      "kind": "cf",
+      "title": "Add OID descriptions to dumped parse/query/plan trees",
+      "status": "Withdrawn",
+      "date": "2025-08-25",
+      "first_date": "2025-08-22",
+      "url": "https://commitfest.postgresql.org/patch/5987/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/e0922caf-b9d8-4c2a-a670-4a82226d59d6@gmail.com"
+      ],
+      "authors": "Chao Li (chaol)",
+      "objectors": "Tom Lane",
+      "summary": "The patch adds comments to the text dumps of parse, query and plan trees that name the object behind each OID, such as the index, operator, function or type. It does this by catalog lookups inside the node output code.",
+      "objection": "Tom Lane objected that the lookups would make the dump code need a live, non-aborted transaction and could add catalog accesses that cause problems or deadlocks, so pprint could no longer be called from almost anywhere. He also said the change breaks re-reading of dumped trees, which rules, views and parallel query depend on. The author withdrew the patch after this reply.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "planstate_tree_walker visit node once",
+        "plan tree walker visited bitmapset"
+      ],
+      "from_hint": false,
+      "score": 0.266,
+      "enriched": true,
+      "key_quote": "It means that the dump code has to\nexecute in a live (not-aborted) transaction, which is not a\nrequirement it had before, and will complicate some debugging\nscenarios.",
+      "quote_message_url": "https://www.postgresql.org/message-id/1874560.1755871854%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:6682",
+      "kind": "cf",
+      "title": "Fix TOCTOU race in ReplicationSlotsComputeRequiredLSN()",
+      "status": "Withdrawn",
+      "date": "2026-04-17",
+      "first_date": "2026-04-17",
+      "url": "https://commitfest.postgresql.org/patch/6682/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CACSdjfMQYL3DV-3inrxdReqpFMOky4JxLbN0gTTY+qGJqrUJXw@mail.gmail.com"
+      ],
+      "authors": "JoongHyuk Shin (shin)",
+      "objectors": "\"Zhijie Hou (Fujitsu)\"",
+      "summary": "The patch moved LWLockRelease(ReplicationSlotControlLock) in ReplicationSlotsComputeRequiredLSN() to after the call to XLogSetReplicationSlotMinimumLSN(), so a stale minimum LSN cannot overwrite a lower one. It copied the fix that commit 2a5225b99d7 made for ReplicationSlotsComputeRequiredXmin() and was proposed for backpatching.",
+      "objection": "The patch widened the lock scope only on the read side and left the lock level in ReplicationSlotReserveWal() unchanged, so it did not fix the race. Another commitfest entry already addressed the same issue, and the author withdrew this one.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "parallel query subplan duplicate shm_toc key",
+        "shm_toc_insert assertion failure parallel"
+      ],
+      "from_hint": false,
+      "score": 0.227,
+      "enriched": true,
+      "key_quote": "The patch you posted\nonly increases the lock scope in ReplicationSlotsComputeRequiredLSN() but does\nnot increase the lock level when reserving WALs, so I think it would not\nfix the issue.",
+      "quote_message_url": "https://www.postgresql.org/message-id/TYRPR01MB14195CA431CFC783F77FB8AEF94202%40TYRPR01MB14195.jpnprd01.prod.outlook.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:3872",
+      "kind": "cf",
+      "title": "pg_upgrade allows itself to be run twice (initdb)",
+      "status": "Returned with feedback",
+      "date": "2022-12-01",
+      "first_date": "2022-06-25",
+      "url": "https://commitfest.postgresql.org/patch/3872/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20220625160437.GI22452@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "Peter Eisentraut",
+      "summary": "At the end of initdb, the patch sets NextOID in the control file to FirstNormalObjectId, so objects created in single-user mode cannot get OIDs that slip past pg_upgrade's check that the new cluster is empty. The author also proposed that pg_upgrade reject any changes made to the new cluster between initdb and pg_upgrade, which also stops a second pg_upgrade run on the same cluster.",
+      "objection": "Peter Eisentraut asked that the control file be updated directly with the controldata_utils.h functions instead of calling pg_resetwal. He also doubted that initdb needs to guard against use of postgres --single, which many consider deprecated outside initdb, and closed the entry as returned with feedback. No revised patch appears in the thread.",
+      "touch_points": [
+        "on-disk format / pg_upgrade"
+      ],
+      "matched_queries": [
+        "hash join subplan initialized twice",
+        "ExecShutdownNode called twice"
+      ],
+      "from_hint": false,
+      "score": 0.218,
+      "enriched": true,
+      "key_quote": "However, I don't know whether we need to add special provisions that guard against people using postgres --single in complicated ways.  Many consider the single-user mode deprecated outside of initdb use.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2bd2552b-f89e-429b-0bb8-443edb283fb4%40enterprisedb.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:1804",
+      "kind": "cf",
+      "title": "KNN for B-tree",
+      "status": "Returned with feedback",
+      "date": "2020-03-16",
+      "first_date": "2017-01-18",
+      "url": "https://commitfest.postgresql.org/patch/1804/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ce35e97b-cf34-3f5d-6b99-2c25bae49999@postgrespro.ru"
+      ],
+      "authors": "Nikita Glukhov (n.glukhov)",
+      "objectors": "Alexander Korotkov",
+      "summary": "The patch set adds kNN search to B-tree so that `ORDER BY col <-> const LIMIT k` can use a B-tree index, with a bidirectional scan that starts at the target value and moves toward the nearer next tuple. It also changes the planner interface for index ordering, adds core distance operators for scalar types to the B-tree opclasses, and removes the duplicate operators from btree_gist.",
+      "objection": "Alexander Korotkov, the reviewer preparing it for commit, decided the implementation was in the wrong place and marked it returned with feedback, suggesting a new implementation for v14. The patch merges a forward and a backward scan inside the B-tree code, but that merge belongs in the IndexScan node or the optimizer and executor. The other approach he named is a priority-queue scan in B-tree like GiST and SP-GiST, which needs much more work in the B-tree core. In 2017 the patch had been returned once before because the amcanorderbyop redesign needed more thought.",
+      "touch_points": [],
+      "matched_queries": [
+        "planstate_tree_walker visit node once",
+        "plan tree walker visited bitmapset"
+      ],
+      "from_hint": false,
+      "score": 0.205,
+      "enriched": true,
+      "key_quote": "The appropriate place to do this high-level work is IndexScan node or even Optimizer/Executor (Merge node over to IndexScan nodes), but not B-tree itself.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAPpHfdsj1xq4h1t%3DPROTMacnr%3DiwgimqbSTjBUMBkmRv_GjR0g%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:4509",
+      "kind": "cf",
+      "title": "Improve pg_restore toc file parsing and format for better performances",
+      "status": "Returned with feedback",
+      "date": "2024-01-14",
+      "first_date": "2023-07-27",
+      "url": "https://commitfest.postgresql.org/patch/4509/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2656000.KRxA6XjA2N@peanuts2"
+      ],
+      "authors": "Pierre Ducroquet (pinaraf)",
+      "objectors": "Nathan Bossart, vignesh C",
+      "summary": "The patch set shrinks toc.dat and speeds up pg_restore -l by dropping the unused has-oids field, replacing sscanf with strtoul, and storing integers in binary form. A fourth patch stores owners, tablespaces, table access methods and schemas once in string tables and replaces the per-entry strings with indexes.",
+      "objection": "The author stopped responding after review. Nathan Bossart and vignesh C left comments on 0002 to 0004: OIDs need InvalidOid as the list terminator, debug printf calls and palloc in a client tool must go, and the repeated code needs a common function. No new version followed, and Nathan Bossart's request for a revision got no reply, so vignesh C returned the entry because the comments were not resolved.",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "parallel query subplan duplicate shm_toc key",
+        "shm_toc_insert assertion failure parallel"
+      ],
+      "from_hint": false,
+      "score": 0.2,
+      "enriched": true,
+      "key_quote": "I have changed the status of commitfest entry to \"Returned with\nFeedback\" as the comments have not yet been resolved.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALDaNm3eqhF7WDKuqf4bHa0P78bGVP9uQZqwQzqLjBMn1AYh3Q%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:1646",
+      "kind": "cf",
+      "title": "Subplan result cache",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2018-05-23",
+      "url": "https://commitfest.postgresql.org/patch/1646/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/daceb327-9a20-51f4-fe6c-60b898692305@iki.fi"
+      ],
+      "authors": "Heikki Linnakangas (heikki)",
+      "objectors": "David Rowley",
+      "summary": "Heikki Linnakangas proposed caching SubPlan results inside nodeSubplan.c, keyed by the correlation parameters, so a correlated subquery runs once per distinct parameter set. On TPC-DS query 6 this cut runtime from about 30 s to 120 ms.",
+      "objection": "The reviewer, David Rowley, asked for the cache to be a separate plan node, similar to Materialize, that the planner adds based on cost and that could also serve parameterized nested loops. He set the patch to waiting on author, but no new version followed, so Michael Paquier marked it returned with feedback because the status had not changed.",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel query subplan duplicate shm_toc key",
+        "parallel instrumentation SubPlan sort method missing"
+      ],
+      "from_hint": false,
+      "score": 0.167,
+      "enriched": true,
+      "key_quote": "From looking at the code I see that the caching is being done inside\nnodeSubplan.c. I don't think this is the right approach to the\nproblem.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAKJS1f-kAk1cGVvzg9TXCLhPsxx_oFVOrTGSR5yTRXKWntTVFA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:6276",
+      "kind": "cf",
+      "title": "Safer hash table initialization macro",
+      "status": "Withdrawn",
+      "date": "2026-03-09",
+      "first_date": "2025-12-01",
+      "url": "https://commitfest.postgresql.org/patch/6276/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/aS2b3LoUypW1%2FGdz@ip-10-97-1-34.eu-west-3.compute.internal"
+      ],
+      "authors": "Bertrand Drouvot (bertranddrouvot.pg)",
+      "objectors": "",
+      "summary": "Add a macro, HASH_ELEM_INIT, that sets keysize and entrysize from a named key member and checks at compile time that the key is the first member of the entry struct. The thread grew into a larger patch series by Jelte Fennema-Nio with new hash table creation functions (hash_make and variants), automatic string or blob key detection, and a foreach_hash iteration macro.",
+      "objection": "The visible messages do not show why. The last visible messages are positive reviews and fixes from late January 2026, and no message shows the withdrawal or a deciding objection.",
+      "touch_points": [],
+      "matched_queries": [
+        "hash join subplan initialized twice"
+      ],
+      "from_hint": false,
+      "score": 0.148,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:5751",
+      "kind": "cf",
+      "title": "Disable parallel query by default",
+      "status": "Rejected",
+      "date": "2026-02-11",
+      "first_date": "2025-05-13",
+      "url": "https://commitfest.postgresql.org/patch/5751/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/a5916f83-de79-4a40-933a-fb0d9ba2f5a0@app.fastmail.com"
+      ],
+      "authors": "Scott Mead (scott_mead)",
+      "objectors": "",
+      "summary": "Disable parallel query by default\nThreads: Disable parallel query by default",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel query subplan duplicate shm_toc key"
+      ],
+      "from_hint": false,
+      "score": 0.148,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:4149",
+      "kind": "cf",
+      "title": "Fix assertion failure in SnapBuildInitialSnapshot()",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2022-11-10",
+      "url": "https://commitfest.postgresql.org/patch/4149/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAA4eK1L8wYcyTPxNzPGkhuO52WBGoOZbT0A73Le=ZUWYAYmdfw@mail.gmail.com"
+      ],
+      "authors": "Masahiko Sawada (masahikosawada)",
+      "objectors": "",
+      "summary": "Fix assertion failure in SnapBuildInitialSnapshot()\nThreads: Assertion failure in SnapBuildInitialSnapshot()",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "shm_toc_insert assertion failure parallel"
+      ],
+      "from_hint": false,
+      "score": 0.141,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:3601",
+      "kind": "cf",
+      "title": "Summary Sort workers Stats in EXPLAIN ANALYZE",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-03-21",
+      "url": "https://commitfest.postgresql.org/patch/3601/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/BL0PR05MB5188210988EA15126C255B6DC4169@BL0PR05MB5188.namprd05.prod.outlook.com"
+      ],
+      "authors": "Jian Guo (jiang)",
+      "objectors": "",
+      "summary": "Summary Sort workers Stats in EXPLAIN ANALYZE\nThreads: Summary Sort workers Stats in EXPLAIN ANALYZE",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "EXPLAIN ANALYZE parallel worker loops wrong"
+      ],
+      "from_hint": false,
+      "score": 0.137,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "revert:d00107cd63e780753aa25563fa37603369997d0c",
+      "kind": "revert",
+      "title": "Revert \"Show index search count in EXPLAIN ANALYZE.\"",
+      "status": "Reverted",
+      "date": "2025-03-05",
+      "first_date": "2025-03-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=d00107cd63e780753aa25563fa37603369997d0c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAH2-Wz=PKR6rB7qbx+Vnd7eqeB5VTcrW=iJvAsTsKbdG+kW_UA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAH2-WzkRqvaqR2CTNqTZP0z6FuL4-3ED6eQB0yx38XBNj1v-4Q@mail.gmail.com"
+      ],
+      "authors": "Peter Geoghegan",
+      "objectors": "",
+      "summary": "Revert \"Show index search count in EXPLAIN ANALYZE.\"\nReverted commit(s): Show index search count in EXPLAIN ANALYZE.",
+      "objection": "This reverts commit 5ead85fbc81162ab1594f656b036a22e814f96b3.\n\nThis commit shows test failures with debug_parallel_query=regress.  The\nunderlying issue needs to be debugged, so revert for now.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "EXPLAIN ANALYZE parallel worker loops wrong"
+      ],
+      "from_hint": false,
+      "score": 0.131,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:6546",
+      "kind": "cf",
+      "title": "Fix slotsync worker busy loop causing repeated log messages",
+      "status": "Withdrawn",
+      "date": "2026-05-01",
+      "first_date": "2026-02-27",
+      "url": "https://commitfest.postgresql.org/patch/6546/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHGQGwF6zG9Z8ws1yb3hY1VqV-WT7hR0qyXCn2HdbjvZQKufDw@mail.gmail.com"
+      ],
+      "authors": "Fujii Masao (masaofujii)",
+      "objectors": "",
+      "summary": "Fix slotsync worker busy loop causing repeated log messages\nThreads: Fix slotsync worker busy loop causing repeated log messages",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "EXPLAIN ANALYZE parallel worker loops wrong"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3455",
+      "kind": "cf",
+      "title": "Sort leaf pages by ctid for gist indexes built using sorting method",
+      "status": "Withdrawn",
+      "date": "2021-12-16",
+      "first_date": "2021-12-15",
+      "url": "https://commitfest.postgresql.org/patch/3455/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHqSB9gd0NnQuPHSnnR7BC-rNnJWZ53rRA+vYZF4pcRK-4y_kw@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "Sort leaf pages by ctid for gist indexes built using sorting method\nThreads: [PATCH] sort leaf pages by ctid for gist indexes built using sorted method",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel instrumentation SubPlan sort method missing"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "revert:1d6fb35ad62968c8678d0321887e2b9ca8fe1a84",
+      "kind": "revert",
+      "title": "Revert \"Fix accumulation of parallel worker instrumentation.\"",
+      "status": "Reverted",
+      "date": "2017-12-13",
+      "first_date": "2017-12-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1d6fb35ad62968c8678d0321887e2b9ca8fe1a84",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAA4eK1LW2aFKzY3=vwvc=t-juzPPVWP2uT1bpx_MeyEqnM+p8g@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20171127175631.GA405@depesz.com"
+      ],
+      "authors": "Robert Haas",
+      "objectors": "",
+      "summary": "Revert \"Fix accumulation of parallel worker instrumentation.\"\nReverted commit(s): Fix accumulation of parallel worker instrumentation.",
+      "objection": "This reverts commit 2c09a5c12a66087218c7f8cba269cd3de51b9b82.  Per\nfurther discussion, that doesn't seem to be the best possible fix.",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel instrumentation SubPlan sort method missing"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P16",
+      "source_id": "revert:26acb54a1368bf3706294400abca85b15c9233a6",
+      "kind": "revert",
+      "title": "Revert \"Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".\"",
+      "status": "Reverted",
+      "date": "2021-03-24",
+      "first_date": "2021-03-10",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=26acb54a1368bf3706294400abca85b15c9233a6",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/E1lMiB9-0001c3-SY@gemulon.postgresql.org",
+        "https://www.postgresql.org/message-id/flat/20210318025228.GE11765@telsasoft.com",
+        "https://www.postgresql.org/message-id/flat/CAA4eK1K-cW7svLC2D7DHoGHxdAdg3P37BLgebqBOC2ZLc9a6QQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAJcOf-cXnB5cnMKqWEp2E2z7Mvcd04iLVmV=qpFJrR3AcrTS3g@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/2309260.1615485644@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CAJcOf-fAdj=nDKMsRhQzndm-O13NY4dL6xGcEvdX5Xvbbi0V7g@mail.gmail.com"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Revert \"Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".\"\nReverted commit(s): Doc: Update description for parallel insert reloption.; Add a new GUC and a reloption to enable inserts in parallel-mode.; Improve FK trigger parallel-safety check added by 05c8482f7f.; Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".; Fix use of relcache TriggerDesc field introduced by commit 05c8482f7f.",
+      "objection": "To allow inserts in parallel-mode this feature has to ensure that all the\nconstraints, triggers, etc. are parallel-safe for the partition hierarchy\nwhich is costly and we need to find a better way to do that. Additionally,\nwe could have used existing cached information in some cases like indexes,\ndomains, etc. to determine the parallel-safety.\n\nList of commits reverted, in reverse chronological order:\n\ned62d3737c Doc: Update description for parallel insert reloption.\nc8f78b6161 Add a new GUC and a reloption to enable inserts in parallel-mode.\nc5be48f092 Improve FK trigger parallel-safety check added by 05c8482f7f.\ne2cda3c20a Fix use of relcache TriggerDesc field introduced by commit 05c8482f7f.\ne4e87a32cc Fix valgrind issue in commit 05c8482f7f.\n05c8482f7f Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "shm_toc_insert assertion failure parallel"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:2588",
+      "kind": "cf",
+      "title": "Hashjoin fall back to block nested hashloop join",
+      "status": "Withdrawn",
+      "date": "2020-11-10",
+      "first_date": "2019-05-16",
+      "url": "https://commitfest.postgresql.org/patch/2588/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGKWWmf=WELLG=aUGbcugRaSQbtm0tKYiBut-B2rVKX63g@mail.gmail.com"
+      ],
+      "authors": "Melanie Plageman (melanieplageman), Soumyadeep Chakraborty (soumyadeep2007), Jesse Zhang (essej), David Kimura (dgkimura)",
+      "objectors": "",
+      "summary": "Hashjoin fall back to block nested hashloop join\nThreads: Avoiding hash join batch explosions with extreme skew and weird stats",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "hash join subplan initialized twice"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:3806",
+      "kind": "cf",
+      "title": "Minimizing calls to SubTransSetParent()",
+      "status": "Withdrawn",
+      "date": "2023-03-22",
+      "first_date": "2022-08-08",
+      "url": "https://commitfest.postgresql.org/patch/3806/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANbhV-H8ov5+nCMBYQFKhO+UZJjrFgY_ORiMWr3RhS4+x44PzA@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon)",
+      "objectors": "",
+      "summary": "Minimizing calls to SubTransSetParent()\nThreads: SUBTRANS: Minimizing calls to SubTransSetParent()",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "ExecShutdownNode called twice"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:3454",
+      "kind": "cf",
+      "title": "sort leaf pages by ctid for gist indexes built using sorted method",
+      "status": "Returned with feedback",
+      "date": "2022-03-22",
+      "first_date": "2021-12-15",
+      "url": "https://commitfest.postgresql.org/patch/3454/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHqSB9gd0NnQuPHSnnR7BC-rNnJWZ53rRA+vYZF4pcRK-4y_kw@mail.gmail.com"
+      ],
+      "authors": "Aliaksandr Kalenik (kalenik.aliaksandr.gmail.com)",
+      "objectors": "",
+      "summary": "sort leaf pages by ctid for gist indexes built using sorted method\nThreads: [PATCH] sort leaf pages by ctid for gist indexes built using sorted method",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel instrumentation SubPlan sort method missing"
+      ],
+      "from_hint": false,
+      "score": 0.112,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:5486",
+      "kind": "cf",
+      "title": "Optionally record Plan IDs to track plan changes for a query",
+      "status": "Returned with feedback",
+      "date": "2025-03-24",
+      "first_date": "2025-01-02",
+      "url": "https://commitfest.postgresql.org/patch/5486/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAP53Pkyow59ajFMHGpmb1BK9WHDypaWtUsS_5DoYUEfsa_Hktg@mail.gmail.com"
+      ],
+      "authors": "Lukas Fittl (lfittl)",
+      "objectors": "",
+      "summary": "Optionally record Plan IDs to track plan changes for a query\nThreads: [PATCH] Optionally record Plan IDs to track plan changes for a query",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "plan tree walker visited bitmapset"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:1596",
+      "kind": "cf",
+      "title": "CALL optional in PL/pgSQL",
+      "status": "Rejected",
+      "date": "2018-04-05",
+      "first_date": "2018-03-01",
+      "url": "https://commitfest.postgresql.org/patch/1596/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/093a9770-42a8-8f8c-a0b6-060fe742a010@2ndquadrant.com"
+      ],
+      "authors": "Peter Eisentraut (petere)",
+      "objectors": "",
+      "summary": "CALL optional in PL/pgSQL\nThreads: CALL optional in PL/pgSQL",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "ExecShutdownNode called twice"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:2844",
+      "kind": "cf",
+      "title": "Parallel INSERT (INTO ... SELECT ...)",
+      "status": "Returned with feedback",
+      "date": "2021-04-01",
+      "first_date": "2020-09-22",
+      "url": "https://commitfest.postgresql.org/patch/2844/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJcOf-cXnB5cnMKqWEp2E2z7Mvcd04iLVmV=qpFJrR3AcrTS3g@mail.gmail.com"
+      ],
+      "authors": "Greg Nancarrow (gregn1234)",
+      "objectors": "",
+      "summary": "Parallel INSERT (INTO ... SELECT ...)\nThreads: Parallel INSERT (INTO ... SELECT ...)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "shm_toc_insert assertion failure parallel"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:2765",
+      "kind": "cf",
+      "title": "Add extra statistics to explain for Nested Loop",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2020-10-16",
+      "url": "https://commitfest.postgresql.org/patch/2765/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/f6490a9dec1b97118ac5a8509f095877@postgrespro.ru",
+        "https://www.postgresql.org/message-id/flat/ae576cac3f451d318374f2a2e494aab1@postgrespro.ru"
+      ],
+      "authors": "Justin Pryzby (justinpryzby), Ekaterina Sokolova (e.sokolova)",
+      "objectors": "",
+      "summary": "Add extra statistics to explain for Nested Loop\nThreads: [PATCH] Add extra statistics to explain for Nested Loop; Re: [PATCH] Add extra statistics to explain for Nested Loop",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "EXPLAIN ANALYZE parallel worker loops wrong"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:3143",
+      "kind": "cf",
+      "title": "Parallel INSERT SELECT take 2",
+      "status": "Returned with feedback",
+      "date": "2022-07-28",
+      "first_date": "2021-04-12",
+      "url": "https://commitfest.postgresql.org/patch/3143/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/TYAPR01MB29905A9AB82CC8BA50AB0F80FE709@TYAPR01MB2990.jpnprd01.prod.outlook.com",
+        "https://www.postgresql.org/message-id/flat/TYAPR01MB29900259117BD4F1C36F0D5BFE489@TYAPR01MB2990.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "Greg Nancarrow (gregn1234), Zhijie Hou (houzj)",
+      "objectors": "",
+      "summary": "Parallel INSERT SELECT take 2\nThreads: Parallel INSERT SELECT take 2; [bug?] Missed parallel safety checks, and wrong parallel safety",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "shm_toc_insert assertion failure parallel"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 7,
+    "new_calls": 1,
+    "failed": 0,
+    "quotes_verified": 1,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2026-10-26",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found. [P15] reverts a 2017 fix for a different instrumentation bug, accumulation across worker rescans, and records only a generic reason. The thread does point to a64846f3ada as a related old problem, but says nothing more about it (message #1). The open design question is v1's list-based helper versus dedup inside planstate_tree_walker(), and it is being settled in messages #6-#8."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "The user-visible change, corrected EXPLAIN ANALYZE loop counts and Sort Method lines, fixes wrong output and needs no compatibility handling. Both objections concern the extension API and back-patching."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 2,
+      "note": "The patch adds no on-disk, WAL, catalog or wire-protocol state. Its DSM state lives only for one query in one server, so pg_upgrade, standbys and subscribers are unaffected. Both objections are about the extension API and back-patching."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal has no privilege or exposure aspect. It changes how the executor walks PlanState trees during parallel setup and instrumentation; it adds no SQL surface, privilege, setting or new information exposure, and it fixes inflated EXPLAIN ANALYZE output instead of revealing more. An unprivileged user can already trigger the assertion only on assert-enabled builds, which the fix removes."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "The bug is real and confirmed by two reviewers, so the objections concern back-patch shape and API contract, not desirability. [P15] is a reverted instrumentation fix, but its recorded reason is too vague to apply here."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "This is a bug fix for wrong results and an assertion failure, and no extension or existing setting can do that job. The second mechanism next to planstate_tree_walker(), and the per-node guards like checking shared_info, were raised in messages #3 and #6, and the thread already plans to put dedup into the walker itself."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "This is a bug fix, so the demand test does not apply in the usual way. Message #1 gives a reproducer for an assertion failure on master, and messages #2 and #3 confirm it independently. On non-assert builds, EXPLAIN ANALYZE shows wrong loop counts and drops Sort Method lines. A second plan shape in message #5 shows the bug is not limited to hash joins. Wrong output is a defect even if few users notice it."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 7,
+      "new_survived": 2,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 81,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 12,
+    "wall_ms": 111031,
+    "cost_usd": 1.651471,
+    "dry_run": false
+  }
+}

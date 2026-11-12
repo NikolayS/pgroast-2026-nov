@@ -1,0 +1,1203 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:44:19.466Z",
+  "input": {
+    "arg": "7357",
+    "cf": {
+      "id": 7357,
+      "url": "https://commitfest.postgresql.org/patch/7357/",
+      "title": "postgres_fdw: Fix costing of remote sorts without remote estimates",
+      "status": "Needs review",
+      "authors": "Jelte Fennema-Nio (jeltef)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/DLRIUVXIEUOQ.2E2I0B7VZLHLI%40jeltef.nl",
+    "subject": "postgres_fdw: Fix costing of remote sorts without remote estimates",
+    "thread_start": "2026-09-29T04:39:56Z",
+    "messages_read": 8,
+    "messages_total": 8,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v3-0001-postgres_fdw-Track-run-cost-instead-of-total-cost.patch",
+      "v3-0002-postgres_fdw-Add-tests-for-costing-local-work-bel.patch",
+      "v3-0003-postgres_fdw-Separate-remote-transfer-and-local-c.patch",
+      "v3-0004-postgres_fdw-Fix-costing-of-remote-sorts-without-.patch",
+      "v3-0005-postgres_fdw-Explain-where-remote-tlist-costing-d.patch",
+      "v1-0001-postgres_fdw-Fix-costing-of-remote-sorts-without-.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "One objection survived, standards-compat-1, and it is a fixable level 2 point. Message #1 lists merge joins and merge appends turning into hash plans, and the thread shows no runtime numbers for those changes. The problem is stated and a reviewer accepts it, so levels 1a and 1b pass. The remaining work is measurements and a planner committer's judgment on new default plan shapes.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "postgres_fdw: cost remote sorts as a fraction of a local sort",
+    "problem": "Without use_remote_estimate, postgres_fdw costs a sorted foreign path by multiplying the whole path cost by DEFAULT_FDW_SORT_MULTIPLIER (1.2). For expensive paths that return few rows, such as joins and aggregates, this surcharge exceeds the real sort cost, so a local Sort wins and the remote sort is never pushed down. Users of postgres_fdw without remote estimates get worse plans.",
+    "proposed_design": "Every sorted foreign path is charged 0.8 times the cost of a local sort of its output, generalizing what commit ffab494a4d did in one place. Since v2, estimate_path_cost_size() builds costs in the order the work happens (remote, transfer, local), tracks run_cost instead of total_cost, and applies the sort charge to remote work only. Local quals on base relations are charged for retrieved rows only.",
+    "user_visible_surface": [],
+    "author_claims": [
+      "The 1.2 surcharge does not scale with rows, so pushed-down sorts lose for aggregates and joins.",
+      "Existing regression plans change for the better: more remote sorts, hash joins and hash aggregates instead of merge plans.",
+      "The exact fraction does not matter, as long as the remote sort is cheaper than a local one.",
+      "More pushdown is always better, so benchmarks are not needed.",
+      "Plans with use_remote_estimate do not change, and the new code is simpler and fixes a startup-cost bug."
+    ],
+    "thread_state": "Rui Zhao found LIMIT and local-filter regressions; v2 fixed them by restructuring the costing. For two aggregate costing issues Rui raised later, v3 adds comments instead of fixes, saying create_agg_path() costs the same way; nobody has replied to v3.",
+    "unclear": [
+      "The patch shows no runtime numbers, only plan-shape changes in regression output.",
+      "No evidence covers large tables or a remote index on the sort key, where the real remote sort is nearly free.",
+      "The thread gives no reason for 0.8 beyond keeping remote and local sorts from tying.",
+      "It does not say whether DEFAULT_FDW_SORT_MULTIPLIER and the 1.05 special case are removed or kept elsewhere.",
+      "No reviewer has said whether the v3 position on the aggregate costing issues is acceptable."
+    ],
+    "search_queries": [
+      "postgres_fdw sort cost multiplier",
+      "DEFAULT_FDW_SORT_MULTIPLIER",
+      "postgres_fdw use_remote_estimate costing",
+      "foreign path sort pushdown cost",
+      "postgres_fdw ORDER BY pushdown",
+      "estimate_path_cost_size startup cost",
+      "postgres_fdw LIMIT pushdown costing",
+      "FDW remote sort local sort planner"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Plan changes for existing postgres_fdw users, with no runtime evidence",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "planner_behaviour",
+      "touch_points": [
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site queries a large remote table without use_remote_estimate, and the remote side has an index on the join key. Today it gets a merge join over remotely ordered scans. After upgrade the sort charge grows as N log N, the plan flips to a hash join that builds a large local hash table, and the site finds out when query latency changes.",
+      "argument": "The regression output already shows merge joins and merge appends turning into hash plans (message #1), so the patch removes remote ordering in some places. The author's \"more pushdown is always better, no need for benchmarks\" (message #3) does not cover those flips. Message #2 asked for TPC-H-style runs and the remote-index case, and nobody has answered with numbers. The only way back is use_remote_estimate, which costs an extra remote round trip per path. The 0.8 fraction is fixed, while fdw_startup_cost and fdw_tuple_cost are server options.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        3
+      ],
+      "author_must_show": "On a large remote table with an index on the sort key, how do runtimes compare when the plan changes from a remote-sorted merge plan to a hash plan?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "\"Jelte Fennema-Nio\"",
+          "date": "2026-09-29T04:39:56Z",
+          "url": "https://www.postgresql.org/message-id/DLRIUVXIEUOQ.2E2I0B7VZLHLI%40jeltef.nl"
+        },
+        {
+          "index": 2,
+          "from": "Narayanan Venkateswaran",
+          "date": "2026-10-01T06:12:00Z",
+          "url": "https://www.postgresql.org/message-id/CAFjuD9dj8tqqyz1NMOFU0Kr190sWz8qNbVAQApWD9p7YY9A4Wg%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Jelte Fennema-Nio",
+          "date": "2026-10-01T14:47:28Z",
+          "url": "https://www.postgresql.org/message-id/CAGECzQSxLNtEuWWrU1K%3D2CAiGMRSV%2BUetK_nFz7%3DpdDKnHhUdw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #1 itself lists merge joins and merge appends becoming hash plans, and \"more pushdown is always better\" does not cover those. The thread has no runtime numbers for them, so the request for measurements stands as fixable.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Plan changes for every non-estimate user, no runtime evidence or way back",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "planner_behaviour",
+      "touch_points": [
+        "planner_behaviour",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site joins two large foreign tables, each with a remote index on the join key. After upgrade, the planner swaps a merge join over remotely ordered scans for a hash join over unsorted scans. The hash join may spill to disk, and the site finds out from slower queries with no option that restores the old costing.",
+      "argument": "Message #1 lists merge joins becoming hash joins and merge appends becoming hash aggregates, so the patch removes some remote ordering as well as adding some. The author's answer in message #3, that more pushdown is always better, does not cover those cases. No runtime numbers are shown, and the large-table and remote-index cases from message #2 were answered by argument only. The patch commits the project to new plan shapes for every postgres_fdw user without use_remote_estimate.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        3
+      ],
+      "author_must_show": "What runtime measurements on large tables, with and without a remote index on the sort key, show that the new merge-to-hash plan changes are not slower?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "\"Jelte Fennema-Nio\"",
+          "date": "2026-09-29T04:39:56Z",
+          "url": "https://www.postgresql.org/message-id/DLRIUVXIEUOQ.2E2I0B7VZLHLI%40jeltef.nl"
+        },
+        {
+          "index": 2,
+          "from": "Narayanan Venkateswaran",
+          "date": "2026-10-01T06:12:00Z",
+          "url": "https://www.postgresql.org/message-id/CAFjuD9dj8tqqyz1NMOFU0Kr190sWz8qNbVAQApWD9p7YY9A4Wg%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Jelte Fennema-Nio",
+          "date": "2026-10-01T14:47:28Z",
+          "url": "https://www.postgresql.org/message-id/CAGECzQSxLNtEuWWrU1K%3D2CAiGMRSV%2BUetK_nFz7%3DpdDKnHhUdw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1. That one is more accurate, because it names use_remote_estimate as the existing way back, while this one says no option exists.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Fdw costing now copies create_agg_path() inaccuracies on purpose",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later core patch fixes how create_agg_path() charges target list costs under HAVING, or for repeated expressions. postgres_fdw keeps the old charges, because only comments tie the two together. Pushed-down aggregates then lose to local aggregation, and nobody notices until users report slower plans.",
+      "argument": "v3-0005 keeps two known errors, reported by Rui in message #7, in postgres_fdw because create_agg_path() makes the same errors (message #8). This creates an unwritten rule that two code paths must stay wrong in the same way. Only a comment in contrib records the rule, and no test fails if core changes. A committer would likely ask for a shared costing helper or a test that catches the two paths drifting apart.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        7,
+        8
+      ],
+      "author_must_show": "What would make a future fix to create_agg_path() fail loudly in postgres_fdw, a shared helper or a regression test, and not rely on a comment alone?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "Rui Zhao",
+          "date": "2026-10-08T16:13:29Z",
+          "url": "https://www.postgresql.org/message-id/CAHWVJhEQs%2BFjLM%2BUGzzHqnZ9c3x8vyEBK%2BBrzgpbOvP4Oq68UQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "\"Jelte Fennema-Nio\"",
+          "date": "2026-11-04T22:35:10Z",
+          "url": "https://www.postgresql.org/message-id/DMMS9RAQOT0Y.28E2MC9GWPYTY%40jeltef.nl"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "Message #8 says both inaccuracies exist before this patch set, and v3-0005 only adds comments. The patch writes the rule down and does not create it, and the failure depends on a hypothetical future core change.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No field report or runtime numbers show the old plans hurt users",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "demand",
+      "touch_points": [
+        "planner_behaviour",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site using postgres_fdw with the default use_remote_estimate = false upgrades. Some queries switch from merge joins over remotely sorted scans to hash joins over unsorted scans. If those plans are slower on their data, they find out only after the upgrade, as a production regression with no setting to restore the old costing.",
+      "argument": "The evidence for the change is the mechanism in message #1 and plan-shape diffs in the regression output. The material has no user report, no -general or -bugs thread, and no timing from a real workload. Message #2 asked for benchmarks and use_remote_estimate comparisons, and message #3 answered that more pushdown is always better. Some of the listed plan changes remove remote sorts, so that answer does not cover them. Every user on the default setting gets the new plans, so the benefit needs evidence beyond plan shapes.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        3
+      ],
+      "author_must_show": "Which real workloads or user reports show the current 1.2 surcharge picking slower plans, and do benchmarks show the changed plans running faster, including the hash-join cases?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "\"Jelte Fennema-Nio\"",
+          "date": "2026-09-29T04:39:56Z",
+          "url": "https://www.postgresql.org/message-id/DLRIUVXIEUOQ.2E2I0B7VZLHLI%40jeltef.nl"
+        },
+        {
+          "index": 2,
+          "from": "Narayanan Venkateswaran",
+          "date": "2026-10-01T06:12:00Z",
+          "url": "https://www.postgresql.org/message-id/CAFjuD9dj8tqqyz1NMOFU0Kr190sWz8qNbVAQApWD9p7YY9A4Wg%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Jelte Fennema-Nio",
+          "date": "2026-10-01T14:47:28Z",
+          "url": "https://www.postgresql.org/message-id/CAGECzQSxLNtEuWWrU1K%3D2CAiGMRSV%2BUetK_nFz7%3DpdDKnHhUdw%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "Message #1 shows a concrete defect that commit ffab494a4d also hit, where sorted aggregate and join paths lose to a local Sort; the reviewer in message #5 agrees. The remaining request for runtime numbers duplicates standards-compat-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": true,
+      "reason": "The patch changes the cost of every sorted foreign path when use_remote_estimate is off, so existing plans change."
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The title says \"Fix\" and 0001 fixes a startup-cost bug, but the plan changes make the series unsuitable for stable branches."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "The patch restructures estimate_path_cost_size() and adds a fixed 0.8 fraction that someone must defend later."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "On a large remote table with an index on the sort key, how do runtimes compare when a remote-sorted merge plan becomes a hash plan?",
+    "How often do the new plans without use_remote_estimate match the plans chosen with use_remote_estimate = true, compared with the old costing?",
+    "Over what range of fractions did the plans stay the same, and at what table sizes was that tested?",
+    "Does the series remove DEFAULT_FDW_SORT_MULTIPLIER and the 1.05 special case, or do they remain in some code path?",
+    "Is the startup-cost fix in 0001 meant for back-patching, separately from the patches that change plans?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "Someone who knows postgres_fdw path costing and the planner's sort and aggregate cost model would have to own it. No committer has posted in the visible thread.",
+    "liability": "The committer signs for plan changes for every postgres_fdw user without use_remote_estimate, and for the 0.8 fraction, with reports likely after the next major release.",
+    "author_follow_up": "The author posted v2 and v3 in response to review within about two weeks, and credited the reviewer's findings in the commit messages."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "low",
+    "review_cost": "medium",
+    "recommended_action": "proceed",
+    "reason": "The change affects postgres_fdw users on the default use_remote_estimate = false and adds no user-visible surface. Five patches in one contrib module are moderate to review, but the plan changes need runtime numbers and a planner-aware committer."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read, so the claims that 0001 changes no plans and that the sort charge applies to remote work only are unchecked. Messages #4 to #8 were not shown in full, so the v3 position on aggregate costing is judged from the commit message alone.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:291",
+      "kind": "cf",
+      "title": "Asynchronous execution on postgres-fdw",
+      "status": "Rejected",
+      "date": "2015-08-10",
+      "first_date": "2015-07-02",
+      "url": "https://commitfest.postgresql.org/patch/291/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20150702.144824.266400086.horiguchi.kyotaro@lab.ntt.co.jp"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti)",
+      "objectors": "Heikki Linnakangas",
+      "summary": "The patch set adds a core pre-execution callback mechanism, so that nodes can register callbacks that run just before the ExecProc phase, and uses it to start postgres_fdw remote queries asynchronously, with one running query per foreign server. It also offers three experimental ways to set the fetch size: duration-based adaptation, a byte-limited FETCH, and a fetch_size foreign table option.",
+      "objection": "Heikki Linnakangas marked the entry rejected because a more general solution based on parallel workers was in progress and would largely make this patch obsolete, with the option to revisit it later in the release cycle. Earlier he had objected that the pre-execution callback has the same problems as starting execution in ExecInit, and that queries should start in the first IterateForeignScan() call. Robert Haas and Stephen Frost replied that the design questions were still open, and Stephen Frost did not like that the mechanism was specific to FDWs.",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw sort cost multiplier",
+        "DEFAULT_FDW_SORT_MULTIPLIER",
+        "postgres_fdw use_remote_estimate costing",
+        "postgres_fdw ORDER BY pushdown",
+        "postgres_fdw LIMIT pushdown costing"
+      ],
+      "from_hint": false,
+      "score": 0.516,
+      "enriched": true,
+      "key_quote": "I've marked this as rejected in the commitfest, because others are\nworking on a more general solution with parallel workers.",
+      "quote_message_url": "https://www.postgresql.org/message-id/55C8516B.10509%40iki.fi",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:791",
+      "kind": "cf",
+      "title": "Push down more UPDATEs/DELETEs in postgres_fdw",
+      "status": "Returned with feedback",
+      "date": "2017-11-29",
+      "first_date": "2016-09-06",
+      "url": "https://commitfest.postgresql.org/patch/791/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/b9cee735-62f8-6c07-7528-6364ce9347d0@lab.ntt.co.jp"
+      ],
+      "authors": "Etsuro Fujita (efujita)",
+      "objectors": "",
+      "summary": "The patch extends postgres_fdw direct modification so that an UPDATE or DELETE that joins foreign tables on the same server is sent to the remote server as one statement, such as `DELETE ... USING`. It also deparses RETURNING lists that refer to columns of the joined relations.",
+      "objection": "The patch reached Ready for Committer, but Robert Haas found in review that it no longer applied after recent changes. He also asked for more comments, use of the new RelOptKind macros, and a regression test for the non-pushed path. The patch went to Waiting for author because it had bitrotted, no new version came, and the entry was returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw sort cost multiplier",
+        "DEFAULT_FDW_SORT_MULTIPLIER",
+        "postgres_fdw use_remote_estimate costing",
+        "postgres_fdw ORDER BY pushdown",
+        "postgres_fdw LIMIT pushdown costing"
+      ],
+      "from_hint": false,
+      "score": 0.513,
+      "enriched": true,
+      "key_quote": "No updates have showed up since, so returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB7nPqROcTZYqM_qcvNfxiNYwu%2Ba%3D6rnL%2BwxBJ-1v9V_u6BxBw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:1055",
+      "kind": "cf",
+      "title": "postgres_fdw: evaluate placeholdervars on remote server",
+      "status": "Returned with feedback",
+      "date": "2017-09-27",
+      "first_date": "2017-02-28",
+      "url": "https://commitfest.postgresql.org/patch/1055/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6533e100-dbdf-1ac3-23f3-6ca9da48adbb@lab.ntt.co.jp"
+      ],
+      "authors": "Etsuro Fujita (efujita)",
+      "objectors": "Etsuro Fujita, Robert Haas",
+      "summary": "The patch lets postgres_fdw evaluate PlaceHolderVars on the remote server, so left, right and full joins that contain PHVs can be pushed down. It also changes how whole-row references are deparsed and builds on the deparser support for subqueries from the full-join pushdown work.",
+      "objection": "The author said he was not satisfied with the patch and that it needed more work, and he did not rebase it for the September 2017 CommitFest after reminders. Robert Haas proposed marking patches like this Returned with Feedback when no rebase arrives before the CommitFest starts, and the author agreed and marked it so.",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw sort cost multiplier",
+        "postgres_fdw use_remote_estimate costing",
+        "postgres_fdw ORDER BY pushdown",
+        "postgres_fdw LIMIT pushdown costing",
+        "FDW remote sort local sort planner"
+      ],
+      "from_hint": false,
+      "score": 0.473,
+      "enriched": true,
+      "key_quote": "Frankly, I think things where there was a ping multiple weeks before\nthe CommitFest started and no rebase before it started should be\nregarded as untimely submissions, and summarily marked Returned with\nFeedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoawtJWe-V21ZH0-jQ%3DubbyXtYPBZPqpD_fZCxsR8eanSA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:32",
+      "kind": "cf",
+      "title": "Async execution of postgres_fdw.",
+      "status": "Rejected",
+      "date": "2015-05-09",
+      "first_date": "2014-12-15",
+      "url": "https://commitfest.postgresql.org/patch/32/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20141215.180944.242184148.horiguchi.kyotaro@lab.ntt.co.jp"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti)",
+      "objectors": "Stephen Frost, Tom Lane",
+      "summary": "The patch made postgres_fdw send the remote query asynchronously from ExecInitForeignScan, so several foreign scans could run on remote servers at the same time. It wrapped PGconn in a new PgFdwConn struct so that several scans could share one connection, and it cancelled a pending async query when another scan or modification used that connection.",
+      "objection": "Starting the remote query in ExecInitNode is against the documented FDW API, which says execution must not start before IterateForeignScan is called. Tom Lane added that ExecInitNode only builds runtime structures: a scan may never be iterated, for example on the inner side of a nestloop with an empty outer relation, and parameter values for a parameterized scan are not yet available. He also asked to drop the connection wrapper layer, which caused most of the code churn and added unchecked malloc failures.",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw sort cost multiplier",
+        "DEFAULT_FDW_SORT_MULTIPLIER",
+        "postgres_fdw use_remote_estimate costing",
+        "postgres_fdw ORDER BY pushdown",
+        "postgres_fdw LIMIT pushdown costing"
+      ],
+      "from_hint": false,
+      "score": 0.462,
+      "enriched": true,
+      "key_quote": "I certainly appreciate that you've put quite a bit of effort into this\nbut I'm afraid we can't accept it while it's starting to run a query on\nthe remote side during the ExecInitNode phase.  The query can not start\nexecuting on the remote side until InterateForeignScan is called.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20150509012440.GF30322%40tamriel.snowman.net",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:3265",
+      "kind": "cf",
+      "title": "Kerberos delegation support in libpq and postgres_fdw",
+      "status": "Returned with feedback",
+      "date": "2021-11-26",
+      "first_date": "2021-07-20",
+      "url": "https://commitfest.postgresql.org/patch/3265/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CO1PR05MB8023CC2CB575E0FAAD7DF4F8A8E29@CO1PR05MB8023.namprd05.prod.outlook.com"
+      ],
+      "authors": "Peifeng Qiu (pqiu)",
+      "objectors": "",
+      "summary": "The patch adds Kerberos credential delegation to libpq, so postgres_fdw can connect to another server and authenticate as the current login user. The backend stores the delegated proxy credential in an in-memory credential cache, and a superuser must set password_required to false in the user mapping.",
+      "objection": "The author stopped responding. Peter Eisentraut asked for the TAP tests to move under src/test/kerberos/ and for a check of dblink, and the patch later stopped applying after the Perl namespace changes. No rebase came, the author's email bounced, and Daniel Gustafsson marked the entry Returned with Feedback.",
+      "touch_points": [
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "postgres_fdw sort cost multiplier",
+        "DEFAULT_FDW_SORT_MULTIPLIER",
+        "postgres_fdw use_remote_estimate costing",
+        "postgres_fdw ORDER BY pushdown",
+        "postgres_fdw LIMIT pushdown costing"
+      ],
+      "from_hint": false,
+      "score": 0.414,
+      "enriched": true,
+      "key_quote": "As the thread has stalled, and the OP email bounces, I'm marking this patch\nReturned with Feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2322DE7A-DDD1-4739-AB6F-234B3ADD590E%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:1042",
+      "kind": "cf",
+      "title": "postgres_fdw: support parameterized foreign joins",
+      "status": "Returned with feedback",
+      "date": "2017-11-29",
+      "first_date": "2017-02-27",
+      "url": "https://commitfest.postgresql.org/patch/1042/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/be91628f-b754-0dcd-5998-451cea28ecd0@lab.ntt.co.jp"
+      ],
+      "authors": "Etsuro Fujita (efujita)",
+      "objectors": "",
+      "summary": "postgres_fdw would build parameterized foreign-join paths, so a join of foreign tables can be pushed to the remote server with a parameter from an outer local relation. The core planner records the required_outer relations it tried during add_paths_to_joinrel(), and postgresGetForeignJoinPaths() builds parameterized paths for them.",
+      "objection": "The patch was marked Ready for Committer but depended on the separate \"epqpath-for-foreignjoin\" patch and was not committed. It then bitrotted and was moved to Waiting for author. The author did not post an update for about six weeks, so Michael Paquier returned it with feedback. No design objection appears in the visible messages.",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw sort cost multiplier",
+        "DEFAULT_FDW_SORT_MULTIPLIER",
+        "postgres_fdw use_remote_estimate costing",
+        "postgres_fdw ORDER BY pushdown",
+        "postgres_fdw LIMIT pushdown costing"
+      ],
+      "from_hint": false,
+      "score": 0.383,
+      "enriched": true,
+      "key_quote": "One month and a half after, the already-rotten patch has not been\nupdated, so I am marking it as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB7nPqSgBUZ_K2-ciUBFKD7oEqru_wbznjpSJkOmN8MwviK6TQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:3144",
+      "kind": "cf",
+      "title": "postgres_fdw: Handle boolean comparison predicates",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-05-31",
+      "url": "https://commitfest.postgresql.org/patch/3144/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAE2gYzwD4m6PWn2iO=pXquZ61++axZYe2=UWbw44q4jbR6x-9A@mail.gmail.com"
+      ],
+      "authors": "Emre Hasegeli (hasegeli)",
+      "objectors": "Daniel Gustafsson, Ashutosh Bapat, Ronan Dunklau",
+      "summary": "The patch makes postgres_fdw push the boolean tests IS [NOT] TRUE/FALSE/UNKNOWN down to the remote server. It deparses each test into an equivalent expression, such as (NOT x OR x IS NULL) for IS NOT TRUE.",
+      "objection": "The patch stopped applying to HEAD, and the author did not post a rebased version after Daniel Gustafsson asked for one, so it was returned at the end of the commitfest. Ashutosh Bapat and Ronan Dunklau also asked why the tests are rewritten instead of sent as written, and asked for a test on a boolean column. The author did not answer these points.",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw sort cost multiplier",
+        "postgres_fdw use_remote_estimate costing",
+        "postgres_fdw ORDER BY pushdown",
+        "postgres_fdw LIMIT pushdown costing"
+      ],
+      "from_hint": false,
+      "score": 0.369,
+      "enriched": true,
+      "key_quote": "The patch no longer applies to HEAD, can you please submit a rebased version?",
+      "quote_message_url": "https://www.postgresql.org/message-id/77B273E8-DDE0-4370-8CBF-592DD5CDB4E5%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:824",
+      "kind": "cf",
+      "title": "postgres_fdw super user checks",
+      "status": "Returned with feedback",
+      "date": "2016-12-02",
+      "first_date": "2016-10-16",
+      "url": "https://commitfest.postgresql.org/patch/824/",
+      "thread_urls": [],
+      "authors": "Jeff Janes (jjanes)",
+      "objectors": "",
+      "summary": "postgres_fdw super user checks",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "postgres_fdw sort cost multiplier",
+        "postgres_fdw use_remote_estimate costing",
+        "postgres_fdw ORDER BY pushdown",
+        "postgres_fdw LIMIT pushdown costing"
+      ],
+      "from_hint": false,
+      "score": 0.341,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "revert:f4c7c410ee4a7baa06f51ebb8d5333c169691dd3",
+      "kind": "revert",
+      "title": "Revert \"Optimize order of GROUP BY keys\".",
+      "status": "Reverted",
+      "date": "2022-10-03",
+      "first_date": "2022-03-30",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f4c7c410ee4a7baa06f51ebb8d5333c169691dd3",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/TYAPR01MB586665EB5FB2C3807E893941F5579@TYAPR01MB5866.jpnprd01.prod.outlook.com",
+        "https://www.postgresql.org/message-id/flat/7c79e6a5-8597-74e8-0671-1c39d124c9d6@sigaev.ru",
+        "https://www.postgresql.org/message-id/flat/CA+q6zcW_4o2NC0zutLkOJPsFt80megSpX_dVRo6GK9PC-Jx_Ag@mail.gmail.com"
+      ],
+      "authors": "Tomas Vondra",
+      "objectors": "",
+      "summary": "Revert \"Optimize order of GROUP BY keys\".\nReverted commit(s): Optimize order of GROUP BY keys",
+      "objection": "This reverts commit db0d67db2401eb6238ccc04c6407a4fd4f985832 and\nseveral follow-on fixes.  The idea of making a cost-based choice\nof the order of the sorting columns is not fundamentally unsound,\nbut it requires cost information and data statistics that we don't\nreally have.  For example, relying on procost to distinguish the\nrelative costs of different sort comparators is pretty pointless\nso long as most such comparator functions are labeled with cost 1.0.\nMoreover, estimating the number of comparisons done by Quicksort\nrequires more than just an estimate of the number of distinct values\nin the input: you also need some idea of the sizes of the larger\ngroups, if you want an estimate that's good to better than a factor of\nthree or so.  That's data that's often unknown or not very reliable.\nWorse, to arrive at estimates of the number of calls made to the\nlower-order-column comparison functions, the code needs to make\nestimates of the numbers of distinct values of multiple columns,\nwhich are necessarily even less trustworthy than per-column stats.\nEven if all the inputs are perfectly reliable, the cost algorithm\nas-implemented cannot offer useful information about how to order\nsorting columns beyond the point at which the average group size\nis estimated to drop to 1.\n\nClose inspection of the code added by db0d67db2 shows that there\nare also multiple small bugs.  These could have been fixed, but\nthere's not much point if we don't trust the estimates to be\naccurate in-principle.\n\nFinally, the changes in cost_sort's behavior made for very large\nchanges (often a factor of 2 or so) in the cost estimates for all\nsorting operations, not only those for multi-column GROUP BY.\nThat naturally changes plan choices in many situations, and there's\nprecious little evidence to show that the changes are for the better.\nGiven the above doubts about whether the new estimates are really\ntrustworthy, it's hard to summon much confidence that these changes\nare better on the average.\n\nSince we're hard up against the release deadline for v15, let's\nrevert these changes for now.  We can always try again later.\n\nNote: in v15, I left T_PathKeyInfo in place in nodes.h even though\nit's unreferenced.  Removing it would be an ABI break, and it seems\na bit late in the release cycle for that.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "foreign path sort pushdown cost",
+        "estimate_path_cost_size startup cost"
+      ],
+      "from_hint": false,
+      "score": 0.196,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P10",
+      "source_id": "revert:7d4667c6203d0174903a53de9d1730fbec26576b",
+      "kind": "revert",
+      "title": "Revert \"postgres_fdw: Inherit the local transaction's access/deferrable modes.\"",
+      "status": "Reverted",
+      "date": "2025-06-08",
+      "first_date": "2025-06-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=7d4667c6203d0174903a53de9d1730fbec26576b",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ed2296f1-1a6b-4932-b870-5bb18c2591ae@oss.nttdata.com",
+        "https://www.postgresql.org/message-id/flat/CAPmGK16n_hcUUWuOdmeUS+w4Q6dZvTEDHb=OP=5JBzo-M3QmpQ@mail.gmail.com"
+      ],
+      "authors": "Etsuro Fujita",
+      "objectors": "",
+      "summary": "Revert \"postgres_fdw: Inherit the local transaction's access/deferrable modes.\"\nReverted commit(s): postgres_fdw: Inherit the local transaction's access/deferrable modes.",
+      "objection": "We concluded that commit e5a3c9d9b is a feature rather than a fix; since\nit was added after feature freeze, revert it.",
+      "touch_points": [],
+      "matched_queries": [
+        "FDW remote sort local sort planner"
+      ],
+      "from_hint": false,
+      "score": 0.132,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:3782",
+      "kind": "cf",
+      "title": "Refactoring postgres_fdw/connection.c",
+      "status": "Withdrawn",
+      "date": "2023-05-23",
+      "first_date": "2022-07-25",
+      "url": "https://commitfest.postgresql.org/patch/3782/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/8cbc84da-148d-bfe3-dc58-c95e01b51d90@oss.nttdata.com"
+      ],
+      "authors": "Fujii Masao (masaofujii)",
+      "objectors": "Kyotaro Horiguchi, Etsuro Fujita",
+      "summary": "The patch set removes duplicate code in postgres_fdw/connection.c. It merges pgfdw_get_result() and pgfdw_get_cleanup_result() into one function with a timeout, renamed pgfdw_get_result_timed(), and adds common functions for issuing COMMIT or RELEASE SAVEPOINT and waiting for their results in the transaction and subtransaction callbacks.",
+      "objection": "Kyotaro Horiguchi and Etsuro Fujita objected that 0002 and 0003 shared too little code to justify merging and made the code harder to understand. Fujita accepted 0001 in principle but objected to the rename, since it makes back-patching hard. He also objected that waiting for DEALLOCATE ALL with interrupt checks could abort the local transaction after the remote commit, leaving the two states inconsistent. The visible messages end with that objection, with no author reply before the withdrawal.",
+      "touch_points": [],
+      "matched_queries": [
+        "DEFAULT_FDW_SORT_MULTIPLIER"
+      ],
+      "from_hint": false,
+      "score": 0.126,
+      "enriched": true,
+      "key_quote": "The current implementation is easy to understand, so I'd vote for leaving them alone for now.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAPmGK16OQZriK95w0Tn7dbA9xhJ0%2Bbv3KQPF6X3pMzUNU1F3mg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:1543",
+      "kind": "cf",
+      "title": "ICU as default collation provider",
+      "status": "Returned with feedback",
+      "date": "2019-02-04",
+      "first_date": "2017-06-23",
+      "url": "https://commitfest.postgresql.org/patch/1543/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3366.1498183854@sss.pgh.pa.us"
+      ],
+      "authors": "Marina Polyakova (whipping.top1991)",
+      "objectors": "",
+      "summary": "ICU as default collation provider\nThreads: Can ICU be used for a database's default sort order?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "DEFAULT_FDW_SORT_MULTIPLIER"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:1296",
+      "kind": "cf",
+      "title": "Better estimate for filter cost",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2017-09-11",
+      "url": "https://commitfest.postgresql.org/patch/1296/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANE+7D8G=1dAbhqy4HJrEtutNpxRfn8-6-uhEXq-=705kaWVvA@mail.gmail.com"
+      ],
+      "authors": "Yuto Hayamizu (hayamiz), Ryoji Kawamichi (kawamichi)",
+      "objectors": "",
+      "summary": "Better estimate for filter cost\nThreads: [PATCH] Overestimated filter cost and its mitigation",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "estimate_path_cost_size startup cost"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:5607",
+      "kind": "cf",
+      "title": "SIMD optimization for list_sort and tuple-sort",
+      "status": "Withdrawn",
+      "date": "2025-08-06",
+      "first_date": "2024-11-21",
+      "url": "https://commitfest.postgresql.org/patch/5607/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CO6PR11MB5620E3878444C023A7C8CA9C95222@CO6PR11MB5620.namprd11.prod.outlook.com",
+        "https://www.postgresql.org/message-id/flat/CO1PR11MB506011C3052AE779750D9789EDA02@CO1PR11MB5060.namprd11.prod.outlook.com"
+      ],
+      "authors": "Rakshit R (rakshtr)",
+      "objectors": "",
+      "summary": "SIMD optimization for list_sort and tuple-sort\nThreads: SIMD optimization for list_sort; Proposal for optimizations with simd enabled sort",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "FDW remote sort local sort planner"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:2582",
+      "kind": "cf",
+      "title": "Improve planner cost estimations for alternative subplans",
+      "status": "Withdrawn",
+      "date": "2020-11-13",
+      "first_date": "2020-06-05",
+      "url": "https://commitfest.postgresql.org/patch/2582/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/07b3fa88-aa4e-2e13-423d-8389eb1712cf@imap.cc"
+      ],
+      "authors": "Alexey Bashtanov (bashtanov)",
+      "objectors": "",
+      "summary": "Improve planner cost estimations for alternative subplans\nThreads: Improve planner cost estimations for alternative subplans",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "estimate_path_cost_size startup cost"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:4236",
+      "kind": "cf",
+      "title": "Add estimated hit ratio to Memoize in EXPLAIN to explain cost adjustment",
+      "status": "Returned with feedback",
+      "date": "2023-09-01",
+      "first_date": "2023-03-05",
+      "url": "https://commitfest.postgresql.org/patch/4236/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAP53Pky29GWAVVk3oBgKBDqhND0BRBN6yTPeguV_qSivFL5N_g@mail.gmail.com"
+      ],
+      "authors": "Lukas Fittl (lfittl)",
+      "objectors": "",
+      "summary": "Add estimated hit ratio to Memoize in EXPLAIN to explain cost adjustment\nThreads: Add estimated hit ratio to Memoize in EXPLAIN to explain cost adjustment",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "estimate_path_cost_size startup cost"
+      ],
+      "from_hint": false,
+      "score": 0.116,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:167",
+      "kind": "cf",
+      "title": "Join pushdown support for foreign tables",
+      "status": "Returned with feedback",
+      "date": "2015-12-22",
+      "first_date": "2015-02-16",
+      "url": "https://commitfest.postgresql.org/patch/167/",
+      "thread_urls": [],
+      "authors": "Shigeru Hanada (hanada)",
+      "objectors": "",
+      "summary": "Join pushdown support for foreign tables",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "foreign path sort pushdown cost"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:4980",
+      "kind": "cf",
+      "title": "Expand applicability of aggregate's sortop optimization",
+      "status": "Returned with feedback",
+      "date": "2025-07-08",
+      "first_date": "2024-05-08",
+      "url": "https://commitfest.postgresql.org/patch/4980/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2Wg-+EV4HdbQiut7X3KQd39xwmrpV4CeCmoJFFjH8cGdhw@mail.gmail.com"
+      ],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "",
+      "summary": "Expand applicability of aggregate's sortop optimization\nThreads: Expand applicability of aggregate's sortop optimization",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "FDW remote sort local sort planner"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:3513",
+      "kind": "cf",
+      "title": "Consider incremental sort for fractional paths in generate_orderappend_paths",
+      "status": "Returned with feedback",
+      "date": "2022-04-07",
+      "first_date": "2021-04-16",
+      "url": "https://commitfest.postgresql.org/patch/3513/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/e8f9ec90-546d-e948-acce-0525f3e92773@enterprisedb.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "Consider incremental sort for fractional paths in generate_orderappend_paths\nThreads: PATCH: generate fractional cheapest paths in\ngenerate_orderedappend_path",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "foreign path sort pushdown cost"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:1706",
+      "kind": "cf",
+      "title": "cost_sort improvement",
+      "status": "Returned with feedback",
+      "date": "2019-01-31",
+      "first_date": "2018-06-28",
+      "url": "https://commitfest.postgresql.org/patch/1706/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/803ccdce-39ef-f1c3-3c65-c79959f7081d@sigaev.ru"
+      ],
+      "authors": "Fedor Sigaev (sigaev)",
+      "objectors": "",
+      "summary": "cost_sort improvement\nThreads: cost_sort() improvements",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "foreign path sort pushdown cost"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:20",
+      "kind": "cf",
+      "title": "Join pushdown support for foreign tables",
+      "status": "Rejected",
+      "date": "2015-01-16",
+      "first_date": "2015-01-12",
+      "url": "https://commitfest.postgresql.org/patch/20/",
+      "thread_urls": [],
+      "authors": "Shigeru Hanada (hanada)",
+      "objectors": "",
+      "summary": "Join pushdown support for foreign tables",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "foreign path sort pushdown cost"
+      ],
+      "from_hint": false,
+      "score": 0.101,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:6187",
+      "kind": "cf",
+      "title": "Optimize SnapBuild by maintaining committed.xip in sorted order",
+      "status": "Withdrawn",
+      "date": "2026-04-29",
+      "first_date": "2025-11-07",
+      "url": "https://commitfest.postgresql.org/patch/6187/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABPTF7XiwbA38OZBj5Y2F-q+fZ=03YFN9iFnb_406F4SfE-f4w@mail.gmail.com"
+      ],
+      "authors": "Xuneng Zhou (dylanzhou)",
+      "objectors": "",
+      "summary": "Optimize SnapBuild by maintaining committed.xip in sorted order\nThreads: Optimize SnapBuild by maintaining committed.xip in sorted order",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "FDW remote sort local sort planner"
+      ],
+      "from_hint": false,
+      "score": 0.099,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:2050",
+      "kind": "cf",
+      "title": "Fix unique join costings",
+      "status": "Returned with feedback",
+      "date": "2020-12-03",
+      "first_date": "2018-09-13",
+      "url": "https://commitfest.postgresql.org/patch/2050/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/153683552113.22350.18441286362867559841@wrigleys.postgresql.org"
+      ],
+      "authors": "David Rowley (davidrowley)",
+      "objectors": "",
+      "summary": "Fix unique join costings\nThreads: BUG #15383: Join Filter cost estimation problem in 10.5",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "estimate_path_cost_size startup cost"
+      ],
+      "from_hint": false,
+      "score": 0.093,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:763",
+      "kind": "cf",
+      "title": "Confusing docs about GetForeignUpperPaths in fdwhandler.sgml",
+      "status": "Rejected",
+      "date": "2016-11-04",
+      "first_date": "2016-08-01",
+      "url": "https://commitfest.postgresql.org/patch/763/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/374eb243-eb04-b45f-34bc-698b30e5f47c@lab.ntt.co.jp"
+      ],
+      "authors": "Etsuro Fujita (efujita)",
+      "objectors": "",
+      "summary": "Confusing docs about GetForeignUpperPaths in fdwhandler.sgml\nThreads: Confusing docs about GetForeignUpperPaths in fdwhandler.sgml",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "DEFAULT_FDW_SORT_MULTIPLIER"
+      ],
+      "from_hint": false,
+      "score": 0.09,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 7,
+    "new_calls": 1,
+    "failed": 0,
+    "quotes_verified": 1,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2026-09-29",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found. [P9] reverted cost-based ordering of GROUP BY keys because comparator cost and group-size statistics were unreliable; this proposal does not depend on those inputs, so that reason does not apply here. Message #1 names the earlier discussion behind commit ffab494a4d, which left the 1.05 multiplier as an arbitrary choice and the question open; the proposal generalizes that commit's approach rather than repeating a rejected idea."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 1,
+      "note": "The proposal adds no syntax, GUC, catalog object or dump state, so pg_dump, psql and SQL-standard concerns do not apply. [P9] is about planner costing, but its recorded reason was untrustworthy sort-comparison statistics, so it does not apply here."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The proposal changes only planner costing inside contrib/postgres_fdw. Nothing in it is persistent or crosses a node boundary in a new way: no on-disk format, WAL, catalog, wire protocol or user-visible option change. The remote SQL it emits stays the same kind of query, and the postgres_fdw.h changes are internal to the module, not an extension API that others build on. Plan changes for existing users belong to the planner angle."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The patch changes only planner cost estimates inside postgres_fdw when use_remote_estimate is off. It adds no privilege, GUC, catalog object or new data exposure, and it does not change which expressions are shipped to the remote server or who may run them. Plan choice alone does not open a security or privilege path, so this angle has no objection."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "Hot-path cost is limited to planning foreign paths, and the patch set is split into steps that can be committed separately, so neither gives a reason to object. No committer has posted in the visible thread. That affects committability, not the verdict."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "The only existing alternative is use_remote_estimate, which costs extra remote EXPLAIN round trips at plan time; the patch fixes the default heuristic, adds no user-visible surface and replaces DEFAULT_FDW_SORT_MULTIPLIER with the method commit ffab494a4d already used. Neither use_remote_estimate nor any extension or hook offers that, so this angle has nothing to raise."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "The problem is plausible and concerns the default configuration of a widely used module, and an earlier commit already worked around it in one place. The objection asks for evidence and does not argue that nobody needs the fix."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 4,
+      "new_survived": 1,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 63,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 13,
+    "wall_ms": 142100,
+    "cost_usd": 1.8121720000000001,
+    "dry_run": false
+  }
+}

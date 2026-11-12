@@ -1,0 +1,1208 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:46:32.372Z",
+  "input": {
+    "arg": "7369",
+    "cf": {
+      "id": 7369,
+      "url": "https://commitfest.postgresql.org/patch/7369/",
+      "title": "REPACK (CONCURRENTLY): do not block the table while waiting for the final lock",
+      "status": "Needs review",
+      "authors": "shihao zhong (zhong950419)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAGRkXqQTRvmJJBjLmLa0boO1S78nz46s%3DB3htYMFTkSW-FS18Q%40mail.gmail.com",
+    "subject": "REPACK (CONCURRENTLY): do not block the table while waiting for the final lock",
+    "thread_start": "2026-09-30T05:09:41Z",
+    "messages_read": 4,
+    "messages_total": 4,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v1-0001-Do-not-let-REPACK-CONCURRENTLY-block-the-table-wh.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The problem is real and measured, and no surviving objection is fatal. The design leaves polling unbounded when lock_timeout is unset (standards-compat-1), and the decoding slot retains WAL and catalog_xmin for that whole time (replication-ondisk-1). The deadlock fallback covers only waiters on the table lock (maintenance-fit-3). Message #2 offers a competing design, and the thread has not compared the two.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "REPACK (CONCURRENTLY) polls for the final lock instead of queueing",
+    "problem": "REPACK (CONCURRENTLY) queues for AccessExclusiveLock at the end, so while a long transaction blocks it, every new query on the table waits behind REPACK. Setting lock_timeout avoids that, but REPACK then fails after all the copying is done. This hits users of busy tables that have long transactions.",
+    "proposed_design": "REPACK makes conditional lock attempts. Between them it applies the changes decoded meanwhile, and it retries every 50 ms, like lazy_truncate_heap(). lock_timeout bounds the polling, and when LockHasWaitersRelation() reports a waiter behind a lock REPACK holds, REPACK falls back to a normal wait so deadlocks are still detected.",
+    "user_visible_surface": [
+      "New wait event REPACK_LOCK_WAIT for the polling phase.",
+      "Changed behavior: REPACK (CONCURRENTLY) no longer queues for ACCESS EXCLUSIVE, so other sessions do not wait behind it.",
+      "lock_timeout now limits how long REPACK keeps polling for the lock.",
+      "Documentation of REPACK rewritten to describe the polling."
+    ],
+    "author_claims": [
+      "A single-row SELECT waited 14.7 s behind a queued REPACK on master and 0.9 s with the patch.",
+      "With 16 pgbench clients at about 135k tps, REPACK took 1 to 10 s to get the lock, against 0.5 s when queueing.",
+      "The author considers that delay acceptable after hours of copying.",
+      "A lock manager variant that leaves the queue after each deadlock_timeout gets the lock in 0.5 s, but adds 130 lines to lock.c and proc.c.",
+      "The meaning of lock_timeout does not change."
+    ],
+    "thread_state": "Antonin Houska questioned using deadlock_timeout and posted his own patch that limits wait time without giving up, because a failed REPACK loses all its work. Alvaro Herrera refuses changes for 19 and will not study either idea before 2027; the author agreed to target 20.",
+    "unclear": [
+      "The patch gives no upper bound on polling when lock_timeout is unset, and REPACK may never get the lock on a very busy table.",
+      "The thread does not compare this patch with Antonin Houska's patch.",
+      "The proposal does not say whether retaking the lock between conditional attempts lets a stream of weaker lockers starve REPACK forever.",
+      "The proposal does not say what LockHasWaitersRelation() misses, such as waiters on other objects or advisory locks in a deadlock cycle.",
+      "The proposal gives no figures for the extra decoding and apply work while polling on a write-heavy table."
+    ],
+    "search_queries": [
+      "REPACK CONCURRENTLY lock wait",
+      "conditional lock AccessExclusiveLock polling",
+      "lock queue blocking new queries",
+      "pg_repack swap lock timeout",
+      "lock_timeout retry DDL",
+      "CLUSTER CONCURRENTLY final lock",
+      "lock manager leave wait queue",
+      "VACUUM truncate lock polling"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Default REPACK may never finish when lock_timeout is unset",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "design",
+      "touch_points": [
+        "backpatchability",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA runs REPACK (CONCURRENTLY) without lock_timeout on a table with steady short-lock traffic. Conditional attempts keep failing, and REPACK keeps decoding and holding its slot for hours. The DBA notices only when it has not finished and WAL has piled up.",
+      "argument": "Today REPACK without lock_timeout queues and gets the lock once the blocker ends, so it always finishes. The patch changes that contract with no option to opt out. Message #1 measured 1 to 10 s at 135k tps but gives no upper bound, and a busier table may never see a gap. The LockHasWaitersRelation() fallback only covers waiters behind REPACK's own lock.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "What bounds polling when lock_timeout is unset, and why is there no REPACK option to keep the current queueing behavior?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "shihao zhong",
+          "date": "2026-09-30T05:09:41Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQTRvmJJBjLmLa0boO1S78nz46s%3DB3htYMFTkSW-FS18Q%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #1 says a conditional request succeeds only when nobody holds a lock, and it names no bound other than lock_timeout. The measured 1 to 10 s at 135k tps does not rule out starvation on a busier table.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Unbounded polling keeps the REPACK decoding slot and its WAL alive",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication",
+        "catalog"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA runs REPACK (CONCURRENTLY) on a hot table with lock_timeout unset. Conditional attempts keep failing because some lock is always held, so the logical decoding slot holds back WAL and catalog_xmin while REPACK polls. pg_wal grows until the disk fills, or max_slot_wal_keep_size invalidates the slot and REPACK fails after all the copying.",
+      "argument": "Message #1 reports 1 to 10 s to get the lock at 135k tps, but gives no upper bound when lock_timeout is unset. Queueing waits only for the holders ahead of it, while polling can lose every attempt to new arrivals. The proposal does not say how long REPACK may keep its slot during polling, or what happens to WAL retention and catalog bloat in that time.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "What bounds polling when lock_timeout is unset, and how is WAL and catalog_xmin retention by the REPACK slot limited while it polls?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "shihao zhong",
+          "date": "2026-09-30T05:09:41Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQTRvmJJBjLmLa0boO1S78nz46s%3DB3htYMFTkSW-FS18Q%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "REPACK (CONCURRENTLY) decodes changes through a slot, and the proposal gives no bound on polling when lock_timeout is unset. Queueing waits only for current holders, so the longer retention of WAL and catalog_xmin is a new cost that the thread does not address.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Deadlock fallback depends on a check later changes can break",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch makes REPACK hold a lock on another object while it polls. A session waits on that lock while it holds a lock on the table. LockHasWaitersRelation() on the table reports nothing, so REPACK keeps polling and the deadlock detector never runs, and the hang lasts until lock_timeout or manual cancellation.",
+      "argument": "Message #1 limits the fallback to waiters behind \"the lock REPACK holds\" on the relation. Any cycle through another lock REPACK holds is outside that check. Correctness then depends on every future change to REPACK's locking also updating the waiter check. A reviewer is likely to miss that, and nothing fails loudly when it is missed.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "Which locks does REPACK hold while polling, and what ensures that a waiter on any of them, now or after later changes, triggers the normal wait path?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "shihao zhong",
+          "date": "2026-09-30T05:09:41Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQTRvmJJBjLmLa0boO1S78nz46s%3DB3htYMFTkSW-FS18Q%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #1 describes the fallback only for waiters behind the lock REPACK holds on the table. The proposal does not list the other locks REPACK holds while polling, so an undetected cycle through one of them cannot be excluded.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Lock monitoring no longer shows what blocks REPACK",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "psql_ux"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA sees REPACK stuck and runs pg_blocking_pids() on its pid, or looks for an ungranted row in pg_locks, to find the long transaction. With polling there is no waiting lock request, so both return nothing. The DBA cannot identify the session to cancel.",
+      "argument": "Lock waits in Postgres show up in pg_locks and pg_blocking_pids(), and existing monitoring scripts depend on that. The patch replaces the lock wait with a new wait event, REPACK_LOCK_WAIT, which names no blocker. The documentation hunk does not tell users how to find the blocking session.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "How does a user find the session that blocks a polling REPACK, given that pg_locks and pg_blocking_pids() no longer show the wait?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "shihao zhong",
+          "date": "2026-09-30T05:09:41Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQTRvmJJBjLmLa0boO1S78nz46s%3DB3htYMFTkSW-FS18Q%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "A conditional attempt leaves no ungranted row in pg_locks, so pg_blocking_pids() returns nothing for REPACK. The granted locks on the table are still visible in pg_locks, so the user can find the holder, but the documentation hunk does not say so.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Unbounded polling keeps the decoding slot and WAL pinned",
+      "level": "2",
+      "rubric_item": 4,
+      "category": "design",
+      "touch_points": [
+        "wal_replication",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA runs REPACK (CONCURRENTLY) with lock_timeout unset on a table that always has some lock holder. The conditional attempt never succeeds, so REPACK polls indefinitely. Its logical decoding slot keeps WAL and the catalog xmin pinned for the whole cluster until someone notices disk growth or catalog bloat.",
+      "argument": "Message #1 reports a conditional request succeeds \"only when nobody holds a lock at that moment\" and that it took up to 10 s at 135k tps. Nothing bounds the wait when lock_timeout is 0, which is the default. When queueing, REPACK gets its turn behind current holders. With polling, a steady stream of weaker lockers can starve it, and every other user of the cluster pays through retained WAL and catalog bloat.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "What bounds polling when lock_timeout is unset, and how does REPACK avoid starvation under a continuous stream of AccessShareLock holders?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "shihao zhong",
+          "date": "2026-09-30T05:09:41Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQTRvmJJBjLmLa0boO1S78nz46s%3DB3htYMFTkSW-FS18Q%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1 for slot and WAL retention, and of standards-compat-1 for starvation by weaker lockers.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Lock-queue fix built into one command, separate from Houska's design",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Later, ALTER TABLE or another command that wants the same behavior copies this loop with its own interval, waiter check and wait event. Each copy handles deadlocks and timeouts a little differently. A lock-manager change then has to be checked against every copy, and a missed one shows up as a field report of a hang.",
+      "argument": "Queueing behind a waiting AccessExclusiveLock affects every DDL command, but the patch puts its answer only in repack.c with a REPACK-specific wait event. Message #1 rejects a general lock-manager variant as \"130 lines ... for one caller\". That framing leaves core with a one-off policy. Message #2 offers a different policy that never gives up, and the thread does not compare the two, so the long-run shape is not settled.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "Why should this policy live in repack.c instead of a reusable lock-acquisition helper, and how does it compare with the patch in message #2?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "shihao zhong",
+          "date": "2026-09-30T05:09:41Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQTRvmJJBjLmLa0boO1S78nz46s%3DB3htYMFTkSW-FS18Q%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "Antonin Houska",
+          "date": "2026-10-06T18:32:29Z",
+          "url": "https://www.postgresql.org/message-id/91610.1791311549%40localhost"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The scenario depends on later commands copying the loop, and the proposal does not propose that. The loop follows lazy_truncate_heap(), and applying decoded changes between attempts is specific to REPACK; the comparison with message #2 is pending in the thread.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "REPACK keeps its logical decoding slot, and so WAL and catalog_xmin, for as long as it polls."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "see objection replication-ondisk-1: Unbounded polling keeps the REPACK decoding slot and its WAL alive"
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": true,
+      "reason": "see objection standards-compat-2: Lock monitoring no longer shows what blocks REPACK"
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The patch changes REPACK behavior; message #3 refuses that for 19, so it targets 20."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "The polling loop in repack.c has its own deadlock fallback, and later locking changes in REPACK must keep it correct."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "What bounds polling when lock_timeout is unset, and can a steady stream of short AccessShareLock holders starve REPACK forever?",
+    "How much WAL and catalog_xmin does the REPACK slot retain while polling on a write-heavy table, and what limits it?",
+    "Which locks does REPACK hold while polling, and what makes a waiter on any of them trigger the normal wait path?",
+    "How does this patch compare with the patch in message #2, which limits the wait without letting REPACK give up?",
+    "How does a user find the session that blocks a polling REPACK, now that pg_blocking_pids() returns nothing for it?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Alvaro Herrera takes part in message #3 but says he will not study either patch before 2027. The owner must know REPACK (CONCURRENTLY) and the lock manager.",
+    "liability": "The owner signs for REPACK finishing on busy tables, for deadlock detection in the polling loop, and for slot retention while polling, for as long as REPACK (CONCURRENTLY) exists.",
+    "author_follow_up": "The brief says the author agreed to target 20, which suggests the author stays with the patch."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "fix design first",
+    "reason": "The patch is small (three files, 6 KB) and helps users who repack busy tables with long transactions. The deadlock fallback and the unbounded polling need agreement, and a comparison with message #2, before code review."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read. Whether the fallback through LockHasWaitersRelation() covers every lock REPACK holds while polling, and how the loop interacts with the decoding worker, cannot be judged from the prose.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:3983",
+      "kind": "cf",
+      "title": "Lockless queue of waiters based on atomic operations for LWLock",
+      "status": "Returned with feedback",
+      "date": "2024-01-26",
+      "first_date": "2022-10-31",
+      "url": "https://commitfest.postgresql.org/patch/3983/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALT9ZEEz+=Nepc5eti6x531q64Z6+DxtP3h-h_8O5HDdtkJcPw@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov (smagen), Pavel Borisov (pborisov)",
+      "objectors": "",
+      "summary": "Store the head and tail of the LWLock wait queue in a 64-bit atomic lock state, so that waiters are added and removed with CAS operations and LWLockWaitListLock is no longer needed. The patch builds on ideas from OrioleDB and showed gains with about 1000 pgbench connections, with a small regression near 20 connections.",
+      "objection": "The thread went idle for more than a year after v6 in November 2022, and no reviewer took the patch forward. vignesh C returned it in the commitfest for lack of interest. Earlier, Andres Freund noted that the approach needs O(waiters) atomic operations instead of O(1), which may explain the regression, but the visible messages do not show this point deciding the outcome.",
+      "touch_points": [],
+      "matched_queries": [
+        "REPACK CONCURRENTLY lock wait",
+        "lock queue blocking new queries",
+        "lock manager leave wait queue"
+      ],
+      "from_hint": false,
+      "score": 0.37,
+      "enriched": true,
+      "key_quote": "I have returned this patch in commitfest as nobody had shown any\ninterest in pursuing it.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALDaNm2vk_NkwtNdUZNHi9wcfOb9xTBcTCVGdtXCgiPgKgzzGg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:7039",
+      "kind": "cf",
+      "title": "REPACK (CONCURRENTLY) doesn't handle invalid indexes",
+      "status": "Returned with feedback",
+      "date": "2026-09-13",
+      "first_date": "2026-07-21",
+      "url": "https://commitfest.postgresql.org/patch/7039/",
+      "thread_urls": [],
+      "authors": "Zsolt Parragi (zsolt.parragi)",
+      "objectors": "",
+      "summary": "REPACK (CONCURRENTLY) doesn't handle invalid indexes",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "REPACK CONCURRENTLY lock wait",
+        "pg_repack swap lock timeout"
+      ],
+      "from_hint": false,
+      "score": 0.3,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:7040",
+      "kind": "cf",
+      "title": "REPACK (CONCURRENTLY) doesn't handle invalid indexes",
+      "status": "Withdrawn",
+      "date": "2026-09-07",
+      "first_date": "2026-07-21",
+      "url": "https://commitfest.postgresql.org/patch/7040/",
+      "thread_urls": [],
+      "authors": "Zsolt Parragi (zsolt.parragi)",
+      "objectors": "",
+      "summary": "REPACK (CONCURRENTLY) doesn't handle invalid indexes",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "REPACK CONCURRENTLY lock wait",
+        "pg_repack swap lock timeout"
+      ],
+      "from_hint": false,
+      "score": 0.272,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:4480",
+      "kind": "cf",
+      "title": "Add pg_wait_for_lockers() function",
+      "status": "Withdrawn",
+      "date": "2024-07-22",
+      "first_date": "2022-12-23",
+      "url": "https://commitfest.postgresql.org/patch/4480/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMpnoC5SBCh7Ue+wO17_T-SEXN4U0oFQdXnBh9H5pLM8vjbUDQ@mail.gmail.com"
+      ],
+      "authors": "Will Mortensen (will-extrahop)",
+      "objectors": "",
+      "summary": "The patch exposes the lock manager's WaitForLockers() to SQL as pg_wait_for_lockers(), which waits for transactions holding given table locks, optionally in a single lock mode, to commit or roll back, without taking a lock itself. It supports incremental reading of inserted rows using pg_sequence_last_value(), as a replacement for briefly taking a conflicting lock with LOCK.",
+      "objection": "The author withdrew the entry after off-list feedback from Robert Haas asking for more self-contained motivation, and after considering directly exposing GetLockers() and VirtualXactLock() instead. He planned to come back in a new thread with quantitative evidence that the function is more efficient than polling pg_locks. No reviewer had endorsed the patch in the visible messages during about 18 months of revisions.",
+      "touch_points": [],
+      "matched_queries": [
+        "REPACK CONCURRENTLY lock wait",
+        "lock manager leave wait queue"
+      ],
+      "from_hint": false,
+      "score": 0.225,
+      "enriched": true,
+      "key_quote": "Since the main advantage over polling the existing pg_locks view would be efficiency, we will try to provide more quantitative evidence/analysis of that. That will probably want to be a new thread and CF entry, so I'm withdrawing this one.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAMpnoC61bX3TbX8%3D-vPspBxxHU6w0Zjo%2Bhghz5H8xhg-vS%3Db%3Dg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:e28bb885196916b0a3d898ae4f2be0e38108d81b",
+      "kind": "revert",
+      "title": "Revert changes to CONCURRENTLY that \"sped up\" Xmin advance",
+      "status": "Reverted",
+      "date": "2022-05-31",
+      "first_date": "2021-02-23",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e28bb885196916b0a3d898ae4f2be0e38108d81b",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/17485-396609c6925b982d@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/20210115133858.GA18931@alvherre.pgsql"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert changes to CONCURRENTLY that \"sped up\" Xmin advance\nReverted commit(s): VACUUM: ignore indexing operations with CONCURRENTLY",
+      "objection": "This reverts commit d9d076222f5b \"VACUUM: ignore indexing operations\nwith CONCURRENTLY\".\n\nThese changes caused indexes created with the CONCURRENTLY option to\nmiss heap tuples that were HOT-updated and HOT-pruned during the index\ncreation.  Before these changes, HOT pruning would have been prevented\nby the Xmin of the transaction creating the index, but because this\nchange was precisely to allow the Xmin to move forward ignoring that\nbackend, now other backends scanning the table can prune them.  This is\nnot a problem for VACUUM (which requires a lock that conflicts with a\nCREATE INDEX CONCURRENTLY operation), but HOT-prune can definitely\noccur.  In other words, Xmin advancement was sped up, but at the cost of\ncorrupting the resulting index.\n\nRegrettably, this means that the new feature in PG14 that RIC/CIC on\nvery large tables no longer force VACUUM to retain very old tuples goes\naway.  We might try to implement it again in a later release, but for\nnow the risk of indexes missing tuples is too high and there's no easy\nfix.\n\nBackpatch to 14, where this change appeared.\n\nDiagnosys-by: Andrey Borodin <x4mmm@yandex-team.ru>\nDiagnosys-by: Michael Paquier <michael@paquier.xyz>\nDiagnosys-by: Andres Freund <andres@anarazel.de>",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "REPACK CONCURRENTLY lock wait",
+        "CLUSTER CONCURRENTLY final lock"
+      ],
+      "from_hint": false,
+      "score": 0.215,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "revert:eb5f4d6c5cece3e3fa80a506153e5202b093b7ca",
+      "kind": "revert",
+      "title": "Revert ill-fated patch to release exclusive lock early after vacuum truncates a table.  Introduces race condition, as shown by buildfarm failures.",
+      "status": "Reverted",
+      "date": "2007-09-20",
+      "first_date": "2007-09-20",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=eb5f4d6c5cece3e3fa80a506153e5202b093b7ca",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert ill-fated patch to release exclusive lock early after vacuum truncates a table.  Introduces race condition, as shown by buildfarm failures.",
+      "objection": "Revert ill-fated patch to release exclusive lock early after vacuum\ntruncates a table.  Introduces race condition, as shown by buildfarm\nfailures.",
+      "touch_points": [],
+      "matched_queries": [
+        "conditional lock AccessExclusiveLock polling",
+        "VACUUM truncate lock polling"
+      ],
+      "from_hint": false,
+      "score": 0.2,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:3583",
+      "kind": "cf",
+      "title": "Fix checkpointer sync request queue problems",
+      "status": "Withdrawn",
+      "date": "2022-11-07",
+      "first_date": "2022-03-01",
+      "url": "https://commitfest.postgresql.org/patch/3583/",
+      "thread_urls": [],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Fix checkpointer sync request queue problems",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "lock queue blocking new queries",
+        "lock manager leave wait queue"
+      ],
+      "from_hint": false,
+      "score": 0.191,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "revert:890d2182a2c425aaa80f9bf9f7116d31e0c6538e",
+      "kind": "revert",
+      "title": "Revert \"Display the time when the process started waiting for the lock, in pg_locks.\"",
+      "status": "Reverted",
+      "date": "2021-02-09",
+      "first_date": "2021-02-09",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=890d2182a2c425aaa80f9bf9f7116d31e0c6538e",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/a96013dc51cdc56b2a2b84fa8a16a993@oss.nttdata.com"
+      ],
+      "authors": "Fujii Masao",
+      "objectors": "",
+      "summary": "Revert \"Display the time when the process started waiting for the lock, in pg_locks.\"\nReverted commit(s): Display the time when the process started waiting for the lock, in pg_locks.",
+      "objection": "This reverts commit 3b733fcd04195399db56f73f0616b4f5c6828e18.\n\nPer buildfarm members prion and rorqual.",
+      "touch_points": [],
+      "matched_queries": [
+        "REPACK CONCURRENTLY lock wait",
+        "lock manager leave wait queue"
+      ],
+      "from_hint": false,
+      "score": 0.181,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:702",
+      "kind": "cf",
+      "title": "notice lock waits",
+      "status": "Returned with feedback",
+      "date": "2016-10-03",
+      "first_date": "2016-08-05",
+      "url": "https://commitfest.postgresql.org/patch/702/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMkU=1xGV=xEOYFeDmRxRXc1okzyGa+=J_7Brgi--MQO3Ej8XQ@mail.gmail.com"
+      ],
+      "authors": "Jeff Janes (jjanes)",
+      "objectors": "Michael Paquier, Jim Nasby",
+      "summary": "A new GUC, notice_lock_waits, sends the log_lock_waits message to the client as a NOTICE so interactive sessions such as psql see when they wait on a lock. It was PGC_SUSET because the message names the PID of the blocking process.",
+      "objection": "Michael Paquier returned it because two GUCs that do almost the same thing make a confusing interface. He preferred Jim Nasby's idea of one setting that takes a message level, which also lets users who set client_min_messages to WARNING see the message. Others suggested changing log_lock_waits or adding a general way to send selected LOG messages to the client.",
+      "touch_points": [],
+      "matched_queries": [
+        "REPACK CONCURRENTLY lock wait",
+        "lock manager leave wait queue"
+      ],
+      "from_hint": false,
+      "score": 0.173,
+      "enriched": true,
+      "key_quote": "The interface proposed, aka 2 GUCs doing\nbasically the same thing is quite confusing I think.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB7nPqR%2BLMW27bZf8SNs%2BXiR3yPJDF2EXenODVR62_q-SEdzWQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:1613",
+      "kind": "cf",
+      "title": "Fsync queue forgets requests on failure",
+      "status": "Rejected",
+      "date": "2018-07-13",
+      "first_date": "2018-04-05",
+      "url": "https://commitfest.postgresql.org/patch/1613/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/87y3i1ia4w.fsf@news-spur.riddles.org.uk"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "Thomas Munro",
+      "summary": "Fix the checkpointer so that when an fsync of a relation segment fails during a checkpoint, the pending fsync request is kept for the next checkpoint instead of being dropped. The patch stops the pending-ops bitmapset from being lost when it is unlinked from the hashtable entry, merges unprocessed requests back on failure, and removes segments that succeeded as it goes.",
+      "objection": "The author withdrew it as redundant with work in another thread (by Craig and Andres) that turns fsync I/O errors into PANICs and overhauls the request queue, because retrying fsync after a failure is useless on Linux. He noted that the other patch still left the retry path for errnos other than EIO and ENOSPC, but rejected this entry on the grounds that the issue would be resolved in that other thread.",
+      "touch_points": [],
+      "matched_queries": [
+        "lock queue blocking new queries",
+        "lock manager leave wait queue"
+      ],
+      "from_hint": false,
+      "score": 0.16,
+      "enriched": true,
+      "key_quote": "Rejected, since this will have to be dealt with one way or another in\nthat other thread.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAEepm%3D0v3UX3vOgyK4zL_bJK%3DPTDf5mWLOSU%2B3zJ99T%2BEOmwWQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "revert:dca369320f6023b55feb49f281d394181fc57903",
+      "kind": "revert",
+      "title": "Revert \"isolationtester: don't repeat the is-it-waiting query when retrying a step.\"",
+      "status": "Reverted",
+      "date": "2016-02-12",
+      "first_date": "2016-02-12",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=dca369320f6023b55feb49f281d394181fc57903",
+      "thread_urls": [],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"isolationtester: don't repeat the is-it-waiting query when retrying a step.\"\nReverted commit(s): isolationtester: don't repeat the is-it-waiting query when retrying a step.",
+      "objection": "This mostly reverts commit 9c9782f066e0ce5424b8706df2cce147cb78170f.\nI left in the parts that rearranged removal of completed waiting steps;\nbut the idea of not rechecking a step's blocked-ness isn't working.",
+      "touch_points": [],
+      "matched_queries": [
+        "lock queue blocking new queries",
+        "lock_timeout retry DDL"
+      ],
+      "from_hint": false,
+      "score": 0.153,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:6983",
+      "kind": "cf",
+      "title": "pg_get_domain_ddl: DDL reconstruction function for CREATE DOMAIN statement",
+      "status": "Withdrawn",
+      "date": "2026-09-07",
+      "first_date": "2026-07-03",
+      "url": "https://commitfest.postgresql.org/patch/6983/",
+      "thread_urls": [],
+      "authors": "Florin Irion (irionr)",
+      "objectors": "",
+      "summary": "pg_get_domain_ddl: DDL reconstruction function for CREATE DOMAIN statement",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "lock_timeout retry DDL"
+      ],
+      "from_hint": false,
+      "score": 0.15,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:6820",
+      "kind": "cf",
+      "title": "pg_stat_lock: add blocker mode dimension",
+      "status": "Withdrawn",
+      "date": "2026-08-13",
+      "first_date": "2026-05-31",
+      "url": "https://commitfest.postgresql.org/patch/6820/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHza6qcu797ENAGFQftdTzYKMHdD7CktaVptc+Ex4xg_4F7HkA@mail.gmail.com"
+      ],
+      "authors": "Tatsuya Kawata (croissant)",
+      "objectors": "",
+      "summary": "The patch adds a mode column to pg_stat_lock, so waits and wait_time are counted per blocking lock mode, taken under the lock partition LWLock when a backend joins the wait queue. For fastpath_exceeded the same column records the requested mode.",
+      "objection": "No reviewer replied in the visible messages. The author posted v1 and a rebased v2, and the entry was later withdrawn. The visible messages do not show why.",
+      "touch_points": [],
+      "matched_queries": [
+        "lock queue blocking new queries"
+      ],
+      "from_hint": false,
+      "score": 0.136,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3595",
+      "kind": "cf",
+      "title": "Support logical replication of DDL commands",
+      "status": "Withdrawn",
+      "date": "2024-03-28",
+      "first_date": "2022-02-21",
+      "url": "https://commitfest.postgresql.org/patch/3595/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAD30U+pVmfKwUKy8cbZOnUXyguJ-uBNejwD75Kyo=OjdQGJ9g@mail.gmail.com"
+      ],
+      "authors": "Zheng Li (zhengli), Zhijie Hou (houzj), Ajin Cherian (ajinc), vigneshwaran C (vignesh.postgres), Runqi Tian (runqitian)",
+      "objectors": "Michael Paquier",
+      "summary": "Replicate DDL commands through logical replication so that schema changes reach subscribers, for example during major version upgrades. The later patch set deparses DDL commands in event triggers into a JSON format string, WAL-logs it, and the apply worker rebuilds and runs the command, starting with create, alter and drop table.",
+      "objection": "Michael Paquier objected that the hand-written deparser, with its one-to-one mapping of node enums to hardcoded text, makes every change to the parse node structures of replicated DDL also require a change here. He asked for generated code instead, and the authors argued that much of the deparsing cannot be generated. Work stopped after July 2023, and in March 2024 Amit Kapila said the entry should be closed because it still needs a lot of work.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "lock_timeout retry DDL"
+      ],
+      "from_hint": false,
+      "score": 0.129,
+      "enriched": true,
+      "key_quote": "As presented, this stuff has an extremely high maintenance cost long-term because it requires anybody doing a change in the parsed tree structures of the DDLs replicated to also change the code paths introduced by this patch set.",
+      "quote_message_url": "https://www.postgresql.org/message-id/ZIgf3qBvFoTsMhIc%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:4054",
+      "kind": "cf",
+      "title": "fix and document CLUSTER privileges",
+      "status": "Returned with feedback",
+      "date": "2023-01-14",
+      "first_date": "2022-12-07",
+      "url": "https://commitfest.postgresql.org/patch/4054/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20221207223924.GA4182184@nathanxps13"
+      ],
+      "authors": "Nathan Bossart (bossartn)",
+      "objectors": "",
+      "summary": "The patch removes the database-owner check in CLUSTER's partition-gathering code, so only table ownership (and later the MAINTAIN privilege) grants permission, and it documents CLUSTER's privilege requirements. A later version also adds a warning when CLUSTER skips a partition the user lacks permission for, as VACUUM does.",
+      "objection": "No objection stopped it. The reviewer moved the entry to Ready for Committer, then marked it Returned with feedback because commit ff9618e8 had already absorbed most of the changes. The author agreed and said only two documentation edits were left, which he sent to Jeff for comment.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "CLUSTER CONCURRENTLY final lock"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": true,
+      "key_quote": "I have changed the status to \"Returned with feedback\" as per commit\nff9618e8 this patch might not be applied anymore if I have well understood.",
+      "quote_message_url": "https://www.postgresql.org/message-id/fd364d14-792e-ec27-4798-7a42c9a6c7d1%40migops.com",
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:6669",
+      "kind": "cf",
+      "title": "Fix NULL dereference in pg_get_database_ddl()",
+      "status": "Withdrawn",
+      "date": "2026-04-13",
+      "first_date": "2026-04-10",
+      "url": "https://commitfest.postgresql.org/patch/6669/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJTYsWWzqpoRYxyA4ukjYpMPGEDgK2Za4t4wu9GdWOAtT8v-SQ@mail.gmail.com"
+      ],
+      "authors": "Ayush Tiwari (aytiwari)",
+      "objectors": "David Rowley",
+      "summary": "The patch adds a NULL check in pg_get_database_ddl_internal() so that a dattablespace pointing to a missing tablespace no longer crashes the backend in pg_strcasecmp(). In that case the function omits the TABLESPACE clause, and a regression test covers it.",
+      "objection": "The only reproducer was a manual update of pg_database with allow_system_table_mods, and David Rowley asked why this self-inflicted catalog corruption should matter more than other such cases. The author then found no supported path to the state, because the catalog snapshot keeps both lookups consistent and DROP TABLESPACE fails while the database directory exists, so he withdrew the patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "lock_timeout retry DDL"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": true,
+      "key_quote": "Can you explain why this method of self-inflicted catalogue corruption\nis any more important than any of the just-about-infinite other ways\nthere are of causing issues by manually updating the catalogue tables?",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAApHDvrJEM-qSm2rRJdowYtpss9xbmfRPRfOrEG0j01y1CkSNg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:5601",
+      "kind": "cf",
+      "title": "Logical replication timeout",
+      "status": "Returned with feedback",
+      "date": "2025-09-01",
+      "first_date": "2024-11-06",
+      "url": "https://commitfest.postgresql.org/patch/5601/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/638764862.181008636.1730878611279.JavaMail.zimbra@meteo.fr"
+      ],
+      "authors": "Marc Rechté (rechtem)",
+      "objectors": "",
+      "summary": "Logical replication timeout\nThreads: Logical replication timeout",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_repack swap lock timeout"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:2760",
+      "kind": "cf",
+      "title": "Remove some unnecessary if-condition",
+      "status": "Withdrawn",
+      "date": "2020-10-22",
+      "first_date": "2020-10-09",
+      "url": "https://commitfest.postgresql.org/patch/2760/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/7be3d1e817064219a929446a72f3f82b@G08CNEXMBPEKD05.g08.fujitsu.local"
+      ],
+      "authors": "Zhijie Hou (houzj)",
+      "objectors": "",
+      "summary": "Remove some unnecessary if-condition\nThreads: Remove some unnecessary if-condition",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "conditional lock AccessExclusiveLock polling"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:2720",
+      "kind": "cf",
+      "title": "remove spurious CREATE INDEX CONCURRENTLY wait",
+      "status": "Withdrawn",
+      "date": "2020-09-01",
+      "first_date": "2020-08-10",
+      "url": "https://commitfest.postgresql.org/patch/2720/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200810233815.GA18970@alvherre.pgsql"
+      ],
+      "authors": "Álvaro Herrera (alvherre)",
+      "objectors": "",
+      "summary": "remove spurious CREATE INDEX CONCURRENTLY wait\nThreads: remove spurious CREATE INDEX CONCURRENTLY wait",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "REPACK CONCURRENTLY lock wait"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "revert:cc32ec24fdf3b9808617439d41b0ba7f3eb16b04",
+      "kind": "revert",
+      "title": "Revert the commits related to allowing page lock to conflict among parallel group members.",
+      "status": "Reverted",
+      "date": "2023-07-06",
+      "first_date": "2020-03-19",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=cc32ec24fdf3b9808617439d41b0ba7f3eb16b04",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJKUy5jffnRKNvRHKQ0LynRb0RJC-o4P8Ku3x9vGAVLwDBWumQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAD21AoCmT3cFQUN4aVvzy5chw7DuzXrJCbrjTU05B+Ss=Gn1LA@mail.gmail.com"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Revert the commits related to allowing page lock to conflict among parallel group members.\nReverted commit(s): Allow page lock to conflict among parallel group members.; Add assert to ensure that page locks don't participate in deadlock cycle.",
+      "objection": "This commit reverts the work done by commits 3ba59ccc89 and 72e78d831a.\nThose commits were incorrect in asserting that we never acquire any other\nheavy-weight lock after acquring page lock other than relation extension\nlock. We can acquire a lock on catalogs while doing catalog look up after\nacquring page lock.\n\nThis won't impact any existing feature but we need to think some other way\nto achieve this before parallelizing other write operations or even\nimproving the parallelism in vacuum (like allowing multiple workers\nfor an index).",
+      "touch_points": [
+        "catalog changes",
+        "security / privileges",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "VACUUM truncate lock polling"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:4118",
+      "kind": "cf",
+      "title": "low wal_retrieve_retry_interval causes missed signals on Windows",
+      "status": "Withdrawn",
+      "date": "2023-02-25",
+      "first_date": "2023-01-11",
+      "url": "https://commitfest.postgresql.org/patch/4118/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20230111061116.GA1668254@nathanxps13"
+      ],
+      "authors": "Nathan Bossart (bossartn)",
+      "objectors": "",
+      "summary": "low wal_retrieve_retry_interval causes missed signals on Windows\nThreads: low wal_retrieve_retry_interval causes missed signals on Windows",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "lock_timeout retry DDL"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:6145",
+      "kind": "cf",
+      "title": "Fix race condition in SSI when reading PredXact->SxactGlobalXmin",
+      "status": "Withdrawn",
+      "date": "2025-10-22",
+      "first_date": "2025-09-04",
+      "url": "https://commitfest.postgresql.org/patch/6145/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEkjoh2X8yL9TKrQKx6SL6gtMNuZsyH8K-+rE78EwdOv4oXjSA@mail.gmail.com"
+      ],
+      "authors": "Josh Curtis (joshcurtis)",
+      "objectors": "",
+      "summary": "Fix race condition in SSI when reading PredXact->SxactGlobalXmin\nThreads: Fix race condition in SSI when reading PredXact->SxactGlobalXmin",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "conditional lock AccessExclusiveLock polling"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:1897",
+      "kind": "cf",
+      "title": "Delay locking partitions during query execution",
+      "status": "Withdrawn",
+      "date": "2019-03-05",
+      "first_date": "2018-12-03",
+      "url": "https://commitfest.postgresql.org/patch/1897/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKJS1f_kfRQ3ZpjQyHC7=PK9vrhxiHBQFZ+hc0JCwwnRKkF3hg@mail.gmail.com"
+      ],
+      "authors": "David Rowley (davidrowley)",
+      "objectors": "",
+      "summary": "Delay locking partitions during query execution\nThreads: Delay locking partitions during query execution",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "lock queue blocking new queries"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:3030",
+      "kind": "cf",
+      "title": "Make relfile tombstone files conditional on WAL level",
+      "status": "Withdrawn",
+      "date": "2021-10-29",
+      "first_date": "2021-03-04",
+      "url": "https://commitfest.postgresql.org/patch/3030/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKG+fTEcYQvc18aEbrJjPri99A09JZcEXzXjT5h57S+Agkw@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Make relfile tombstone files conditional on WAL level\nThreads: Make relfile tombstone files conditional on WAL level",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "conditional lock AccessExclusiveLock polling"
+      ],
+      "from_hint": false,
+      "score": 0.103,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 3,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 0
+  },
+  "precedent_cutoff": "2026-09-30",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found, and the thread names no earlier discussion of this idea. Message #2 posts a competing patch that bounds the wait without giving up, and message #3 defers both patches past 19 without judging either one."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "Two objections raised; the lock_timeout reuse itself fits existing practice in lazy_truncate_heap()."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "The patch changes no on-disk format, WAL record, catalog or wire protocol. The only cross-boundary state is the logical decoding slot that REPACK already uses, which the objection above covers."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "No security objection. The patch changes only how REPACK (CONCURRENTLY) gets its final lock, and does not change who may run REPACK or what anyone can see. A user with only SELECT can delay REPACK with a stream of short queries, but under queueing that same user can already block it with one long transaction. Unbounded polling and the WAL kept while it runs belong to the design angle."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "Committability: Alvaro Herrera knows the area and is engaged, but he defers all study until 2027. The author agreed to target 20."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing feature lets a user make REPACK (CONCURRENTLY) take its final lock without queueing. lock_timeout loses all the copied work, as message #1 shows, and the proposal reuses the polling pattern of lazy_truncate_heap() instead of adding a new mechanism. Antonin Houska's patch in message #2 is an alternative design under discussion, not an existing feature."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "The material shows real demand. The problem is a known property of the lock queue, and the author shows it with numbers (a SELECT waited 14.7 s against 0.9 s). Antonin Houska posted his own patch for the same problem in message #2, so a second person wants it fixed. The existing workaround, lock_timeout, throws away all the copying work, and the cost of the change falls mainly on REPACK itself. The open questions are about design and the choice between the two patches, which other angles cover."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 6,
+      "new_survived": 4,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 77,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 16,
+    "wall_ms": 145409,
+    "cost_usd": 1.2645714,
+    "dry_run": false
+  }
+}

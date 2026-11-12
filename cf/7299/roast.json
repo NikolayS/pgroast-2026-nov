@@ -1,0 +1,1097 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:38:03.030Z",
+  "input": {
+    "arg": "7299",
+    "cf": {
+      "id": 7299,
+      "url": "https://commitfest.postgresql.org/patch/7299/",
+      "title": "Avoid emitting core dumps when not needed",
+      "status": "Needs review",
+      "authors": "Ayush Tiwari (aytiwari)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/20231118222911.trznxgya4hvzapva%40awork3.anarazel.de",
+    "subject": "PANIC serves too many masters",
+    "thread_start": "2023-11-18T22:29:11Z",
+    "messages_read": 13,
+    "messages_total": 13,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v1-0001-Allow-selected-PANIC-errors-to-skip-core-dumps.patch",
+      "v1-0002-Avoid-core-dumps-for-WAL-disk-full-failures.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "No objection survived at levels 1a or 1b: message #1 states the problem and messages #2 to #5 support the direction. Two fixable level 2 points remain. maintenance-fit-1 asks why the patch matches ENOSPC at each call site when one rule on the SQLSTATE would cover EDQUOT and future sites. standards-compat-1 notes that the postmaster log line and exit status change for a marked PANIC. Both need a committer who knows error handling and the postmaster.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Let selected PANIC errors exit without a core dump",
+    "problem": "Every PANIC calls abort(), so operational failures such as ENOSPC during WAL writes produce core files with little diagnostic value. Repeated crash-restart cycles can create thousands of identical cores, which fills disks further and hides real bugs in fleet-wide crash analysis. The audience is operators and developers who collect core dumps in production.",
+    "proposed_design": "PANIC keeps its level and restart behavior, and ErrorData gets a no_core_dump flag. A marked PANIC exits with _exit(2) instead of abort(), so the postmaster still runs crash handling; a core-worthy outer PANIC wins over a nested marked error. Selected WAL, control-file and walreceiver write paths mark ENOSPC this way.",
+    "user_visible_surface": [
+      "New developer GUC force_core_dump_on_panic (boolean, postgresql.conf or command line) that restores abort() for marked PANICs.",
+      "New ereport() auxiliary function errabort(bool) in the C API.",
+      "New ereport() auxiliary function errnocoredump_on_errno(int), which marks the error when the saved errno matches.",
+      "PANIC on ENOSPC in WAL and control-file I/O no longer produces a core file by default.",
+      "New injection_points test function, renamed in v5 to injection_points_test_panic_core_dump."
+    ],
+    "author_claims": [
+      "A core file from a disk-full PANIC has little diagnostic value and can make disk pressure worse.",
+      "Existing postmaster crash handling is preserved because exit code 2 is treated as a crash.",
+      "Other errno values, corruption failures and internal-invariant PANICs still call abort().",
+      "The postmaster reads postgresql.conf before its first control-file read, so the override GUC applies there."
+    ],
+    "thread_state": "Andres Freund, Jeff Davis and Tom Lane discussed the idea in 2023 and favored keeping PANIC while changing call sites gradually. Nazir Bilal Yavuz reviewed v2 through v4; v5 answers his comments, and nobody has replied to it yet.",
+    "unclear": [
+      "The thread does not say whether _exit(2) skips anything that abort() did beyond the core file, such as signal-based monitoring that watches for SIGABRT.",
+      "The patch does not handle the restart-or-exit part of the original problem, and the thread does not say if that is planned.",
+      "The material does not say whether a core is still produced by other backends when send_abort_for_crash is on.",
+      "The thread does not say whether ENOSPC is the only errno worth marking, for example EDQUOT or EROFS.",
+      "The material does not say whether extensions are expected to use errabort() and how stable that API is."
+    ],
+    "search_queries": [
+      "PANIC core dump abort",
+      "avoid core dump ENOSPC",
+      "PANIC error level classification",
+      "crash restart loop disk full",
+      "errabort ereport flag",
+      "new elevel CRITICAL BUG",
+      "postmaster give up after repeated crashes",
+      "WAL write out of space PANIC"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Per-call-site errno marking instead of one rule keyed on the SQLSTATE",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator runs pg_wal on a quota-limited volume. A WAL write fails with EDQUOT inside a critical section and is promoted to PANIC. Each crash-restart cycle still writes a core, because only ENOSPC is matched. The same happens at a WAL write site added in a later release that nobody marked.",
+      "argument": "v2-0002 lists the marked paths by hand, and v5 added walreceiver only because a reviewer noticed it (message #12, message #13). Nothing fails when a new write path is left unmarked. errcode_for_file_access() already maps both ENOSPC and EDQUOT to ERRCODE_DISK_FULL, so one check in errfinish() on that SQLSTATE would cover every current and future site. Message #9 suggested deciding from the error code, and the thread did not weigh this option against errno matching.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        9,
+        12,
+        13
+      ],
+      "author_must_show": "Why is matching ENOSPC at each call site better than one errfinish() rule that skips the core for a PANIC with SQLSTATE 53100?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 9,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-10-02T08:05:55Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ3YH2%3DFtr%3DQ---LKXxF_m%2BwcgHnFTNw%3DJ26hEn2i%2BrLWg%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-10-12T12:04:04Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ3F1eS7i2UQE3ptFuLOe0BTK6reXgF9rRRpNEDh4zDhqw%40mail.gmail.com"
+        },
+        {
+          "index": 13,
+          "from": "Ayush Tiwari",
+          "date": "2026-10-12T13:09:56Z",
+          "url": "https://www.postgresql.org/message-id/CAJTYsWV%3DKjO5h_Pn5YGqgeoe%2B77wawQ1u00WmLOjHqcF7QdODQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Marking call sites one by one follows what Tom Lane and Jeff Davis favored in messages #3 and #4, which lowers the weight. But the EDQUOT case is concrete, and the thread did not weigh the error-code rule raised in message #9.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Marked PANIC changes the postmaster crash log line and exit status",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator alerts on the postmaster line \"terminated by signal 6: Aborted\", or on SIGABRT exits seen by a process supervisor. After upgrade, a WAL ENOSPC PANIC shows up as \"exited with exit code 2\" instead. Alerts that matched the signal stop firing, and the operator finds out only during the next disk-full outage.",
+      "argument": "The brief already lists SIGABRT-based monitoring as an open question, and no message in the thread takes it up. Children killed during crash handling also leave with exit code 2, so the new exit status looks like an ordinary secondary exit. In message #6 Andres wanted core-dumping errors to be easy to search for in logs, and this design makes the culprit harder to find. v5 has no reply yet, so nobody has weighed the change in what users see.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        6,
+        7,
+        13
+      ],
+      "author_must_show": "What does the postmaster log for a marked PANIC, and how does an operator tell it apart from the other children's exit-code-2 exits after a crash?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Andres Freund",
+          "date": "2023-11-18T22:29:11Z",
+          "url": "https://www.postgresql.org/message-id/20231118222911.trznxgya4hvzapva%40awork3.anarazel.de"
+        },
+        {
+          "index": 6,
+          "from": "Andres Freund",
+          "date": "2023-11-20T23:35:18Z",
+          "url": "https://www.postgresql.org/message-id/20231120233518.l7p5vzlqaxwkztlh%40awork3.anarazel.de"
+        },
+        {
+          "index": 7,
+          "from": "Ayush Tiwari",
+          "date": "2026-09-12T16:20:31Z",
+          "url": "https://www.postgresql.org/message-id/CAJTYsWV601xS0D_SrZ111VX0N%2BtRe2fjK-VjY75v1gNJ93%2BjkQ%40mail.gmail.com"
+        },
+        {
+          "index": 13,
+          "from": "Ayush Tiwari",
+          "date": "2026-10-12T13:09:56Z",
+          "url": "https://www.postgresql.org/message-id/CAJTYsWV%3DKjO5h_Pn5YGqgeoe%2B77wawQ1u00WmLOjHqcF7QdODQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The change from \"terminated by signal 6\" to \"exited with exit code 2\" is real, and the thread does not discuss it. One sub-claim is weak: the postmaster logs only the first failing child at LOG, and the PANIC message itself still appears.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "The patch marks ENOSPC errors in WAL write, sync and recovery read paths in xlog.c and xlogrecovery.c, and in walreceiver."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "ErrorData gets a no_core_dump field, and elog.h gains errabort() and errnocoredump_on_errno()."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": true,
+      "reason": "The patch adds the developer option force_core_dump_on_panic."
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Each PANIC-capable write path must be marked by hand, and nothing fails when a new path is left unmarked."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Why is matching ENOSPC at each call site better than one errfinish() rule that skips the core for a PANIC with SQLSTATE 53100?",
+    "Should EDQUOT and EROFS also skip the core dump, and if not, why is ENOSPC different?",
+    "What does the postmaster log for a marked PANIC, and how does an operator tell it apart from other children that exit with code 2?",
+    "Does a marked PANIC still produce core files from the other backends when send_abort_for_crash is on?",
+    "Are extensions expected to call errabort() and errnocoredump_on_errno(), and is that API meant to be stable?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "A committer who knows elog.c error handling and the postmaster crash-restart path would have to own it. Committers shaped the idea in 2023, but none has replied to v1 through v5.",
+    "liability": "The owner signs for the choice of which PANIC sites skip the core dump, for the changed exit status of a marked PANIC, and for two new ereport() helpers that extensions may adopt. The marking list needs care in every release that adds a WAL or control-file write path.",
+    "author_follow_up": "The author posted five versions and answered the review comments on v2 through v4, which suggests the author stays for fixes."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "low",
+    "review_cost": "medium",
+    "recommended_action": "needs champion",
+    "reason": "Operators who collect core dumps in production benefit, and message #1 reports the problem at fleet scale. The patch is small and its cost is limited to PANIC paths, but it touches elog.c and WAL write paths, and no committer has replied to any version."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, this review could not check that _exit(2) and abort() differ only in the core file, that the nested PANIC precedence holds, or that the postmaster control-file path sees the GUC.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:3675",
+      "kind": "cf",
+      "title": "[BUG] Panic due to incorrect missingContrecPtr after promotion",
+      "status": "Withdrawn",
+      "date": "2022-09-21",
+      "first_date": "2022-02-22",
+      "url": "https://commitfest.postgresql.org/patch/3675/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/44D259DE-7542-49C4-8A52-2AB01534DCA9@amazon.com"
+      ],
+      "authors": "Sami Imseih (simseih)",
+      "objectors": "",
+      "summary": "After a standby skipped a missing continuation record, missingContrecPtr stayed set, so on promotion the server wrote an overwrite_contrecord at a past LSN and later hit a WAL flush PANIC. The patch writes the overwrite_contrecord only when missingContrecPtr is ahead of the last WAL record, and adds a TAP test.",
+      "objection": "The patch was not committed because a separate commit, 6672d79, fixed the same issue. Robert Haas pointed to that commit, and the author confirmed it fixes the PANIC. Before that, Kyotaro Horiguchi's debugging of the author's logs suggested the inconsistent WAL came from the primary.",
+      "touch_points": [],
+      "matched_queries": [
+        "PANIC core dump abort",
+        "PANIC error level classification",
+        "new elevel CRITICAL BUG",
+        "WAL write out of space PANIC"
+      ],
+      "from_hint": false,
+      "score": 0.489,
+      "enriched": true,
+      "key_quote": "For the benefit of anyone who may be looking at this thread in the archive later, I believe this commit will have fixed this issue:",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoY%2BWgqfj%2BdLdL_ESaf4YX8hKSDkkfXfZvHrsPPzZ2o_1w%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "revert:703f148e98ecb4b299fdad403fc5a1de51220714",
+      "kind": "revert",
+      "title": "Revert \"Prevent panic during shutdown checkpoint\"",
+      "status": "Reverted",
+      "date": "2017-06-06",
+      "first_date": "2017-05-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=703f148e98ecb4b299fdad403fc5a1de51220714",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20170602002912.tqlwn4gymzlxpvs2@alap3.anarazel.de"
+      ],
+      "authors": "Peter Eisentraut",
+      "objectors": "",
+      "summary": "Revert \"Prevent panic during shutdown checkpoint\"\nReverted commit(s): Prevent panic during shutdown checkpoint",
+      "objection": "This reverts commit 086221cf6b1727c2baed4703c582f657b7c5350e, which\nwas made to master only.\n\nThe approach implemented in the above commit has some issues.  While\nthose could easily be fixed incrementally, doing so would make\nbackpatching considerably harder, so instead first revert this patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "PANIC core dump abort",
+        "PANIC error level classification",
+        "WAL write out of space PANIC"
+      ],
+      "from_hint": false,
+      "score": 0.304,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:3664",
+      "kind": "cf",
+      "title": "Deletion of the recycled future WAL files to free-up disk space if max_wal_size is reduced or wal_recycle is set to off",
+      "status": "Returned with feedback",
+      "date": "2022-08-01",
+      "first_date": "2022-05-06",
+      "url": "https://commitfest.postgresql.org/patch/3664/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACU3ovReRGggVGK6Q+CwX1Aiy0NRo7qn8fg8Ke1vngo-bQ@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "Jacob Champion",
+      "summary": "When max_wal_size is reduced or wal_recycle is set to off, a checkpoint should delete recycled future WAL files to free disk space. The author suggested keeping recycled WAL files in a sorted list and, at checkpoint, deleting them from the newest end, rebuilding the list after restart if needed.",
+      "objection": "No patch was ever posted, so the commitfest entry had nothing to review. Jacob Champion closed it for that reason and invited the author to reopen it if a patch existed. Justin Pryzby supported the idea, and Tom Lane questioned only whether the behaviour was real.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "crash restart loop disk full",
+        "WAL write out of space PANIC"
+      ],
+      "from_hint": false,
+      "score": 0.244,
+      "enriched": true,
+      "key_quote": "(This is registered in CF, but there doesn't seem to be a patch as part\nof this thread, so I don't think there's anything to review.",
+      "quote_message_url": "https://www.postgresql.org/message-id/f3664b22-ef52-3640-4487-40e6f193b288%40timescale.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:2381",
+      "kind": "cf",
+      "title": "remove single character literal tokens from the core grammar",
+      "status": "Rejected",
+      "date": "2020-01-18",
+      "first_date": "2019-12-16",
+      "url": "https://commitfest.postgresql.org/patch/2381/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CACPNZCvG3rYfw-L-b9eaxtdDvgkOwz4U3TFriUVBOhKcuOBRkw@mail.gmail.com"
+      ],
+      "authors": "John Naylor (john.naylor)",
+      "objectors": "Tom Lane",
+      "summary": "Replace all single character literal tokens in the core, PL/pgSQL and ECPG grammars with named tokens, so the grammar can later use Bison 3.5's \"%define api.token.raw\" and skip the yytranslate[] lookup. The author measured about 1.7-1.9% faster raw parsing with the option enabled.",
+      "objection": "Tom Lane argued that the patch only moves the character-to-token mapping from the parser into the lexer, so it may not be an improvement. He also judged the patch too invasive for a small gain that needs Bison 3.5, a version the project would not require for a long time. The visible messages show no further discussion before the rejection.",
+      "touch_points": [
+        "SQL syntax / standard"
+      ],
+      "matched_queries": [
+        "PANIC core dump abort",
+        "avoid core dump ENOSPC"
+      ],
+      "from_hint": false,
+      "score": 0.23,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:2354",
+      "kind": "cf",
+      "title": "Connection string usage for Core Postgresql client applications",
+      "status": "Withdrawn",
+      "date": "2020-01-21",
+      "first_date": "2019-05-17",
+      "url": "https://commitfest.postgresql.org/patch/2354/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB_COdiamM8HrthAXpGfg8B2rL-fzq-mvhZ4o=jYEhWAsMqiCA@mail.gmail.com"
+      ],
+      "authors": "Lætitia AVROT (arkhena)",
+      "objectors": "",
+      "summary": "The patch documents that the dbname argument or option of several client applications (clusterdb, pgbench, pg_dump, pg_restore, reindexdb, vacuumdb) accepts a connection string. The author also suggested making all client applications accept connection strings with the same syntax, such as a common -d switch.",
+      "objection": "The author withdrew the patch after review. Laurenz Albe supported it and asked for wording changes and for createdb and dropdb to be covered. The author replied that she was not satisfied with a documentation-only patch and wanted every client application to accept the same syntax, so she would rethink the approach.",
+      "touch_points": [
+        "pg_dump / restore",
+        "planner"
+      ],
+      "matched_queries": [
+        "PANIC core dump abort",
+        "avoid core dump ENOSPC"
+      ],
+      "from_hint": false,
+      "score": 0.229,
+      "enriched": true,
+      "key_quote": "I'm not very satisfied with this patch. I think I want to go further with unifying connection string usage.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB_COdh1RtpGoG%2BGA5HZrQiiR1DGnQB2zx8S2RkCOzvSF4%3D%2B3w%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:2728",
+      "kind": "cf",
+      "title": "Improve pg_dump dumping publication tables",
+      "status": "Withdrawn",
+      "date": "2021-01-15",
+      "first_date": "2020-09-04",
+      "url": "https://commitfest.postgresql.org/patch/2728/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/EA6F1B1A-8081-4200-A83F-FB9DAC6B49D0@amazon.com"
+      ],
+      "authors": "John Hsu (jhsu)",
+      "objectors": "",
+      "summary": "The patch changes pg_dump's getPublicationTables() to fetch all publication-table memberships with a single query, instead of iterating over every table and issuing a separate query per table. The matching TableInfo for each row is then looked up in tblinfoindex, which should be faster when there are many tables.",
+      "objection": "The patch was superseded, not rejected: Tom Lane had already committed practically the same change in passing (commit 8e396a773), which also removed the server-side join. He therefore marked the entry withdrawn. Cary Huang's earlier concern about client-side memory use with very many publication tables was answered by Tom Lane as not significant compared to the per-table data pg_dump already collects.",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "PANIC core dump abort",
+        "avoid core dump ENOSPC"
+      ],
+      "from_hint": false,
+      "score": 0.208,
+      "enriched": true,
+      "key_quote": "I'll mark this CF entry \"withdrawn\", since it wasn't rejected\nexactly.  Too bad we don't have a classification of \"superseded\nby events\", or something like that.",
+      "quote_message_url": "https://www.postgresql.org/message-id/1679096.1610742123%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:2600",
+      "kind": "cf",
+      "title": "pg_dump --where option",
+      "status": "Returned with feedback",
+      "date": "2020-09-30",
+      "first_date": "2020-06-15",
+      "url": "https://commitfest.postgresql.org/patch/2600/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALAY4q8o00Sg5nemi2AuqNuLvmGLaR6br+YrvM41ZuSPjM2Qvg@mail.gmail.com"
+      ],
+      "authors": "Surafel Temesgen (surafel), Carter Thaxton (carter.thaxton)",
+      "objectors": "Daniel Gustafsson, Michael Paquier",
+      "summary": "Add a --where option to pg_dump that exposes pg_dump's existing internal ability to filter dumped table data with a WHERE clause, building on an earlier patch. This version aims to give clearer error messages for invalid clauses and to apply a filter only to a specified table instead of to every table matched by a pattern.",
+      "objection": "Daniel Gustafsson's review raised open issues: pasting arbitrary SQL into the query without schema-qualification checks may expose CVE-2018-1058-style problems, the patch had no tests, and it was unclear how quoted multibyte table names or table names containing colons would be handled. The author did not answer this review for two weeks, and Michael Paquier, noting that tests are needed, marked the entry returned with feedback.",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "PANIC core dump abort",
+        "avoid core dump ENOSPC"
+      ],
+      "from_hint": false,
+      "score": 0.18,
+      "enriched": true,
+      "key_quote": "Documenting something is well and good, but isn't allowing arbitrary SQL\ncopy-pasted into the query (which isn't checked for schema qualification)\nopening up for some of the ill-effects of CVE-2018-1058?",
+      "quote_message_url": "https://www.postgresql.org/message-id/2B42FF94-D3D7-4758-94AC-7602BADC8D29%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:671",
+      "kind": "cf",
+      "title": "add option to pg_dumpall to exclude tables from the dump",
+      "status": "Returned with feedback",
+      "date": "2016-10-03",
+      "first_date": "2016-07-10",
+      "url": "https://commitfest.postgresql.org/patch/671/",
+      "thread_urls": [],
+      "authors": "Jürgen Hannappel (hannappe)",
+      "objectors": "",
+      "summary": "add option to pg_dumpall to exclude tables from the dump",
+      "objection": "",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "PANIC core dump abort",
+        "avoid core dump ENOSPC"
+      ],
+      "from_hint": false,
+      "score": 0.174,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:1576",
+      "kind": "cf",
+      "title": "Parallel Dump to /dev/null",
+      "status": "Returned with feedback",
+      "date": "2018-03-22",
+      "first_date": "2018-02-01",
+      "url": "https://commitfest.postgresql.org/patch/1576/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20180201132446.GA13784@nighthawk.caipicrew.dd-dns.de"
+      ],
+      "authors": "Michael Banck (mbanck)",
+      "objectors": "Stephen Frost, Tom Lane, Michael Paquier, Peter Geoghegan",
+      "summary": "The patch lets pg_dump directory format (-Fd) treat /dev/null (NUL on Windows) as its target, so a parallel dump with -j can be discarded. The goal was a faster pg_dump-to-/dev/null corruption check, with about a 3.5 times speedup shown on a 170 GB database.",
+      "objection": "Reviewers objected to adding a special case to pg_dump for what is a weak corruption check, and asked for a proper tool that checks the whole database in one pass. Stephen Frost also said that a parallel dump to /dev/null but not to a regular file would confuse users. Tom Lane found the patch more intrusive than claimed. Michael Paquier proposed returning it with feedback, and the author did so.",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "PANIC core dump abort",
+        "avoid core dump ENOSPC"
+      ],
+      "from_hint": false,
+      "score": 0.154,
+      "enriched": true,
+      "key_quote": "Instead of trying to use pg_dump for this, we should provide a way to\nactually check for corruption across everything (instead of just the\nheap..), and have all detected corruption reported in one pass.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20180320231932.GN2416%40tamriel.snowman.net",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:3807",
+      "kind": "cf",
+      "title": "Generalize ereport_startup_progress infrastructure",
+      "status": "Withdrawn",
+      "date": "2022-10-11",
+      "first_date": "2022-08-02",
+      "url": "https://commitfest.postgresql.org/patch/3807/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACWijWQkoqdu5zhw=4pZHdLD07prHuppfPT6Y_8uVGjA0Q@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "Robert Haas",
+      "summary": "The patch moves the ereport_startup_progress infrastructure into elog.c/.h as a generic ereport_progress API, renames log_startup_progress_interval to log_progress_report_interval, and passes the interval to begin_progress_report_phase(). Follow-up patches would use it for postmaster removal of temp files and temp relation files, and later for checkpointer file processing.",
+      "objection": "Robert Haas said neither proposed use was the right way to solve its problem. The postmaster use changed timeout.c and relied on the timeout infrastructure, which he did not consider safe there. The checkpointer use needed more design work on how it interacts with log_checkpoints and the existing checkpoint logging. The author withdrew the entry about two weeks after his last message, which proposed new GUC designs and got no visible reply.",
+      "touch_points": [],
+      "matched_queries": [
+        "errabort ereport flag"
+      ],
+      "from_hint": false,
+      "score": 0.146,
+      "enriched": true,
+      "key_quote": "At the same time, I don't think the overall picture here is too clear yet. I'm reluctant to commit to a specific UI for a feature whose scope we don't seem to know.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoYZ_EPy6zjo%3DAWqZudcyQbuO8%3D0FXsLfQOb0wS5jEg-fg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:3356",
+      "kind": "cf",
+      "title": "Reword docs of GUCs restart_after_crash and remove_temp_files_after_crash",
+      "status": "Rejected",
+      "date": "2022-04-05",
+      "first_date": "2021-10-08",
+      "url": "https://commitfest.postgresql.org/patch/3356/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACXrG_RV0CMAkmsGJh65yiit5FbUSRtF7xVWW35ue=5U-A@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "",
+      "summary": "Reword docs of GUCs restart_after_crash and remove_temp_files_after_crash\nThreads: Reword docs of feature \"Remove temporary files after backend crash\"",
+      "objection": "",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "crash restart loop disk full"
+      ],
+      "from_hint": false,
+      "score": 0.145,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "revert:d3adaabaf7d555ec8bb1d83c43f72e79f1bf0b7d",
+      "kind": "revert",
+      "title": "Revert \"pg_dump: Lock all relations, not just plain tables\".",
+      "status": "Reverted",
+      "date": "2020-11-06",
+      "first_date": "2020-10-27",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=d3adaabaf7d555ec8bb1d83c43f72e79f1bf0b7d",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/16703-e348f58aab3cf6cc@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/20201021200659.GA32358@alvherre.pgsql"
+      ],
+      "authors": "Alvaro Herrera, Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"pg_dump: Lock all relations, not just plain tables\".\nReverted commit(s): pg_dump: Lock all relations, not just plain tables; Avoid null pointer dereference if error result lacks SQLSTATE.",
+      "objection": "Revert 403a3d91c, as well as the followup fix 7f4235032, in all\nbranches.  We need to think a bit harder about what the behavior\nof LOCK TABLE on views should be, and there's no time for that\nbefore next week's releases.  We'll take another crack at this\nlater.",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "avoid core dump ENOSPC"
+      ],
+      "from_hint": false,
+      "score": 0.14,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:833451552925d0175e1e15128e411ddef9a36996",
+      "kind": "revert",
+      "title": "Revert \"postmaster: Start syslogger earlier\".",
+      "status": "Reverted",
+      "date": "2019-05-19",
+      "first_date": "2019-01-30",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=833451552925d0175e1e15128e411ddef9a36996",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/15804-3721117bf40fb654@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/d5d50936-20b9-85f1-06bc-94a01c5040c1@2ndquadrant.com"
+      ],
+      "authors": "Peter Eisentraut",
+      "objectors": "",
+      "summary": "Revert \"postmaster: Start syslogger earlier\".\nReverted commit(s): postmaster: Start syslogger earlier",
+      "objection": "This commit reverts 57431a911d3a650451d198846ad3194900666152.\n\nWhile that's still a good idea in the abstract, we found out\nthat there are multiple crasher bugs in it on Windows builds,\nmaking the logging_collector option unusable on Windows.\nThere's no time left to fix these issues before 12beta1,\nso revert the patch to allow Windows beta testing to proceed.\nWe'll try again at some future date.\n\nPer bug #15804 from Yulian Khodorkovskiy and additional\ninvestigation by Michael Paquier.",
+      "touch_points": [],
+      "matched_queries": [
+        "postmaster give up after repeated crashes"
+      ],
+      "from_hint": false,
+      "score": 0.135,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:1521",
+      "kind": "cf",
+      "title": "BUG: cannot read big bytea (~600MB)",
+      "status": "Rejected",
+      "date": "2018-03-01",
+      "first_date": "2018-02-16",
+      "url": "https://commitfest.postgresql.org/patch/1521/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/c8bdf802d41ec37003ec3b726db79428@postgrespro.ru"
+      ],
+      "authors": "Victor Drobny (faza107), Anna Akenteva (anna.akenteva)",
+      "objectors": "",
+      "summary": "BUG: cannot read big bytea (~600MB)\nThreads: [HACKERS] [bug-fix] Cannot select big bytea values (~600MB)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "new elevel CRITICAL BUG"
+      ],
+      "from_hint": false,
+      "score": 0.131,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "revert:0c071936e94c6859afb2ec8d2c8dddf7bcdab7ee",
+      "kind": "revert",
+      "title": "Revert error-throwing wrappers for the printf family of functions.",
+      "status": "Reverted",
+      "date": "2015-05-19",
+      "first_date": "2015-05-18",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=0c071936e94c6859afb2ec8d2c8dddf7bcdab7ee",
+      "thread_urls": [],
+      "authors": "Noah Misch",
+      "objectors": "",
+      "summary": "Revert error-throwing wrappers for the printf family of functions.\nReverted commit(s): Add error-throwing wrappers for the printf family of functions.; Permit use of vsprintf() in PostgreSQL code.",
+      "objection": "This reverts commit 16304a013432931e61e623c8d85e9fe24709d9ba, except\nfor its changes in src/port/snprintf.c; as well as commit\ncac18a76bb6b08f1ecc2a85e46c9d2ab82dd9d23 which is no longer needed.\n\nFujii Masao reported that the previous commit caused failures in psql on\nOS X, since if one exits the pager program early while viewing a query\nresult, psql sees an EPIPE error from fprintf --- and the wrapper function\nthought that was reason to panic.  (It's a bit surprising that the same\ndoes not happen on Linux.)  Further discussion among the security list\nconcluded that the risk of other such failures was far too great, and\nthat the one-size-fits-all approach to error handling embodied in the\nprevious patch is unlikely to be workable.\n\nThis leaves us again exposed to the possibility of the type of failure\nenvisioned in CVE-2015-3166.  However, that failure mode is strictly\nhypothetical at this point: there is no concrete reason to believe that\nan attacker could trigger information disclosure through the supposed\nmechanism.  In the first place, the attack surface is fairly limited,\nsince so much of what the backend does with format strings goes through\nstringinfo.c or psprintf(), and those already had adequate defenses.\nIn the second place, even granting that an unprivileged attacker could\ncontrol the occurrence of ENOMEM with some precision, it's a stretch to\nbelieve that he could induce it just where the target buffer contains some\nvaluable information.  So we concluded that the risk of non-hypothetical\nproblems induced by the patch greatly outweighs the security risks.\nWe will therefore revert, and instead undertake closer analysis to\nidentify specific calls that may need hardening, rather than attempt a\nuniversal solution.\n\nWe have kept the portion of the previous patch that improved snprintf.c's\nhandling of errors when it calls the platform's sprintf().  That seems to\nbe an unalloyed improvement.",
+      "touch_points": [
+        "psql",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "PANIC error level classification"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:3134",
+      "kind": "cf",
+      "title": "Bug in query rewriter - hasModifyingCTE not getting set",
+      "status": "Returned with feedback",
+      "date": "2021-09-08",
+      "first_date": "2021-02-06",
+      "url": "https://commitfest.postgresql.org/patch/3134/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJcOf-fAdj=nDKMsRhQzndm-O13NY4dL6xGcEvdX5Xvbbi0V7g@mail.gmail.com"
+      ],
+      "authors": "Takayuki Tsunakawa (maumau)",
+      "objectors": "",
+      "summary": "Bug in query rewriter - hasModifyingCTE not getting set\nThreads: Bug in query rewriter - hasModifyingCTE not getting set",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "new elevel CRITICAL BUG"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:1362",
+      "kind": "cf",
+      "title": "PARALLEL flag for cursors",
+      "status": "Returned with feedback",
+      "date": "2018-02-07",
+      "first_date": "2017-10-14",
+      "url": "https://commitfest.postgresql.org/patch/1362/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/98760523-a0d2-8705-38e3-c4602ecf2448@2ndquadrant.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "PARALLEL flag for cursors\nThreads: PATCH: enabling parallel execution for cursors explicitly\n(experimental)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "errabort ereport flag"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "revert:64925603c972aa3a9f1d4c42686dba67f1a7e9d0",
+      "kind": "revert",
+      "title": "Revert \"Use pselect(2) not select(2), if available, to wait in postmaster's loop.\"",
+      "status": "Reverted",
+      "date": "2017-04-24",
+      "first_date": "2017-04-24",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=64925603c972aa3a9f1d4c42686dba67f1a7e9d0",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/9696.1493072081@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/9205.1492833041@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Use pselect(2) not select(2), if available, to wait in postmaster's loop.\"\nReverted commit(s): Use pselect(2) not select(2), if available, to wait in postmaster's loop.",
+      "objection": "This reverts commit 81069a9efc5a374dd39874a161f456f0fb3afba4.\n\nBuildfarm results suggest that some platforms have versions of pselect(2)\nthat are not merely non-atomic, but flat out non-functional.  Revert the\nuse-pselect patch to confirm this diagnosis (and exclude the no-SA_RESTART\npatch as the source of trouble).  If it's so, we should probably look into\nblacklisting specific platforms that have broken pselect.",
+      "touch_points": [],
+      "matched_queries": [
+        "crash restart loop disk full"
+      ],
+      "from_hint": false,
+      "score": 0.116,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:2637",
+      "kind": "cf",
+      "title": "audo-detect and use -moutline-atomics compilation flag for aarch64",
+      "status": "Rejected",
+      "date": "2020-09-29",
+      "first_date": "2020-07-01",
+      "url": "https://commitfest.postgresql.org/patch/2637/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/099F69EE-51D3-4214-934A-1F28C0A1A7A7@amazon.com"
+      ],
+      "authors": "Tsahi Zidenberg (tsahee)",
+      "objectors": "",
+      "summary": "audo-detect and use -moutline-atomics compilation flag for aarch64\nThreads: [PATCH] audo-detect and use -moutline-atomics compilation flag for\naarch64",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "errabort ereport flag"
+      ],
+      "from_hint": false,
+      "score": 0.116,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:1883",
+      "kind": "cf",
+      "title": "Add Hook Functions for Disk Quota Extension",
+      "status": "Returned with feedback",
+      "date": "2020-07-31",
+      "first_date": "2018-11-20",
+      "url": "https://commitfest.postgresql.org/patch/1883/",
+      "thread_urls": [],
+      "authors": "Haozhou Wang (hawang), Hubert Zhang (hubertz), Hao Wu (hwu)",
+      "objectors": "",
+      "summary": "Add Hook Functions for Disk Quota Extension",
+      "objection": "",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "crash restart loop disk full"
+      ],
+      "from_hint": false,
+      "score": 0.116,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "revert:dca369320f6023b55feb49f281d394181fc57903",
+      "kind": "revert",
+      "title": "Revert \"isolationtester: don't repeat the is-it-waiting query when retrying a step.\"",
+      "status": "Reverted",
+      "date": "2016-02-12",
+      "first_date": "2016-02-12",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=dca369320f6023b55feb49f281d394181fc57903",
+      "thread_urls": [],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"isolationtester: don't repeat the is-it-waiting query when retrying a step.\"\nReverted commit(s): isolationtester: don't repeat the is-it-waiting query when retrying a step.",
+      "objection": "This mostly reverts commit 9c9782f066e0ce5424b8706df2cce147cb78170f.\nI left in the parts that rearranged removal of completed waiting steps;\nbut the idea of not rechecking a step's blocked-ness isn't working.",
+      "touch_points": [],
+      "matched_queries": [
+        "postmaster give up after repeated crashes"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:1772",
+      "kind": "cf",
+      "title": "Create a new session for postmaster in pg_ctl",
+      "status": "Returned with feedback",
+      "date": "2018-09-30",
+      "first_date": "2018-08-01",
+      "url": "https://commitfest.postgresql.org/patch/1772/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEET0ZH5Bf7dhZB3mYy8zZQttJrdZg_0Wwaj0o1PuuBny1JkEw@mail.gmail.com"
+      ],
+      "authors": "Paul Guo (paulguo-pivotal)",
+      "objectors": "",
+      "summary": "Create a new session for postmaster in pg_ctl\nThreads: [Patch] Create a new session in postmaster by calling setsid()",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "postmaster give up after repeated crashes"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:3027",
+      "kind": "cf",
+      "title": "Add regexp_positions(string text, pattern text, flags text) → setof record (starts integer[], lengths integer[])",
+      "status": "Returned with feedback",
+      "date": "2021-12-03",
+      "first_date": "2021-03-01",
+      "url": "https://commitfest.postgresql.org/patch/3027/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/9b2fe34e-b666-471d-8297-f0c82b133085@www.fastmail.com"
+      ],
+      "authors": "Joel Jacobson (joeljacobson)",
+      "objectors": "",
+      "summary": "Add regexp_positions(string text, pattern text, flags text) → setof record (starts integer[], lengths integer[])\nThreads: [PATCH] regexp_positions ( string text, pattern text, flags text ) → setof int4range[]",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "errabort ereport flag"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:3066",
+      "kind": "cf",
+      "title": "Use SIGIO to detect postmaster death",
+      "status": "Withdrawn",
+      "date": "2021-07-13",
+      "first_date": "2020-09-17",
+      "url": "https://commitfest.postgresql.org/patch/3066/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGK1607VmtrDUHQXrsooU=ap4g4R2yaoByWOOA3m8xevUQ@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Use SIGIO to detect postmaster death\nThreads: PostmasterIsAlive() in recovery (non-USE_POST_MASTER_DEATH_SIGNAL builds)",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "postmaster give up after repeated crashes"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 6,
+    "new_calls": 2,
+    "failed": 0,
+    "quotes_verified": 2,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 0
+  },
+  "precedent_cutoff": "2023-11-18",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found, and nothing in the thread shows an earlier rejection. Messages #1 to #6 are the 2023 discussion that started this idea; v5 follows the direction favored there in messages #3 and #5: keep PANIC, change call sites incrementally, and control core dumps with a separate flag."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 1,
+      "note": "Only one objection from this angle. The C API follows the errabort() spelling suggested in message #4, and the GUC is a developer option that only restores today's behaviour. The patch adds no SQL syntax and no catalog or pg_dump surface."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The proposal touches no on-disk format, WAL record, catalog, replication protocol or wire protocol, and needs no pg_upgrade work. A marked PANIC changes only how the failing process ends: _exit(2) replaces abort(), and both skip cleanup and lead the postmaster into the same crash-restart path. Adding the ErrorData field changes the ABI only for a major release (target 20), so backpatching is not in question."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal has no privilege or exposure aspect. The new GUC is set only in postgresql.conf or on the command line, errabort() is a C API with no SQL surface, and fewer core files means less server memory written to disk. Unprivileged users can already cause ENOSPC; this change removes core files and does not add one."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 1,
+      "note": "From the maintenance angle the design is small. Its costs fall on PANIC paths only, with no hot-path or per-backend cost, and it follows the flag approach suggested in message #4 and message #5. Committability: Andres Freund, Jeff Davis and Tom Lane shaped the idea in 2023, but no committer has replied to v1-v5. Only a non-committer reviewer is engaged, so the owner of the aftermath is not yet known."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing setting gives selective core suppression: ulimit -c, kernel core_pattern and systemd-coredump limits apply to every abort(), and filtering out SIGABRT drops too much, as message #1 says. An emit_log_hook extension could call _exit(2) on PANIC with ENOSPC, but that is a fragile workaround outside core's control, and messages #1-#6 agreed to put this in core."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "The material shows real demand. Andres Freund reports fleet-wide crash analysis made harder by thousands of identical ENOSPC cores (message #1), and Jeff Davis and Tom Lane agreed and backed incremental call-site changes (messages #2 to #5). The author reports seeing the same disk-full cores in practice (message #7). The only workaround, disabling cores with ulimit or core_pattern, also drops the cores from real bugs, because every PANIC ends in SIGABRT. The cost falls mostly on the marked call sites: one developer GUC and two ereport() helpers, with no new hot-path cost."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 2,
+      "new_survived": 2,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 57,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 13,
+    "wall_ms": 104955,
+    "cost_usd": 1.6278667999999998,
+    "dry_run": false
+  }
+}

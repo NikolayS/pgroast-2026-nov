@@ -1,0 +1,1468 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:39:07.369Z",
+  "input": {
+    "arg": "7308",
+    "cf": {
+      "id": 7308,
+      "url": "https://commitfest.postgresql.org/patch/7308/",
+      "title": "Optimize truncation logic to reduce AccessExclusive lock impact",
+      "status": "Needs review",
+      "authors": "shihao zhong (zhong950419), Stepan Neretin (snpgg)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CA%2BYyo5Trs9x03-sc4PpmEXPY9K_B_jbEbNd01RbF%2BvOxs3zVUA%40mail.gmail.com",
+    "subject": "Optimize truncation logic to reduce AccessExclusive lock impact",
+    "thread_start": "2025-03-18T06:03:38Z",
+    "messages_read": 5,
+    "messages_total": 5,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "03164ee7bce36946eaa521f6db2be1b30bead577.diff"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection is fatal, and the lock problem is real and reported from production. Patch 2 makes the buffer drop on a primary depend on an exact fork size (prior-attempts-1, maintenance-fit-2), which is the doubt recorded for [P1]. Someone who knows the buffer manager has to judge that. Patch 1 still needs a workload that justifies it once patch 2 is applied (maintenance-fit-1).",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Cut buffer scan cost when vacuum truncates a relation tail",
+    "problem": "When vacuum truncates free pages at the end of a table, it holds AccessExclusiveLock while smgrtruncate() scans all of shared buffers. With very large shared_buffers (the report cites 1.8 TiB on NUMA hosts), this scan is slow and blocks other sessions for a long time. pg_statistic is named as one of the most affected tables.",
+    "proposed_design": "The thread has two patches. The first (Neretin, idea by Sokolov) changes should_attempt_truncation so vacuum truncates only when it can free at least 3% of the relation plus 2 pages. The second (Zhong, from Rowley's suggestion) has smgrtruncate() pass the known old fork sizes to DropRelationBuffers(), so small truncations look up buffers one by one instead of scanning the whole pool.",
+    "user_visible_surface": [
+      "Patch 1: vacuum truncates the relation tail less often, and small tables may stay at about 3 pages instead of 1.",
+      "Patch 2: DropRelationBuffers() receives the old fork sizes, which is a C API change for extensions that call it.",
+      "Patch 2: RelationTruncate() asserts that the caller holds AccessExclusiveLock, so extensions that call it with a weaker lock will hit the assertion."
+    ],
+    "author_claims": [
+      "Patch 2 cut DropRelationBuffers() time for a 2000-page truncation from 23.35 ms to 0.27 ms at shared_buffers 32GB.",
+      "Below the 32768-block scan threshold at 8GB, a 30000-page truncation took about 2.5 to 3 times less time.",
+      "Above the threshold both versions do the same full scan, and background throughput did not change in any run.",
+      "Passed sizes are safe because AccessExclusiveLock or recovery rules stop the relation from growing between measuring and dropping.",
+      "With zero_damaged_pages, a valid zero page past the end of file may stay for the checkpointer, which the author accepts."
+    ],
+    "thread_state": "Rowley suggested the targeted-drop approach and noted that patch 1 only answers the existing comment about tuning REL_TRUNCATE_*. Sokolov agreed and asked whether huge tables should be truncated less often; patch 2 has no replies yet.",
+    "unclear": [
+      "The CommitFest entry does not say which patch is under review, or whether patch 1 is dropped.",
+      "The material includes no prose or file list for the patch 2 attachment.",
+      "Patch 1 reports no measurements of how often truncation happens or how long the lock is held.",
+      "Patch 2 says the 'original thread' quotes Tom on dirty buffers, but that thread is not linked or shown.",
+      "Neither patch says whether the problem remains for large truncations of huge tables above the scan threshold.",
+      "The material does not say if patch 2 changes the DropRelationBuffers() signature or adds a new function."
+    ],
+    "search_queries": [
+      "vacuum truncate AccessExclusiveLock shared buffers",
+      "DropRelationBuffers full scan",
+      "REL_TRUNCATE_FRACTION REL_TRUNCATE_MINIMUM",
+      "should_attempt_truncation",
+      "vacuum_truncate relation tail",
+      "smgrtruncate drop buffers optimization",
+      "large shared_buffers truncation slow",
+      "BUF_DROP_FULL_SCAN_THRESHOLD"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P1",
+      "source_id": "cf:286",
+      "title": "drop/truncate table sucks for large values of shared buffers",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/286/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAA4eK1JPLGjpMeJ5YLNE7bpNBhP2EQe_rDR+Aw3atNfj9WkAGg@mail.gmail.com"
+      ],
+      "date": "2015-07-02",
+      "first_date": "2015-06-27",
+      "who_objected": "Tom Lane, Heikki Linnakangas",
+      "quote": "Committing a band-aid will just make it harder to pursue real fixes.",
+      "quote_url": "https://www.postgresql.org/message-id/14561.1435845813%40sss.pgh.pa.us",
+      "enriched": true,
+      "reason": "Tom Lane objected that the approach fails badly if the caller is wrong about the relation's maximum page number (for example, kernel lseek bugs). He also noted that it does not help DROP TABLESPACE or DROP DATABASE, which also scan the whole buffer pool. Heikki Linnakangas returned it with feedback, citing the issues raised, a still-unwritten alternative (delayed cleanup during the checkpoint scan), and a preference for a structure such as a radix tree that can find all buffers for a relation or database. Tom Lane added that committing a band-aid would make more complete fixes harder to pursue.",
+      "relation": "similar_idea",
+      "what_is_different": "P1 aimed at DROP and TRUNCATE TABLE. Patch 2 covers only relation truncation and reuses the old_nblocks values that smgrtruncate() already has, with the existing FindAndDropRelationBuffers() path and threshold."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Wrong relation size from lseek would leave buffers behind",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "prior_rejection",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "On a primary, vacuum truncates a table tail and smgrnblocks() returns a size that is too small, for example because of a kernel or file system bug. The targeted drop skips dirty buffers past that size. The checkpointer later tries to write a block of a truncated file and fails, and nobody sees it until then.",
+      "argument": "[P1] tried the same per-block lookup and, according to its thread summary, was turned down partly because it fails badly if the caller is wrong about the relation's last page. Message #5 argues only that the relation cannot grow between measuring and dropping. It does not cover a wrong size returned by lseek. The full scan does not depend on the reported size. d6ad34f34 limited the shortcut to recovery, where the size is cached, and this patch extends it to normal running.",
+      "precedent_ids": [
+        "P1"
+      ],
+      "thread_message_refs": [
+        2,
+        5
+      ],
+      "author_must_show": "Outside recovery, what happens if smgrnblocks() underreports the fork size, and does the existing truncation path already fail in that case without the full scan?",
+      "precedents": [
+        {
+          "id": "P1",
+          "title": "drop/truncate table sucks for large values of shared buffers",
+          "url": "https://commitfest.postgresql.org/patch/286/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CAA4eK1JPLGjpMeJ5YLNE7bpNBhP2EQe_rDR+Aw3atNfj9WkAGg@mail.gmail.com"
+          ],
+          "date": "2015-07-02",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "David Rowley",
+          "date": "2025-03-19T02:09:07Z",
+          "url": "https://www.postgresql.org/message-id/CAApHDvrfngqCpQ09LKdr-BnJEVHW0%3DwAhxfRBnw%3DHJ2645cJPg%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "shihao zhong",
+          "date": "2026-09-17T02:44:44Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqRcNOrciQy%3D8sAYF%3D8Dsin2tYNpnUwe6V5JM%2BvXKeUHeA%40mail.gmail.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #5 rules out relation growth but does not cover a size that smgrnblocks() underreports, which is the reason recorded for [P1]. The recovery path already trusts a size first read by lseek, which lowers the risk but does not answer the question.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Targeted drop makes truncate callers responsible for exact fork sizes",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch or an extension calls smgrtruncate() with stale fork sizes, or while the relation can still grow. Buffers past the passed size stay in shared buffers, and the checkpointer later writes a dirty one past the new end of file. A release build gives no error at truncate time, so the problem shows up later as a checkpoint failure or a damaged relation.",
+      "argument": "Outside recovery, today's full scan does not depend on any size the caller passes. Message #5 moves correctness to the caller: the sizes must be exact and the relation must not grow, and only an Assert in RelationTruncate() enforces this. Outside recovery the size comes from lseek, and [P1] records doubt about trusting it as a reason the same lookup approach was not accepted. Reusing the existing FindAndDropRelationBuffers() path lowers the risk, but the proposal does not say what a release build checks.",
+      "precedent_ids": [
+        "P1"
+      ],
+      "thread_message_refs": [
+        2,
+        5
+      ],
+      "author_must_show": "In a release build, what detects a dirty buffer left past the passed size, and why is the lseek-accuracy doubt recorded for the earlier attempt not a concern here?",
+      "precedents": [
+        {
+          "id": "P1",
+          "title": "drop/truncate table sucks for large values of shared buffers",
+          "url": "https://commitfest.postgresql.org/patch/286/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CAA4eK1JPLGjpMeJ5YLNE7bpNBhP2EQe_rDR+Aw3atNfj9WkAGg@mail.gmail.com"
+          ],
+          "date": "2015-07-02",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "David Rowley",
+          "date": "2025-03-19T02:09:07Z",
+          "url": "https://www.postgresql.org/message-id/CAApHDvrfngqCpQ09LKdr-BnJEVHW0%3DwAhxfRBnw%3DHJ2645cJPg%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "shihao zhong",
+          "date": "2026-09-17T02:44:44Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqRcNOrciQy%3D8sAYF%3D8Dsin2tYNpnUwe6V5JM%2BvXKeUHeA%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "smgrtruncate() callers already pass old_nblocks, but today a wrong value cannot leave buffers behind outside recovery. Patch 2 makes it a correctness input, and message #5 names only an Assert in RelationTruncate() as the check. The lseek part duplicates prior-attempts-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Patch 1 lets large tables keep much more empty tail space",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "desirability",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user with a 2 TiB table deletes about 40 GiB of rows at its end. Today vacuum truncates once 1000 free tail pages (8 MiB) exist. Under 3% plus 2 pages it needs about 60 GiB, so the space never goes back to the OS, and the user finds out when disk usage does not drop.",
+      "argument": "Patch 1 changes a constant that applies to every installation, so all users of large tables pay in disk space to cut lock time on hosts with very large shared_buffers. Message #1 shows no data on how often truncation runs or how long the lock is held. Patch 2 already removes most of the scan cost for small truncations, which weakens the case for patch 1. Users who want fewer truncations can already set the vacuum_truncate reloption per table.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        3,
+        5
+      ],
+      "author_must_show": "With patch 2 applied, which workload still needs the 3% plus 2 pages rule, and what lock times show it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Stepan Neretin",
+          "date": "2025-03-18T06:03:38Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BYyo5Trs9x03-sc4PpmEXPY9K_B_jbEbNd01RbF%2BvOxs3zVUA%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "David Rowley",
+          "date": "2025-03-19T02:09:07Z",
+          "url": "https://www.postgresql.org/message-id/CAApHDvrfngqCpQ09LKdr-BnJEVHW0%3DwAhxfRBnw%3DHJ2645cJPg%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Yura Sokolov",
+          "date": "2025-03-19T16:05:13Z",
+          "url": "https://www.postgresql.org/message-id/0be607a5-20f6-4894-bb22-412e3c784bc2%40postgrespro.ru"
+        },
+        {
+          "index": 5,
+          "from": "shihao zhong",
+          "date": "2026-09-17T02:44:44Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqRcNOrciQy%3D8sAYF%3D8Dsin2tYNpnUwe6V5JM%2BvXKeUHeA%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The numbers are right: today 1000 free tail pages trigger truncation, and 3% of a 2 TiB table is about 60 GiB. Message #1 shows no lock-time data, and patch 2 makes Sokolov's small-truncation case cheap, so patch 1 still needs a stated workload.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Patch 1 changes when every vacuum returns space, with no opt-in",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "desirability",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA deletes old rows from a 2 TiB table and runs VACUUM to give disk back. Today vacuum truncates once about 1000 free tail pages (8 MiB) exist. Under patch 1 it needs about 3% of the table, roughly 60 GiB, so the space stays allocated and the DBA finds out from disk monitoring after the upgrade.",
+      "argument": "Message #1 replaces the min(REL_TRUNCATE_MINIMUM, relsize/REL_TRUNCATE_FRACTION) rule with a hardcoded 3% plus 2 pages, and should_attempt_truncation also governs manual VACUUM. Users already have a per-table off switch for lock-sensitive tables: the vacuum_truncate reloption and the VACUUM TRUNCATE option. Patch 1 instead changes the default for everyone, including users who never saw the lock problem. Message #2 frames this as the tuning question in the existing comment, and message #3 calls a tunable formula hard to build, so no knob is offered.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        3
+      ],
+      "author_must_show": "Why is changing the default threshold for all tables better than using vacuum_truncate = off on the affected tables, once patch 2 makes small truncations cheap?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Stepan Neretin",
+          "date": "2025-03-18T06:03:38Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BYyo5Trs9x03-sc4PpmEXPY9K_B_jbEbNd01RbF%2BvOxs3zVUA%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "David Rowley",
+          "date": "2025-03-19T02:09:07Z",
+          "url": "https://www.postgresql.org/message-id/CAApHDvrfngqCpQ09LKdr-BnJEVHW0%3DwAhxfRBnw%3DHJ2645cJPg%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Yura Sokolov",
+          "date": "2025-03-19T16:05:13Z",
+          "url": "https://www.postgresql.org/message-id/0be607a5-20f6-4894-bb22-412e3c784bc2%40postgrespro.ru"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1, which uses the same 2 TiB example and the same vacuum_truncate alternative.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Patch 2 does not say whether DropRelationBuffers() keeps its signature",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension or table access method that calls DropRelationBuffers() fails to compile against version 20 if the patch adds a parameter. The same applies to an extension that calls RelationTruncate() under a lock weaker than AccessExclusiveLock: it starts failing the new assertion in assert-enabled builds. In both cases the author learns of the problem from their CI after the change is released.",
+      "argument": "Message #2 suggested adding another version of DropRelationBuffers(), which would leave existing callers alone. Message #5 says the sizes are passed on to DropRelationBuffers(). It does not say whether the existing function changes or a new one is added. The material has no commit message or file list for patch 2. The assertion also makes a locking rule into a contract for RelationTruncate() callers, but the proposal does not document that rule anywhere.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        5
+      ],
+      "author_must_show": "Does patch 2 change the existing DropRelationBuffers() signature or add a new function, and where is the AccessExclusiveLock rule for RelationTruncate() callers documented?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "David Rowley",
+          "date": "2025-03-19T02:09:07Z",
+          "url": "https://www.postgresql.org/message-id/CAApHDvrfngqCpQ09LKdr-BnJEVHW0%3DwAhxfRBnw%3DHJ2645cJPg%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "shihao zhong",
+          "date": "2026-09-17T02:44:44Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqRcNOrciQy%3D8sAYF%3D8Dsin2tYNpnUwe6V5JM%2BvXKeUHeA%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "Postgres changes internal C functions between major versions, and a compile error is the loud signal extensions rely on. Truncating under a weaker lock is already unsafe, so the assertion exposes an existing bug in such a caller.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Targeted buffer drop trusts the measured file size outside recovery",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "On a primary, smgrnblocks() returns a size smaller than the true number of blocks with buffers, for example after a filesystem or lseek fault. Vacuum truncates, the targeted drop skips a dirty buffer past that size, and the checkpointer later writes it back past the new end of file. The resulting corruption shows up long after the truncation, with nothing tying it to the cause.",
+      "argument": "Today, outside recovery, smgrnblocks_cached() returns InvalidBlockNumber, so DropRelationBuffers() scans the whole pool and catches every buffer whatever the file size says. Patch 2 makes normal operation depend on old_nblocks being exact, which is the risk [P1] was returned for. Message #5 rules out growth under AccessExclusiveLock but does not cover a wrong size reading. The temporary verification scan in message #5 was a test aid and is not part of the patch.",
+      "precedent_ids": [
+        "P1"
+      ],
+      "thread_message_refs": [
+        2,
+        5
+      ],
+      "author_must_show": "Why is a mismatch between the lseek-derived size and the buffers that really exist no longer a concern, given that [P1] was returned for this reason?",
+      "precedents": [
+        {
+          "id": "P1",
+          "title": "drop/truncate table sucks for large values of shared buffers",
+          "url": "https://commitfest.postgresql.org/patch/286/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CAA4eK1JPLGjpMeJ5YLNE7bpNBhP2EQe_rDR+Aw3atNfj9WkAGg@mail.gmail.com"
+          ],
+          "date": "2015-07-02",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "David Rowley",
+          "date": "2025-03-19T02:09:07Z",
+          "url": "https://www.postgresql.org/message-id/CAApHDvrfngqCpQ09LKdr-BnJEVHW0%3DwAhxfRBnw%3DHJ2645cJPg%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "shihao zhong",
+          "date": "2026-09-17T02:44:44Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqRcNOrciQy%3D8sAYF%3D8Dsin2tYNpnUwe6V5JM%2BvXKeUHeA%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of prior-attempts-1, which states the same lseek underreport scenario and asks the more precise question.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Valid buffer can survive past end of file after truncation",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A session with zero_damaged_pages reads past end of file and leaves a valid zero page in shared buffers. Vacuum truncates the relation, and the targeted drop leaves that buffer in place. If the relation is extended again, or the page is dirtied and written, a stale buffer sits on a block number that is now being reused.",
+      "argument": "Message #5 accepts this case and leaves the page \"for the checkpointer\". The full scan today removes all buffers for the fork above the cut point, which keeps the invariant that no valid buffer exists past end of file after truncation. The proposal does not say what happens when relation extension later finds an existing valid buffer for the new block. The setting is rare, but it is used during corruption recovery, when that invariant matters most.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        5
+      ],
+      "author_must_show": "What does relation extension or the checkpointer do when it meets a valid buffer for a block past end of file left by a targeted drop?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "shihao zhong",
+          "date": "2026-09-17T02:44:44Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqRcNOrciQy%3D8sAYF%3D8Dsin2tYNpnUwe6V5JM%2BvXKeUHeA%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The same valid zero page past end of file exists today whenever no truncation follows the zero_damaged_pages read, so no invariant holds there now. Relation extension already handles an existing buffer for the new block and reuses a zero page.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Patch 1 overlaps the existing vacuum_truncate storage parameter",
+      "level": "1b",
+      "rubric_item": 12,
+      "category": "does_not_fit",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator whose very large table stalls on truncation can already set `alter table ... set (vacuum_truncate = off)` or run `vacuum (truncate false)`. Patch 1 instead changes the truncation rule for every table on every install. Users who never had the lock problem see small tables stay at about 3 pages and tails freed later, with no setting to restore the old rule.",
+      "argument": "Message #1 changes `should_attempt_truncation` globally and does not mention the vacuum_truncate storage parameter. Message #3 targets 2TB tables that free about 8MB at a time, which the parameter already covers per table. The parameter turns truncation off fully, so patch 1 adds a middle ground, but neither message shows that it is needed or why it should be the default for all tables. For pg_statistic, setting the parameter on a catalog needs allow_system_table_mods, which is a real but narrow limit.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3
+      ],
+      "author_must_show": "For which workloads is `vacuum_truncate = off` on the affected tables not enough, and why should the new threshold apply to every table by default?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Stepan Neretin",
+          "date": "2025-03-18T06:03:38Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BYyo5Trs9x03-sc4PpmEXPY9K_B_jbEbNd01RbF%2BvOxs3zVUA%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Yura Sokolov",
+          "date": "2025-03-19T16:05:13Z",
+          "url": "https://www.postgresql.org/message-id/0be607a5-20f6-4894-bb22-412e3c784bc2%40postgrespro.ru"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1, which already raises the vacuum_truncate reloption and the change of default for all tables.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Patch 1 changes truncation for everyone to help huge buffer pools",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user with ordinary shared_buffers runs vacuum after a bulk delete at the end of a table. Under patch 1, vacuum now leaves up to 3% of the table plus 2 pages untruncated, where before it returned that space. The user gets nothing back for this, because the full buffer scan was cheap at their size.",
+      "argument": "The only demand shown is one report from 1.8 TiB shared_buffers hosts (message #1), with no numbers on how often truncation runs or how long the lock is held. Patch 2 (message #5) addresses that cost directly, so small truncations become targeted lookups, and only the users with the problem see a difference. Sokolov's case of a 2TB table truncated every 8MB (message #3) is also a small truncation, and patch 2 makes it cheap. Users who still want less truncation can set the vacuum_truncate reloption on user tables today.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3,
+        5
+      ],
+      "author_must_show": "With patch 2 applied, which measured workload still holds AccessExclusiveLock long enough to need patch 1's higher threshold, and why is vacuum_truncate = off not enough there?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Stepan Neretin",
+          "date": "2025-03-18T06:03:38Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BYyo5Trs9x03-sc4PpmEXPY9K_B_jbEbNd01RbF%2BvOxs3zVUA%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Yura Sokolov",
+          "date": "2025-03-19T16:05:13Z",
+          "url": "https://www.postgresql.org/message-id/0be607a5-20f6-4894-bb22-412e3c784bc2%40postgrespro.ru"
+        },
+        {
+          "index": 5,
+          "from": "shihao zhong",
+          "date": "2026-09-17T02:44:44Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqRcNOrciQy%3D8sAYF%3D8Dsin2tYNpnUwe6V5JM%2BvXKeUHeA%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1. Its scenario is also partly wrong: for tables under about 33000 pages the current rule needs 1/16 of the table, so patch 1 truncates sooner there.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "Patch 2 changes which buffers are dropped at truncation, so a missed dirty buffer could be written past the new end of file."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "Patch 2 passes old fork sizes to DropRelationBuffers() and adds a lock assertion in RelationTruncate()."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Patch 2 makes callers of smgrtruncate() responsible for exact fork sizes; patch 1 changes the default truncation rule for all tables."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "Patch 1 overlaps the existing vacuum_truncate reloption and VACUUM TRUNCATE option."
+    }
+  ],
+  "questions": [
+    "Which patch is the CommitFest entry asking reviewers to look at: patch 2 alone, or both patches?",
+    "Outside recovery, what happens if smgrnblocks() underreports the fork size, and does the current truncation path already fail in that case without the full scan?",
+    "In a release build, what detects a dirty buffer left past the size passed to DropRelationBuffers()?",
+    "With patch 2 applied, which workload still needs the 3% plus 2 pages rule, and what lock times show it?",
+    "Does the lock problem remain for truncations above BUF_DROP_FULL_SCAN_THRESHOLD, and is that case in scope?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "Someone who knows the buffer manager and smgr truncation code would have to own patch 2. Patch 2 has no replies yet.",
+    "liability": "The owner signs for the rule that no dirty buffer survives past the new end of file after a targeted drop on a primary. A mistake shows up later as a checkpoint failure or a damaged relation, far from its cause.",
+    "author_follow_up": "The second author posted measurements and created the CommitFest entry. There is no sign either way about fixes after commit."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "low",
+    "review_cost": "medium",
+    "recommended_action": "proceed",
+    "reason": "Patch 2 reuses an existing lookup path and helps installations with large shared_buffers, with measurements shown. Review cost is medium because the patch 2 code was not read and it touches the buffer manager; patch 1 can wait for a stated workload."
+  },
+  "self_advice": [],
+  "provisional_note": "The material has no prose or file list for patch 2, so its API shape and release-build checks could not be judged. The safety argument is known only from the objections' account of message #5.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:286",
+      "kind": "cf",
+      "title": "drop/truncate table sucks for large values of shared buffers",
+      "status": "Returned with feedback",
+      "date": "2015-07-02",
+      "first_date": "2015-06-27",
+      "url": "https://commitfest.postgresql.org/patch/286/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAA4eK1JPLGjpMeJ5YLNE7bpNBhP2EQe_rDR+Aw3atNfj9WkAGg@mail.gmail.com"
+      ],
+      "authors": "Amit Kapila (amitkapila)",
+      "objectors": "Tom Lane, Heikki Linnakangas",
+      "summary": "Speed up DROP/TRUNCATE TABLE when shared_buffers is large by looking up each block of the relation in the buffer mapping table, instead of scanning all of shared_buffers. This path is used only when the table is smaller than a threshold (25% of shared_buffers) and shared_buffers is at least 32MB.",
+      "objection": "Tom Lane objected that the approach fails badly if the caller is wrong about the relation's maximum page number (for example, kernel lseek bugs). He also noted that it does not help DROP TABLESPACE or DROP DATABASE, which also scan the whole buffer pool. Heikki Linnakangas returned it with feedback, citing the issues raised, a still-unwritten alternative (delayed cleanup during the checkpoint scan), and a preference for a structure such as a radix tree that can find all buffers for a relation or database. Tom Lane added that committing a band-aid would make more complete fixes harder to pursue.",
+      "touch_points": [],
+      "matched_queries": [
+        "vacuum truncate AccessExclusiveLock shared buffers",
+        "smgrtruncate drop buffers optimization",
+        "large shared_buffers truncation slow",
+        "BUF_DROP_FULL_SCAN_THRESHOLD"
+      ],
+      "from_hint": false,
+      "score": 0.443,
+      "enriched": true,
+      "key_quote": "Committing a band-aid will just make it harder to pursue real fixes.",
+      "quote_message_url": "https://www.postgresql.org/message-id/14561.1435845813%40sss.pgh.pa.us",
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:220",
+      "kind": "cf",
+      "title": "optimizing vacuum truncation scans WIP",
+      "status": "Returned with feedback",
+      "date": "2015-08-12",
+      "first_date": "2015-04-20",
+      "url": "https://commitfest.postgresql.org/patch/220/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMkU=1wK_At0JfE4Esm8Mgrfrr8mLTxpEYnvpVggPawKv6VC0A@mail.gmail.com"
+      ],
+      "authors": "Jeff Janes (jjanes)",
+      "objectors": "Robert Haas, Andres Freund, Simon Riggs",
+      "summary": "Speed up the backward scan that VACUUM performs before truncating empty pages at the end of a table, at first by periodically jumping back and prefetching blocks forward. A later version also used the visibility map to skip re-inspecting trailing pages that the current vacuum had already found empty, relying on the rule that only VACUUM sets visibility map bits.",
+      "objection": "The visibility-map approach was judged fragile because it depends on VACUUM being the only code that sets visibility map bits. Robert Haas and Andres Freund wanted to keep open the option of setting those bits elsewhere, such as during HOT pruning or from a background process. Simon Riggs concluded the VM technique should be dropped and asked for a prefetch-only patch with a simple stride. The author said he would not get to that in the current commitfest and suggested Returned with Feedback; the committer indicated a simple prefetch patch could be accepted later.",
+      "touch_points": [],
+      "matched_queries": [
+        "vacuum truncate AccessExclusiveLock shared buffers",
+        "should_attempt_truncation",
+        "vacuum_truncate relation tail"
+      ],
+      "from_hint": false,
+      "score": 0.324,
+      "enriched": true,
+      "key_quote": "In that case, I think the rely-on-VM technique sinks again, sorry Jim,\nJeff.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CANP8%2BjLAFNVnUZRG463qvffWS1o6Uge6Gj5yWk5vVqb4hbPjWQ%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:649",
+      "kind": "cf",
+      "title": "Vacuuming relations on full tablespaces (Add EMERGENCY option)",
+      "status": "Returned with feedback",
+      "date": "2016-09-28",
+      "first_date": "2015-09-04",
+      "url": "https://commitfest.postgresql.org/patch/649/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAA-aLv4T2fY8Uogy0y0B0U7Y+eywEue=M6PPjMKQgO+MjF9uSw@mail.gmail.com"
+      ],
+      "authors": "Asif Naeem (muhammad.asif.naeem)",
+      "objectors": "Robert Haas",
+      "summary": "Add an EMERGENCY option to VACUUM so it can run on a full tablespace by not growing the visibility map and free space map, letting it reach the truncation step and free space. The patch did this by adding extended versions of visibilitymap_pin() and RecordPageWithFreeSpace() and by passing the option through vacuumlazy.c.",
+      "objection": "Robert Haas objected that changing the calling convention of visibilitymap_pin() and RecordPageWithFreeSpace() was too invasive. He said the revised patch did not address this and that its early return in visibilitymap_set() for an invalid buffer would not be acceptable. The patch then stopped applying to master, and the author sent no update for about three weeks after Haribabu Kommi asked for a rebase, so the entry was returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "vacuum truncate AccessExclusiveLock shared buffers",
+        "DropRelationBuffers full scan",
+        "vacuum_truncate relation tail"
+      ],
+      "from_hint": false,
+      "score": 0.274,
+      "enriched": true,
+      "key_quote": "The patch has gotten a lot smaller, and that's clearly good, but\nintroducing extended versions of those functions still seems like a\nthing we should try to avoid.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoZHLKxiL39Xfjr8zYaOzG4cXeN-U%3DoCFRRQ_Lp%2BJhmRKQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "revert:a16d421ca4fc639929bc964b2585e8382cf16e33",
+      "kind": "revert",
+      "title": "Revert \"Auto-tune effective_cache size to be 4x shared buffers\"",
+      "status": "Reverted",
+      "date": "2014-05-09",
+      "first_date": "2013-10-08",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=a16d421ca4fc639929bc964b2585e8382cf16e33",
+      "thread_urls": [],
+      "authors": "Bruce Momjian",
+      "objectors": "",
+      "summary": "Revert \"Auto-tune effective_cache size to be 4x shared buffers\"\nReverted commit(s): Auto-tune effective_cache size to be 4x shared buffers",
+      "objection": "This reverts commit ee1e5662d8d8330726eaef7d3110cb7add24d058, as well as\na remarkably large number of followup commits, which were mostly concerned\nwith the fact that the implementation didn't work terribly well.  It still\ndoesn't: we probably need some rather basic work in the GUC infrastructure\nif we want to fully support GUCs whose default varies depending on the\nvalue of another GUC.  Meanwhile, it also emerged that there wasn't really\nconsensus in favor of the definition the patch tried to implement (ie,\neffective_cache_size should default to 4 times shared_buffers).  So whack\nit all back to where it was.  In a followup commit, I'll do what was\nrecently agreed to, which is to simply change the default to a higher\nvalue.",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "vacuum truncate AccessExclusiveLock shared buffers",
+        "large shared_buffers truncation slow",
+        "BUF_DROP_FULL_SCAN_THRESHOLD"
+      ],
+      "from_hint": false,
+      "score": 0.272,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:eb5f4d6c5cece3e3fa80a506153e5202b093b7ca",
+      "kind": "revert",
+      "title": "Revert ill-fated patch to release exclusive lock early after vacuum truncates a table.  Introduces race condition, as shown by buildfarm failures.",
+      "status": "Reverted",
+      "date": "2007-09-20",
+      "first_date": "2007-09-20",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=eb5f4d6c5cece3e3fa80a506153e5202b093b7ca",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert ill-fated patch to release exclusive lock early after vacuum truncates a table.  Introduces race condition, as shown by buildfarm failures.",
+      "objection": "Revert ill-fated patch to release exclusive lock early after vacuum\ntruncates a table.  Introduces race condition, as shown by buildfarm\nfailures.",
+      "touch_points": [],
+      "matched_queries": [
+        "vacuum truncate AccessExclusiveLock shared buffers",
+        "REL_TRUNCATE_FRACTION REL_TRUNCATE_MINIMUM",
+        "vacuum_truncate relation tail"
+      ],
+      "from_hint": false,
+      "score": 0.265,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P6",
+      "source_id": "revert:9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "kind": "revert",
+      "title": "Fix index-only scan plans, take 2.",
+      "status": "Partially reverted",
+      "date": "2022-01-03",
+      "first_date": "2022-01-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3179992.1641150853@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/17350-b5bdcf476e5badbb@postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Fix index-only scan plans, take 2.\nReverted commit(s): Fix index-only scan plans when not all index columns can be returned.",
+      "objection": "Commit 4ace45677 failed to fix the problem fully, because the\nsame issue of attempting to fetch a non-returnable index column\ncan occur when rechecking the indexqual after using a lossy index\noperator.  Moreover, it broke EXPLAIN for such indexquals (which\nindicates a gap in our test cases :-().\n\nRevert the code changes of 4ace45677 in favor of adding a new field\nto struct IndexOnlyScan, containing a version of the indexqual that\ncan be executed against the index-returned tuple without using any\nnon-returnable columns.  (The restrictions imposed by check_index_only\nguarantee this is possible, although we may have to recompute indexed\nexpressions.)  Support construction of that during setrefs.c\nprocessing by marking IndexOnlyScan.indextlist entries as resjunk\nif they can't be returned, rather than removing them entirely.\n(We could alternatively require setrefs.c to look up the IndexOptInfo\nagain, but abusing resjunk this way seems like a reasonably safe way\nto avoid needing to do that.)\n\nThis solution isn't great from an API-stability standpoint: if there\nare any extensions out there that build IndexOnlyScan structs directly,\nthey'll be broken in the next minor releases.  However, only a very\ninvasive extension would be likely to do such a thing.  There's no\nchange in the Path representation, so typical planner extensions\nshouldn't have a problem.\n\nAs before, back-patch to all supported branches.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "DropRelationBuffers full scan",
+        "BUF_DROP_FULL_SCAN_THRESHOLD"
+      ],
+      "from_hint": false,
+      "score": 0.239,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "wiki:Optimizer_.2F_Executor:4",
+      "kind": "do_not_want",
+      "title": "Allow shared buffer cache contents to affect index cost computations",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Optimizer_.2F_Executor",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Allow shared buffer cache contents to affect index cost computations\nSection: Optimizer / Executor",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "vacuum truncate AccessExclusiveLock shared buffers",
+        "smgrtruncate drop buffers optimization",
+        "large shared_buffers truncation slow"
+      ],
+      "from_hint": false,
+      "score": 0.221,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:1765",
+      "kind": "cf",
+      "title": "Detect shared buffer access violations using mprotect()",
+      "status": "Returned with feedback",
+      "date": "2019-02-03",
+      "first_date": "2018-07-11",
+      "url": "https://commitfest.postgresql.org/patch/1765/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANXE4Te4G0TGq6cr0-TvwP0H4BNiK_-hB5gHe8mF+nz0mcYfMQ@mail.gmail.com"
+      ],
+      "authors": "Asim Rama Praveen (apraveen)",
+      "objectors": "Tom Lane",
+      "summary": "Add a compile-time option (-DMPROTECT_BUFFER) that uses mprotect() to mark shared buffers read-only or read-write according to pin and content-lock state, so that violations of shared buffer access rules are caught. The patch came out of a discussion of places that modify shared buffers without holding the content lock.",
+      "objection": "Tom Lane asked that the patch be restructured so that bad accesses can be caught with either Valgrind or mprotect depending on compile options, using macros such as ProtectBuffer() that expand to nothing when the feature is disabled instead of inline #ifdef blocks. He also raised the concern that buffers are not reliably aligned on system page boundaries. The author did not address this feedback before the commitfest ended, so Andres Freund marked the entry returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "vacuum truncate AccessExclusiveLock shared buffers",
+        "large shared_buffers truncation slow"
+      ],
+      "from_hint": false,
+      "score": 0.216,
+      "enriched": true,
+      "key_quote": "It'd be better to\nset things up so that the patch adds support for catching bad accesses\nwith either valgrind or mprotect, according to compile options.",
+      "quote_message_url": "https://www.postgresql.org/message-id/22918.1547427152%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "wiki:Vacuum:1",
+      "kind": "do_not_want",
+      "title": "Auto-fill the free space map by scanning the buffer cache or by checking pages written by the background writer",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Vacuum",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Auto-fill the free space map by scanning the buffer cache or by checking pages written by the background writer\nSection: Vacuum\nLinked: Dead Space Map; Re: Automatic free space map filling",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "vacuum truncate AccessExclusiveLock shared buffers",
+        "BUF_DROP_FULL_SCAN_THRESHOLD"
+      ],
+      "from_hint": false,
+      "score": 0.15,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:3358",
+      "kind": "cf",
+      "title": "Update relfrozenxmin when truncating temp tables",
+      "status": "Returned with feedback",
+      "date": "2024-01-22",
+      "first_date": "2020-11-08",
+      "url": "https://commitfest.postgresql.org/patch/3358/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAM-w4HNNBDeXiXrj0B+_-WvP5NZ6of0RLueqFUZfyqbLcbEfMA@mail.gmail.com"
+      ],
+      "authors": "Greg Stark (stark)",
+      "objectors": "",
+      "summary": "The patch makes truncation of ON COMMIT DELETE ROWS temp tables, and of tables truncated in the transaction that created them, reset relfrozenxid, relminmxid and related pg_class stats as if the table were new. A separate patch adds autovacuum warnings, with the backend pid, for non-orphaned temp tables nearing the wraparound limits.",
+      "objection": "Peter Smith returned the entry after the thread had no activity for more than nine months and saw little interest. The last posts left open questions. Greg Stark's profiling showed a per-commit cost, since every ON COMMIT DELETE ROWS table is truncated and its pg_class row updated when a transaction touches any temp table. Andres Freund had also questioned the use of vac_update_relstats() in heapam_handler.c and asked for tests of the change.",
+      "touch_points": [],
+      "matched_queries": [
+        "REL_TRUNCATE_FRACTION REL_TRUNCATE_MINIMUM"
+      ],
+      "from_hint": false,
+      "score": 0.146,
+      "enriched": true,
+      "key_quote": "Since there seems not much interest, I have changed the status to \"Returned with Feedback\" [1].",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAHut%2BPtzLUB5zXHNpgQjT7paJn6EgEz_8y4VThe%2BGwKPBDTecg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:2409",
+      "kind": "cf",
+      "title": "TRUNCATE on foreign tables",
+      "status": "Returned with feedback",
+      "date": "2020-01-28",
+      "first_date": "2020-01-01",
+      "url": "https://commitfest.postgresql.org/patch/2409/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOP8fzb_gkReLput7OvOK+8NHgw-RKqNv59vem7=524krQTcWA@mail.gmail.com"
+      ],
+      "authors": "KaiGai Kohei (kaigai)",
+      "objectors": "Michael Paquier",
+      "summary": "Add an optional ExecForeignTruncate callback to FdwRoutine so that TRUNCATE works on foreign tables, including foreign partitions of a partitioned table. The callback gets the foreign tables of one server as a list, with DropBehavior and restart_seqs, and postgres_fdw sends one remote TRUNCATE for them.",
+      "objection": "Michael Paquier marked it returned with feedback because the implementation, the docs and the tests needed more work. The open issues at that point were ONLY handling, since TRUNCATE ONLY on a local foreign table could truncate the whole inheritance tree on the remote server, and a possible separate truncatable option for postgres_fdw. Missing postgres_fdw documentation and missing inheritance tests were also still open.",
+      "touch_points": [],
+      "matched_queries": [
+        "should_attempt_truncation"
+      ],
+      "from_hint": false,
+      "score": 0.133,
+      "enriched": true,
+      "key_quote": "For now, as the patch needs more work for its implementation, docs and tests, I am marking it as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20200128040346.GC1552%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:4196",
+      "kind": "cf",
+      "title": "Optimize Numeric using fixed buffer reducing pallocs for small numbers",
+      "status": "Returned with feedback",
+      "date": "2023-09-13",
+      "first_date": "2023-02-16",
+      "url": "https://commitfest.postgresql.org/patch/4196/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/35fb0533-1e3e-42f6-b989-ce1f9b5f3ebe@app.fastmail.com"
+      ],
+      "authors": "Joel Jacobson (joeljacobson)",
+      "objectors": "Dean Rasheed",
+      "summary": "The patch adds a small fixed digit buffer to NumericVar, with a buf_len field, so that small numerics avoid palloc/pfree in numeric.c. Later versions reuse allocated buffers and change add_var(), div_var() and similar functions so the result may no longer be one of the operands.",
+      "objection": "Dean Rasheed found the change too invasive for gains of a few percent, with regressions in some cases such as generate_series() and a sqrt/sum series. He objected to low-level functions no longer accepting the result as an input, and proposed instead to reuse the digit buffer in make_result(); Joel Jacobson agreed to abandon the fixed buffer approach. No one pursued the alternative patch, and Peter Eisentraut returned the entry as inactive.",
+      "touch_points": [],
+      "matched_queries": [
+        "smgrtruncate drop buffers optimization"
+      ],
+      "from_hint": false,
+      "score": 0.132,
+      "enriched": true,
+      "key_quote": "So IMO the results just don't justify such an extensive set of\nchanges, and I think we should abandon this fixed buffer approach.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAEZATCWQUioVxu3SSn0LEki_aOoPgssCquq_O%2BkcG5_K8Zkkvw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:2499",
+      "kind": "cf",
+      "title": "TRUNCATE on foreign tables",
+      "status": "Returned with feedback",
+      "date": "2020-08-02",
+      "first_date": "2020-01-01",
+      "url": "https://commitfest.postgresql.org/patch/2499/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOP8fzb_gkReLput7OvOK+8NHgw-RKqNv59vem7=524krQTcWA@mail.gmail.com"
+      ],
+      "authors": "KaiGai Kohei (kaigai)",
+      "objectors": "",
+      "summary": "Add an optional FDW callback, ExecForeignTruncate, that ExecuteTruncateGuts calls for foreign tables, so TRUNCATE works on them, including partitioned tables with foreign leaves. postgres_fdw would use it to send TRUNCATE to the remote server, grouping relations by server and passing ONLY and CASCADE/RESTRICT through.",
+      "objection": "The v5 patch from March 2020 stopped applying to HEAD because of conflicts in the postgres_fdw expected test output. Daniel Gustafsson asked for a rebase in July, and the visible messages show no reply from the author. The entry was then closed as stalled. Earlier, in January, Michael Paquier had returned the patch because its implementation, docs and tests needed more work.",
+      "touch_points": [],
+      "matched_queries": [
+        "should_attempt_truncation"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": true,
+      "key_quote": "As this has stalled, I've marked this patch Returned with Feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/A6105B51-5B85-4DF6-8996-60F5FECEDB2C%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:4393",
+      "kind": "cf",
+      "title": "Optimize walsender handling invalid messages of 'drop publication'",
+      "status": "Withdrawn",
+      "date": "2023-10-20",
+      "first_date": "2023-02-27",
+      "url": "https://commitfest.postgresql.org/patch/4393/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAM_vCudj3_HdJ2G5erwq_Jj+-bwfr67yxmS8oh=-cjPXY4pihg@mail.gmail.com"
+      ],
+      "authors": "Bowen Shi (zxwsbg)",
+      "objectors": "",
+      "summary": "Optimize walsender handling invalid messages of 'drop publication'\nThreads: Optimize walsender handling invalid messages of 'drop publication'",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "smgrtruncate drop buffers optimization"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:1366",
+      "kind": "cf",
+      "title": "Flexible configuration for full-text search",
+      "status": "Returned with feedback",
+      "date": "2017-11-30",
+      "first_date": "2017-10-19",
+      "url": "https://commitfest.postgresql.org/patch/1366/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20171019172409.731f52a7@asp437-24-g082ur"
+      ],
+      "authors": "Artur Zakirov (a.zakirov), Aleksandr Parfenov (a.parfenov)",
+      "objectors": "",
+      "summary": "Flexible configuration for full-text search\nThreads: Flexible configuration for full-text search",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "DropRelationBuffers full scan"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:1421",
+      "kind": "cf",
+      "title": "Flexible configuration for full-text search",
+      "status": "Returned with feedback",
+      "date": "2019-02-04",
+      "first_date": "2017-10-19",
+      "url": "https://commitfest.postgresql.org/patch/1421/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20171019172409.731f52a7@asp437-24-g082ur"
+      ],
+      "authors": "Aleksandr Parfenov (a.parfenov)",
+      "objectors": "",
+      "summary": "Flexible configuration for full-text search\nThreads: Flexible configuration for full-text search",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "DropRelationBuffers full scan"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:2758",
+      "kind": "cf",
+      "title": "Add `truncate` option to subscription commands",
+      "status": "Withdrawn",
+      "date": "2020-11-25",
+      "first_date": "2020-10-09",
+      "url": "https://commitfest.postgresql.org/patch/2758/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CF3B6672-2A43-4204-A60A-68F359218A9B@endpoint.com"
+      ],
+      "authors": "David Christensen (davidchristensen)",
+      "objectors": "",
+      "summary": "Add `truncate` option to subscription commands\nThreads: [PATCH] Add `truncate` option to subscription commands",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "should_attempt_truncation"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:2441",
+      "kind": "cf",
+      "title": "Rational number type (fractions)",
+      "status": "Rejected",
+      "date": "2020-09-04",
+      "first_date": "2020-02-08",
+      "url": "https://commitfest.postgresql.org/patch/2441/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200208042554.GE42864@begriffs.com"
+      ],
+      "authors": "Joe Nelson (begriffs)",
+      "objectors": "",
+      "summary": "Rational number type (fractions)\nThreads: POC: rational number type (fractions)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "REL_TRUNCATE_FRACTION REL_TRUNCATE_MINIMUM"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "revert:85d8b30724c0fd117a683cc72706f71b28463a05",
+      "kind": "revert",
+      "title": "Apply a better fix to mdunlinkfork().",
+      "status": "Partially reverted",
+      "date": "2022-11-09",
+      "first_date": "2022-07-28",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=85d8b30724c0fd117a683cc72706f71b28463a05",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3797575.1667924888@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CA+TgmoYYMXGUJO5GZk1-MByJGu_bB8CbOL6GJQC8=Bzt6x6vDg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/17679-1095d04450cf6a6e@postgresql.org"
+      ],
+      "authors": "Robert Haas, Tom Lane",
+      "objectors": "",
+      "summary": "Apply a better fix to mdunlinkfork().\nReverted commit(s): Use TRUNCATE to preserve relfilenode for pg_largeobject + index.; Fix failure to remove non-first segments of temporary tables.",
+      "objection": "Replace the stopgap fix I made in 0e758ae89 with a cleaner one.\n\nThe real problem with 4ab5dae94 is that it contorted this function's\nlogic substantially, by introducing a third code path that required\ndifferent behavior in the function's main loop.  That seems quite\nunnecessary on closer inspection: the new IsBinaryUpgrade case can\njust share the behavior of the other immediate-unlink cases.  Hence,\nrevert 4ab5dae94 and most of 0e758ae89 (keeping the latter's\nsave/restore errno fix), and add IsBinaryUpgrade to the set of\nconditions tested to choose immediate unlink.\n\nAlso fix some additional places with sloppy handling of errno,\nto ensure we have an invariant that we always continue processing\nafter any non-ENOENT failure of do_truncate.  I doubt that that's\nfixing any bug of field importance, so I don't feel it necessary to\nback-patch; but we might as well get it right while we're here.\n\nAlso improve the comments, which had drifted a bit from what the\ncode actually does, and neglected to mention some important\nconsiderations.\n\nBack-patch to v15, not because this is fixing any bug but because\nit doesn't seem like a good idea for v15's mdunlinkfork logic to be\nsignificantly different from both v14 and v16.",
+      "touch_points": [],
+      "matched_queries": [
+        "large shared_buffers truncation slow"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:3573",
+      "kind": "cf",
+      "title": "jit_warn_above_fraction parameter",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-02-25",
+      "url": "https://commitfest.postgresql.org/patch/3573/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABUevExR_9ZmkYj-aBvDreDKUinWLBBpORcmTbuPdNb5vGOLtA@mail.gmail.com"
+      ],
+      "authors": "Magnus Hagander (mha)",
+      "objectors": "",
+      "summary": "jit_warn_above_fraction parameter\nThreads: Add parameter jit_warn_above_fraction",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "REL_TRUNCATE_FRACTION REL_TRUNCATE_MINIMUM"
+      ],
+      "from_hint": false,
+      "score": 0.101,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "revert:f4c7c410ee4a7baa06f51ebb8d5333c169691dd3",
+      "kind": "revert",
+      "title": "Revert \"Optimize order of GROUP BY keys\".",
+      "status": "Reverted",
+      "date": "2022-10-03",
+      "first_date": "2022-03-30",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f4c7c410ee4a7baa06f51ebb8d5333c169691dd3",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/TYAPR01MB586665EB5FB2C3807E893941F5579@TYAPR01MB5866.jpnprd01.prod.outlook.com",
+        "https://www.postgresql.org/message-id/flat/7c79e6a5-8597-74e8-0671-1c39d124c9d6@sigaev.ru",
+        "https://www.postgresql.org/message-id/flat/CA+q6zcW_4o2NC0zutLkOJPsFt80megSpX_dVRo6GK9PC-Jx_Ag@mail.gmail.com"
+      ],
+      "authors": "Tomas Vondra",
+      "objectors": "",
+      "summary": "Revert \"Optimize order of GROUP BY keys\".\nReverted commit(s): Optimize order of GROUP BY keys",
+      "objection": "This reverts commit db0d67db2401eb6238ccc04c6407a4fd4f985832 and\nseveral follow-on fixes.  The idea of making a cost-based choice\nof the order of the sorting columns is not fundamentally unsound,\nbut it requires cost information and data statistics that we don't\nreally have.  For example, relying on procost to distinguish the\nrelative costs of different sort comparators is pretty pointless\nso long as most such comparator functions are labeled with cost 1.0.\nMoreover, estimating the number of comparisons done by Quicksort\nrequires more than just an estimate of the number of distinct values\nin the input: you also need some idea of the sizes of the larger\ngroups, if you want an estimate that's good to better than a factor of\nthree or so.  That's data that's often unknown or not very reliable.\nWorse, to arrive at estimates of the number of calls made to the\nlower-order-column comparison functions, the code needs to make\nestimates of the numbers of distinct values of multiple columns,\nwhich are necessarily even less trustworthy than per-column stats.\nEven if all the inputs are perfectly reliable, the cost algorithm\nas-implemented cannot offer useful information about how to order\nsorting columns beyond the point at which the average group size\nis estimated to drop to 1.\n\nClose inspection of the code added by db0d67db2 shows that there\nare also multiple small bugs.  These could have been fixed, but\nthere's not much point if we don't trust the estimates to be\naccurate in-principle.\n\nFinally, the changes in cost_sort's behavior made for very large\nchanges (often a factor of 2 or so) in the cost estimates for all\nsorting operations, not only those for multi-column GROUP BY.\nThat naturally changes plan choices in many situations, and there's\nprecious little evidence to show that the changes are for the better.\nGiven the above doubts about whether the new estimates are really\ntrustworthy, it's hard to summon much confidence that these changes\nare better on the average.\n\nSince we're hard up against the release deadline for v15, let's\nrevert these changes for now.  We can always try again later.\n\nNote: in v15, I left T_PathKeyInfo in place in nodes.h even though\nit's unreferenced.  Removing it would be an ABI break, and it seems\na bit late in the release cycle for that.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "smgrtruncate drop buffers optimization"
+      ],
+      "from_hint": false,
+      "score": 0.101,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:2226",
+      "kind": "cf",
+      "title": "Store FullTransactionId in TwoPhaseFileHeader/GlobalTransactionData",
+      "status": "Withdrawn",
+      "date": "2019-09-04",
+      "first_date": "2019-08-01",
+      "url": "https://commitfest.postgresql.org/patch/2226/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALDaNm2fFeQC_SbM_LsSPNZG3HZ0SC34szY+451iW7oysAb8Cw@mail.gmail.com"
+      ],
+      "authors": "vigneshwaran C (vignesh.postgres)",
+      "objectors": "",
+      "summary": "Store FullTransactionId in TwoPhaseFileHeader/GlobalTransactionData\nThreads: Store FullTransactionId in TwoPhaseFileHeader/GlobalTransactionData",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "DropRelationBuffers full scan"
+      ],
+      "from_hint": false,
+      "score": 0.101,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "revert:14216649f3dc8bd9839702440dd593e958b0920b",
+      "kind": "revert",
+      "title": "PGDLLIMPORT-ify old_snapshot_threshold.",
+      "status": "Partially reverted",
+      "date": "2016-04-21",
+      "first_date": "2016-04-21",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=14216649f3dc8bd9839702440dd593e958b0920b",
+      "thread_urls": [],
+      "authors": "Kevin Grittner",
+      "objectors": "",
+      "summary": "PGDLLIMPORT-ify old_snapshot_threshold.\nReverted commit(s): Include snapmgr.h in blscan.c",
+      "objection": "Revert commit 7cb1db1d9599f0a09d6920d2149d956ef6d88b0e, which represented\na misunderstanding of the problem (if snapmgr.h weren't already included\nin bufmgr.h, things wouldn't compile anywhere).  Instead install what\nI think is the real fix.",
+      "touch_points": [],
+      "matched_queries": [
+        "BUF_DROP_FULL_SCAN_THRESHOLD"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "revert:19e57f4f78e4354d9a21c284868373d28bb0d368",
+      "kind": "revert",
+      "title": "Revert \"vacuumdb: Add option for analyzing only relations missing stats.\"",
+      "status": "Reverted",
+      "date": "2025-03-07",
+      "first_date": "2025-03-07",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=19e57f4f78e4354d9a21c284868373d28bb0d368",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/Z5O1bpcwDrMgyrYy@nathan"
+      ],
+      "authors": "Nathan Bossart",
+      "objectors": "",
+      "summary": "Revert \"vacuumdb: Add option for analyzing only relations missing stats.\"\nReverted commit(s): vacuumdb: Add option for analyzing only relations missing stats.",
+      "objection": "This reverts commit 5f8eb25706b62923c53172e453c8a4dedd877a3d, which in\nmy branch by mistake.",
+      "touch_points": [],
+      "matched_queries": [
+        "vacuum_truncate relation tail"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 6,
+    "new_calls": 2,
+    "failed": 0,
+    "quotes_verified": 2,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 3
+  },
+  "precedent_cutoff": "2025-03-18",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "[P2] (prefetch in the vacuum backward scan) and [P5] (early lock release) are in the same area, but their recorded reasons do not apply to either patch."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "Neither patch adds SQL syntax, a GUC, a catalog change or pg_dump state. The objections cover the default behaviour change in patch 1 and the C API contract in patch 2."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 2,
+      "note": "Patch 1 changes only the vacuum truncation threshold and has no persistent or cross-node state. Patch 2 does not change WAL or recovery behaviour, and the DropRelationBuffers() API change targets master only."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "Neither patch adds a privilege, role, setting, view or user-callable entry point, and neither changes what any session can see or do. The risk of missed buffers in patch 2 is a data safety question for the design angle, and patch 1 only changes when vacuum truncates."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "Two objections raised. Patch 2 reuses an existing lookup path, which lowers the maintenance concern, but no committer has replied to it yet."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "Patch 2 extends the existing FindAndDropRelationBuffers() path used in recovery and does not add a second mechanism. No extension can change how smgrtruncate() drops buffers, so this angle raises nothing against patch 2."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "The problem behind patch 2 is real and shown with a production report and measurements, and its benefit lands where the cost was, so the demand angle has no objection to patch 2."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 9,
+      "new_objections": 9,
+      "new_survived": 3,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "review angle \"replication-ondisk\" returned prior attempts; ignored (only the prior-attempts angle may)",
+    "synthesis said NEEDS-COMMITTER-EYES but listed a level 1b objection (maintenance-fit-1); changed to NEEDS-DESIGN-DISCUSSION"
+  ],
+  "tone_lint": {
+    "fields_checked": 93,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 15,
+    "wall_ms": 186110,
+    "cost_usd": 1.7879338,
+    "dry_run": false
+  }
+}

@@ -1,0 +1,1556 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:34:23.009Z",
+  "input": {
+    "arg": "7258",
+    "cf": {
+      "id": 7258,
+      "url": "https://commitfest.postgresql.org/patch/7258/",
+      "title": "Native planner and executor for SQL/PGQ",
+      "status": "Needs review",
+      "authors": "Henri Gasc (henri.gasc)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAJyuutjsZbTVg4O1zxr9%3Dvwk%3DiKkbXtq9wCW6PhBVaXg%3DDM6Qg%40mail.gmail.com",
+    "subject": "[SQL/PGQ] Native executor for Graph query",
+    "thread_start": "2026-08-08T09:53:21Z",
+    "messages_read": 12,
+    "messages_total": 12,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v2-0002-Add-GUC-enable_native-and-max_depth.patch",
+      "v2-0001-Restore-SQL-PGQ-as-a-cfbot-base-not-for-review.patch",
+      "v2-0005-Implement-the-executor.patch",
+      "v2-0003-Parse-grammar-for-VLE.patch",
+      "v2-0008-Remove-dead-code-and-simplify-GraphScan.patch",
+      "v2-0007-Add-rows-estimate-to-planner-and-use-IndexScan-if.patch",
+      "v2-0004-Split-graph-queries-into-GraphScan-Append-SeqScan.patch",
+      "v2-0006-Correct-bug-const-with-label-disjunction-and-show.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The goal of running VLE patterns is reasonable, and no surviving objection is fatal. The design leaves open questions that the list must settle before code review. The native path is on by default while message #1 says row level security was not started (security-1). The series keeps two execution paths behind a GUC (maintenance-fit-1) and moves fixed-length patterns off the join planner without numbers (demand-1).",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Native planner and executor node for SQL/PGQ graph queries",
+    "problem": "Graph queries in SQL/PGQ are run by rewriting them into relational joins, and a custom node for variable-length edge (VLE) patterns could not be mixed with non-VLE patterns in one query. The author wants graph patterns, including VLE, planned and executed natively for users of GRAPH_TABLE.",
+    "proposed_design": "A new GraphScan plan node handles one quantified hop, with a parameterized inner subplan (Append over SeqScan or IndexScan per element table) that expands one hop from the current vertex. The executor walks the graph depth first with per-depth state and backtracking, and only path mode WALK is supported. The series is meant to replace the rewriter for graph queries, and it sits on a 0001 commit that restores the reverted SQL/PGQ base.",
+    "user_visible_surface": [
+      "GUC enable_native_graphtable, on by default; off uses the rewriter.",
+      "GUC limiting traversal depth (max_graph_stack_depth, default 1001 per the reviewer; the commit title says max_depth).",
+      "Grammar for VLE quantifiers inside GRAPH_TABLE MATCH patterns.",
+      "New GraphScan node in EXPLAIN output, with the inner subplan shown under \"Inner\".",
+      "For a lateral query such as select * from x1, graph_table (...), the author first proposed to reject it; v2 instead matches the rewriter's results."
+    ],
+    "author_claims": [
+      "The native path supports partitioning, inheritance, foreign tables and views, and lateral queries give the same results as the rewriter.",
+      "Row level security was not handled in the first version, and later messages do not say it is handled now.",
+      "The planner estimates rows and uses IndexScan for the inner subplan when possible.",
+      "Future work could add other path modes, BFS or bidirectional search, and predicate pushdown."
+    ],
+    "thread_state": "Henson Choi reviewed it and proposed that per-depth PlanState copies be created lazily and linked through up/down pointers on PlanState, sending WIP patches. The author prefers to commit a working version first; the instrumentation rollup and eager init of about a thousand frames per GraphScan are still open.",
+    "unclear": [
+      "The material has no documentation hunks for the GUCs, the VLE syntax or GraphScan behaviour.",
+      "The proposal does not say whether row level security is enforced on the native path.",
+      "The proposal shows no performance numbers against the rewriter.",
+      "The series depends on the reverted SQL/PGQ base, and the material does not say when that base returns.",
+      "The proposal does not say what happens when traversal reaches max_graph_stack_depth.",
+      "The proposal does not say whether cycles are detected or how WALK avoids unbounded paths."
+    ],
+    "search_queries": [
+      "SQL/PGQ graph executor",
+      "property graph GRAPH_TABLE",
+      "variable length edge path",
+      "graph traversal depth first executor",
+      "recursive query depth first execution",
+      "new plan node rewriter replacement",
+      "enable_native_graphtable GUC",
+      "quantified path pattern"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Native path on by default without row level security enforcement",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA puts RLS policies on an edge or vertex table and grants SELECT on a property graph over it. A restricted user runs GRAPH_TABLE with a VLE pattern; the native GraphScan path, enabled by default, may return rows the policy hides. Nothing reports an error, so the leak goes unnoticed until someone audits the results.",
+      "argument": "Message #1 says row level security was not approached at all. Messages #2 to #12 add partitioning, views, foreign tables and lateral handling but never say RLS is enforced. The rewriter gets RLS and per-table permission checks from ordinary relational range table entries. GraphScan builds its own inner subplans per element table, and the proposal does not say those subplans still carry the RLS quals and permission checks while enable_native_graphtable defaults to on.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        4,
+        7
+      ],
+      "author_must_show": "Does the native path apply the same RLS policies and table privilege checks as the rewriter, with tests that show identical rows for a restricted role?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Henri GASC",
+          "date": "2026-08-08T09:53:21Z",
+          "url": "https://www.postgresql.org/message-id/CAJyuutjsZbTVg4O1zxr9%3Dvwk%3DiKkbXtq9wCW6PhBVaXg%3DDM6Qg%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "Henri GASC",
+          "date": "2026-09-04T06:43:06Z",
+          "url": "https://www.postgresql.org/message-id/CAJyuutgjpVNhm8b%2BhgqJEr_7Q-VsOjAeM1vKr3sM1GGZjVBU8g%40mail.gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "Henson Choi",
+          "date": "2026-09-07T13:38:56Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBVM-xhJvf5cbmocsPQFD9OC1MNPJmaQY05U66NohaRuQ%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Henri GASC",
+          "date": "2026-09-15T08:44:03Z",
+          "url": "https://www.postgresql.org/message-id/CAJyuutgJzqVJEsKGFaQpPbp812TcAx69wpgSuHjn6vVDmEdBVw%40mail.gmail.com"
+        }
+      ],
+      "id": "security-1",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #1 says row level security was not started, and no later message says it is enforced. The native path is on by default, so the gap would reach users who never set the GUC.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Two graph execution paths with a GUC that switches between them",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "new_guc",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch fixes a GRAPH_TABLE semantics bug or adds a pattern feature in rewriteGraphTable.c and does not touch nodeGraphScan.c. Results now depend on enable_native_graphtable. A user finds out when the two settings return different rows for the same query.",
+      "argument": "Message #2 says the series aims to replace the rewriter completely, yet enable_native_graphtable keeps the rewriter as a live, user-selectable path. The two paths already diverged once: v2 had to copy the rewriter's lateral results instead of the documented Cartesian product (messages #1, #2). Nothing makes a change to one path fail when the other is not updated. The proposal does not say when the rewriter path goes away, or how the two are kept in agreement until then.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "Is the rewriter path removed in this series, and if not, what keeps both paths returning the same results until it is?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Henri GASC",
+          "date": "2026-08-08T09:53:21Z",
+          "url": "https://www.postgresql.org/message-id/CAJyuutjsZbTVg4O1zxr9%3Dvwk%3DiKkbXtq9wCW6PhBVaXg%3DDM6Qg%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "Henri GASC",
+          "date": "2026-09-04T06:43:06Z",
+          "url": "https://www.postgresql.org/message-id/CAJyuutgjpVNhm8b%2BhgqJEr_7Q-VsOjAeM1vKr3sM1GGZjVBU8g%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #2 states the aim to replace the rewriter, yet the series keeps both paths behind a GUC. No message says when the rewriter path is removed or what test keeps the two in agreement.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Per-depth copies of arbitrary subplans break the one-PlanState-per-Plan assumption",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api",
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Someone adds a counter to IndexScanInstrumentation, or a new node type with private statistics or EState-level state. It works everywhere except under GraphScan, where EXPLAIN ANALYZE shows only depth 0's share, or depths disturb each other's state. Nobody notices until a user reports wrong EXPLAIN numbers or wrong rows.",
+      "argument": "GraphScan runs ExecInitNode on up to about a thousand copies of the inner plan for each execution (messages #9, #11). Message #4 notes that the parameter workspace, SubPlan states and runtime pruning state live on the EState and are shared across copies. Message #12 shows the rollup already misreports Index Searches and double-counts with NO SCROLL cursors. Every future executor node and instrumentation change inherits this, and the current design states no contract for it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4,
+        9,
+        11,
+        12
+      ],
+      "author_must_show": "Which executor invariants must a node under GraphScan's inner plan respect, and how does a future node type find out it breaks them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "Henson Choi",
+          "date": "2026-09-07T13:38:56Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBVM-xhJvf5cbmocsPQFD9OC1MNPJmaQY05U66NohaRuQ%40mail.gmail.com"
+        },
+        {
+          "index": 9,
+          "from": "Henson Choi",
+          "date": "2026-09-17T04:13:38Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zAGW6jPu0y0pX4eKeNBjEB1yQfkDgP4mf4-30Oe1qVu%2BA%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Henson Choi",
+          "date": "2026-09-17T10:38:31Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBwWs0yC94xN8Vk_8nap0%2B%3Dafs%2BnFhQy5kWUAWhcO_GZA%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "Henson Choi",
+          "date": "2026-09-17T11:21:43Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zByDpnT0L1iG_dnneSFjxhq6u9p62Eqmo8uE_1p_jjn4g%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #4 and #9 support the shared EState concern and the frame 0 only EXPLAIN output. The Index Searches and NO SCROLL issues in message #12 belong to the reviewer's WIP patch, so they must not be counted against the series.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Variable-length paths could reuse WITH RECURSIVE instead of a new node",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user writes a quantified GRAPH_TABLE pattern, and it runs through a new GraphScan traversal engine with its own depth limit, frame stack and instrumentation. The same traversal written as WITH RECURSIVE over the edge tables runs through RecursiveUnion, which already offers SEARCH DEPTH FIRST and CYCLE. Fixes and features for path traversal must then be made twice.",
+      "argument": "Postgres already runs variable-length traversal over tables through recursive queries, with depth-first ordering and cycle detection in the SQL syntax. The proposal does not say why the rewriter cannot expand a VLE element into a recursive subquery, and why that cannot be mixed with fixed-length elements. Message #1 explains only why a custom node could not be mixed with non-VLE patterns. Message #4 favours moving execution out of the rewriter and notes that the same machinery would serve WITH RECURSIVE, which points to overlap with RecursiveUnion rather than a reason against reusing it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        4,
+        11
+      ],
+      "author_must_show": "Which VLE pattern, mixed with fixed-length elements, cannot be rewritten into a recursive query, or runs unacceptably slowly that way?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Henri GASC",
+          "date": "2026-08-08T09:53:21Z",
+          "url": "https://www.postgresql.org/message-id/CAJyuutjsZbTVg4O1zxr9%3Dvwk%3DiKkbXtq9wCW6PhBVaXg%3DDM6Qg%40mail.gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "Henson Choi",
+          "date": "2026-09-07T13:38:56Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBVM-xhJvf5cbmocsPQFD9OC1MNPJmaQY05U66NohaRuQ%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Henson Choi",
+          "date": "2026-09-17T10:38:31Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBwWs0yC94xN8Vk_8nap0%2B%3Dafs%2BnFhQy5kWUAWhcO_GZA%40mail.gmail.com"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #1 explains only why a custom node failed, and no message compares a rewrite to a recursive query. Message #4 says moving execution out of the rewriter was a direction given earlier, but the material does not show that reasoning.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No shown need to move fixed-length patterns off the rewriter",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "desirability",
+      "touch_points": [
+        "planner_behaviour",
+        "new_guc",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user runs a fixed two-hop GRAPH_TABLE query over large tables, and the rewriter today plans it as ordinary joins, possibly a hash join. With enable_native_graphtable on by default, the query instead runs as a GraphScan that probes the inner subplan once per vertex. The user sees the slowdown after upgrading and has to find an undocumented GUC to get the old plan back.",
+      "argument": "The stated problem in message #1 is that VLE patterns could not be mixed with non-VLE patterns. Message #2 widens the goal to replacing the rewriter for all graph queries, but no material shows that fixed-length pattern users have a problem the join planner does not already solve. The proposal shows no numbers against the rewriter, so every GRAPH_TABLE user takes on a new default plan shape to serve the VLE subset. A committer would likely ask for the native path to be limited to quantified hops until benefit for the rest is measured.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        10
+      ],
+      "author_must_show": "For fixed-length patterns, which queries run faster or become possible on the native path, and by how much compared with the rewriter's join plans?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Henri GASC",
+          "date": "2026-08-08T09:53:21Z",
+          "url": "https://www.postgresql.org/message-id/CAJyuutjsZbTVg4O1zxr9%3Dvwk%3DiKkbXtq9wCW6PhBVaXg%3DDM6Qg%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "Henri GASC",
+          "date": "2026-09-04T06:43:06Z",
+          "url": "https://www.postgresql.org/message-id/CAJyuutgjpVNhm8b%2BhgqJEr_7Q-VsOjAeM1vKr3sM1GGZjVBU8g%40mail.gmail.com"
+        },
+        {
+          "index": 10,
+          "from": "Henri GASC",
+          "date": "2026-09-17T09:25:48Z",
+          "url": "https://www.postgresql.org/message-id/CAJyuutg04hOj%3DhQueaKka9-x1BEud41iGyRY5s26tcxUha9rZA%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The series shows no numbers against the rewriter, and message #2 widens the goal from VLE to all graph queries. A per-vertex probe replacing a join plan chosen by the planner is a concrete regression risk for fixed-length patterns.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "Unbounded quantifiers under WALK are cut off by a GUC",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "sql_standard_syntax",
+      "touch_points": [
+        "sql_standard_syntax",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user writes an unbounded VLE quantifier over a cyclic graph with the default WALK mode. The traversal stops at max_graph_stack_depth, so the result set changes with a configuration setting. If a later release adds a conforming restrictor or selector rule, the same query starts to fail.",
+      "argument": "Message #11 says an unbounded quantifier is clamped to max_graph_stack_depth + 1, and message #7 says only WALK is supported. As I read SQL/PGQ, an unbounded quantifier needs a restrictor or selector so the result is finite. The proposal does not say whether reaching the limit raises an error or truncates results. Accepting this grammar now fixes behaviour that users will depend on.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        7,
+        11
+      ],
+      "author_must_show": "Does an unbounded quantifier without a restrictor or selector follow the standard's rule, and what does the user see when traversal reaches max_graph_stack_depth?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "Henri GASC",
+          "date": "2026-09-15T08:44:03Z",
+          "url": "https://www.postgresql.org/message-id/CAJyuutgJzqVJEsKGFaQpPbp812TcAx69wpgSuHjn6vVDmEdBVw%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Henson Choi",
+          "date": "2026-09-17T10:38:31Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBwWs0yC94xN8Vk_8nap0%2B%3Dafs%2BnFhQy5kWUAWhcO_GZA%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #11 confirms the clamp to max_graph_stack_depth + 1, and no message says whether reaching it raises an error or truncates. The claim about a later release breaking the query is speculative, but the dependence of results on a setting stands.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "Views using VLE quantifiers may not survive pg_dump and pg_upgrade",
+      "level": "2",
+      "rubric_item": 13,
+      "category": "pg_dump_round_trip",
+      "touch_points": [
+        "pg_dump_round_trip",
+        "catalog",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user creates a view over graph_table with a quantified edge such as -[e]->{1,5}. pg_dump, or pg_upgrade through pg_dump, recreates the view from ruleutils output. If the quantifier is not printed, the restored view runs one hop, and the user finds out only when query results change after the upgrade.",
+      "argument": "The commit that adds the VLE grammar (0003) touches gram.y, parse_graphtable.c and primnodes.h but not ruleutils.c. ruleutils.c appears only in 0007, which is about row estimates and IndexScan, so the touched-file list does not show where the quantifier is deparsed. A view keeps its parse tree in pg_rewrite, and pg_upgrade rebuilds views from their deparsed text. The thread does not mention views defined with VLE patterns or a dump and restore test for them.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        7,
+        8
+      ],
+      "author_must_show": "Does pg_get_viewdef reproduce a view with a VLE quantifier exactly, and does a pg_dump test cover that view?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "Henri GASC",
+          "date": "2026-09-15T08:44:03Z",
+          "url": "https://www.postgresql.org/message-id/CAJyuutgJzqVJEsKGFaQpPbp812TcAx69wpgSuHjn6vVDmEdBVw%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Henri GASC",
+          "date": "2026-09-16T13:45:12Z",
+          "url": "https://www.postgresql.org/message-id/CAJyuutjcJhwH9Xz9%3D8jK-Ch%3D38AiAzJ6XG-_QooiEUaT0M5Shw%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The file lists show 0003 adds grammar without touching ruleutils.c, and no message mentions deparsing a quantifier. The gap is unconfirmed without the code, since 0007 does touch ruleutils.c, so this stands as a question the author can answer with a test.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "Traversal depth setting lets any user drive per-query memory",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An unprivileged user sets max_graph_stack_depth to a large value and runs a GRAPH_TABLE query with several unbounded quantified hops. Each GraphScan initializes a full plan state copy per possible depth before reading any row. The backend uses large memory and locks, and the operator learns of it from the OOM killer.",
+      "argument": "Message #11 states that ExecInitGraphScan builds about max_graph_stack_depth copies of the inner plan for every GraphScan at every execution, each doing index_open and index_beginscan. The cost scales with the setting, not with the data, and multiplies by the number of quantified hops. The proposal does not say what context the setting has, what upper bound it has, or what happens when traversal reaches it. In message #10 the author agrees to initialize the frames on first use, but wants to commit first.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        9,
+        10,
+        11
+      ],
+      "author_must_show": "Who may change max_graph_stack_depth, what is its upper bound, and does memory per query stay bounded by depth reached rather than by the setting?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 9,
+          "from": "Henson Choi",
+          "date": "2026-09-17T04:13:38Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zAGW6jPu0y0pX4eKeNBjEB1yQfkDgP4mf4-30Oe1qVu%2BA%40mail.gmail.com"
+        },
+        {
+          "index": 10,
+          "from": "Henri GASC",
+          "date": "2026-09-17T09:25:48Z",
+          "url": "https://www.postgresql.org/message-id/CAJyuutg04hOj%3DhQueaKka9-x1BEud41iGyRY5s26tcxUha9rZA%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Henson Choi",
+          "date": "2026-09-17T10:38:31Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBwWs0yC94xN8Vk_8nap0%2B%3Dafs%2BnFhQy5kWUAWhcO_GZA%40mail.gmail.com"
+        }
+      ],
+      "id": "security-2",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #11 describes about a thousand ExecInitNode calls per GraphScan per execution at the default setting, and the author defers frame init on first use until after commit. The material does not give the GUC's context or upper bound, so the unprivileged-user part is unconfirmed.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "Large new planner and executor area, no committer engaged, base reverted",
+      "level": "2",
+      "rubric_item": 16,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The series lands on top of a SQL/PGQ base that is still being reworked for catalog and dependency reasons. A bug in GraphScan planning or backtracking turns up after release. The only people who know nodeGraphScan.c are a first-time author and one reviewer, and no committer has read the design.",
+      "argument": "The series adds about 300 KiB of planner, executor and parser changes (v2-0002 to v2-0008) and sits on 0001, which restores the reverted base 'not for review' (messages #5, #6). The only review so far is from Henson Choi, who says he has limited time (message #4). Message #6 expects the base to be re-posted in a different form, so the design under review may need to move with it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4,
+        5,
+        6
+      ],
+      "author_must_show": "Which committer familiar with the planner and executor has agreed on the GraphScan design, and does it still hold once the re-posted SQL/PGQ base lands?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "Henson Choi",
+          "date": "2026-09-07T13:38:56Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zBVM-xhJvf5cbmocsPQFD9OC1MNPJmaQY05U66NohaRuQ%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Henri GASC",
+          "date": "2026-09-08T07:47:39Z",
+          "url": "https://www.postgresql.org/message-id/CAJyuutgcHE30-zkjYfDv1-QaP14V8bP%3Dm4eRdsG02gX%2Be2Xmfg%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Henson Choi",
+          "date": "2026-09-08T11:18:35Z",
+          "url": "https://www.postgresql.org/message-id/CAAAe_zAr4JsHX95RicJ5cVZbF9gosmrX0fNBgtMvMm6sgjuoVQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The dependency on a reverted base that message #6 expects to be re-posted is specific to this series. The missing committer belongs in the committability field and must not raise the verdict; the reviewer also stayed engaged with three detailed reviews.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Default-on GUC picks between two executors with possibly different results",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "new_guc",
+      "touch_points": [
+        "new_guc",
+        "security_privileges",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user has row level security on an edge table and runs a GRAPH_TABLE query after upgrade. With enable_native_graphtable on by default, the query takes the native path. If that path does not enforce the RLS policy, the user sees rows the rewriter would hide, and finds out only when someone compares results with the GUC off.",
+      "argument": "Message #1 says row level security was not started on the native path, and no later message says it is handled now. The GUC chooses an executor, so query results, and maybe policy enforcement, depend on a session setting. Postgres keeps enable_* planner GUCs free of semantic effects. Message #2 says the native path should replace the rewriter completely, so the GUC works as a fallback for open correctness gaps.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "Does every GRAPH_TABLE query, including ones under RLS, return the same rows with enable_native_graphtable on and off, and how is that tested?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Henri GASC",
+          "date": "2026-08-08T09:53:21Z",
+          "url": "https://www.postgresql.org/message-id/CAJyuutjsZbTVg4O1zxr9%3Dvwk%3DiKkbXtq9wCW6PhBVaXg%3DDM6Qg%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "Henri GASC",
+          "date": "2026-09-04T06:43:06Z",
+          "url": "https://www.postgresql.org/message-id/CAJyuutgjpVNhm8b%2BhgqJEr_7Q-VsOjAeM1vKr3sM1GGZjVBU8g%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of security-1 for the row level security gap, and of maintenance-fit-1 for results that depend on the GUC. Those two state the same points with more detail.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Two execution paths for the same graph queries behind a GUC",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "new_guc",
+      "touch_points": [
+        "new_guc",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user gets a wrong or failing result from GRAPH_TABLE with enable_native_graphtable on, then sets it off and gets a different answer from the rewriter. Every later SQL/PGQ change must be built and tested on both paths, and nothing fails loudly when one path is updated and the other is not.",
+      "argument": "Message #2 says the series aims to replace the rewriter, but v2-0002 keeps the rewriter as a fallback behind enable_native_graphtable, on by default. The lateral case in messages #1 and #2 shows the paths already disagreed once and needed extra work to match. The proposal does not say whether the rewriter path will be removed, or when, so for now it adds a second mechanism for a job the rewriter already does.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "Is the rewriter path for graph queries removed in this series, and if not, what keeps the two paths giving the same results?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Henri GASC",
+          "date": "2026-08-08T09:53:21Z",
+          "url": "https://www.postgresql.org/message-id/CAJyuutjsZbTVg4O1zxr9%3Dvwk%3DiKkbXtq9wCW6PhBVaXg%3DDM6Qg%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "Henri GASC",
+          "date": "2026-09-04T06:43:06Z",
+          "url": "https://www.postgresql.org/message-id/CAJyuutgjpVNhm8b%2BhgqJEr_7Q-VsOjAeM1vKr3sM1GGZjVBU8g%40mail.gmail.com"
+        }
+      ],
+      "id": "already-exists-2",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1, which makes the same point about two paths behind enable_native_graphtable and asks the same question.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The series adds a GraphScan plan node, changes plannodes.h and execnodes.h, and touches pg_plan_advice's plan walker."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": true,
+      "reason": "0003 adds grammar for VLE quantifiers in GRAPH_TABLE, and only path mode WALK is supported."
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": true,
+      "reason": "0002 adds enable_native_graphtable, on by default, and a traversal depth limit."
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": true,
+      "reason": "All GRAPH_TABLE queries get a GraphScan plan by default instead of the rewriter's join plans."
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": true,
+      "reason": "A view with a VLE quantifier must be deparsed by ruleutils.c, and 0003 does not touch that file."
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "Message #1 says row level security was not started on the native path, which is on by default."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "A new executor node with per-depth PlanState copies, plus a second execution path beside the rewriter."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "see objection maintenance-fit-2: Per-depth copies of arbitrary subplans break the one-PlanState-per-Plan assumption"
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Does the native path apply the same RLS policies and table privilege checks as the rewriter, and which test shows identical rows for a restricted role?",
+    "Is the rewriter path for graph queries removed in this series, and if not, what keeps both paths returning the same results?",
+    "For fixed-length patterns, how do GraphScan plans compare in run time with the rewriter's join plans on large tables?",
+    "What does the user see when traversal reaches max_graph_stack_depth, an error or a truncated result, and who may change that setting?",
+    "Why can a VLE element not be expanded into a recursive query that the existing RecursiveUnion node runs?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "It needs a committer who knows the executor's PlanState and EState rules and the planner's path and plan creation code, and who follows the SQL/PGQ base.",
+    "liability": "The owner signs for a new plan node, its per-depth copies of arbitrary inner plans, two GUCs, and agreement between two graph execution paths for as long as both exist. The series also depends on a reverted base that message #6 expects to be re-posted in another form.",
+    "author_follow_up": "The author posted updates in messages #2 and #3 and a split v2 series in message #8, and answers the reviewer. The author prefers to commit a working version before changing frame init to run on first use."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "high",
+    "review_cost": "high",
+    "recommended_action": "fix design first",
+    "reason": "The series is about 300 KiB across parser, planner and executor, serves users of GRAPH_TABLE, and sits on a base that is reverted. The RLS gap, the two-path question and the per-depth PlanState contract need answers before line-by-line review pays off."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, RLS enforcement in the inner subplans, deparsing of VLE quantifiers, and the context and upper bound of the depth GUC could not be checked. Nine of the 12 thread messages were seen only through the objections.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "revert:6719b238e8f0ea83c39d2b1728c7670cdaa34e06",
+      "kind": "revert",
+      "title": "Rearrange execution of PARAM_EXTERN Params for plpgsql's benefit.",
+      "status": "Partially reverted",
+      "date": "2017-12-21",
+      "first_date": "2015-07-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6719b238e8f0ea83c39d2b1728c7670cdaa34e06",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/32589.1513706441@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Rearrange execution of PARAM_EXTERN Params for plpgsql's benefit.\nReverted commit(s): Further reduce overhead for passing plpgsql variables to the executor.",
+      "objection": "This patch does three interrelated things:\n\n* Create a new expression execution step type EEOP_PARAM_CALLBACK\nand add the infrastructure needed for add-on modules to generate that.\nAs discussed, the best control mechanism for that seems to be to add\nanother hook function to ParamListInfo, which will be called by\nExecInitExpr if it's supplied and a PARAM_EXTERN Param is found.\nFor stand-alone expressions, we add a new entry point to allow the\nParamListInfo to be specified directly, since it can't be retrieved\nfrom the parent plan node's EState.\n\n* Redesign the API for the ParamListInfo paramFetch hook so that the\nParamExternData array can be entirely virtual.  This also lets us get rid\nof ParamListInfo.paramMask, instead leaving it to the paramFetch hook to\ndecide which param IDs should be accessible or not.  plpgsql_param_fetch\nwas already doing the identical masking check, so having callers do it too\nseemed redundant.  While I was at it, I added a \"speculative\" flag to\nparamFetch that the planner can specify as TRUE to avoid unwanted failures.\nThis solves an ancient problem for plpgsql that it couldn't provide values\nof non-DTYPE_VAR variables to the planner for fear of triggering premature\n\"record not assigned yet\" or \"field not found\" errors during planning.\n\n* Rework plpgsql to get rid of the need for \"unshared\" parameter lists,\nby dint of turning the single ParamListInfo per estate into a nearly\nread-only data structure that doesn't instantiate any per-variable data.\nInstead, the paramFetch hook controls access to per-variable data and can\nmake the right decisions on the fly, replacing the cases that we used to\nneed multiple ParamListInfos for.  This might perhaps have been a\nperformance loss on its own, but by using a paramCompile hook we can\nbypass plpgsql_param_fetch entirely during normal query execution.\n(It's now only called when, eg, we copy the ParamListInfo into a cursor\nportal.  copyParamList() or SerializeParamList() effectively instantiate\nthe virtual parameter array as a simple physical array without a\nparamFetch hook, which is what we want in those cases.)  This allows\nreverting most of commit 6c82d8d1f, though I kept the cosmetic\ncode-consolidation aspects of that (eg the assign_simple_var function).\n\nPerformance testing shows this to be at worst a break-even change,\nand it can provide wins ranging up to 20% in test cases involving\naccesses to fields of \"record\" variables.  The fact that values of\nsuch variables can now be exposed to the planner might produce wins\nin some situations, too, but I've not pursued that angle.\n\nIn passing, remove the \"parent\" pointer from the arguments to\nExecInitExprRec and related functions, instead storing that pointer in a\ntransient field in ExprState.  The ParamListInfo pointer for a stand-alone\nexpression is handled the same way; we'd otherwise have had to add\nyet another recursively-passed-down argument in expression compilation.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "SQL/PGQ graph executor",
+        "recursive query depth first execution",
+        "new plan node rewriter replacement"
+      ],
+      "from_hint": false,
+      "score": 0.268,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:1771",
+      "kind": "cf",
+      "title": "Make executor's Range Table an array instead of a List",
+      "status": "Returned with feedback",
+      "date": "2018-08-23",
+      "first_date": "2018-08-23",
+      "url": "https://commitfest.postgresql.org/patch/1771/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKJS1f9EypD_=xG6ACFdF=1cBjz+Z9hiHHSd-RqLjor+QyA-nw@mail.gmail.com"
+      ],
+      "authors": "David Rowley (davidrowley)",
+      "objectors": "",
+      "summary": "The patch converts the executor's range table from a List to an array at executor startup, so getrelid and similar lookups by index become O(1) instead of O(n). It targets InitPlan() overhead for UPDATE and DELETE on partitioned tables with many result relations, and reports about 22% higher tps with 300 partitions.",
+      "objection": "The author withdrew the patch because Amit Langote had posted a patch the week before that already turned the executor range table into an array, as part of a larger patch set. The author chose to review that patch instead. Nobody objected to the idea itself.",
+      "touch_points": [],
+      "matched_queries": [
+        "SQL/PGQ graph executor",
+        "graph traversal depth first executor"
+      ],
+      "from_hint": false,
+      "score": 0.236,
+      "enriched": true,
+      "key_quote": "Sorry, didn't realise. I'll withdraw this and review yours during the\nupcoming 'fest.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAKJS1f_x2P2OHW%2BrD9jby2vmnH3ovDje0g3kWH50eOst8OQqBA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:5630",
+      "kind": "cf",
+      "title": "Allow LISTEN on patterns",
+      "status": "Withdrawn",
+      "date": "2025-03-07",
+      "first_date": "2025-03-04",
+      "url": "https://commitfest.postgresql.org/patch/5630/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/8d39e9fc-5ab9-40e7-8f94-6dcfe2a57370@yeah.net"
+      ],
+      "authors": "Zongliang Quan (quanzl)",
+      "objectors": "Tom Lane, Aleksander Alekseev, Trey Boudreau",
+      "summary": "The patch lets LISTEN take a quoted LIKE pattern, such as `LISTEN 'c%'`, so that one session receives notifications on every matching channel. The author asked whether explicit syntax like LISTEN LIKE or LISTEN SIMILAR should mark pattern listens, and later sketched LIKE, ILIKE and SIMILAR TO variants with pattern-aware UNLISTEN.",
+      "objection": "The author withdrew it after two days. The thread does not say why, but it shows two open problems. Tom Lane said that earlier proposals had stalled on how LISTEN and UNLISTEN patterns interact, and that overlapping patterns could force N pattern matches per incoming notification. Telling whether one pattern covers another may work for simple LIKE patterns but almost certainly not for regexes, and the author agreed his design was superficial and needed rework.",
+      "touch_points": [],
+      "matched_queries": [
+        "quantified path pattern"
+      ],
+      "from_hint": false,
+      "score": 0.145,
+      "enriched": true,
+      "key_quote": "It seems like a series of N such\ncommands could leave us in a state where we have to do N\npattern-matches to decide if a channel name is being listened\nto, which seems annoyingly expensive.",
+      "quote_message_url": "https://www.postgresql.org/message-id/316388.1741192968%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "revert:5472743d9e8583638a897b47558066167cc14583",
+      "kind": "revert",
+      "title": "Revert \"Move PartitionPruneInfo out of plan nodes into PlannedStmt\"",
+      "status": "Reverted",
+      "date": "2023-05-04",
+      "first_date": "2022-12-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=5472743d9e8583638a897b47558066167cc14583",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/4191508.1674157166@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20230502175409.kcoirxczpdha26wt@alvherre.pgsql",
+        "https://www.postgresql.org/message-id/flat/CA+HiwqFGkMSge6TgC9KQzde0ohpAycLQuV7ooitEEpbKB0O_mg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CA+HiwqG6tbc2oadsbyyy24b2AL295XHQgyLRWghmA7u_SL1K8A@mail.gmail.com"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert \"Move PartitionPruneInfo out of plan nodes into PlannedStmt\"\nReverted commit(s): Move PartitioPruneInfo out of plan nodes into PlannedStmt; Fix setrefs.c code for adjusting partPruneInfos",
+      "objection": "This reverts commit ec386948948c and its fixup 589bb816499e.\n\nThis change was intended to support query planning avoiding acquisition\nof locks on partitions that were going to be pruned; however, the\noverall project took a different direction at [1] and this bit is no\nlonger needed.  Put things back the way they were as agreed in [2], to\navoid unnecessary complexity.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "new plan node rewriter replacement"
+      ],
+      "from_hint": false,
+      "score": 0.139,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:26acb54a1368bf3706294400abca85b15c9233a6",
+      "kind": "revert",
+      "title": "Revert \"Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".\"",
+      "status": "Reverted",
+      "date": "2021-03-24",
+      "first_date": "2021-03-10",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=26acb54a1368bf3706294400abca85b15c9233a6",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/E1lMiB9-0001c3-SY@gemulon.postgresql.org",
+        "https://www.postgresql.org/message-id/flat/20210318025228.GE11765@telsasoft.com",
+        "https://www.postgresql.org/message-id/flat/CAA4eK1K-cW7svLC2D7DHoGHxdAdg3P37BLgebqBOC2ZLc9a6QQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAJcOf-cXnB5cnMKqWEp2E2z7Mvcd04iLVmV=qpFJrR3AcrTS3g@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/2309260.1615485644@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CAJcOf-fAdj=nDKMsRhQzndm-O13NY4dL6xGcEvdX5Xvbbi0V7g@mail.gmail.com"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Revert \"Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".\"\nReverted commit(s): Doc: Update description for parallel insert reloption.; Add a new GUC and a reloption to enable inserts in parallel-mode.; Improve FK trigger parallel-safety check added by 05c8482f7f.; Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".; Fix use of relcache TriggerDesc field introduced by commit 05c8482f7f.",
+      "objection": "To allow inserts in parallel-mode this feature has to ensure that all the\nconstraints, triggers, etc. are parallel-safe for the partition hierarchy\nwhich is costly and we need to find a better way to do that. Additionally,\nwe could have used existing cached information in some cases like indexes,\ndomains, etc. to determine the parallel-safety.\n\nList of commits reverted, in reverse chronological order:\n\ned62d3737c Doc: Update description for parallel insert reloption.\nc8f78b6161 Add a new GUC and a reloption to enable inserts in parallel-mode.\nc5be48f092 Improve FK trigger parallel-safety check added by 05c8482f7f.\ne2cda3c20a Fix use of relcache TriggerDesc field introduced by commit 05c8482f7f.\ne4e87a32cc Fix valgrind issue in commit 05c8482f7f.\n05c8482f7f Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "enable_native_graphtable GUC"
+      ],
+      "from_hint": false,
+      "score": 0.132,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "revert:d1d2979852538d7021cc809a40ef127d59747697",
+      "kind": "revert",
+      "title": "Revert \"Propagate CTE property flags when copying a CTE list into a rule.\"",
+      "status": "Reverted",
+      "date": "2021-02-07",
+      "first_date": "2021-02-07",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=d1d2979852538d7021cc809a40ef127d59747697",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJcOf-fAdj=nDKMsRhQzndm-O13NY4dL6xGcEvdX5Xvbbi0V7g@mail.gmail.com"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Propagate CTE property flags when copying a CTE list into a rule.\"\nReverted commit(s): Propagate CTE property flags when copying a CTE list into a rule.",
+      "objection": "This reverts commit ed290896335414c6c069b9ccae1f3dcdd2fac6ba and\nequivalent back-branch commits.  The issue is subtler than I thought,\nand it's far from new, so just before a release deadline is no time\nto be fooling with it.  We'll consider what to do at a bit more\nleisure.",
+      "touch_points": [],
+      "matched_queries": [
+        "property graph GRAPH_TABLE"
+      ],
+      "from_hint": false,
+      "score": 0.132,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:4837",
+      "kind": "cf",
+      "title": "JIT compilation per plan node",
+      "status": "Withdrawn",
+      "date": "2024-08-21",
+      "first_date": "2024-01-02",
+      "url": "https://commitfest.postgresql.org/patch/4837/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGPVpCSBn_-t3jvpmmhHsqNs2NOGo1tSBbyZNg1CjGgAcQJk+Q@mail.gmail.com"
+      ],
+      "authors": "David Rowley (davidrowley), Melih Mutlu (melihmutlu)",
+      "objectors": "David Rowley",
+      "summary": "The patch moves the JIT compilation decision from the whole query to each plan node, so a node is compiled when its cost times its estimated number of calls exceeds jit_above_cost. Inlining and optimization stay decided per query, and the patch passes estimated calls through createplan.c with a new CreatePlanContext.",
+      "objection": "No visible message states why the entry was withdrawn. Tomas Vondra and Robert Haas supported moving the decision to the node level. In the last messages, David Rowley questioned plan node total cost as the measure, proposed using the estimated number of executions of each ExprState instead, and said the costing design was still undecided. The thread then stops, three months before the withdrawal.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "new plan node rewriter replacement"
+      ],
+      "from_hint": false,
+      "score": 0.13,
+      "enriched": true,
+      "key_quote": "Anyway, I don't think it's worth talking in detail about specifics about implementation for the total cost of the node idea when the whole replacement costing model design is still undecided.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAApHDvq2yMNXM%3Dc51BOLtcNBc_KN_Gtb3i-pAdbg6%3DvuyKcUxA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:3560",
+      "kind": "cf",
+      "title": "Add native windows on arm64 support",
+      "status": "Returned with feedback",
+      "date": "2022-02-26",
+      "first_date": "2022-02-23",
+      "url": "https://commitfest.postgresql.org/patch/3560/",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Add native windows on arm64 support",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "enable_native_graphtable GUC"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "revert:1722d5eb05d8e5d2e064cd1798abcae4f296ca9d",
+      "kind": "revert",
+      "title": "Revert \"Don't lock partitions pruned by initial pruning\"",
+      "status": "Reverted",
+      "date": "2025-05-22",
+      "first_date": "2025-03-19",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1722d5eb05d8e5d2e064cd1798abcae4f296ca9d",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/605328.1747710381@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/18830-1f31ea1dc930d444@postgresql.org"
+      ],
+      "authors": "Amit Langote",
+      "objectors": "",
+      "summary": "Revert \"Don't lock partitions pruned by initial pruning\"\nReverted commit(s): Ensure first ModifyTable rel initialized if all are pruned",
+      "objection": "As pointed out by Tom Lane, the patch introduced fragile and invasive\ndesign around plan invalidation handling when locking of prunable\npartitions was deferred from plancache.c to the executor. In\nparticular, it violated assumptions about CachedPlan immutability and\naltered executor APIs in ways that are difficult to justify given the\nadded complexity and overhead.\n\nThis also removes the firstResultRels field added to PlannedStmt in\ncommit 28317de72, which was intended to support deferred locking of\ncertain ModifyTable result relations.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "graph traversal depth first executor"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:687",
+      "kind": "cf",
+      "title": "Fix for PL/Python slow input arrays traversal issue",
+      "status": "Rejected",
+      "date": "2016-09-22",
+      "first_date": "2016-07-28",
+      "url": "https://commitfest.postgresql.org/patch/687/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAH38_tkwA5qgLV8zPN1OpPzhtkNKQb30n3xq-2NR9jUfv3qwHA@mail.gmail.com"
+      ],
+      "authors": "Alexey Grishchenko (0x0fff)",
+      "objectors": "",
+      "summary": "PL/Python converted input arrays by calling array_ref for each element, which costs O(N^2) for arrays with nulls or variable-size elements. The patch walks the array once and keeps the offset of the last element, as array_out does.",
+      "objection": "The entry was closed as a duplicate because the same change is part of another patch, commitfest entry 697. The thread contains no objection to the fix itself.",
+      "touch_points": [],
+      "matched_queries": [
+        "graph traversal depth first executor"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": true,
+      "key_quote": "Yes, this should be closed as it is contained in https://commitfest.postgresql.org/10/697/",
+      "quote_message_url": "https://www.postgresql.org/message-id/20160919191619.1302.72485.pgcf%40coridan.postgresql.org",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:3561",
+      "kind": "cf",
+      "title": "Add native windows on arm64 support",
+      "status": "Returned with feedback",
+      "date": "2022-12-01",
+      "first_date": "2022-02-23",
+      "url": "https://commitfest.postgresql.org/patch/3561/",
+      "thread_urls": [],
+      "authors": "Niyas Sait (niyassait)",
+      "objectors": "",
+      "summary": "Add native windows on arm64 support",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "enable_native_graphtable GUC"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:1897",
+      "kind": "cf",
+      "title": "Delay locking partitions during query execution",
+      "status": "Withdrawn",
+      "date": "2019-03-05",
+      "first_date": "2018-12-03",
+      "url": "https://commitfest.postgresql.org/patch/1897/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKJS1f_kfRQ3ZpjQyHC7=PK9vrhxiHBQFZ+hc0JCwwnRKkF3hg@mail.gmail.com"
+      ],
+      "authors": "David Rowley (davidrowley)",
+      "objectors": "David Rowley, Robert Haas",
+      "summary": "Skip locking partitions in AcquireExecutorLocks() and lock each one only when the executor first opens it in ExecGetRangeTableRelation(), so that partitions removed by run-time pruning are never locked. The patch adds a delaylock flag to RangeTblEntry, and the main gain is for prepared statements that use generic plans over many partitions.",
+      "objection": "The author withdrew it after he found a cached generic plan that fails with \"could not open relation with OID\" when another session drops an index on a partition that was not locked. Robert Haas had said the patch is dead unless the executor can cope with arbitrary AEL-requiring changes to delay-locked partitions. The only fix the author saw was to take partition locks on the top-level partitioned table, which is a larger, separate change. Tom Lane also objected to storing planner output in RangeTblEntry.",
+      "touch_points": [],
+      "matched_queries": [
+        "recursive query depth first execution"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": true,
+      "key_quote": "If you can't,\nthen this patch is dead.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoZN-80143F8OhN8Cn5-uDae5miLYVwMapAuc%2B7%2BZ7pyNg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:da33a3894e0fc440ac53cdc0f2e360e703b13b8c",
+      "kind": "revert",
+      "title": "Revert exporting of internal GUC variable \"data_directory\".",
+      "status": "Reverted",
+      "date": "2015-05-29",
+      "first_date": "2010-12-03",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=da33a3894e0fc440ac53cdc0f2e360e703b13b8c",
+      "thread_urls": [],
+      "authors": "Robert Haas",
+      "objectors": "",
+      "summary": "Revert exporting of internal GUC variable \"data_directory\".\nReverted commit(s): Use GUC lexer for recovery.conf parsing.",
+      "objection": "This undoes a poorly-thought-out choice in commit 970a18687f9b3058, namely\nto export guc.c's internal variable data_directory.  The authoritative\nvariable so far as C code is concerned is DataDir; there is no reason for\nanything except specific bits of GUC code to look at the GUC variable.\n\nAfter yesterday's commits fixing the fsync-on-restart patch, the only\nremaining misuse of data_directory was in AlterSystemSetConfigFile(),\nwhich would be much better off just using a relative path anyhow: it's\nless code and it doesn't break if the DBA moves the data directory of a\nrunning system, which is a case we've taken some pains over in the past.\n\nThis is mostly cosmetic, so no need for a back-patch (and I'd be hesitant\nto remove a global variable in stable branches anyway).",
+      "touch_points": [
+        "new GUC",
+        "WAL / replication / standby",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "variable length edge path"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:5852",
+      "kind": "cf",
+      "title": "Add RESPECT/IGNORE NULLS and FROM FIRST/LAST options",
+      "status": "Withdrawn",
+      "date": "2025-06-26",
+      "first_date": "2018-07-13",
+      "url": "https://commitfest.postgresql.org/patch/5852/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGMVOdsbtRwE_4+v8zjH1d9xfovDeQAGLkP_B6k69_VoFEgX-A@mail.gmail.com"
+      ],
+      "authors": "Tatsuo Ishii (ishii), Oliver Ford (ojford)",
+      "objectors": "",
+      "summary": "Add the SQL-standard null treatment clause (RESPECT/IGNORE NULLS) and FROM FIRST/LAST to window functions. Later versions drop FROM FIRST/LAST and support IGNORE NULLS for lead, lag, first_value, last_value and nth_value, with each window function checking the option through a new window API and raising an error if it does not support it.",
+      "objection": "The visible messages do not show why. The last message, posted the day before the withdrawal, adds a v14 with performance work and says the patch is close to committable form.",
+      "touch_points": [],
+      "matched_queries": [
+        "graph traversal depth first executor"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:3020",
+      "kind": "cf",
+      "title": "alter table set TABLE ACCESS METHOD",
+      "status": "Withdrawn",
+      "date": "2021-06-08",
+      "first_date": "2021-02-28",
+      "url": "https://commitfest.postgresql.org/patch/3020/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210228222530.GD20769@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "",
+      "summary": "Add an ALTER TABLE ... SET TABLE ACCESS METHOD command that rewrites a table into a different table access method, so data can be migrated between AMs without manually recreating the table. The patch also detoasted tuples in ATRewriteTable during the rewrite so that the new AM would not receive data compressed or toasted by the old one.",
+      "objection": "The visible messages do not show why. The last messages show reviewers agreeing that the detoasting step in ATRewriteTable could be removed because detoasting is the table AM's responsibility, and discussing whether a dummy table AM test module would be useful; none of them gives a reason for withdrawing the entry.",
+      "touch_points": [],
+      "matched_queries": [
+        "property graph GRAPH_TABLE"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:1218",
+      "kind": "cf",
+      "title": "Pattern based listeners for asynchronous messaging (LISTEN/NOTIFY)",
+      "status": "Returned with feedback",
+      "date": "2017-11-30",
+      "first_date": "2017-07-31",
+      "url": "https://commitfest.postgresql.org/patch/1218/",
+      "thread_urls": [],
+      "authors": "Markus Sintonen (markuss)",
+      "objectors": "",
+      "summary": "Pattern based listeners for asynchronous messaging (LISTEN/NOTIFY)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "quantified path pattern"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:2388",
+      "kind": "cf",
+      "title": "Fix to_char() behaviour with 'WW-D' pattern",
+      "status": "Returned with feedback",
+      "date": "2020-07-10",
+      "first_date": "2019-12-24",
+      "url": "https://commitfest.postgresql.org/patch/2388/",
+      "thread_urls": [],
+      "authors": "Mark Lorenz (s-man42)",
+      "objectors": "",
+      "summary": "Fix to_char() behaviour with 'WW-D' pattern",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "quantified path pattern"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:1747",
+      "kind": "cf",
+      "title": "Autoprepare: implicitly replace literals with parameters and store generalized plan",
+      "status": "Returned with feedback",
+      "date": "2020-07-01",
+      "first_date": "2017-04-24",
+      "url": "https://commitfest.postgresql.org/patch/1747/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/8e76d8fc-8b8c-14bd-d4d1-e9cf193a74f5@postgrespro.ru"
+      ],
+      "authors": "Konstantin Knizhnik (knizhnik)",
+      "objectors": "Tom Lane",
+      "summary": "The patch made the server detect queries repeated with different literal values, replace the literals with parameters, and cache a generic plan per session, like an implicit prepared statement. A later version limited this to extended query mode, where it turned unnamed statements into prepared ones.",
+      "objection": "Tom Lane argued that the feature would hurt more use cases than it helps. Restricted to extended query mode, it only overrides the application's choice of unnamed statements, which the client can change more easily and with better knowledge. He also noted that the plancache already chooses generic plans wrongly in real workloads, that the pgbench benchmarks showed only best cases with no worst-case or cache-pressure numbers, and that the patch had no tests; the author sent nothing more, so the entry was returned with feedback.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "new plan node rewriter replacement"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": true,
+      "key_quote": "I think that extending that behavior to more cases is going to be a net loss, until we find some way to make it smarter and more reliable.",
+      "quote_message_url": "https://www.postgresql.org/message-id/29529.1583090776%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:4309",
+      "kind": "cf",
+      "title": "Add native windows on arm64 support",
+      "status": "Returned with feedback",
+      "date": "2023-09-19",
+      "first_date": "2023-05-07",
+      "url": "https://commitfest.postgresql.org/patch/4309/",
+      "thread_urls": [],
+      "authors": "Niyas Sait (niyassait)",
+      "objectors": "",
+      "summary": "Add native windows on arm64 support",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "enable_native_graphtable GUC"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:6377",
+      "kind": "cf",
+      "title": "Precompute string lengths in PerformRadiusTransaction",
+      "status": "Withdrawn",
+      "date": "2026-03-25",
+      "first_date": "2026-01-05",
+      "url": "https://commitfest.postgresql.org/patch/6377/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/tencent_6B29EC4570E6F0C659B4EAA7@qq.com"
+      ],
+      "authors": "Man Zeng (zengman)",
+      "objectors": "",
+      "summary": "Precompute string lengths in PerformRadiusTransaction\nThreads: [PATCH] Precompute string lengths in PerformRadiusTransaction",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "variable length edge path"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:1264",
+      "kind": "cf",
+      "title": "Exclude partition constaint checking in query execution plan for partitioned table queries",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2017-08-14",
+      "url": "https://commitfest.postgresql.org/patch/1264/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/27516421-5afa-203c-e22a-8407e9187327@postgrespro.ru"
+      ],
+      "authors": "Konstantin Knizhnik (knizhnik)",
+      "objectors": "",
+      "summary": "Exclude partition constaint checking in query execution plan for partitioned table queries\nThreads: Secondary index access optimizations",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "recursive query depth first execution"
+      ],
+      "from_hint": false,
+      "score": 0.103,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "revert:16a3ae504e2030583851c8f45cbed14b0c546d6e",
+      "kind": "revert",
+      "title": "Revert inappropriate weakening of an Assert in plpgsql.",
+      "status": "Reverted",
+      "date": "2025-03-21",
+      "first_date": "2017-10-27",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=16a3ae504e2030583851c8f45cbed14b0c546d6e",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1565347.1742572349@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CAA4eK1+_BuZrmVCeua5Eqnm4Co9DAXdM5HPAOE2J19ePbR912Q@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/b6cd572a-3e44-8785-75e9-c512a5a17a73@tieto.com"
+      ],
+      "authors": "Robert Haas, Tom Lane",
+      "objectors": "",
+      "summary": "Revert inappropriate weakening of an Assert in plpgsql.\nReverted commit(s): Allow parallel query for prepared statements with generic plans.; Repair bogus handling of multi-assignment Params in upper plan levels.",
+      "objection": "Commit 682ce911f modified exec_save_simple_expr to accept a Param\nin the tlist of a Gather node, rather than the normal case of a Var\nreferencing the Gather's input.  It turns out that this was a kluge\nto work around the bug later fixed in 0f7ec8d9c, namely that setrefs.c\nwas failing to replace Params in upper plan nodes with Var references\nto the same Params appearing in the child tlists.  With that fixed,\nthere seems no reason to continue to allow a Param here.  (Moreover,\neven if we did expect a Param here, the semantically correct thing\nto do would be to take the Param as the expression being sought.\nWhatever it may represent, it is *not* a reference to the child.)\nHence, revert that part of 682ce911f.\n\nThat all happened a long time ago.  However, since the net effect\nhere is just to tighten an Assert condition, I'm content to change\nit only in master.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "new plan node rewriter replacement"
+      ],
+      "from_hint": false,
+      "score": 0.097,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:5208",
+      "kind": "cf",
+      "title": "prefetching for nestloop / indexscan",
+      "status": "Withdrawn",
+      "date": "2024-11-22",
+      "first_date": "2024-08-26",
+      "url": "https://commitfest.postgresql.org/patch/5208/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/c660f36c-f648-47f1-ad97-a362432451e4@vondra.me"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "prefetching for nestloop / indexscan\nThreads: PoC: prefetching data between executor nodes (e.g. nestloop +\nindexscan)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "SQL/PGQ graph executor"
+      ],
+      "from_hint": false,
+      "score": 0.096,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "revert:50c137487c96e629e0e5372bb3d1b5f1a2f71a88",
+      "kind": "revert",
+      "title": "Fix permission tests for views/tables proven empty by constraint exclusion.",
+      "status": "Partially reverted",
+      "date": "2013-05-01",
+      "first_date": "2013-04-30",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=50c137487c96e629e0e5372bb3d1b5f1a2f71a88",
+      "thread_urls": [],
+      "authors": "Kevin Grittner",
+      "objectors": "",
+      "summary": "Fix permission tests for views/tables proven empty by constraint exclusion.\nReverted commit(s): Add regression test for bug fixed by recent refactoring.",
+      "objection": "A view defined as \"select <something> where false\" had the curious property\nthat the system wouldn't check whether users had the privileges necessary\nto select from it.  More generally, permissions checks could be skipped\nfor tables referenced in sub-selects or views that were proven empty by\nconstraint exclusion (although some quick testing suggests this seldom\nhappens in cases of practical interest).  This happened because the planner\nfailed to include rangetable entries for such tables in the finished plan.\n\nThis was noticed in connection with erroneous handling of materialized\nviews, but actually the issue is quite unrelated to matviews.  Therefore,\nrevert commit 200ba1667b3a8d7a9d559d2f05f83d209c9d8267 in favor of a more\ndirect test for the real problem.\n\nBack-patch to 9.2 where the bug was introduced (by commit\n7741dd6590073719688891898e85f0cb73453159).",
+      "touch_points": [
+        "planner",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "property graph GRAPH_TABLE"
+      ],
+      "from_hint": false,
+      "score": 0.096,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 3,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 0
+  },
+  "precedent_cutoff": "2026-08-08",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found, and nothing in the thread points to an earlier rejection that this series repeats. The thread mentions two earlier events: the author's own custom VLE node (message #1), which this series replaces because that node could not mix VLE and non-VLE patterns, and the SQL/PGQ base revert (messages #5, #6). Message #6 reports that the revert was about catalogs and dependencies, not execution, so its reason does not apply to this executor design. The series still cannot go in until that base returns."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "Two objections from the standards and compatibility angle. pg_dump is not affected, because the series adds no new objects beyond the restored SQL/PGQ base."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "Apart from view deparsing, the series adds no on-disk format, WAL record, wire protocol message or replicated state. The catalog changes belong to the restored SQL/PGQ base in 0001, which is marked not for review, and GraphScan state lives only within one execution."
+    },
+    {
+      "angle": "security",
+      "objections": 2,
+      "note": "Two objections from the security angle; no listed precedent applies."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "Objections listed above. Hot-path cost for queries that do not use GRAPH_TABLE looks nil from the prose, so no objection is raised on that point."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 2,
+      "note": "No contrib module or extension that already provides SQL/PGQ graph execution is named in the material, so no objection rests on an external alternative."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "Demand for VLE itself is reasonable: quantified path patterns are part of SQL/PGQ, and a reviewer in message #4 supports the direction. The only objection concerns widening the change to all graph queries."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 11,
+      "new_survived": 9,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "attachment limit (8) reached; graph_table_hops.txt not read",
+    "attachment limit (8) reached; native_graph_20260808.patch not read"
+  ],
+  "tone_lint": {
+    "fields_checked": 106,
+    "hits_found": 3,
+    "sentences_rewritten": 3,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 16,
+    "wall_ms": 210225,
+    "cost_usd": 3.2814753999999997,
+    "dry_run": false
+  }
+}

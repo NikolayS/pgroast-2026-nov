@@ -6,9 +6,9 @@
 
 ## Verdict
 
-**NEEDS-DESIGN-DISCUSSION** (confidence: medium). No surviving objection is fatal, and none stops review at level 1 or 2. The goal extends the existing wal_compression setting, and the open points are fixable: the default and opt-out (standards-compat-1), the codec needed to read block references (replication-ondisk-1), and workload evidence (demand-1). The WAL record format change and the WIP streams rule (replication-ondisk-2) need a committer who knows xlogreader and recovery to sign.
+**NEEDS-DESIGN-DISCUSSION** (confidence: medium). No surviving objection is fatal, and less WAL is a lasting need. The remaining points are fixable. standards-compat-2 and demand-1 ask for OLTP cost and benefit numbers behind the default-on 512-byte threshold. replication-ondisk-1 asks for a confirmed XLOG_PAGE_MAGIC bump. maintenance-fit-1 and standards-compat-1 concern the two record lengths and the changed meaning of wal_fpi_bytes. A committer who knows the WAL insert and reader paths has to sign the record format.
 
-Not checked: Without the code, I could not check that every reader masks XLR_COMPRESSED and uses the right length, or whether the page magic changes. The truncated messages #16 and #17 hide the stream lock cost.
+Not checked: The code was not read. Buffer allocation in critical sections, bounds checks when decompressing, the XLOG_PAGE_MAGIC bump and the GUC contexts could not be checked.
 
 ## Prior attempts
 
@@ -16,82 +16,85 @@ None found before 2025-01-12.
 
 ## Objections a reviewer is likely to raise
 
-### 1. Gain for whole-record compression is shown on one synthetic workload only
+### 1. Existing wal_compression users get whole-record compression by default
 
-A user turns on zstd with the default 512-byte threshold on an OLTP cluster and expects lower WAL volume. In that workload few records exceed the threshold, so the change in WAL volume is small. Meanwhile the record format change, the second compression buffer and the extra reader path are permanent for every release and every WAL tool.
+A site runs with wal_compression = on, which now means zstd first, and upgrades. Every record over 512 bytes is compressed whole, and each backend holds about 268 KiB more. If OLTP latency rises, the site cannot tell why, because nothing in its configuration changed.
 
-The only measured benefit of 0002 is CREATE INDEX over 10M random doubles: 19% less WAL with zstd and 15% with lz4 (messages #4, #17). The 2PC case from message #1 has no numbers. No field report, -general thread or production WAL sample shows how much real WAL sits in large multi-FPI records. Michael Paquier committed the context-reuse parts but had no opinion on 0002 and 0003 (message #25), and the other interested reviewers (messages #6, #21) state liking the idea without giving a workload.
+wal_compression has been documented as compression of full-page writes. With a 512-byte default threshold, the patch widens what it does for every current user of lz4 or zstd. Message #7 says 512 was not tested. The brief notes that no CPU or latency numbers for 0001 on OLTP are shown, only WAL size. Message #13 shows a low threshold can make WAL larger, so the default is a real choice that needs data behind it.
 
-**Question:** On which production or realistic workloads, other than a B-tree build on random data, does 0002 reduce WAL volume, and by how much at the default threshold?
+**Question:** What OLTP CPU and latency measurements support enabling whole-record compression at 512 bytes by default, rather than leaving it off until a user sets a threshold?
 
-<sub>fixable, level 1b, demand; messages [#1](https://www.postgresql.org/message-id/4DC38068-976E-4A84-8EE6-4EFACBBD927A%40yandex-team.ru), [#4](https://www.postgresql.org/message-id/73E8D8A0-F5C3-45E8-8DFC-60AA86F8B890%40yandex-team.ru), [#17](https://www.postgresql.org/message-id/A2BB6471-C150-423C-B6F5-BFEC46BE544B%40yandex-team.ru), [#25](https://www.postgresql.org/message-id/asRsOl73nf8GeBFd%40paquier.xyz); `demand-1`</sub>
+<sub>fixable, level 2, new GUC; messages [#7](https://www.postgresql.org/message-id/87E092DC-0E61-426A-8F73-B61A19BCC00D%40yandex-team.ru), [#13](https://www.postgresql.org/message-id/4D8E3280-632B-4C6C-A728-835B7FDE6325%40yandex-team.ru), [#16](https://www.postgresql.org/message-id/33EDA443-E905-4E15-A7B0-F734C369A19B%40yandex-team.ru), [#25](https://www.postgresql.org/message-id/asRsOl73nf8GeBFd%40paquier.xyz); `standards-compat-2`</sub>
 
-### 2. Default threshold turns on whole-record compression for every existing wal_compression user
+### 2. Gain from whole-record compression is shown on one synthetic workload
 
-A site runs wal_compression = on and upgrades. With the 512-byte default, large records are now compressed whole and need a second buffer per backend, and WAL size and CPU change. To get the old behaviour back, the DBA has to find a second GUC and set it to about 1GB.
+A committer takes on a new WAL record format, a new GUC and a changed reader path, and the 15-19% saving appears only on random-data B-tree builds. On typical OLTP WAL, whose records are mostly under 512 bytes, 0001 does nothing. The cost stays even if few users see the gain.
 
-In message #11 Fujii Masao asked to keep FPI-only compression as a real choice, and message #12 agreed to complement it. But the opt-out in message #13 is a magic threshold value, with no explicit setting. The 512 default has no measured basis (message #7), and message #16 shows a low threshold can make WAL larger. wal_compression already selects the method, so a committer would likely ask why the scope is not chosen there.
+The only measurement for 0001 is CREATE INDEX over 10M random doubles (messages #4 and #17). Message #16 says the records over 512 bytes are 0.8% of pgbench records, and the author points to 0003, which is WIP, for the rest. No field report, -general thread or user in the thread describes WAL volume from large records as their problem. Message #6 liked the idea, but did not report a need.
 
-**Question:** Why is whole-record compression on by default for existing wal_compression users, and why is the opt-out a large threshold value with no explicit off setting?
+Precedent: [XLog size reductions: Reduced XLog record header size](https://www.postgresql.org/message-id/flat/CAEze2WgcW5SkPO_TGTqirRcCS_FN0xEZqUsXDE6pPz2TYzXQBA@mail.gmail.com) (Returned with feedback, 2024-04-09)
 
-<sub>fixable, level 2, new GUC; messages [#7](https://www.postgresql.org/message-id/87E092DC-0E61-426A-8F73-B61A19BCC00D%40yandex-team.ru), [#11](https://www.postgresql.org/message-id/CAHGQGwG7krZ%2Bpktg9c2e8xk-6TK-sK0kMSWriSQtz%3DJvJ_E6Pg%40mail.gmail.com), [#12](https://www.postgresql.org/message-id/19C9772F-9377-4ABA-88CF-F5B7C35C5A4C%40yandex-team.ru), [#13](https://www.postgresql.org/message-id/4D8E3280-632B-4C6C-A728-835B7FDE6325%40yandex-team.ru), [#16](https://www.postgresql.org/message-id/33EDA443-E905-4E15-A7B0-F734C369A19B%40yandex-team.ru); `standards-compat-1`</sub>
+**Question:** Which real workloads besides random-data index builds produce records above the threshold, and how much WAL does 0001 save on them?
 
-### 3. Whole-record compression hides block references behind the codec
+<sub>fixable, level 1b, demand; messages [#4](https://www.postgresql.org/message-id/73E8D8A0-F5C3-45E8-8DFC-60AA86F8B890%40yandex-team.ru), [#6](https://www.postgresql.org/message-id/87d08e95-0e55-4bcf-9f4b-5c9e7b8d91f8%40oss.nttdata.com), [#16](https://www.postgresql.org/message-id/33EDA443-E905-4E15-A7B0-F734C369A19B%40yandex-team.ru), [#17](https://www.postgresql.org/message-id/A2BB6471-C150-423C-B6F5-BFEC46BE544B%40yandex-team.ru); `demand-1`</sub>
 
-A cluster runs with wal_compression = on, which now picks zstd first, so every record over 512 bytes is compressed as one unit. A pg_rewind binary, or an out-of-tree WAL reader built without zstd, can no longer parse the block headers of those records. It fails during a failover rewind or an incremental backup scan, not when the setting is changed.
+### 3. Compressed records hide block references from WAL parsers outside xlogreader
 
-Today a reader without lz4 or zstd can still decode record headers and block references and fails only on restoring an image. With 0002 the block headers sit inside the compressed payload (message #1), so codec support decides whether the record can be read at all. The default threshold turns this on for every existing wal_compression = lz4, zstd or on user, with no opt-in (messages #7, #20). The material also does not say whether XLOG_PAGE_MAGIC is bumped, so older tools may misread records instead of rejecting them (message #3).
+An incremental backup tool that parses raw WAL to collect changed blocks meets an XLR_COMPRESSED record. It does not see the block references inside the compressed body and leaves those pages out of the backup. The restored cluster is missing changes, and the user finds this only after a restore.
 
-**Question:** Why should whole-record compression be on by default for existing wal_compression users, and how does a reader without the codec report the problem instead of misparsing?
+The claim that "WAL readers need no new logic" holds only for readers built on the in-core xlogreader. Message #36 shows that in-core code already misread the flag, since replorigin_identity reported records as UNKNOWN. The brief says the material does not show whether XLOG_PAGE_MAGIC is bumped. Message #3 mentions bumping WAL_FILE_MAGIC, and no later message confirms it, so a parser that reads WAL would get no loud signal.
 
-<sub>fixable, level 2, WAL / replication / standby; messages [#1](https://www.postgresql.org/message-id/4DC38068-976E-4A84-8EE6-4EFACBBD927A%40yandex-team.ru), [#3](https://www.postgresql.org/message-id/ECCAD8F2-032D-42FE-B60D-0D6EB0423FF2%40yandex-team.ru), [#7](https://www.postgresql.org/message-id/87E092DC-0E61-426A-8F73-B61A19BCC00D%40yandex-team.ru), [#20](https://www.postgresql.org/message-id/04119E77-9C0F-415A-A9E0-65E6E4A57940%40yandex-team.ru); `replication-ondisk-1`</sub>
+**Question:** Is XLOG_PAGE_MAGIC bumped so that old raw-WAL parsers reject the new format, and how would an external block-tracking tool find the block references in a compressed record?
 
-### 4. wal_fpi_bytes exceeding wal_bytes changes the meaning of a pg_stat_wal column
+<sub>fixable, level 2, WAL / replication / standby; messages [#3](https://www.postgresql.org/message-id/ECCAD8F2-032D-42FE-B60D-0D6EB0423FF2%40yandex-team.ru), [#36](https://www.postgresql.org/message-id/CAN4CZFOhMg9oyKUSeK4VhdB1B-cOjS6qUgTk9HCDnbMg9pLQHQ%40mail.gmail.com); `replication-ondisk-1`</sub>
 
-A monitoring dashboard plots wal_fpi_bytes / wal_bytes as the full-page-image share of WAL. After upgrade the ratio goes above 1, as in message #33 (90 MB against 10 MB), and alerts or capacity plans built on it give wrong answers. Users learn of the change only from a release-notes line or the documentation.
+### 4. Split between physical and decoded record length burdens every WAL reader
 
-Today wal_fpi_bytes is a subset of wal_bytes, and external tools depend on that. Message #35 keeps the pre-compression count, documents that it can exceed wal_bytes, and says the jointly compressed bytes cannot be split. That reason holds, but the result is one view whose two byte columns count in different units. A committer would likely ask for a separate column, or for wal_fpi_bytes to stay physical.
+A later patch adds a length check or an xl_info test in xlogreader, an rmgr desc routine or an extension WAL reader, and picks the wrong length or misses the XLR_COMPRESSED bit. Tests pass because wal_compression is off by default, and the bug shows up only on clusters running lz4 or zstd with large records.
 
-Precedent: [Tracking the compression effect](https://www.postgresql.org/message-id/flat/0489c74a83dbd54ed33feb6690d7ca4f@oss.nttdata.com) (Withdrawn, 2022-10-31)
+Message #20 shows a rebase over an unrelated length check (18992dc9d98) that still compiled, but against a variable that no longer existed. Message #36 found replication origin records reported as UNKNOWN because one routine did not mask the new bit. Both bugs were silent and surfaced only in review. v13 clears the flag after decompression, but every record now has two lengths, and nothing makes the compiler or the default tests catch the wrong one.
 
-**Question:** Can pg_stat_wal keep wal_fpi_bytes no larger than wal_bytes, for example by reporting pre-compression image bytes in a new column instead?
+**Question:** What makes a future WAL reader or length check that uses the wrong length fail in the default regression run, not only with compression turned on?
 
-<sub>fixable, level 2, design; messages [#33](https://www.postgresql.org/message-id/CAN4CZFOgbHQFvmBD%3DTo7Hjv1fJ2QMJn0pM-2HcPvH4dqkehxcQ%40mail.gmail.com), [#35](https://www.postgresql.org/message-id/D815DE2E-6EEB-4EF4-8B5F-3374F552D55C%40yandex-team.ru); `standards-compat-2`</sub>
+<sub>fixable, level 2, maintenance burden ("who maintains this in 10 years"); messages [#20](https://www.postgresql.org/message-id/04119E77-9C0F-415A-A9E0-65E6E4A57940%40yandex-team.ru), [#36](https://www.postgresql.org/message-id/CAN4CZFOhMg9oyKUSeK4VhdB1B-cOjS6qUgTk9HCDnbMg9pLQHQ%40mail.gmail.com), [#37](https://www.postgresql.org/message-id/17A14E6D-9ECA-4E15-AAF7-1EAED2568788%40yandex-team.ru); `maintenance-fit-1`</sub>
 
-### 5. Two record lengths that every future xlogreader change must choose between
+### 5. pg_stat_wal.wal_fpi_bytes can now exceed wal_bytes
 
-A later patch adds a sanity check, a statistic or a buffer size based on xl_tot_len in xlogreader or pg_waldump. It is correct for uncompressed records, which is all the default test setup produces. With whole-record compression on, it checks or allocates the wrong side, and this shows up as a decode failure or a wrong report in the field.
+A monitoring dashboard computes the FPI share of WAL as wal_fpi_bytes / wal_bytes. After upgrade, with zstd and the default threshold, it reports shares like 845%, as in message #33. The operator finds out from alerts or wrong capacity planning, with no change on their side.
 
-0002 splits each record into a physical length and a decoded length. Message #20 shows a rebase across 18992dc9d98 that needed a choice of side, and a plain textual rebase compiled against a variable that no longer existed. Message #36 found replorigin_identity reading xl_info without masking XLR_COMPRESSED. v13 clears the flag after decompression, but nothing makes the wrong choice of length fail loudly.
+Message #35 keeps wal_fpi_bytes as image bytes before whole-record compression and only documents that it can exceed physical wal_bytes. Today both columns count bytes written, so existing tools read them as parts of one total. The proposal changes what the pair means without a new column or a rename. pg_waldump and pg_walinspect got separate physical and decoded sizes, but pg_stat_wal did not.
 
-**Question:** Which test configuration runs the recovery and tool suites with whole-record compression on, so that a check on the wrong length fails in CI?
+**Question:** Why not leave wal_fpi_bytes comparable to wal_bytes and report pre-compression image bytes in a separate column with its own name?
 
-<sub>fixable, level 2, maintenance burden ("who maintains this in 10 years"); messages [#20](https://www.postgresql.org/message-id/04119E77-9C0F-415A-A9E0-65E6E4A57940%40yandex-team.ru), [#33](https://www.postgresql.org/message-id/CAN4CZFOgbHQFvmBD%3DTo7Hjv1fJ2QMJn0pM-2HcPvH4dqkehxcQ%40mail.gmail.com), [#35](https://www.postgresql.org/message-id/D815DE2E-6EEB-4EF4-8B5F-3374F552D55C%40yandex-team.ru), [#36](https://www.postgresql.org/message-id/CAN4CZFOhMg9oyKUSeK4VhdB1B-cOjS6qUgTk9HCDnbMg9pLQHQ%40mail.gmail.com); `maintenance-fit-2`</sub>
+<sub>fixable, level 2, design; messages [#33](https://www.postgresql.org/message-id/CAN4CZFOgbHQFvmBD%3DTo7Hjv1fJ2QMJn0pM-2HcPvH4dqkehxcQ%40mail.gmail.com), [#35](https://www.postgresql.org/message-id/D815DE2E-6EEB-4EF4-8B5F-3374F552D55C%40yandex-team.ru); `standards-compat-1`</sub>
 
 ## Questions for the author
 
-1. On which realistic workloads, other than a B-tree build on random data, does whole-record compression reduce WAL volume at the 512-byte default, and by how much?
-2. Why is whole-record compression on by default for existing lz4 and zstd users, with a large threshold value as the only way back to FPI-only compression?
-3. Which in-tree tools and known out-of-tree WAL readers need only block references today, and how do they behave on a compressed record when built without the codec?
-4. Can pg_stat_wal keep wal_fpi_bytes no larger than wal_bytes, for example by reporting image bytes before compression in a new column?
-5. Which test configuration runs the recovery and tool suites with whole-record compression on, and with streams on, so a wrong length or a direct read by LSN fails in CI?
+1. What CPU and latency cost does 0001 add on pgbench or a similar OLTP workload at the default 512-byte threshold, and how was 512 chosen?
+2. Which workloads besides the random-data index build produce records above the threshold, and how much WAL does 0001 save on them compared with HEAD?
+3. Is XLOG_PAGE_MAGIC bumped so that WAL parsers that predate the new format reject it instead of misreading compressed records?
+4. Why not keep wal_fpi_bytes comparable to wal_bytes and report image bytes before compression in a separate column?
+5. For WAL segments smaller than 4MB, does 0003 also restart streams at each segment boundary, or which retention rule keeps the earlier segments?
 
 ## Touch points
 
-- **WAL / replication / standby:** The patch adds the XLR_COMPRESSED bit in xl_info and a compression header to the WAL record format.
-- **ABI / extension API:** The patch changes xlogrecord.h and xlogreader.h, and the streams patch adds XLogBeginReadStreamed() for WAL readers.
-- **SQL-standard conflict or non-standard syntax:** see objection standards-compat-1: Default threshold turns on whole-record compression for every existing wal_compression user
-- **new GUC:** The series adds wal_compression_threshold and, in the WIP patch, wal_compression_streams.
-- **maintenance burden ("who maintains this in 10 years"):** Each record gets a physical and a decoded length, and streams add a rule for every reader that reads by LSN.
-- **performance on the hot path:** The WAL insert path in xloginsert.c gains a compression attempt and a second buffer per backend.
+- **on-disk format / pg_upgrade:** The WAL record format gains the XLR_COMPRESSED bit and a compression header, and 0003 adds 4MB stream restart points.
+- **WAL / replication / standby:** Recovery, logical decoding, pg_rewind and pg_waldump must read compressed records; 0003 changes where a reader may start.
+- **ABI / extension API:** xlogreader.h and xlogrecord.h change, and 0003 adds XLogBeginReadStreamed() for readers that start mid-WAL.
+- **new GUC:** wal_compression_threshold in 0001 and wal_compression_streams in WIP 0003.
+- **security / privileges:** Cross-record stream history in 0003 could make WAL size depend on other sessions' data.
+- **backpatchability:** see objection replication-ondisk-1: Compressed records hide block references from WAL parsers outside xlogreader
+- **maintenance burden ("who maintains this in 10 years"):** Every record has a physical and a decoded length, and 0003 adds an unenforced rule for records read by LSN.
+- **performance on the hot path:** Records over 512 bytes are compressed whole in the WAL insert path for every lz4 and zstd user.
+- **doesn't fit what Postgres is about (extension / external tool / already solved):** see objection demand-1: Gain from whole-record compression is shown on one synthetic workload
 
 ## Who would commit it, and when
 
-- Owner: qualified committer engaged. Michael Paquier committed the zstd context reuse split out of this series, but in message #25 gave no opinion on whole-record compression or streams. The owner must know xloginsert, xlogreader and recovery.
-- Priority: fix design first; audience a sizeable minority; review cost high. Users of wal_compression with lz4 or zstd gain, with 15% to 19% less WAL shown on one index build. The patch changes the WAL record format and the insert and reader paths, so the default, the opt-out and the pg_stat_wal meaning should be settled before detailed review.
+- Owner: qualified committer engaged. Michael Paquier committed the zstd context-reuse parts but gave no opinion on whole-record or stream compression. Fujii Masao reviewed the design early. The owner must know xloginsert.c, xlogreader.c and recovery.
+- Priority: fix design first; audience a sizeable minority; review cost high. The gain reaches users of lz4 or zstd WAL compression with large records, and is shown on one index-build test. The patch changes the WAL record format and the insert and reader paths, so the default threshold, the format signal and the stats meaning should be settled before detailed review.
 
 ---
 
-[roast-full.md](roast-full.md) has 1 more objection(s) that held, 5 refuted, the proposal restated, all 15 touch points, run details. Warnings in this run: 1.
+[roast-full.md](roast-full.md) has 3 more objection(s) that held, 4 refuted, the proposal restated, all 15 touch points, run details. Warnings in this run: 1.
 
 Prepared by an AI harness; treat as a devil's advocate, not a verdict.

@@ -1,0 +1,1377 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:45:10.081Z",
+  "input": {
+    "arg": "7364",
+    "cf": {
+      "id": 7364,
+      "url": "https://commitfest.postgresql.org/patch/7364/",
+      "title": "Costing for parallel scans with few/single row produced in the outer side",
+      "status": "Needs review",
+      "authors": "Matthias van de Meent (mmeent)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAEze2Wi%2BJp26mhBJvrMshKGYNTtPcxzd1BWoEW_7%2BeH6saj3gQ%40mail.gmail.com",
+    "subject": "Costing for parallel scans with few/single row produced in the outer side",
+    "thread_start": "2026-09-28T22:06:23Z",
+    "messages_read": 6,
+    "messages_total": 6,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v2-0001-optimizer-Improve-costing-for-low-rowcount-parall.patch",
+      "v1-0001-optimizer-Better-costing-for-low-rowcount-paralle.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The problem is stated and a committer who knows parallel costing treats it as real, so thin demand (demand-1) alone does not stop review. The design does: effective_workers has no defined invariant (maintenance-fit-1), and v2 still costs 5 outer rows below 4 at 4 workers (standards-compat-1). Message #6 also reports wrong values for partial aggregates and Parallel Append, which the patch does not target (demand-2). The list needs to agree on the invariant before code review makes sense.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Cap parallel worker discount when outer side yields fewer rows than workers",
+    "problem": "When the outer side of a parallel plan produces fewer rows than there are workers, the planner still divides the cost of inner join nodes by about the worker count. Only one worker finds the row and runs the joins, so the planner picks a parallel seq scan over a cheaper primary key index scan. The author hit this in a TPCC benchmark on pg18 and master.",
+    "proposed_design": "The patch adds Path->effective_workers, an estimate of how many workers can do useful work given the row estimate, and uses it in place of the planned worker count when it computes the parallel divisor. Pathnode code propagates the value through joins, upper rels and, in v2, Append. v2 makes the Path worker fields int16 so that Path does not grow.",
+    "user_visible_surface": [
+      "New Path field effective_workers in pathnodes.h, visible to planner extensions and custom path providers.",
+      "Path worker count fields change type from int to int16 in v2.",
+      "Changed signatures in optimizer/pathnode.h and paths.h, including create_append_path, which may affect extensions."
+    ],
+    "author_claims": [
+      "Parallelism adds nothing past the outer node when the outer side yields one row, so inner nodes should get no worker discount.",
+      "With the patch the TPCC reproducer, about 19 GB, uses a non-parallel PK scan on district.",
+      "Only queries that underestimate rows below the useful worker count can plan worse, and those plans already have bigger problems.",
+      "int16 worker fields are safe because MAX_PARALLEL_WORKER_LIMIT is 1024.",
+      "v2 fixes the negative effective_workers underflow that Haibo Yan reported."
+    ],
+    "thread_state": "Robert Haas doubts that the number of reports justifies a bigger Path, and notes that the correction stops at rows >= workers. Haibo Yan reports open problems in v2: wrong caps for partial aggregates, wrong Append math, and lower cost at higher row counts; he asks for a defined invariant. CFbot says the patch needs a rebase.",
+    "unclear": [
+      "The patch does not define what effective_workers means: useful workers, leader slots, or worker occupancy.",
+      "No measurement shows the planning time or memory cost of the new field.",
+      "No reproducer is smaller than the 19 GB TPCC data set, and no regression test for the target plan is described.",
+      "The patch does not say how it handles uneven work past the threshold, such as 5 rows with 4 workers.",
+      "The author has not answered Haibo Yan's v2 findings on partial aggregates and Parallel Append."
+    ],
+    "search_queries": [
+      "parallel query costing few rows",
+      "parallel workers cost discount nested loop",
+      "effective workers parallel path",
+      "parallel seq scan instead of index scan",
+      "get_parallel_divisor leader participation",
+      "parallel plan cost model skew",
+      "planner parallel join cost estimate"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Every path constructor must now set effective_workers, and nothing checks it",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "planner_behaviour",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds a new partial path type, or a custom scan provider builds partial paths, and copies parallel_workers without deriving effective_workers. The planner then computes a wrong parallel divisor and wrong Gather row counts. Nobody sees this until a user reports a bad plan, because nothing errors and the regression suite tests few such shapes.",
+      "argument": "v1 touched four files and v2 touched ten, because the value has to be propagated through joins, upper rels, set operations and Append. Message #4 and message #6 found wrong values in partial aggregates, partial DISTINCT and Append, each a place where propagation was wrong without any test failing. Message #6 notes the field has no defined invariant, so a future author has no rule to follow when adding a node type.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4,
+        5,
+        6
+      ],
+      "author_must_show": "What written invariant for effective_workers lets a future path constructor or extension set it correctly, and what would fail if it set it wrong?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "Haibo Yan",
+          "date": "2026-09-30T05:36:56Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29FUZJsb1xHbzY_5%3DC2nuvbCUXWCNmBKzZXTgjkFqzdKAQ%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Matthias van de Meent",
+          "date": "2026-10-02T21:10:10Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WiCGjYMy8OOsSBnyHSia3zK8BBD%3D0vycwZJgCE6Co7Uag%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Haibo Yan",
+          "date": "2026-10-04T02:05:53Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29Gt%3Dgv1GiCNh3qEYPmuUgtCnDNKydmd4YHBafPT2y9dUw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #4 and #6 found wrong values in partial aggregates and Append with no test failing, and message #6 asks for an invariant that the author has not yet given. The file count grew from four to ten between v1 and v2.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Plans for existing parallel queries change, with cost falling as estimates rise",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "planner_behaviour",
+      "touch_points": [
+        "planner_behaviour",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After upgrade, autoanalyze moves a join's outer estimate between 4 and 5 rows at 4 workers. The cheaper plan flips each time, because v2 costs R=5 below R=4. The DBA sees unstable plans with no setting change and no switch to get the old costing back.",
+      "argument": "Message #6 shows the R=4 to R=5 cost drop is still present in v2. Message #5 attributes the drop to the existing leader heuristic. Message #6 counters that effective_workers makes that heuristic depend on cardinality at a fixed worker count, so the effect is new. Message #3 also accepts that queries which underestimate below the worker count can plan worse. The proposal gives users no way to opt out or bound that change.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        5,
+        6
+      ],
+      "author_must_show": "Can the cost be made non-decreasing in estimated rows, and what do users with underestimated queries do if their parallel plans disappear after upgrade?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Matthias van de Meent",
+          "date": "2026-09-29T21:05:25Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2Wj8jMehea76X5F1a4eq8aQs-i1_%2B_HGcD-mcTDwfzT6NA%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Matthias van de Meent",
+          "date": "2026-10-02T21:10:10Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WiCGjYMy8OOsSBnyHSia3zK8BBD%3D0vycwZJgCE6Co7Uag%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Haibo Yan",
+          "date": "2026-10-04T02:05:53Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29Gt%3Dgv1GiCNh3qEYPmuUgtCnDNKydmd4YHBafPT2y9dUw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #6 measures a lower cost at R=5 than at R=4 in v2, and the author's reply in message #5 does not remove it. The lack of an opt-out setting is common for planner changes and adds no weight.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Partial paths built by extensions get no defined effective_workers",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A custom scan provider or FDW builds a partial path and sets parallel_workers, as it does today, but has no reason to set the new field. In messages #4 and #6, effective_workers = 0 gives a divisor of 1, so such a path would be costed with no worker discount and lose to core paths. Users would see only a plan change after a major upgrade.",
+      "argument": "v2 adds Path->effective_workers and makes get_parallel_divisor() depend on it, so out-of-core code that creates partial paths now has a new duty. The proposal does not say what value a path gets when its creator leaves the field unset, and nothing fails at build time or run time when it is missing. v2 also changes create_append_path and other signatures in pathnode.h and paths.h. Those changes break the build loudly, but a missing field assignment does not.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4,
+        5,
+        6
+      ],
+      "author_must_show": "What effective_workers does a partial path get when an extension sets only parallel_workers, and how would such an extension learn it must change?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "Haibo Yan",
+          "date": "2026-09-30T05:36:56Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29FUZJsb1xHbzY_5%3DC2nuvbCUXWCNmBKzZXTgjkFqzdKAQ%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Matthias van de Meent",
+          "date": "2026-10-02T21:10:10Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WiCGjYMy8OOsSBnyHSia3zK8BBD%3D0vycwZJgCE6Co7Uag%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Haibo Yan",
+          "date": "2026-10-04T02:05:53Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29Gt%3Dgv1GiCNh3qEYPmuUgtCnDNKydmd4YHBafPT2y9dUw%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The proposal does not say what value a path gets when its creator sets only parallel_workers. Messages #4 and #6 show that a value of 0 gives a divisor of 1, so the silent plan change is plausible, though only the code can confirm it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Gain is narrow while plan and API changes reach everyone",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "desirability",
+      "touch_points": [
+        "abi_extension_api",
+        "planner_behaviour",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user with a one-group partial aggregate or a Parallel Append over low-row partitions gets changed Gather row estimates and possibly a worse plan after upgrade. Extensions that call create_append_path stop compiling, though they never had the single-row outer case.",
+      "argument": "The benefit applies only when the estimated outer rows fall below the worker count (message #3). v2 changes create_append_path and other signatures, and Haibo Yan shows wrong estimates for partial aggregates and Append, queries the patch does not target (message #6). So the cost falls on all parallel plans and on extensions, while the gain stays with a small set of queries.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        5,
+        6
+      ],
+      "author_must_show": "Can the change be limited to the join paths above a near-single-row parallel scan, so partial aggregates, Append and extension APIs see no change?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Matthias van de Meent",
+          "date": "2026-09-29T21:05:25Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2Wj8jMehea76X5F1a4eq8aQs-i1_%2B_HGcD-mcTDwfzT6NA%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Matthias van de Meent",
+          "date": "2026-10-02T21:10:10Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WiCGjYMy8OOsSBnyHSia3zK8BBD%3D0vycwZJgCE6Co7Uag%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Haibo Yan",
+          "date": "2026-10-04T02:05:53Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29Gt%3Dgv1GiCNh3qEYPmuUgtCnDNKydmd4YHBafPT2y9dUw%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #6 shows wrong Gather row estimates for one-group partial aggregates and Append, which the patch does not target, and the author has not answered. The extension compile break must not be used as support, because signature changes at major versions are normal.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Demand rests on one benchmark and one older report",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The project adds a new Path field that every future path type must set correctly. Few production users ever hit the single-row outer case it targets, so later planner patches carry the cost of keeping it right for little real gain.",
+      "argument": "The trigger is a TPCC benchmark at one vendor (message #1). Robert Haas searched and found one clear matching report; the other two cases he found fall outside the patch (messages #2, #3). He said the bigger Path is hard to justify \"as things are\" (message #2). The int16 change in v2 removes the size cost, but the semantic and maintenance cost stays.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        3,
+        5
+      ],
+      "author_must_show": "Which production workloads, besides the TPCC benchmark and the one older list report, get a parallel seq scan over a cheaper PK lookup because of this discount?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Matthias van de Meent",
+          "date": "2026-09-28T22:06:23Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2Wi%2BJp26mhBJvrMshKGYNTtPcxzd1BWoEW_7%2BeH6saj3gQ%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "Robert Haas",
+          "date": "2026-09-29T14:50:13Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmobUaa0OAkUBOy0E-BxkG1k%2B0FZacFzp93_sPJPDQgx3Tw%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Matthias van de Meent",
+          "date": "2026-09-29T21:05:25Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2Wj8jMehea76X5F1a4eq8aQs-i1_%2B_HGcD-mcTDwfzT6NA%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Matthias van de Meent",
+          "date": "2026-10-02T21:10:10Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WiCGjYMy8OOsSBnyHSia3zK8BBD%3D0vycwZJgCE6Co7Uag%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #2 reports one clear matching earlier report, and the author agrees in message #3 that the other two cases fall outside the patch. An engaged committer who sees the problem as real lowers the weight, but the thread shows no further demand.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Path field and pathnode signature changes leave extension contract undefined",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A custom scan provider or planner-hook extension builds partial paths or calls create_append_path. It stops compiling on the new signature. Once adapted, it may leave effective_workers unset or guess at it, and its plans get costed with a divisor the core never intended. Nothing fails loudly.",
+      "argument": "v2 changes the Path worker fields to int16, adds effective_workers, and changes signatures in pathnode.h and paths.h, including create_append_path. Message #6 shows the core code cannot yet derive a correct value for Append or partial aggregates. It asks for an invariant first. Without a stated meaning, extension authors have no rule to follow when they fill the field.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        5,
+        6
+      ],
+      "author_must_show": "What invariant must effective_workers satisfy, and what default value does a path built by an extension get if it does not set the field?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Matthias van de Meent",
+          "date": "2026-10-02T21:10:10Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WiCGjYMy8OOsSBnyHSia3zK8BBD%3D0vycwZJgCE6Co7Uag%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Haibo Yan",
+          "date": "2026-10-04T02:05:53Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29Gt%3Dgv1GiCNh3qEYPmuUgtCnDNKydmd4YHBafPT2y9dUw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1, which states the unset-field case more concretely. Changed signatures in pathnode.h between major versions are normal practice and extensions adapt to them at each release.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Public Path and pathnode API change for one reported workload",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension that builds custom or partial paths, or calls create_append_path, fails to compile against the new major version, or keeps using int arithmetic on the narrowed worker fields. Its authors must change code for a planner correction that affects only plans with fewer estimated outer rows than workers.",
+      "argument": "v2 adds a field to Path, narrows the worker fields to int16, and changes signatures in pathnode.h and paths.h, including create_append_path. Message #2 found only one clear earlier report of the same problem and doubted that it justifies a bigger Path. The int16 change answers struct size, but every extension that reads or sums these fields now carries the overflow care that message #3 says core needs.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        3,
+        5
+      ],
+      "author_must_show": "Which users besides the TPCC reproducer hit this plan shape, and can the correction stay inside costsize.c without changing Path or create_append_path?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Robert Haas",
+          "date": "2026-09-29T14:50:13Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmobUaa0OAkUBOy0E-BxkG1k%2B0FZacFzp93_sPJPDQgx3Tw%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Matthias van de Meent",
+          "date": "2026-09-29T21:05:25Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2Wj8jMehea76X5F1a4eq8aQs-i1_%2B_HGcD-mcTDwfzT6NA%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Matthias van de Meent",
+          "date": "2026-10-02T21:10:10Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WiCGjYMy8OOsSBnyHSia3zK8BBD%3D0vycwZJgCE6Co7Uag%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of demand-1 on the demand point. The rest does not hold: compile breaks at a major version are accepted, and C promotes int16 operands to int, so sums of values capped at 1024 do not overflow.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "v2 adds Path->effective_workers, narrows the worker fields to int16 and changes create_append_path and other signatures in pathnode.h and paths.h."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": true,
+      "reason": "The parallel divisor now depends on estimated rows, so costs and plans of existing parallel queries change."
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The entry is tagged Bugfix and the problem was seen on pg18, but the Path layout and signature changes cannot go into a stable branch."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Every partial path constructor, in core and in extensions, must set effective_workers correctly, and nothing fails when it does not."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "The patch changes the Path struct and adds work per path, and no planning time or memory measurement is shown."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "see objection demand-1: Demand rests on one benchmark and one older report"
+    }
+  ],
+  "questions": [
+    "What invariant does effective_workers satisfy: useful workers, leader slots, or worker occupancy?",
+    "Can the cost be made non-decreasing in estimated outer rows at a fixed worker count, so that 5 rows never cost less than 4 at 4 workers?",
+    "How should effective_workers be computed for partial aggregates, partial DISTINCT and Parallel Append so that the Gather row estimates reported in message #6 stay correct?",
+    "What effective_workers does a partial path get when an extension sets only parallel_workers, and what fails if the value is wrong?",
+    "Which workloads, besides the TPCC benchmark and the one older report found in message #2, pick a parallel seq scan over a cheaper PK lookup because of this discount?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Robert Haas takes part in the thread (message #2) and reviews the approach, but he says he is not sure what is best. The owner must know parallel query costing and partial path generation.",
+    "liability": "The owner signs for the cost model of every parallel plan: plan changes after upgrade, and correct effective_workers values in every current and future partial path type, with no end date.",
+    "author_follow_up": "The author answered the first review within a day and posted v2 for the reported underflow. The v2 findings in message #6 and the CFbot rebase request from 2026-10-08 have no visible reply."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "needs design rethink",
+    "reason": "The gain applies only when estimated outer rows fall below the worker count, and message #2 found one clear earlier report. v2 is about 42 KiB across ten optimizer files and still gives wrong values for Append and partial aggregates, so the meaning of the field must be settled first."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, the value of effective_workers for paths that set only parallel_workers and the planning time cost of the change could not be checked. Messages #4 to #6 were read only through the objections that cite them.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:2787",
+      "kind": "cf",
+      "title": "allow partial union-all and improve parallel subquery costing",
+      "status": "Returned with feedback",
+      "date": "2021-04-08",
+      "first_date": "2020-10-13",
+      "url": "https://commitfest.postgresql.org/patch/2787/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/FRXPR01MB09021F98988B057A636AA4EEB7040@FRXPR01MB0902.DEUPRD01.PROD.OUTLOOK.DE"
+      ],
+      "authors": "Luc Vlaming (luc.vlaming)",
+      "objectors": "",
+      "summary": "The patch lets the planner build partial paths for UNION ALL so the branches can run under a parallel plan. It also changes subquery costing to account for parallelism, with a regression test and before/after plans for TPC-DS query 5.",
+      "objection": "No reviewer took up the patch during the commitfests. In March 2021 the patch no longer applied, and the entry was set to Waiting for Author. The author sent no rebased patch, so the entry was returned with feedback.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "parallel query costing few rows",
+        "parallel workers cost discount nested loop",
+        "parallel plan cost model skew"
+      ],
+      "from_hint": false,
+      "score": 0.334,
+      "enriched": true,
+      "key_quote": "Since no new patch has been provided, marking this Returned with Feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/e57cbf67-cbda-831f-3e62-bbef88a831da%40pgmasters.net",
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:3070",
+      "kind": "cf",
+      "title": "add explicit partial union-all and improve parallel subquery costing",
+      "status": "Returned with feedback",
+      "date": "2021-12-02",
+      "first_date": "2020-10-13",
+      "url": "https://commitfest.postgresql.org/patch/3070/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/FRXPR01MB09021F98988B057A636AA4EEB7040@FRXPR01MB0902.DEUPRD01.PROD.OUTLOOK.DE"
+      ],
+      "authors": "Luc Vlaming (luc.vlaming)",
+      "objectors": "Ronan Dunklau",
+      "summary": "The patch lets the planner build partial Append paths for UNION ALL subqueries so their branches can run in parallel. It also changes subquery scan costing to take parallel workers into account in the row estimate.",
+      "objection": "The author stopped responding after Ronan Dunklau's review asked for a regression test of the new partial append path and questioned the subquery scan row estimate change. Daniel Gustafsson closed the entry because the thread stalled with these requests unanswered. An earlier round was also closed after the patch needed a rebase and no new version came in time.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "parallel query costing few rows",
+        "parallel workers cost discount nested loop",
+        "parallel plan cost model skew"
+      ],
+      "from_hint": false,
+      "score": 0.313,
+      "enriched": true,
+      "key_quote": "With the thread stalled and requests for a test (documentation really?) not\nresponded to I'm marking this patch Returned with Feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/E33DCE99-3887-479D-9D9F-8F133F98917B%40yesql.se",
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:2582",
+      "kind": "cf",
+      "title": "Improve planner cost estimations for alternative subplans",
+      "status": "Withdrawn",
+      "date": "2020-11-13",
+      "first_date": "2020-06-05",
+      "url": "https://commitfest.postgresql.org/patch/2582/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/07b3fa88-aa4e-2e13-423d-8389eb1712cf@imap.cc"
+      ],
+      "authors": "Alexey Bashtanov (bashtanov)",
+      "objectors": "Melanie Plageman, Tomas Vondra, Tom Lane",
+      "summary": "The patch changes how the planner costs an AlternativeSubPlan (hashed or per-row lookup) for the rest of the query. It replaces the use of the per-row estimate with a heuristic blend of the two alternatives' costs.",
+      "objection": "Reviewers said that averaging the costs of two alternatives is wrong in principle, because at run time the executor uses one of them. Tomas Vondra expected regressions where the first plan is used, and the author then found queries that ran slower with the patch. The author suggested moving to Tom Lane's approach of passing a number-of-evaluations estimate to cost_qual_eval, or to Andy Fan's proof of concept that picks the SubPlan during planning, and the entry was withdrawn.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "parallel plan cost model skew",
+        "planner parallel join cost estimate"
+      ],
+      "from_hint": false,
+      "score": 0.239,
+      "enriched": true,
+      "key_quote": "I agree that averaging together the costs of the alternatives seems\nwrong in principle.  It's going to be one or the other, not some\nquantum-mechanical superposition.",
+      "quote_message_url": "https://www.postgresql.org/message-id/1853336.1592702279%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "revert:26acb54a1368bf3706294400abca85b15c9233a6",
+      "kind": "revert",
+      "title": "Revert \"Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".\"",
+      "status": "Reverted",
+      "date": "2021-03-24",
+      "first_date": "2021-03-10",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=26acb54a1368bf3706294400abca85b15c9233a6",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/E1lMiB9-0001c3-SY@gemulon.postgresql.org",
+        "https://www.postgresql.org/message-id/flat/20210318025228.GE11765@telsasoft.com",
+        "https://www.postgresql.org/message-id/flat/CAA4eK1K-cW7svLC2D7DHoGHxdAdg3P37BLgebqBOC2ZLc9a6QQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAJcOf-cXnB5cnMKqWEp2E2z7Mvcd04iLVmV=qpFJrR3AcrTS3g@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/2309260.1615485644@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CAJcOf-fAdj=nDKMsRhQzndm-O13NY4dL6xGcEvdX5Xvbbi0V7g@mail.gmail.com"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Revert \"Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".\"\nReverted commit(s): Doc: Update description for parallel insert reloption.; Add a new GUC and a reloption to enable inserts in parallel-mode.; Improve FK trigger parallel-safety check added by 05c8482f7f.; Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".; Fix use of relcache TriggerDesc field introduced by commit 05c8482f7f.",
+      "objection": "To allow inserts in parallel-mode this feature has to ensure that all the\nconstraints, triggers, etc. are parallel-safe for the partition hierarchy\nwhich is costly and we need to find a better way to do that. Additionally,\nwe could have used existing cached information in some cases like indexes,\ndomains, etc. to determine the parallel-safety.\n\nList of commits reverted, in reverse chronological order:\n\ned62d3737c Doc: Update description for parallel insert reloption.\nc8f78b6161 Add a new GUC and a reloption to enable inserts in parallel-mode.\nc5be48f092 Improve FK trigger parallel-safety check added by 05c8482f7f.\ne2cda3c20a Fix use of relcache TriggerDesc field introduced by commit 05c8482f7f.\ne4e87a32cc Fix valgrind issue in commit 05c8482f7f.\n05c8482f7f Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "parallel query costing few rows",
+        "get_parallel_divisor leader participation"
+      ],
+      "from_hint": false,
+      "score": 0.202,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:527",
+      "kind": "cf",
+      "title": "speeding up GIN build with parallel workers",
+      "status": "Returned with feedback",
+      "date": "2016-10-03",
+      "first_date": "2016-01-15",
+      "url": "https://commitfest.postgresql.org/patch/527/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20160116013839.57cfcb37@thought"
+      ],
+      "authors": "Constantin Pan (kvap)",
+      "objectors": "Robert Haas, Heikki Linnakangas",
+      "summary": "The patch splits a GIN index build between parallel workers, each scanning a range of heap blocks and building its own rbtree of entries. The workers send sorted entries through shared memory to the leader, which merges them and writes each key once; the leader later also takes part as a worker.",
+      "objection": "In April Robert Haas moved it to the next CommitFest because it had too little review and too few comments. He also found no parallel-safety check for expression indexes, workers opening the heap and index with no lock, and no agreement on the gin_shared_mem GUCs. Michael Paquier returned it with feedback mainly because of Heikki Linnakangas's suggestion to keep the rbtree but flush it to tapes and merge them with the tuplesort.c machinery from Peter Geoghegan's parallel B-tree patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel workers cost discount nested loop",
+        "effective workers parallel path"
+      ],
+      "from_hint": false,
+      "score": 0.184,
+      "enriched": true,
+      "key_quote": "If we flushed the tree to a tape instead, then we could perhaps use the machinery that Peter's parallel B-tree patch is adding to tuplesort.c, to merge the tapes.",
+      "quote_message_url": "https://www.postgresql.org/message-id/0a0df4f6-66bb-aeaf-c7a7-60d6d4abaabb%40iki.fi",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:2987",
+      "kind": "cf",
+      "title": "Allow setting parallel_workers on partitioned tables",
+      "status": "Returned with feedback",
+      "date": "2021-09-04",
+      "first_date": "2021-02-15",
+      "url": "https://commitfest.postgresql.org/patch/2987/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/95b1dd96-8634-4545-b1de-e2ac779beb44@www.fastmail.com"
+      ],
+      "authors": "Seamus Abshere (seamusabshere)",
+      "objectors": "David Rowley",
+      "summary": "Allow the parallel_workers reloption on partitioned tables, so that the planner uses it to choose the number of workers for a Parallel Append over the partitions. A later version also let grouping relations take the setting from the partitioned table they read, for partitionwise aggregation.",
+      "objection": "David Rowley questioned the semantics: a high setting on the partitioned table can request more workers than the partitions use, and the number does not shrink when the planner or run-time pruning removes partitions. Laurenz Albe and Amit Langote agreed the design needed more thought, and Amit Langote suggested a separate parallel_append_workers option. The thread then stalled, the patch stopped applying, and Daniel Gustafsson marked it Returned with Feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel workers cost discount nested loop",
+        "effective workers parallel path"
+      ],
+      "from_hint": false,
+      "score": 0.181,
+      "enriched": true,
+      "key_quote": "If someone sets the partitioned table's parallel_workers high so that\nthey get a large number of workers when no partitions are pruned\nduring planning, do they really want the same number of workers in\nqueries where a large number of partitions are pruned?",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAApHDvruNYmZXc%2BojqXYfEby_JtNSqrYsC89f0zZKEBk05u0Jg%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:4860",
+      "kind": "cf",
+      "title": "create index failed. PARALLEL UNSAFE function does not prevent parallel index build",
+      "status": "Rejected",
+      "date": "2024-03-13",
+      "first_date": "2024-01-29",
+      "url": "https://commitfest.postgresql.org/patch/4860/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/18314-5f44050ce33a5492@postgresql.org"
+      ],
+      "authors": "Tender Wang (tndrwang)",
+      "objectors": "Tom Lane",
+      "summary": "The patch made plan_create_index_workers() check parallel safety on the raw index expressions and predicate, read from the pg_index syscache, so that a PARALLEL UNSAFE function folded to a constant still prevents a parallel index build. The bug report showed CREATE INDEX failing in a parallel worker because a plpgsql function with an EXCEPTION block was const-folded before the check.",
+      "objection": "The patch was committed and then reverted after Tom Lane objected. He said it does not fix the failure, which returns when the function is marked PARALLEL SAFE, and that it breaks the planner rule that original markings stop mattering once a function is inlined or const-folded. He also said that passing raw parse-analysis output to is_parallel_safe() misses parallel-unsafe default arguments, and he preferred making exception-using functions parallel safe through a separate commitfest patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel seq scan instead of index scan",
+        "get_parallel_divisor leader participation"
+      ],
+      "from_hint": false,
+      "score": 0.172,
+      "enriched": true,
+      "key_quote": "It's a band-aid\nthat doesn't really solve the problem: if I simply declare the\nfunction as PARALLEL SAFE, the failure comes right back.",
+      "quote_message_url": "https://www.postgresql.org/message-id/162802.1709746091%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:725",
+      "kind": "cf",
+      "title": "system load consideration hook for parallel workers",
+      "status": "Rejected",
+      "date": "2016-09-22",
+      "first_date": "2016-07-29",
+      "url": "https://commitfest.postgresql.org/patch/725/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJrrPGe23T0TQ3V5GABDv0rGdBXhQtCp=SpfY6fJ+YHxuSt5nQ@mail.gmail.com"
+      ],
+      "authors": "Haribabu Kommi (haribabu)",
+      "objectors": "Peter Eisentraut, Tom Lane, Peter Geoghegan",
+      "summary": "Before starting parallel workers, check the current system load and reduce the number of workers when the system is busy, so parallel query does not slow down other sessions at peak load. The author proposed a hook for this and later posted a POC patch that measures CPU load and picks the worker count from the free CPUs.",
+      "objection": "Peter Eisentraut argued that a load-based control for parallel workers alone is premature before there is field experience with parallel query, and that the problem covers all process types. He also did not trust system load metrics as a gatekeeper, since load averages lag by about a minute, and found the POC code platform-specific and poorly documented. He suggested refining the existing process-count settings instead, and closed the entry as not favored by the community.",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "parallel workers cost discount nested loop",
+        "effective workers parallel path"
+      ],
+      "from_hint": false,
+      "score": 0.156,
+      "enriched": true,
+      "key_quote": "We don't yet have enough field experience with the parallel query\nfacilities to know what kind of use patterns there are and what systems\nfor load management we need.  So I think building a highly specific\nsystem like this seems premature.",
+      "quote_message_url": "https://www.postgresql.org/message-id/aca21e2c-746d-36aa-103a-275ce24bb395%402ndquadrant.com",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:5238",
+      "kind": "cf",
+      "title": "Add parallel columns for seq scan and index scan on pg_stat_all_tables and _indexes",
+      "status": "Returned with feedback",
+      "date": "2024-12-11",
+      "first_date": "2024-08-29",
+      "url": "https://commitfest.postgresql.org/patch/5238/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAECtzeXXuMkw-RVGTWvHGOJsmFdsRY+jK0ndQa80sw46y2uvVQ@mail.gmail.com"
+      ],
+      "authors": "Guillaume Lelarge (gleu)",
+      "objectors": "Michael Paquier, Robert Haas",
+      "summary": "The patch adds parallel_seq_scan, last_parallel_seq_scan, parallel_idx_scan and last_parallel_idx_scan columns to pg_stat_all_tables, and parallel_idx_scan and last_parallel_idx_scan to pg_stat_all_indexes. The goal is to help administrators judge how parallel workers are used and tune parallelism settings.",
+      "objection": "Reviewers doubted that per-table and per-index counts of parallel scans help with tuning, since parallel plans with Gather nodes are usually analyzed per statement. Michael Paquier added that the metrics committed in e7a9496de906 and 5d4298e75f25 may already cover the need. Robert Haas found no clear use case for these counters. The author agreed that the committed metrics were good enough for now.",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel seq scan instead of index scan"
+      ],
+      "from_hint": false,
+      "score": 0.144,
+      "enriched": true,
+      "key_quote": "I think the question to which we don't have a clear answer is: for what purpose would you want to be able to distinguish parallel and non-parallel scans on a per-table basis?",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoZ5oiVFF1%3DAqmESrJo4YPbk9WO8n%2BNnLPCm6wNrnoEooQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "revert:e6a9637488e2673efb87f8ead657789e9889fb17",
+      "kind": "revert",
+      "title": "Revert \"Allow parallel workers to cope with a newly-created session user ID.\"",
+      "status": "Reverted",
+      "date": "2024-08-01",
+      "first_date": "2024-07-31",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e6a9637488e2673efb87f8ead657789e9889fb17",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/18545-feba138862f19aaa@postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Allow parallel workers to cope with a newly-created session user ID.\"\nReverted commit(s): Allow parallel workers to cope with a newly-created session user ID.",
+      "objection": "This reverts commit f5f30c22ed69fb37b896c4d4546b2ab823c3fd61.\n\nSome buildfarm animals are failing with \"cannot change\n\"client_encoding\" during a parallel operation\".  It looks like\nassign_client_encoding is unhappy at being asked to roll back a\nclient_encoding setting after a parallel worker encounters a\nfailure.  There must be more to it though: why didn't I see this\nduring local testing?  In any case, it's clear that moving the\nRestoreGUCState() call is not as side-effect-free as I thought.\nGiven that the bug f5f30c22e intended to fix has gone unreported\nfor years, it's not something that's urgent to fix; I'm not\nwilling to risk messing with it further with only days to our\nnext release wrap.",
+      "touch_points": [],
+      "matched_queries": [
+        "effective workers parallel path"
+      ],
+      "from_hint": false,
+      "score": 0.143,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:2765",
+      "kind": "cf",
+      "title": "Add extra statistics to explain for Nested Loop",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2020-10-16",
+      "url": "https://commitfest.postgresql.org/patch/2765/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/f6490a9dec1b97118ac5a8509f095877@postgrespro.ru",
+        "https://www.postgresql.org/message-id/flat/ae576cac3f451d318374f2a2e494aab1@postgrespro.ru"
+      ],
+      "authors": "Justin Pryzby (justinpryzby), Ekaterina Sokolova (e.sokolova)",
+      "objectors": "",
+      "summary": "Add extra statistics to explain for Nested Loop\nThreads: [PATCH] Add extra statistics to explain for Nested Loop; Re: [PATCH] Add extra statistics to explain for Nested Loop",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "parallel workers cost discount nested loop"
+      ],
+      "from_hint": false,
+      "score": 0.137,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:4285",
+      "kind": "cf",
+      "title": "Revise get_cheapest_parallel_safe_total_inner",
+      "status": "Returned with feedback",
+      "date": "2026-02-09",
+      "first_date": "2023-04-11",
+      "url": "https://commitfest.postgresql.org/patch/4285/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMbWs49xR_2T1BPDw+vO4Bs7pqYiQn4aNaWdmA9BdVEaHhtktg@mail.gmail.com"
+      ],
+      "authors": "Richard Guo (richardguo)",
+      "objectors": "",
+      "summary": "Revise get_cheapest_parallel_safe_total_inner\nThreads: Can we rely on the ordering of paths in pathlist?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "get_parallel_divisor leader participation"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:4982",
+      "kind": "cf",
+      "title": "support tid range scan in parallel",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2024-04-29",
+      "url": "https://commitfest.postgresql.org/patch/4982/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/18f2c002a24.11bc2ab825151706.3749144144619388582@highgo.ca"
+      ],
+      "authors": "Cary Huang (cary)",
+      "objectors": "",
+      "summary": "support tid range scan in parallel\nThreads: Support tid range scan in parallel?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel seq scan instead of index scan"
+      ],
+      "from_hint": false,
+      "score": 0.13,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:4839",
+      "kind": "cf",
+      "title": "The Prepare statement with the skewed parameter uses the custom plan",
+      "status": "Withdrawn",
+      "date": "2024-09-22",
+      "first_date": "2023-11-03",
+      "url": "https://commitfest.postgresql.org/patch/4839/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/9365b39d-a748-4e61-9396-466689ea0aa5@yeah.net"
+      ],
+      "authors": "Zongliang Quan (quanzl)",
+      "objectors": "",
+      "summary": "The Prepare statement with the skewed parameter uses the custom plan\nThreads: Improvement discussion of custom and generic plans",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "parallel plan cost model skew"
+      ],
+      "from_hint": false,
+      "score": 0.13,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:2315",
+      "kind": "cf",
+      "title": "Parallel leader process info in EXPLAIN output",
+      "status": "Returned with feedback",
+      "date": "2020-03-17",
+      "first_date": "2019-10-23",
+      "url": "https://commitfest.postgresql.org/patch/2315/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKG+Z22=vkVkXtKRznzRdtj=MtygfZMYUJs8j7ObjzkG1Lw@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Parallel leader process info in EXPLAIN output\nThreads: Parallel leader process info in EXPLAIN",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "get_parallel_divisor leader participation"
+      ],
+      "from_hint": false,
+      "score": 0.128,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:4253",
+      "kind": "cf",
+      "title": "Improve the performance of nested loop join in the case of partitioned inner table",
+      "status": "Returned with feedback",
+      "date": "2023-08-01",
+      "first_date": "2023-03-23",
+      "url": "https://commitfest.postgresql.org/patch/4253/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHdr9ueefdCCCq1mXAYfLmRgEKfhWQDCU7=XmureEAzJcOwfag@mail.gmail.com"
+      ],
+      "authors": "Alexandr Nikulin (anikulin)",
+      "objectors": "",
+      "summary": "Improve the performance of nested loop join in the case of partitioned inner table\nThreads: Improve the performance of nested loop join in the case of\npartitioned inner table",
+      "objection": "",
+      "touch_points": [
+        "planner",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "parallel workers cost discount nested loop"
+      ],
+      "from_hint": false,
+      "score": 0.127,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:2043",
+      "kind": "cf",
+      "title": "Bloom index cost model",
+      "status": "Returned with feedback",
+      "date": "2019-09-30",
+      "first_date": "2019-02-12",
+      "url": "https://commitfest.postgresql.org/patch/2043/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/dc54f6e8-c6bf-6869-08c2-de855de470ae@gmx.net"
+      ],
+      "authors": "Jeff Janes (jjanes)",
+      "objectors": "",
+      "summary": "Bloom index cost model\nThreads: Bloom index cost model seems to be wrong",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "parallel plan cost model skew"
+      ],
+      "from_hint": false,
+      "score": 0.127,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:6546",
+      "kind": "cf",
+      "title": "Fix slotsync worker busy loop causing repeated log messages",
+      "status": "Withdrawn",
+      "date": "2026-05-01",
+      "first_date": "2026-02-27",
+      "url": "https://commitfest.postgresql.org/patch/6546/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHGQGwF6zG9Z8ws1yb3hY1VqV-WT7hR0qyXCn2HdbjvZQKufDw@mail.gmail.com"
+      ],
+      "authors": "Fujii Masao (masaofujii)",
+      "objectors": "",
+      "summary": "Fix slotsync worker busy loop causing repeated log messages\nThreads: Fix slotsync worker busy loop causing repeated log messages",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel workers cost discount nested loop"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:5751",
+      "kind": "cf",
+      "title": "Disable parallel query by default",
+      "status": "Rejected",
+      "date": "2026-02-11",
+      "first_date": "2025-05-13",
+      "url": "https://commitfest.postgresql.org/patch/5751/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/a5916f83-de79-4a40-933a-fb0d9ba2f5a0@app.fastmail.com"
+      ],
+      "authors": "Scott Mead (scott_mead)",
+      "objectors": "",
+      "summary": "Disable parallel query by default\nThreads: Disable parallel query by default",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel query costing few rows"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:2050",
+      "kind": "cf",
+      "title": "Fix unique join costings",
+      "status": "Returned with feedback",
+      "date": "2020-12-03",
+      "first_date": "2018-09-13",
+      "url": "https://commitfest.postgresql.org/patch/2050/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/153683552113.22350.18441286362867559841@wrigleys.postgresql.org"
+      ],
+      "authors": "David Rowley (davidrowley)",
+      "objectors": "",
+      "summary": "Fix unique join costings\nThreads: BUG #15383: Join Filter cost estimation problem in 10.5",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "planner parallel join cost estimate"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "revert:cc32ec24fdf3b9808617439d41b0ba7f3eb16b04",
+      "kind": "revert",
+      "title": "Revert the commits related to allowing page lock to conflict among parallel group members.",
+      "status": "Reverted",
+      "date": "2023-07-06",
+      "first_date": "2020-03-19",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=cc32ec24fdf3b9808617439d41b0ba7f3eb16b04",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJKUy5jffnRKNvRHKQ0LynRb0RJC-o4P8Ku3x9vGAVLwDBWumQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAD21AoCmT3cFQUN4aVvzy5chw7DuzXrJCbrjTU05B+Ss=Gn1LA@mail.gmail.com"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Revert the commits related to allowing page lock to conflict among parallel group members.\nReverted commit(s): Allow page lock to conflict among parallel group members.; Add assert to ensure that page locks don't participate in deadlock cycle.",
+      "objection": "This commit reverts the work done by commits 3ba59ccc89 and 72e78d831a.\nThose commits were incorrect in asserting that we never acquire any other\nheavy-weight lock after acquring page lock other than relation extension\nlock. We can acquire a lock on catalogs while doing catalog look up after\nacquring page lock.\n\nThis won't impact any existing feature but we need to think some other way\nto achieve this before parallelizing other write operations or even\nimproving the parallelism in vacuum (like allowing multiple workers\nfor an index).",
+      "touch_points": [
+        "catalog changes",
+        "security / privileges",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "get_parallel_divisor leader participation"
+      ],
+      "from_hint": false,
+      "score": 0.116,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:2386",
+      "kind": "cf",
+      "title": "Using multicolumn statistics for more precise join selectivity estimatation",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2019-10-14",
+      "url": "https://commitfest.postgresql.org/patch/2386/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/196f1e1a-5464-ed07-ab3c-0c9920564af7@postgrespro.ru"
+      ],
+      "authors": "Konstantin Knizhnik (knizhnik)",
+      "objectors": "",
+      "summary": "Using multicolumn statistics for more precise join selectivity estimatation\nThreads: Columns correlation and adaptive query optimization",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "planner parallel join cost estimate"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:1741",
+      "kind": "cf",
+      "title": "Index Skip Scan",
+      "status": "Returned with feedback",
+      "date": "2022-03-24",
+      "first_date": "2018-06-18",
+      "url": "https://commitfest.postgresql.org/patch/1741/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/707b6f68-16fa-7aa7-96e5-eeb4865e6a30@redhat.com",
+        "https://www.postgresql.org/message-id/flat/1e59d800b38141c5af2ad3a64cf9758e@opammb0562.comp.optiver.com",
+        "https://www.postgresql.org/message-id/flat/20200609102247.jdlatmfyeecg52fi@localhost",
+        "https://www.postgresql.org/message-id/flat/CAH2-WzmUscvoxVkokHxP=uPTDjSi0tJkFpUPD-CeA35dvn-CMw@mail.gmail.com"
+      ],
+      "authors": "Dmitry Dolgov (erthalion), Thomas Munro (macdice), Jesper Pedersen (jpedersen)",
+      "objectors": "",
+      "summary": "Index Skip Scan\nThreads: Index Skip Scan; RE: Index Skip Scan; Index Skip Scan (new UniqueKeys); MDAM techniques and Index Skip Scan patch",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel seq scan instead of index scan"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:4236",
+      "kind": "cf",
+      "title": "Add estimated hit ratio to Memoize in EXPLAIN to explain cost adjustment",
+      "status": "Returned with feedback",
+      "date": "2023-09-01",
+      "first_date": "2023-03-05",
+      "url": "https://commitfest.postgresql.org/patch/4236/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAP53Pky29GWAVVk3oBgKBDqhND0BRBN6yTPeguV_qSivFL5N_g@mail.gmail.com"
+      ],
+      "authors": "Lukas Fittl (lfittl)",
+      "objectors": "",
+      "summary": "Add estimated hit ratio to Memoize in EXPLAIN to explain cost adjustment\nThreads: Add estimated hit ratio to Memoize in EXPLAIN to explain cost adjustment",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "planner parallel join cost estimate"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 8,
+    "new_calls": 0,
+    "failed": 0,
+    "quotes_verified": 0,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 3
+  },
+  "precedent_cutoff": "2026-09-28",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No listed precedent proposed capping the parallel divisor by an estimate of useful workers. [P1] and [P2] covered partial UNION ALL and subquery costing, and [P6] covered a parallel_workers reloption, so their recorded reasons do not apply here. Message #2 points to earlier user reports of similar plans, not to earlier patches, so none of them is a prior rejection."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "The change adds no SQL syntax, GUC, catalog entry or dump state. The objections cover plan stability and the extension-facing Path contract only."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "The patch is planner-only and changes no on-disk format, WAL, catalog or wire protocol. The only cross-boundary state is the extension-facing Path API covered above."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The patch changes only planner cost estimates for parallel paths. It adds no privilege, object, function, setting or monitoring output, and it exposes no new data. Plan choice is already user-influenced through statistics and settings, so the change opens no new path to escalation or denial of service."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "Two objections within the maintenance angle. Robert Haas, who knows parallel query costing, is engaged in the thread, which lowers the risk under item 16."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "Existing workarounds do not meet the need. `alter table district set (parallel_workers = 0)`, a lower max_parallel_workers_per_gather, or a higher parallel_setup_cost can avoid the bad plan, but each turns off parallelism for every query on that table or session, and none fixes the inner-node discount in the cost model. No extension or hook can change get_parallel_divisor for core join paths, so the gap the patch addresses has no alternative outside core. The design concerns (meaning of effective_workers, Append math, Path size) are for other angles."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "Demand objections are listed above. The listed precedents are about other parallel costing changes and do not share this proposal's reason for rejection."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 7,
+      "new_survived": 5,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 81,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 11,
+    "wall_ms": 114589,
+    "cost_usd": 1.4429432,
+    "dry_run": false
+  }
+}

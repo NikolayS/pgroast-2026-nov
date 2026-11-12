@@ -1,0 +1,2014 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:34:30.817Z",
+  "input": {
+    "arg": "7267",
+    "cf": {
+      "id": 7267,
+      "url": "https://commitfest.postgresql.org/patch/7267/",
+      "title": "Direct TOAST v2, faster, smaller and no migration needed",
+      "status": "Needs review",
+      "authors": "Hannu Krosing (hannukrosing)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAMT0RQT5HHYLGWOWPh%3DsceKS7%2BjEE5jTULRTWC9aY9vYjF8OvA%40mail.gmail.com",
+    "subject": "Direct TOAST v2, faster, smaller and no migration needed",
+    "thread_start": "2026-09-05T12:24:50Z",
+    "messages_read": 31,
+    "messages_total": 31,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v15-0001-Refactor-detoasting-and-decompression-pipeline-t.patch",
+      "v15-0002-Add-Direct-TOAST-catalog-GUC-and-reloptions-infr.patch",
+      "v15-0003-Implement-Direct-TOAST-core-storage-reading-and-.patch",
+      "v15-0004-Support-Direct-TOAST-in-logical-decoding-replica.patch",
+      "v15-0005-Add-amcheck-verification-for-Direct-TOAST-tuples.patch",
+      "v15-0006-Add-documentation-for-Direct-TOAST.patch",
+      "v15-0007-Add-pg_ensure_direct_toast-for-in-place-legacy-T.patch",
+      "v15-0008-Add-backend-TOAST-architecture-documentation-and.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The goal is stated and the claimed gains are large, but the design does not yet have reviewer agreement. A direct pointer carries no value identity, so a reused TID can return another value's bytes without an error (replication-ondisk-1). Storing a TID in the parent removes rewriting the TOAST table alone as a way to remove bloat (replication-ondisk-2). Both follow from the core choice, and the thread shows no accepted answer. The demand case (demand-1) rests on benchmarks without configuration or scripts.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Direct TOAST: address TOAST chunks by TID instead of a B-tree index",
+    "problem": "Every TOAST chunk needs a B-tree index insert and a lookup on read, which costs WAL, index bloat, two-pass vacuum and read latency. The author also cites the 32-bit TOAST OID limit, with one real table running out of OIDs at 1 billion rows. The target is large tables with many toasted columns and heavy update churn.",
+    "proposed_design": "A new external pointer, varatt_direct (VARTAG_DIRECT), stores the TID of a root chunk instead of a value ID. Values up to one chunk are read directly, values up to 100 chunks keep a tid[] array in the last chunk, and larger values use a tree with fanout 50 and byte offsets for slice reads. Direct chunks have chunk_id NULL and stay out of a partial index, so dead chunks are pruned straight to LP_UNUSED.",
+    "user_visible_surface": [
+      "New table storage parameter toast_flavour ('plain' | 'direct'), settable with ALTER TABLE, which upgrades the TOAST table in place.",
+      "New GUC toast_default_flavour, choosing the 3-column or 5-column format for new TOAST tables.",
+      "New GUC and reloption direct_toast_self_prune (default on).",
+      "New superuser function pg_ensure_direct_toast(regclass).",
+      "Direct TOAST tables get columns chunk_tids and chunk_tid_offsets, a partial unique index, and refuse VACUUM FULL, CLUSTER and REPACK run on the TOAST table directly."
+    ],
+    "author_claims": [
+      "No migration: plain and direct pointers coexist in one table and the switch is metadata-only.",
+      "A 25M-row table loaded about 2x faster, reached 1385 TPS against 635 TPS, and grew to 380GB against 500GB after 100 hours.",
+      "pgvector top-N queries on toasted vectors ran 5% to 30% faster.",
+      "Writes of 1 MB to 1 GB values ran 7% to 15% faster; reads are equal when the index is cached and faster on cold caches.",
+      "TOAST WAL volume drops by about 40-50%, and vacuum skips index cleanup for direct chunks."
+    ],
+    "thread_state": "Michael Paquier and Matthias van de Meent object to losing standalone VACUUM FULL/REPACK on TOAST tables, to the loss of chunk identity checks, and to skipping index cleanup; Paquier says he cannot support it. The author answers each point and posts v15, but no reviewer accepts the design.",
+    "unclear": [
+      "The benchmarks give no configuration, hardware or scripts, and a later reply says plain TOAST matched direct on cached 1 GB reads.",
+      "The proposal does not say how a TID lookup detects a wrong or reused chunk once chunk_id and the identity check are gone.",
+      "The proposal does not say how to remove TOAST bloat without rewriting the main table and its indexes; REPACK TOAST is only a plan.",
+      "The proposal does not say what lock the in-place change of pg_index and pg_constraint takes, or how it behaves under concurrent writers.",
+      "The proposal does not show how prune-to-LP_UNUSED stays safe when plain chunks in the same table are still indexed."
+    ],
+    "search_queries": [
+      "direct TOAST TID pointer",
+      "TOAST without index",
+      "toast chunk_id index bypass",
+      "physical tid toast pointer",
+      "TOAST OID wraparound 64-bit",
+      "toast_flavour storage parameter",
+      "overflow pages large values heap",
+      "new varatt external pointer format"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P7",
+      "source_id": "cf:5830",
+      "title": "Support for 8-byte TOAST values (aka the TOAST infinite loop problem)",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/5830/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/aFOnKHG7Wn-Srnpv@paquier.xyz"
+      ],
+      "date": "2026-02-10",
+      "first_date": "2025-06-19",
+      "who_objected": "Tom Lane",
+      "quote": "Anyway, as far as things stand today on this thread, I have not been able to get even a single +1 for this design.",
+      "quote_url": "https://www.postgresql.org/message-id/aTn4aS32O4lmaPnj%40paquier.xyz",
+      "enriched": true,
+      "reason": "The toast_external layer with function pointer redirection got no support. Tom Lane questioned its run-time cost and called it overdesigned, and the author later said the design had not received a single +1. Only the oid8 data type was committed. The author then dropped the rest from the v19 cycle, planning a v20 rework without the redirections.",
+      "relation": "related_only",
+      "what_is_different": "P7 widened the value ID to 8 bytes and added a callback layer per vartag. Direct TOAST drops the value ID and the index lookup, and addresses chunks by TID. Only oid8 from P7 was committed, and Direct TOAST builds on it."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Stale direct pointers can read another value's chunk without error",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DDL command scans with SnapshotAny and detoasts a recently dead tuple, as described in message #28. Its direct chunks were already pruned to LP_UNUSED, and a new insert reused the line pointer. Today this case raises a missing-chunk error, but with direct TOAST the backend returns another row's bytes and nobody notices.",
+      "argument": "Plain TOAST checks chunk_id and chunk_seq on every fetch, and messages #2, #21 and #28 describe real bugs that this check catches. A direct pointer carries only a TID, and the chunk carries no link to its value. Patch 0009 adds prune-to-LP_UNUSED, so line pointers get reused quickly and a stale TID is more likely to land on a live chunk. Message #25 offers to look into chunk numbers and a back-pointer, but v15 does not include either.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        21,
+        22,
+        25,
+        28
+      ],
+      "author_must_show": "What data in the direct pointer or the chunk lets a fetch detect a reused or wrong TID and raise an error instead of returning foreign data?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Michael Paquier",
+          "date": "2026-09-07T03:13:44Z",
+          "url": "https://www.postgresql.org/message-id/ap4r6H0A-5SD8pGj%40paquier.xyz"
+        },
+        {
+          "index": 21,
+          "from": "Matthias van de Meent",
+          "date": "2026-09-29T12:18:41Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WjaraCS9Ux9Q8aX38WaqHjvF5HnBM%2BoAPLiHUaZ7wjVpQ%40mail.gmail.com"
+        },
+        {
+          "index": 22,
+          "from": "Michael Paquier",
+          "date": "2026-09-30T02:56:23Z",
+          "url": "https://www.postgresql.org/message-id/arx6V8dC3EhZrDBq%40paquier.xyz"
+        },
+        {
+          "index": 25,
+          "from": "Hannu Krosing",
+          "date": "2026-09-30T09:29:03Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQToBWs4h2S2FzdfES%2BGOYgHRWbeG%3DAxtnbRd6jDYJHHPQ%40mail.gmail.com"
+        },
+        {
+          "index": 28,
+          "from": "Matthias van de Meent",
+          "date": "2026-10-05T13:17:56Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WjEdPEaReJQNPu6%2BNzbFBW9LBazJ6Ls%3DufeHk2v%2BsNqyw%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #28 describes the SnapshotAny detoast case as an active problem, and prune-to-LP_UNUSED makes line pointer reuse faster. A reused single chunk of the same size passes the size check from va_extinfo, and message #25 offers identity data only as future work.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Physical TIDs remove TOAST-only rewrite as a way to remove bloat",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A table with compact HOT-updated rows and churning jsonb columns builds up a bloated direct TOAST table. The DBA runs VACUUM FULL or REPACK on the TOAST table and gets an error. The only remaining option is to rewrite the main table and rebuild all its GIN, trigram or HNSW indexes.",
+      "argument": "The chunk location is stored in the parent tuple, so any move of a chunk requires rewriting the parent. Messages #21, #22 and #28 say that rewriting only the TOAST table is a feature users rely on. Message #28 asks how to shrink a TOAST table whose surviving chunks sit on its last pages, and message #29 answers with a per-row update script and a planned REPACK TOAST. That plan would still have to rewrite parent tuples.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        21,
+        22,
+        24,
+        28,
+        29
+      ],
+      "author_must_show": "How does a planned REPACK TOAST move direct chunks without rewriting parent tuples, and what lock does it hold on the main table while it does so?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Michael Paquier",
+          "date": "2026-09-07T03:13:44Z",
+          "url": "https://www.postgresql.org/message-id/ap4r6H0A-5SD8pGj%40paquier.xyz"
+        },
+        {
+          "index": 21,
+          "from": "Matthias van de Meent",
+          "date": "2026-09-29T12:18:41Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WjaraCS9Ux9Q8aX38WaqHjvF5HnBM%2BoAPLiHUaZ7wjVpQ%40mail.gmail.com"
+        },
+        {
+          "index": 22,
+          "from": "Michael Paquier",
+          "date": "2026-09-30T02:56:23Z",
+          "url": "https://www.postgresql.org/message-id/arx6V8dC3EhZrDBq%40paquier.xyz"
+        },
+        {
+          "index": 24,
+          "from": "Hannu Krosing",
+          "date": "2026-09-30T09:15:08Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQeDnxX%2Bzk94rcNdew7%2B_oM37Wsegyh4mTHqTJ%3D1YGVYQ%40mail.gmail.com"
+        },
+        {
+          "index": 28,
+          "from": "Matthias van de Meent",
+          "date": "2026-10-05T13:17:56Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WjEdPEaReJQNPu6%2BNzbFBW9LBazJ6Ls%3DufeHk2v%2BsNqyw%40mail.gmail.com"
+        },
+        {
+          "index": 29,
+          "from": "Hannu Krosing",
+          "date": "2026-10-05T15:37:09Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQhiFfhZGG%3DUdL-MS4QJWK0Ub-dCP7y8DYe_y6ENTkT6w%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The limit follows from storing a TID in the parent, and the planned REPACK TOAST does not remove it. Since v12 it applies only to tables that opt in, and message #22 names opt-in as a possible path, so it is a tradeoff to justify.",
+        "original_severity": "fatal"
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "A bespoke chunk tree duplicates B-tree work outside the index AM",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Committers improve B-tree storage, deduplication or vacuum, and TOAST does not benefit from it. The tid[] tree with fanout 50, int8 offsets, recursive delete, amcheck checks and reorderbuffer rebuild code then needs its own fixes for corruption, recovery and decoding bugs, and few people know that code.",
+      "argument": "Message #1 says the B-tree inside the TOAST table added more code than it removed. Message #28 describes direct TOAST as a specialized inline index and suggests the same effort could go into making the index path faster for TOAST. The read gain is not settled: message #8 says plain matched direct on cached 1 GB reads. Message #21 estimates about 5x fewer page reads, not 10x. No committer in the thread has offered to own the new structure.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        8,
+        21,
+        22,
+        28
+      ],
+      "author_must_show": "Which of the measured gains cannot be reached by a narrower B-tree or TOAST index optimization that keeps chunk identity and standalone REPACK?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Hannu Krosing",
+          "date": "2026-09-05T12:24:50Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQT5HHYLGWOWPh%3DsceKS7%2BjEE5jTULRTWC9aY9vYjF8OvA%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Hannu Krosing",
+          "date": "2026-09-07T09:15:06Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQR2Fh8DQsOL%3DMv90CBv856pDry5TQTsT3KfEZ%3DY9%3DbJPA%40mail.gmail.com"
+        },
+        {
+          "index": 21,
+          "from": "Matthias van de Meent",
+          "date": "2026-09-29T12:18:41Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WjaraCS9Ux9Q8aX38WaqHjvF5HnBM%2BoAPLiHUaZ7wjVpQ%40mail.gmail.com"
+        },
+        {
+          "index": 22,
+          "from": "Michael Paquier",
+          "date": "2026-09-30T02:56:23Z",
+          "url": "https://www.postgresql.org/message-id/arx6V8dC3EhZrDBq%40paquier.xyz"
+        },
+        {
+          "index": 28,
+          "from": "Matthias van de Meent",
+          "date": "2026-10-05T13:17:56Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WjEdPEaReJQNPu6%2BNzbFBW9LBazJ6Ls%3DufeHk2v%2BsNqyw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #1 says the tree added more code than it removed, and no committer has offered to own it. A denser B-tree cannot remove index inserts or their WAL, so the author's answer should separate those gains from the read gains, which message #8 weakens.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Two pointer formats in one table add a branch to every TOAST consumer",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A future patch to heap rewrite, logical decoding or an extension handles VARTAG_ONDISK pointers and does not handle VARTAG_DIRECT. A direct pointer then reaches code that reads va_tid bytes as a value ID, and nothing fails until a user hits that path on real data.",
+      "argument": "Plain and direct pointers coexist in one table with no time limit, so every caller of VARATT_IS_EXTERNAL_ONDISK must handle both formats. Message #1 says the checks were placed next to the existing ones. v15 (message #31) fixed exactly this kind of bug: toast_preserve_valueid read va_tid as an OID after a flavour change. The proposal does not say what would make a missed branch fail loudly in cassert builds or in tests.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        31
+      ],
+      "author_must_show": "What mechanism makes code that handles only the plain on-disk pointer fail visibly when it receives a direct pointer?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Hannu Krosing",
+          "date": "2026-09-05T12:24:50Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQT5HHYLGWOWPh%3DsceKS7%2BjEE5jTULRTWC9aY9vYjF8OvA%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "Michael Paquier",
+          "date": "2026-09-07T03:13:44Z",
+          "url": "https://www.postgresql.org/message-id/ap4r6H0A-5SD8pGj%40paquier.xyz"
+        },
+        {
+          "index": 31,
+          "from": "Hannu Krosing",
+          "date": "2026-10-18T20:36:39Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQSSSq8-5DL6w3f%2Bdh1R9bAyGmega41OcDoQt_rKbMMFGQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #31 reports a fix for this kind of bug, where toast_preserve_valueid read va_tid bytes as an OID. The proposal names no assertion or test that catches the next missed branch.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Remaining demand rests on author-run benchmarks after OID8 TOAST was committed",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer pushes Direct TOAST mainly for the out-of-OIDs case, which OID8 TOAST already handles. Users of tables with heavy TOAST update churn turn it on for speed. The speedup turns out smaller than the thread claimed, and the project keeps a second TOAST format that few people use.",
+      "argument": "The only field case, a table that ran out of TOAST OIDs at 1 billion rows (message #3), is now covered by OID8 TOAST, which v6 rebased onto (message #11). What remains is performance, measured by the author alone. Message #2 notes the main benchmark has no configuration or scripts, and message #8 retracts the 2x cold-read result. No other user reports TOAST index overhead as a production problem, and message #4 is interest from one prior implementer.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        3,
+        4,
+        8,
+        11
+      ],
+      "author_must_show": "Which production workloads already on OID8 TOAST show TOAST index cost as a bottleneck, measured with published, reproducible scripts?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Michael Paquier",
+          "date": "2026-09-07T03:13:44Z",
+          "url": "https://www.postgresql.org/message-id/ap4r6H0A-5SD8pGj%40paquier.xyz"
+        },
+        {
+          "index": 3,
+          "from": "Hannu Krosing",
+          "date": "2026-09-07T06:51:42Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQ9E74sOfs_7VdvFEdjSFFW6mOztt2PpmPziNWC6_z6%2Bw%40mail.gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "Nikita Malakhov",
+          "date": "2026-09-07T07:45:01Z",
+          "url": "https://www.postgresql.org/message-id/CAN-LCVM-rh9j_YbG93S7RUBbeu6-1TEWe4FJQrPqUvmR2cM2JQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Hannu Krosing",
+          "date": "2026-09-07T09:15:06Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQR2Fh8DQsOL%3DMv90CBv856pDry5TQTsT3KfEZ%3DY9%3DbJPA%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Hannu Krosing",
+          "date": "2026-09-21T15:02:53Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQvk50Gz-5o%3DvU7oqmK1gXzzVKiMJiwrkUczETTPibAyA%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #11 and #26 confirm that oid8 TOAST handles OID exhaustion, so the case rests on performance. The reported gains are large (1385 against 635 TPS), but message #2 notes they come without configuration or scripts, and no second user reports the problem.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "TOAST table format is not captured by pg_dump --binary-upgrade",
+      "level": "2",
+      "rubric_item": 13,
+      "category": "pg_dump_round_trip",
+      "touch_points": [
+        "pg_dump_round_trip",
+        "on_disk_pg_upgrade",
+        "catalog"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA runs pg_ensure_direct_toast() on a table without setting toast_flavour, writes direct values, then runs pg_upgrade --link. The new cluster rebuilds the TOAST table from the dump as 3-column with a full primary key, while the linked files hold 5-column direct chunks. Reads of chunk_tids or later REINDEX then misbehave after the upgrade.",
+      "argument": "The 0007 commit message says pg_ensure_direct_toast() upgrades the format \"without ... changing its reloptions\". The 0002 commit message says create_toast_table() picks 3 or 5 columns from the reloption or from toast_default_flavour, and the new cluster's GUC can differ from the old one. The storage.sgml hunk claims pg_upgrade --link compatibility, but the proposal does not say what in the dump records the TOAST column count and the partial index predicate.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        26,
+        31
+      ],
+      "author_must_show": "What in pg_dump --binary-upgrade output records a 5-column TOAST table with a partial index when toast_flavour is unset or toast_default_flavour differs?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 26,
+          "from": "Hannu Krosing",
+          "date": "2026-10-01T12:41:14Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQRHby8wQ4JPhTLLLjHzbTes%2BNBKh6%3DUCFzfE2LrX5M_Pg%40mail.gmail.com"
+        },
+        {
+          "index": 31,
+          "from": "Hannu Krosing",
+          "date": "2026-10-18T20:36:39Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQSSSq8-5DL6w3f%2Bdh1R9bAyGmega41OcDoQt_rKbMMFGQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #1 says the pg_upgrade tests pass, but the material does not show a case where the reloption or GUC disagrees with the TOAST table format. Direct writes need toast_flavour = 'direct', so the realistic case is a switch back to 'plain' before the upgrade.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "toast_default_flavour changes catalog shape without changing write behaviour",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "new_guc",
+      "touch_points": [
+        "new_guc",
+        "catalog",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA sets toast_default_flavour = 'direct' in postgresql.conf, expecting direct TOAST. New tables get 5-column TOAST tables that refuse VACUUM FULL and REPACK on the TOAST table, but still write plain, indexed chunks. The DBA finds this out when a TOAST-only maintenance job fails, and no space was saved.",
+      "argument": "The config.sgml hunk says the GUC sets only the table format, and that INSERT and UPDATE follow the toast_flavour reloption. In message #3 the author called allowing a GUC for this \"a design mistake\", yet v15 still has it, plus direct_toast_self_prune as both a GUC and a reloption. A third entry point, pg_ensure_direct_toast(), does what ALTER TABLE SET (toast_flavour) already does.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        26,
+        31
+      ],
+      "author_must_show": "Why is a server-wide GUC that sets the TOAST table format, separate from the flavour used for writes, needed beyond the toast_flavour reloption?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Hannu Krosing",
+          "date": "2026-09-07T06:51:42Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQ9E74sOfs_7VdvFEdjSFFW6mOztt2PpmPziNWC6_z6%2Bw%40mail.gmail.com"
+        },
+        {
+          "index": 26,
+          "from": "Hannu Krosing",
+          "date": "2026-10-01T12:41:14Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQRHby8wQ4JPhTLLLjHzbTes%2BNBKh6%3DUCFzfE2LrX5M_Pg%40mail.gmail.com"
+        },
+        {
+          "index": 31,
+          "from": "Hannu Krosing",
+          "date": "2026-10-18T20:36:39Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQSSSq8-5DL6w3f%2Bdh1R9bAyGmega41OcDoQt_rKbMMFGQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The config.sgml hunk confirms the GUC sets only the table format while writes follow the reloption. Message #3 calls the GUC a design mistake, and v15 keeps it without a stated reason.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "One-way format change disables existing TOAST maintenance commands",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "design",
+      "touch_points": [
+        "catalog",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user sets toast_flavour = 'direct' to try the feature, then sets it back to 'plain'. The TOAST table stays 5-column, so VACUUM FULL, CLUSTER and REPACK on pg_toast.pg_toast_N keep failing. The only way out is a rewrite of the main table and all its indexes, which the user finds out when the nightly TOAST repack job errors.",
+      "argument": "Message #25 says the 5-column format disables direct maintenance of the TOAST table once requested. Message #15 in v15 handles a rewrite after a switch back to 'plain' but does not describe a return to the 3-column format. Paquier (message #22) and van de Meent (message #21, #28) count standalone TOAST repack as a property users rely on, and message #24 offers REPACK TOAST only as a plan.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        21,
+        22,
+        24,
+        25,
+        28,
+        31
+      ],
+      "author_must_show": "How does a user who sets toast_flavour back to 'plain' get standalone VACUUM FULL and REPACK on the TOAST table again without rewriting the main table?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 21,
+          "from": "Matthias van de Meent",
+          "date": "2026-09-29T12:18:41Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WjaraCS9Ux9Q8aX38WaqHjvF5HnBM%2BoAPLiHUaZ7wjVpQ%40mail.gmail.com"
+        },
+        {
+          "index": 22,
+          "from": "Michael Paquier",
+          "date": "2026-09-30T02:56:23Z",
+          "url": "https://www.postgresql.org/message-id/arx6V8dC3EhZrDBq%40paquier.xyz"
+        },
+        {
+          "index": 24,
+          "from": "Hannu Krosing",
+          "date": "2026-09-30T09:15:08Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQeDnxX%2Bzk94rcNdew7%2B_oM37Wsegyh4mTHqTJ%3D1YGVYQ%40mail.gmail.com"
+        },
+        {
+          "index": 25,
+          "from": "Hannu Krosing",
+          "date": "2026-09-30T09:29:03Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQToBWs4h2S2FzdfES%2BGOYgHRWbeG%3DAxtnbRd6jDYJHHPQ%40mail.gmail.com"
+        },
+        {
+          "index": 28,
+          "from": "Matthias van de Meent",
+          "date": "2026-10-05T13:17:56Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WjEdPEaReJQNPu6%2BNzbFBW9LBazJ6Ls%3DufeHk2v%2BsNqyw%40mail.gmail.com"
+        },
+        {
+          "index": 31,
+          "from": "Hannu Krosing",
+          "date": "2026-10-18T20:36:39Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQSSSq8-5DL6w3f%2Bdh1R9bAyGmega41OcDoQt_rKbMMFGQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The 0002 commit message says a rewrite preserves the existing TOAST table format, and no version describes a return to 3 columns. The reference to message #15 should read message #31.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "Third-party decoding plugins and extensions do not know VARTAG_DIRECT",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A CDC plugin such as wal2json detects unchanged toasted columns with VARATT_IS_EXTERNAL_ONDISK. After a user sets toast_flavour = 'direct', unchanged columns fail that test, so the plugin tries to detoast the pointer or emits it as data. Downstream consumers then see errors or wrong row images on the first non-toast update.",
+      "argument": "Patch 0004 updates pgoutput and proto.c for unchanged direct attributes, so the in-core plugin needed changes. Out-of-tree output plugins and extensions that read on-disk pointers need the same changes, but nothing fails at build time to tell them. Message #2 objected to placing direct checks next to VARATT_IS_EXTERNAL_ONDISK at many call sites. Each such site is one that an extension author will also miss.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "What should an existing output plugin or extension that tests VARATT_IS_EXTERNAL_ONDISK do with direct pointers, and how does it learn it must change?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Hannu Krosing",
+          "date": "2026-09-05T12:24:50Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQT5HHYLGWOWPh%3DsceKS7%2BjEE5jTULRTWC9aY9vYjF8OvA%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "Michael Paquier",
+          "date": "2026-09-07T03:13:44Z",
+          "url": "https://www.postgresql.org/message-id/ap4r6H0A-5SD8pGj%40paquier.xyz"
+        }
+      ],
+      "id": "replication-ondisk-3",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Patch 0004 had to change pgoutput and proto.c for unchanged direct attributes, so out-of-tree plugins need the same change. The oid8 vartag set a precedent for new vartags, but the material does not show how plugins learn about this one.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "Self-pruning logic enters heap prune and insert paths for all tables",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user who never enables direct TOAST runs an insert-heavy OLTP workload. Every heap_page_prune_and_freeze call and every buffer choice in hio.c now runs extra checks for unindexed TOAST tuples and prune_hand state. No benchmark in the material measures this cost on plain tables.",
+      "argument": "Message #31 lists changes in hio.c, pruneheap.c and FSM recording, including cross-session self-pruning, a staggered prune_hand and a new FSM threshold. These are shared paths for every heap relation. All benchmarks in messages #1 and #5 compare direct with plain TOAST and none measures plain heap tables. The new direct_toast_self_prune GUC and reloption add to toast_flavour, toast_default_flavour and toast_value_type, which makes four TOAST knobs.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        5,
+        31
+      ],
+      "author_must_show": "What is the measured cost of the hio.c and pruneheap.c changes on a workload with no direct TOAST tables?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Hannu Krosing",
+          "date": "2026-09-05T12:24:50Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQT5HHYLGWOWPh%3DsceKS7%2BjEE5jTULRTWC9aY9vYjF8OvA%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Hannu Krosing",
+          "date": "2026-09-07T08:47:46Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQREo8F%2B%2B8sx4bQ5fSYZ2YrQuyRRDfvj5LwTh2X%2BBD6PTA%40mail.gmail.com"
+        },
+        {
+          "index": 31,
+          "from": "Hannu Krosing",
+          "date": "2026-10-18T20:36:39Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQSSSq8-5DL6w3f%2Bdh1R9bAyGmega41OcDoQt_rKbMMFGQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-4",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #31 lists changes in hio.c and pruneheap.c, and no benchmark covers tables without direct TOAST. The text suggests the logic runs only when has_direct_toast is set, so the cost may be small, but only a measurement shows that.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Committed oid8 TOAST already covers the OID exhaustion motivation",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "desirability",
+      "touch_points": [
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer weighs the 1-billion-row OID exhaustion case from message #3 as a reason to accept a new on-disk vartag. Since oid8 TOAST was committed, that table can set toast_value_type = 'oid8' with no new pointer format. Accepting Direct TOAST on that ground would add a second on-disk format for a problem already solved.",
+      "argument": "The brief and message #1 present the 32-bit OID limit as a motivation and contrast Direct TOAST with the 8-byte TOAST work. Message #11 reports that OID8 TOAST was committed. Message #26 states that oid8 removes the wraparound and collision bottleneck. So the case now rests on index cost alone, and message #8 reports plain matching direct on cached 1 GB reads.",
+      "precedent_ids": [
+        "P7"
+      ],
+      "thread_message_refs": [
+        1,
+        3,
+        8,
+        11,
+        26
+      ],
+      "author_must_show": "With oid8 TOAST committed, which measured workload, with configuration and scripts, still needs a TID-based format rather than an improved TOAST index path?",
+      "precedents": [
+        {
+          "id": "P7",
+          "title": "Support for 8-byte TOAST values (aka the TOAST infinite loop problem)",
+          "url": "https://commitfest.postgresql.org/patch/5830/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/aFOnKHG7Wn-Srnpv@paquier.xyz"
+          ],
+          "date": "2026-02-10",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Hannu Krosing",
+          "date": "2026-09-05T12:24:50Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQT5HHYLGWOWPh%3DsceKS7%2BjEE5jTULRTWC9aY9vYjF8OvA%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Hannu Krosing",
+          "date": "2026-09-07T06:51:42Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQ9E74sOfs_7VdvFEdjSFFW6mOztt2PpmPziNWC6_z6%2Bw%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Hannu Krosing",
+          "date": "2026-09-07T09:15:06Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQR2Fh8DQsOL%3DMv90CBv856pDry5TQTsT3KfEZ%3DY9%3DbJPA%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Hannu Krosing",
+          "date": "2026-09-21T15:02:53Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQvk50Gz-5o%3DvU7oqmK1gXzzVKiMJiwrkUczETTPibAyA%40mail.gmail.com"
+        },
+        {
+          "index": 26,
+          "from": "Hannu Krosing",
+          "date": "2026-10-01T12:41:14Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQRHby8wQ4JPhTLLLjHzbTes%2BNBKh6%3DUCFzfE2LrX5M_Pg%40mail.gmail.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of demand-1, which makes the same point about oid8 TOAST and adds the missing benchmark details. Message #26 already drops OID exhaustion as the main argument and rests the case on index cost.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Reused TID can return another row's data instead of an error",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user can read column a but not column b, or sees only some rows under RLS. A stale direct pointer is followed, for example by the SnapshotAny DDL detoast of a recently dead tuple, after self-prune freed the chunk slot and a newer chunk took it. The detoast returns bytes of column b or of a hidden row, and no one notices.",
+      "argument": "One TOAST table holds the values of every column and every row, so a chunk at the right TID but from the wrong value can cross column privileges and RLS. Plain TOAST checks chunk_id and chunk_seq and raises an error on mismatch, and message #28 says these checks catch real corruption today. Direct chunks have chunk_id NULL, and v15 frees dead chunks straight to LP_UNUSED, so a slot can be reused at once. Message #25 offers chunk numbers and a back-pointer, but only as a later idea and not for single chunks.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        21,
+        25,
+        28
+      ],
+      "author_must_show": "What check on every direct chunk read, including single-chunk values, makes a stale or reused TID raise an error instead of returning another value's bytes?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Michael Paquier",
+          "date": "2026-09-07T03:13:44Z",
+          "url": "https://www.postgresql.org/message-id/ap4r6H0A-5SD8pGj%40paquier.xyz"
+        },
+        {
+          "index": 21,
+          "from": "Matthias van de Meent",
+          "date": "2026-09-29T12:18:41Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WjaraCS9Ux9Q8aX38WaqHjvF5HnBM%2BoAPLiHUaZ7wjVpQ%40mail.gmail.com"
+        },
+        {
+          "index": 25,
+          "from": "Hannu Krosing",
+          "date": "2026-09-30T09:29:03Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQToBWs4h2S2FzdfES%2BGOYgHRWbeG%3DAxtnbRd6jDYJHHPQ%40mail.gmail.com"
+        },
+        {
+          "index": 28,
+          "from": "Matthias van de Meent",
+          "date": "2026-10-05T13:17:56Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WjEdPEaReJQNPu6%2BNzbFBW9LBazJ6Ls%3DufeHk2v%2BsNqyw%40mail.gmail.com"
+        }
+      ],
+      "id": "security-1",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1. The privilege and RLS exposure is a consequence of the same missing identity check, and the same fix answers both.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "TID-pinned TOAST values make the TOAST table impossible to rewrite on its own",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fatal",
+      "failure_scenario": "A DBA has a compact main table with several GIN and HNSW indexes and a bloated direct TOAST table. VACUUM FULL and REPACK on the TOAST table are refused, so the only fix is to rewrite the main table and rebuild all its indexes. Every later tool that moves tuples hits the same limit.",
+      "argument": "The parent tuple stores a physical TID, so no tuple in a direct TOAST table can move without rewriting its parent. Message #22 points to TOAST-only maintenance that users rely on, and messages #21 and #28 describe the bloated-TOAST, compact-heap case. Message #24 offers REPACK TOAST only as a plan. Message #29 offers an external Python script, which is not a supported core answer. Once users have direct TOAST data on disk, the project cannot drop this restriction without a migration.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        21,
+        22,
+        24,
+        28,
+        29
+      ],
+      "author_must_show": "How does a user remove bloat from a direct TOAST table without rewriting the main table and its indexes, using only core commands?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Michael Paquier",
+          "date": "2026-09-07T03:13:44Z",
+          "url": "https://www.postgresql.org/message-id/ap4r6H0A-5SD8pGj%40paquier.xyz"
+        },
+        {
+          "index": 21,
+          "from": "Matthias van de Meent",
+          "date": "2026-09-29T12:18:41Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WjaraCS9Ux9Q8aX38WaqHjvF5HnBM%2BoAPLiHUaZ7wjVpQ%40mail.gmail.com"
+        },
+        {
+          "index": 22,
+          "from": "Michael Paquier",
+          "date": "2026-09-30T02:56:23Z",
+          "url": "https://www.postgresql.org/message-id/arx6V8dC3EhZrDBq%40paquier.xyz"
+        },
+        {
+          "index": 24,
+          "from": "Hannu Krosing",
+          "date": "2026-09-30T09:15:08Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQeDnxX%2Bzk94rcNdew7%2B_oM37Wsegyh4mTHqTJ%3D1YGVYQ%40mail.gmail.com"
+        },
+        {
+          "index": 28,
+          "from": "Matthias van de Meent",
+          "date": "2026-10-05T13:17:56Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WjEdPEaReJQNPu6%2BNzbFBW9LBazJ6Ls%3DufeHk2v%2BsNqyw%40mail.gmail.com"
+        },
+        {
+          "index": 29,
+          "from": "Hannu Krosing",
+          "date": "2026-10-05T15:37:09Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQhiFfhZGG%3DUdL-MS4QJWK0Ub-dCP7y8DYe_y6ENTkT6w%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-2, which also notes that the planned REPACK TOAST would still rewrite parent tuples.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Second chunk-lookup mechanism next to the TOAST B-tree index",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden",
+        "on_disk_pg_upgrade",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later change to TOAST chunking, vacuum or amcheck has to be written twice: once for the indexed lookup and once for the TID array and tree. A change that updates only the indexed path builds, passes the default tests, and leaves the direct path wrong. Users find out when direct-flavour tables fail to detoast or fail amcheck.",
+      "argument": "The chunk_tids array and the fanout-50 tree with chunk_tid_offsets act as an index inlined into the TOAST heap, as message #28 says. Message #21 estimates a 4-5x page-access gain at most and says B-tree storage for fixed-size TOAST keys could be denser. The author answers in message #29 that no index path can beat skipping the index. That claim needs a cost model, because message #8 found plain and direct equal on cached 1 GB reads.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        8,
+        21,
+        28,
+        29
+      ],
+      "author_must_show": "Which measured gain remains after a denser TOAST B-tree layout or HOT-like pruning in the existing index path, and why can that path not reach it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 8,
+          "from": "Hannu Krosing",
+          "date": "2026-09-07T09:15:06Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQR2Fh8DQsOL%3DMv90CBv856pDry5TQTsT3KfEZ%3DY9%3DbJPA%40mail.gmail.com"
+        },
+        {
+          "index": 21,
+          "from": "Matthias van de Meent",
+          "date": "2026-09-29T12:18:41Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WjaraCS9Ux9Q8aX38WaqHjvF5HnBM%2BoAPLiHUaZ7wjVpQ%40mail.gmail.com"
+        },
+        {
+          "index": 28,
+          "from": "Matthias van de Meent",
+          "date": "2026-10-05T13:17:56Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WjEdPEaReJQNPu6%2BNzbFBW9LBazJ6Ls%3DufeHk2v%2BsNqyw%40mail.gmail.com"
+        },
+        {
+          "index": 29,
+          "from": "Hannu Krosing",
+          "date": "2026-10-05T15:37:09Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQhiFfhZGG%3DUdL-MS4QJWK0Ub-dCP7y8DYe_y6ENTkT6w%40mail.gmail.com"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-3, which raises the same inline-index point and asks the same question about a narrower B-tree optimization.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "OID exhaustion motivation is already met by committed OID8 TOAST",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "desirability",
+      "touch_points": [
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A reviewer weighs the patch partly on the table that ran out of TOAST OIDs at 1 billion rows. That user can now set toast_value_type = 'oid8' with no new pointer format. The case for direct TOAST then rests only on benchmarks that message #2 says lack configuration details.",
+      "argument": "Message #11 says OID8 TOAST was committed during the thread, and message #26 agrees that oid8 removes the wraparound and collision problem. Message #3 still uses the 1-billion-row case as its real-world driver. Without it, the remaining case is write and vacuum cost on churn-heavy TOAST tables. That case is shown only by the runs in messages #1 and #5, with no scripts or settings.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        3,
+        11,
+        26
+      ],
+      "author_must_show": "On a churn-heavy workload with toast_value_type = 'oid8', what reproducible gain in throughput, WAL and size does direct TOAST give, with configuration and scripts?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Michael Paquier",
+          "date": "2026-09-07T03:13:44Z",
+          "url": "https://www.postgresql.org/message-id/ap4r6H0A-5SD8pGj%40paquier.xyz"
+        },
+        {
+          "index": 3,
+          "from": "Hannu Krosing",
+          "date": "2026-09-07T06:51:42Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQ9E74sOfs_7VdvFEdjSFFW6mOztt2PpmPziNWC6_z6%2Bw%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Hannu Krosing",
+          "date": "2026-09-21T15:02:53Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQvk50Gz-5o%3DvU7oqmK1gXzzVKiMJiwrkUczETTPibAyA%40mail.gmail.com"
+        },
+        {
+          "index": 26,
+          "from": "Hannu Krosing",
+          "date": "2026-10-01T12:41:14Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQRHby8wQ4JPhTLLLjHzbTes%2BNBKh6%3DUCFzfE2LrX5M_Pg%40mail.gmail.com"
+        }
+      ],
+      "id": "already-exists-2",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of demand-1, which covers the oid8 commit and the unreproducible benchmarks in more detail.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Everyone pays for a second TOAST format; only opt-in tables gain",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "on_disk_pg_upgrade",
+        "new_guc",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Later patches to detoasting, pruning, logical decoding or amcheck must handle VARTAG_DIRECT and nullable chunk_id, even on clusters that never use it. A reviewer who misses the direct path ships a bug that shows up only on direct tables, years later. The vartag stays forever because data on disk depends on it.",
+      "argument": "The series touches detoast, pruneheap, reorderbuffer, pgoutput, REPACK and amcheck, and it adds a reloption, two GUCs and a superuser function. These are permanent costs for the whole project, but the benefit goes only to tables that set toast_flavour = 'direct'. Message #28 proposes improving the B-tree path for TOAST instead, which would help every user. The author answers that index access can never match no index (message #29), but shows no measurement of that alternative.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        26,
+        28,
+        29,
+        31
+      ],
+      "author_must_show": "Why would a btree layout tuned for TOAST, which helps every table, not recover most of the measured gain without a new on-disk vartag?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 26,
+          "from": "Hannu Krosing",
+          "date": "2026-10-01T12:41:14Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQRHby8wQ4JPhTLLLjHzbTes%2BNBKh6%3DUCFzfE2LrX5M_Pg%40mail.gmail.com"
+        },
+        {
+          "index": 28,
+          "from": "Matthias van de Meent",
+          "date": "2026-10-05T13:17:56Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WjEdPEaReJQNPu6%2BNzbFBW9LBazJ6Ls%3DufeHk2v%2BsNqyw%40mail.gmail.com"
+        },
+        {
+          "index": 29,
+          "from": "Hannu Krosing",
+          "date": "2026-10-05T15:37:09Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQQhiFfhZGG%3DUdL-MS4QJWK0Ub-dCP7y8DYe_y6ENTkT6w%40mail.gmail.com"
+        },
+        {
+          "index": 31,
+          "from": "Hannu Krosing",
+          "date": "2026-10-18T20:36:39Z",
+          "url": "https://www.postgresql.org/message-id/CAMT0RQSSSq8-5DL6w3f%2Bdh1R9bAyGmega41OcDoQt_rKbMMFGQ%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-2 for the missed-branch scenario and of maintenance-fit-3 for the B-tree alternative. It adds no separate failure case.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "New on-disk pointer tag VARTAG_DIRECT and a 5-column TOAST table format with a partial index."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "Patch 0004 changes decode.c, reorderbuffer.c, proto.c and pgoutput.c to reassemble direct chunks by TID."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "TOAST tables gain two columns, the primary key becomes a partial unique index in place, and pg_proc gains a function."
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "varatt.h adds a vartag that extensions and output plugins testing VARATT_IS_EXTERNAL_ONDISK do not know."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": true,
+      "reason": "Adds toast_default_flavour and direct_toast_self_prune, plus the toast_flavour reloption."
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": true,
+      "reason": "pg_dump --binary-upgrade must recreate a 5-column TOAST table even when the reloption or GUC says 'plain'."
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "Adds superuser function pg_ensure_direct_toast; a reused TID could return bytes of another column or row."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "A second TOAST format with its own chunk tree, delete, decoding and amcheck code stays as long as data uses it."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Changes detoast.c for all TOAST reads, and message #31 lists changes in hio.c and pruneheap.c."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "oid8 TOAST already covers OID exhaustion, and message #28 suggests improving the TOAST index path instead."
+    }
+  ],
+  "questions": [
+    "What data in the direct pointer or the chunk lets a fetch detect a reused or wrong TID and raise an error, including for single-chunk values?",
+    "How does a user remove bloat from a direct TOAST table with core commands, without rewriting the main table and rebuilding its indexes?",
+    "With oid8 TOAST as the baseline, which gains remain under published configuration and scripts, and which of them could a TOAST-specific B-tree improvement not reach?",
+    "What does pg_dump --binary-upgrade record so that a 5-column TOAST table with a partial index survives pg_upgrade when toast_flavour is unset or 'plain'?",
+    "What lock does the in-place change of pg_index and pg_constraint take, and what happens to concurrent writers on the table during it?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Michael Paquier, author of the 8-byte TOAST work (P7), takes part but says he cannot support the design. An owner would need to know heap pruning, TOAST and logical decoding.",
+    "liability": "A permanent on-disk vartag and TOAST table format, a chunk tree with its own delete, decoding and amcheck code, and pruning changes in shared heap paths. Bugs here return wrong data or lose data.",
+    "author_follow_up": "Strong sign: the author answered each review point and posted versions up to v15 in about two months."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "high",
+    "review_cost": "high",
+    "recommended_action": "needs design rethink",
+    "reason": "The target is large tables with many toasted columns and heavy update churn. The series adds an on-disk format across TOAST, heap pruning, logical decoding and amcheck, and reviewers reject the loss of chunk identity and of standalone TOAST repack."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, three points could not be checked: whether the hio.c and pruneheap.c logic runs only for direct TOAST tables, which lock the in-place upgrade takes, and whether prune-to-LP_UNUSED is safe next to indexed plain chunks.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:4296",
+      "kind": "cf",
+      "title": "64-bit TOAST value ID",
+      "status": "Returned with feedback",
+      "date": "2023-09-01",
+      "first_date": "2022-11-28",
+      "url": "https://commitfest.postgresql.org/patch/4296/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAN-LCVPRvRzxeUdYdDCZ7UwZQs1NmZpqBUCd=+RdMPFTyt-bRQ@mail.gmail.com"
+      ],
+      "authors": "Nikita Malakhov (nmalakh)",
+      "objectors": "Aleksander Alekseev",
+      "summary": "The patch makes TOAST value IDs 64-bit, stored in varatt_external as two 32-bit fields, and assigns them from a counter per TOAST table, not from the global OID counter. The aim is to stop the endless loop in GetNewOidWithIndex when a TOAST table runs out of free OIDs.",
+      "objection": "The patch no longer applied by the July 2023 commitfest, and a reviewer asked for a rebased version. The author promised one, but the thread ends with no new version before the entry was closed. The author also said the patch was limited in compatibility with old TOAST pointers. A reviewer proposed making wide pointers a table option as part of a larger redesign of TOAST pointers.",
+      "touch_points": [],
+      "matched_queries": [
+        "toast chunk_id index bypass",
+        "TOAST OID wraparound 64-bit"
+      ],
+      "from_hint": false,
+      "score": 0.28,
+      "enriched": true,
+      "key_quote": "Unfortunately the patch rotted a bit. Could you please submit an updated/rebased patch so that it could be reviewed in the scope of July commitfest?",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAJ7c6TOOrR2xBUnhqNDP932-e%3DmdjWU0huuP%2B%3Dm_kN9hY-o1cA%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "revert:6719b238e8f0ea83c39d2b1728c7670cdaa34e06",
+      "kind": "revert",
+      "title": "Rearrange execution of PARAM_EXTERN Params for plpgsql's benefit.",
+      "status": "Partially reverted",
+      "date": "2017-12-21",
+      "first_date": "2015-07-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6719b238e8f0ea83c39d2b1728c7670cdaa34e06",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/32589.1513706441@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Rearrange execution of PARAM_EXTERN Params for plpgsql's benefit.\nReverted commit(s): Further reduce overhead for passing plpgsql variables to the executor.",
+      "objection": "This patch does three interrelated things:\n\n* Create a new expression execution step type EEOP_PARAM_CALLBACK\nand add the infrastructure needed for add-on modules to generate that.\nAs discussed, the best control mechanism for that seems to be to add\nanother hook function to ParamListInfo, which will be called by\nExecInitExpr if it's supplied and a PARAM_EXTERN Param is found.\nFor stand-alone expressions, we add a new entry point to allow the\nParamListInfo to be specified directly, since it can't be retrieved\nfrom the parent plan node's EState.\n\n* Redesign the API for the ParamListInfo paramFetch hook so that the\nParamExternData array can be entirely virtual.  This also lets us get rid\nof ParamListInfo.paramMask, instead leaving it to the paramFetch hook to\ndecide which param IDs should be accessible or not.  plpgsql_param_fetch\nwas already doing the identical masking check, so having callers do it too\nseemed redundant.  While I was at it, I added a \"speculative\" flag to\nparamFetch that the planner can specify as TRUE to avoid unwanted failures.\nThis solves an ancient problem for plpgsql that it couldn't provide values\nof non-DTYPE_VAR variables to the planner for fear of triggering premature\n\"record not assigned yet\" or \"field not found\" errors during planning.\n\n* Rework plpgsql to get rid of the need for \"unshared\" parameter lists,\nby dint of turning the single ParamListInfo per estate into a nearly\nread-only data structure that doesn't instantiate any per-variable data.\nInstead, the paramFetch hook controls access to per-variable data and can\nmake the right decisions on the fly, replacing the cases that we used to\nneed multiple ParamListInfos for.  This might perhaps have been a\nperformance loss on its own, but by using a paramCompile hook we can\nbypass plpgsql_param_fetch entirely during normal query execution.\n(It's now only called when, eg, we copy the ParamListInfo into a cursor\nportal.  copyParamList() or SerializeParamList() effectively instantiate\nthe virtual parameter array as a simple physical array without a\nparamFetch hook, which is what we want in those cases.)  This allows\nreverting most of commit 6c82d8d1f, though I kept the cosmetic\ncode-consolidation aspects of that (eg the assign_simple_var function).\n\nPerformance testing shows this to be at worst a break-even change,\nand it can provide wins ranging up to 20% in test cases involving\naccesses to fields of \"record\" variables.  The fact that values of\nsuch variables can now be exposed to the planner might produce wins\nin some situations, too, but I've not pursued that angle.\n\nIn passing, remove the \"parent\" pointer from the arguments to\nExecInitExprRec and related functions, instead storing that pointer in a\ntransient field in ExprState.  The ParamListInfo pointer for a stand-alone\nexpression is handled the same way; we'd otherwise have had to add\nyet another recursively-passed-down argument in expression compilation.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "toast chunk_id index bypass",
+        "physical tid toast pointer",
+        "new varatt external pointer format"
+      ],
+      "from_hint": false,
+      "score": 0.268,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:4982",
+      "kind": "cf",
+      "title": "support tid range scan in parallel",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2024-04-29",
+      "url": "https://commitfest.postgresql.org/patch/4982/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/18f2c002a24.11bc2ab825151706.3749144144619388582@highgo.ca"
+      ],
+      "authors": "Cary Huang (cary)",
+      "objectors": "",
+      "summary": "The patch adds a Parallel Tid Range Scan so that queries with lower and upper ctid bounds can use parallel workers. Parallel block allocation is changed to obey the start block and block limit that heap_setscanlimits() sets.",
+      "objection": "No visible message rejects the design. Junwang Zhao and Rafia Sabih posted review comments on v4 in August 2024, about a stray blank line, wrong function names in comments, field order and naming, and a missing comment on the changed block-limit check. The visible messages show no reply from the author or new patch version before the entry was returned with feedback in October 2024. Earlier correctness problems that David Rowley found had been fixed in v3.",
+      "touch_points": [],
+      "matched_queries": [
+        "direct TOAST TID pointer",
+        "physical tid toast pointer"
+      ],
+      "from_hint": false,
+      "score": 0.241,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:1755",
+      "kind": "cf",
+      "title": "Tid range scan",
+      "status": "Returned with feedback",
+      "date": "2019-12-01",
+      "first_date": "2018-08-12",
+      "url": "https://commitfest.postgresql.org/patch/1755/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMyN-kB-nFTkF=VA_JPwFNo08S0d-Yk0F741S2B7LDmYAi8eyA@mail.gmail.com"
+      ],
+      "authors": "Edmund Horner (ejrh)",
+      "objectors": "",
+      "summary": "The patch teaches TID scans to handle range quals on ctid (>, >=, <, <=, BETWEEN) so that only the matching block range is read, and adds ctid ordering and selectivity estimates. Later versions add a table AM callback to limit the scan range, so that the planner offers TID range scans only for table AMs that support it.",
+      "objection": "The selectivity estimate patches went into PG12, but the range scan part stalled after the table AM API arrived. Andres Freund asked for range handling to move into the heap scan code, since an AM callback based on block limits does nothing useful for AMs like zedstore. The author could not rewrite heapgettup_pagemode that way, asked for help or shelving, and no new patch came within two months.",
+      "touch_points": [],
+      "matched_queries": [
+        "direct TOAST TID pointer",
+        "physical tid toast pointer"
+      ],
+      "from_hint": false,
+      "score": 0.234,
+      "enriched": true,
+      "key_quote": "I have had a lot of difficulty making the changes to heapam.c and I think it's becoming obvious I won't get them done by myself.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAMyN-kCX8kNy85_Sa-%3DgXNhZL84vbDtxpKPTF7qTDtTwykaOEQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:5807",
+      "kind": "cf",
+      "title": "Cleanup gcc trick with varattrib_1b_e in VARATT_EXTERNAL_GET_POINTER()",
+      "status": "Withdrawn",
+      "date": "2025-07-14",
+      "first_date": "2025-06-09",
+      "url": "https://commitfest.postgresql.org/patch/5807/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/aEaZf_45j-D_HNw5@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Nathan Bossart, Tom Lane",
+      "summary": "The patch removes the intermediate \"varattrib_1b_e *\" variable from VARATT_EXTERNAL_GET_POINTER() in detoast.h, which was added years ago to work around gcc producing code that assumed aligned datum contents. The goal was to stop code from referencing varattrib_1b_e directly.",
+      "objection": "The entry was withdrawn, and no message gives the author's own reason. Nathan Bossart said the patch saves only a few lines of code, while removing the workaround needs confidence that the gcc problem is gone. Tom Lane argued the problem may still exist because compilers now optimize more aggressively on dubious assumptions, and misaligned accesses are still expensive on many platforms.",
+      "touch_points": [],
+      "matched_queries": [
+        "direct TOAST TID pointer",
+        "new varatt external pointer format"
+      ],
+      "from_hint": false,
+      "score": 0.232,
+      "enriched": true,
+      "key_quote": "The risk/reward ratio might not be favorable on this one.",
+      "quote_message_url": "https://www.postgresql.org/message-id/aEdPZQCnMmZjJoKc%40nathan",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:4734",
+      "kind": "cf",
+      "title": "Tidy fill hstv array (src/backend/access/heap/pruneheap.c)",
+      "status": "Returned with feedback",
+      "date": "2024-03-04",
+      "first_date": "2023-12-28",
+      "url": "https://commitfest.postgresql.org/patch/4734/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEudQArhe-JXZU6O-XoiwzTS7x1xXd=0=yJh9yC1T3v6XxSYBw@mail.gmail.com"
+      ],
+      "authors": "Ranier Vilela (raniervilela)",
+      "objectors": "John Naylor, \"Andrey M(dot) Borodin\", Andres Freund",
+      "summary": "The patch changed heap_page_prune() to fill the whole presult->htsv array with -1 using memset() up front, so the per-item loop no longer sets -1 on each item. It also removed the comment explaining why the array is left uninitialized.",
+      "objection": "John Naylor said the change only moves the work to another place, removes a useful comment, and comes with no evidence that it is faster. Andrey M. Borodin returned the entry and asked for stronger evidence. He then offered to reopen it, but Andres Freund replied that memset() writes the whole array even when there are far fewer items, still needs the branch, and may be bound by memory bandwidth.",
+      "touch_points": [],
+      "matched_queries": [
+        "direct TOAST TID pointer",
+        "physical tid toast pointer"
+      ],
+      "from_hint": false,
+      "score": 0.219,
+      "enriched": true,
+      "key_quote": "I took a glance into the patch, and I would agree that setting field nonzero values with memset() is somewhat unusual. Please provide stronger evidence to do so.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2D923D65-5D29-475E-BF9C-990623BC4CF5%40yandex-team.ru",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:5830",
+      "kind": "cf",
+      "title": "Support for 8-byte TOAST values (aka the TOAST infinite loop problem)",
+      "status": "Returned with feedback",
+      "date": "2026-02-10",
+      "first_date": "2025-06-19",
+      "url": "https://commitfest.postgresql.org/patch/5830/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/aFOnKHG7Wn-Srnpv@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Tom Lane",
+      "summary": "The patch set lets TOAST tables use 8-byte value IDs (a new oid8 type, a wider OID counter, a reloption and a new on-disk vartag) so that TOAST tables are no longer limited to about 4 billion values. It also adds a toast_external layer that converts on-disk external TOAST pointers to an in-memory struct through per-vartag callbacks, so that more vartags, such as for zstd, can be added later.",
+      "objection": "The toast_external layer with function pointer redirection got no support. Tom Lane questioned its run-time cost and called it overdesigned, and the author later said the design had not received a single +1. Only the oid8 data type was committed. The author then dropped the rest from the v19 cycle, planning a v20 rework without the redirections.",
+      "touch_points": [],
+      "matched_queries": [
+        "TOAST without index",
+        "toast chunk_id index bypass"
+      ],
+      "from_hint": false,
+      "score": 0.205,
+      "enriched": true,
+      "key_quote": "Anyway, as far as things stand today on this thread, I have not been able to get even a single +1 for this design.",
+      "quote_message_url": "https://www.postgresql.org/message-id/aTn4aS32O4lmaPnj%40paquier.xyz",
+      "relevant": true
+    },
+    {
+      "id": "P8",
+      "source_id": "revert:3c8e463b0d885e0d976f6a13a1fb78187b25c86f",
+      "kind": "revert",
+      "title": "Revert \"Tidy up locale thread safety in ECPG library.\"",
+      "status": "Reverted",
+      "date": "2025-03-28",
+      "first_date": "2025-03-28",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=3c8e463b0d885e0d976f6a13a1fb78187b25c86f",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CWZBBRR6YA8D.8EHMDRGLCKCD@neon.tech"
+      ],
+      "authors": "Peter Eisentraut",
+      "objectors": "",
+      "summary": "Revert \"Tidy up locale thread safety in ECPG library.\"\nReverted commit(s): Tidy up locale thread safety in ECPG library.",
+      "objection": "This reverts commit 8e993bff5326b00ced137c837fce7cd1e0ecae14.\n\nIt causes various build failures on the buildfarm, to be investigated.",
+      "touch_points": [],
+      "matched_queries": [
+        "direct TOAST TID pointer",
+        "physical tid toast pointer"
+      ],
+      "from_hint": false,
+      "score": 0.194,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:5506",
+      "kind": "cf",
+      "title": "Avoid possible null pointer dereference",
+      "status": "Withdrawn",
+      "date": "2025-02-06",
+      "first_date": "2025-01-04",
+      "url": "https://commitfest.postgresql.org/patch/5506/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEudQApsZ8sdoRsn_oE=KEwkSMjh-sgsjuGWaE6CmHwQ+3xt1g@mail.gmail.com"
+      ],
+      "authors": "Ranier Vilela (raniervilela)",
+      "objectors": "Tom Lane, Daniel Gustafsson",
+      "summary": "Following a Coverity report, the patch removes an Assert after a call to get_cheapest_path_for_pathkeys in get_cheapest_parameterized_child_path (allpaths.c). In its place the code checks the result for NULL at run time.",
+      "objection": "Tom Lane showed that the call cannot return NULL: it passes NIL pathkeys and does not require a parallel-safe path, so some path always matches, and the sole caller already rejects an empty pathlist. The Assert is an intentional logic cross-check, so removing it is not an improvement. The author withdrew the patch.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "direct TOAST TID pointer",
+        "new varatt external pointer format"
+      ],
+      "from_hint": false,
+      "score": 0.193,
+      "enriched": true,
+      "key_quote": "While the proposed patch doesn't break anything, it's removing a\nlogic cross-check that was put there intentionally.  So I don't\nfind it to be an improvement.",
+      "quote_message_url": "https://www.postgresql.org/message-id/918121.1738781786%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:1486",
+      "kind": "cf",
+      "title": "Refuse setting toast.* reloptions when TOAST relation does not exist",
+      "status": "Returned with feedback",
+      "date": "2018-04-10",
+      "first_date": "2018-01-17",
+      "url": "https://commitfest.postgresql.org/patch/1486/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3413542.LWpeoxCNq5@x200m"
+      ],
+      "authors": "Nikolay Shaplov (nataraj)",
+      "objectors": "Robert Haas, Tom Lane",
+      "summary": "The patch makes setting or changing a toast.* reloption raise an error when the table has no TOAST relation. Today such a value is accepted and then lost, so pg_dump does not keep it and it has no effect if toastable columns are added later.",
+      "objection": "Robert Haas pointed out that the rules for whether a table gets a TOAST table can change between major releases, so a pg_dump and restore of a table with a toast.* option could fail after an upgrade. Tom Lane added that the choice can differ on different hardware and opposed a hard error, though a warning might be acceptable. The CF manager returned the patch because there was no consensus on whether it was useful or correct; alternatives such as creating the TOAST relation when a toast.* option is set were left for a new patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "TOAST without index",
+        "toast chunk_id index bypass"
+      ],
+      "from_hint": false,
+      "score": 0.188,
+      "enriched": true,
+      "key_quote": "If a table with that\ndefinition has a toast.* option set, then upgrading from release X to\nrelease X+1 via pg_dump and restore will fail.  That's bad.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoYTnV-2aVkAcpp7T5b%2Bq0w6s2saYiR-SD8maPxDVOyyAA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:3490",
+      "kind": "cf",
+      "title": "Pluggable toaster",
+      "status": "Rejected",
+      "date": "2023-04-03",
+      "first_date": "2021-12-30",
+      "url": "https://commitfest.postgresql.org/patch/3490/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/224711f9-83b7-a307-b17f-4457ab73aa0a@sigaev.ru"
+      ],
+      "authors": "Fedor Sigaev (sigaev), Nikita Glukhov (n.glukhov), Oleg Bartunov (oleg), Nikita Malakhov (nmalakh)",
+      "objectors": "",
+      "summary": "Pluggable toaster\nThreads: Pluggable toaster",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "TOAST without index",
+        "toast chunk_id index bypass"
+      ],
+      "from_hint": false,
+      "score": 0.179,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:3457",
+      "kind": "cf",
+      "title": "pg_stat_toast",
+      "status": "Withdrawn",
+      "date": "2022-07-01",
+      "first_date": "2021-12-12",
+      "url": "https://commitfest.postgresql.org/patch/3457/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/a08b54fa-7b13-9531-6233-33a3d23773a8@pro-open.de"
+      ],
+      "authors": "Gunnar \"Nick\" Bluth (bluthg)",
+      "objectors": "",
+      "summary": "pg_stat_toast\nThreads: [PATCH] pg_stat_toast",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "TOAST without index",
+        "toast chunk_id index bypass"
+      ],
+      "from_hint": false,
+      "score": 0.165,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:2722",
+      "kind": "cf",
+      "title": "Detect escape of ErrorContextCallback stack pointers (and from PG_TRY() )",
+      "status": "Withdrawn",
+      "date": "2020-09-10",
+      "first_date": "2020-09-03",
+      "url": "https://commitfest.postgresql.org/patch/2722/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMsr+YE8tveiaGPuNzw+5fuo0yeZf7LePVLpx9MxUrFHMBG0gQ@mail.gmail.com"
+      ],
+      "authors": "Craig Ringer (ringerc)",
+      "objectors": "",
+      "summary": "Detect escape of ErrorContextCallback stack pointers (and from PG_TRY() )\nThreads: [PATCH] Detect escape of ErrorContextCallback stack pointers (and\nfrom PG_TRY() )",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "direct TOAST TID pointer",
+        "new varatt external pointer format"
+      ],
+      "from_hint": false,
+      "score": 0.163,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:312",
+      "kind": "cf",
+      "title": "Eliminating CREATE INDEX comparator TID tie-breaker overhead",
+      "status": "Rejected",
+      "date": "2015-07-30",
+      "first_date": "2015-07-21",
+      "url": "https://commitfest.postgresql.org/patch/312/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAM3SWZQpZygWdVUC6H_rctP5_FS7g7_EKz7fqeOa6hYiULU6pA@mail.gmail.com"
+      ],
+      "authors": "Peter Geoghegan (pgeoghegan)",
+      "objectors": "",
+      "summary": "Eliminating CREATE INDEX comparator TID tie-breaker overhead\nThreads: Eliminating CREATE INDEX comparator TID tie-breaker overhead",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "direct TOAST TID pointer",
+        "physical tid toast pointer"
+      ],
+      "from_hint": false,
+      "score": 0.162,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:4352",
+      "kind": "cf",
+      "title": "Index-only filters without IOS",
+      "status": "Withdrawn",
+      "date": "2024-06-21",
+      "first_date": "2023-02-15",
+      "url": "https://commitfest.postgresql.org/patch/4352/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/N1xaIrU29uk5YxLyW55MGk5fz9s6V2FNtj54JRaVlFbPixD5z8sJ07Ite5CvbWwik8ZvDG07oSTN-usENLVMq2UAcizVTEd5b-o16ZGDIIU=@yamlcoder.me"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "Index-only filters without IOS\nThreads: Use of additional index columns in rows filtering",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "TOAST without index"
+      ],
+      "from_hint": false,
+      "score": 0.143,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:4686",
+      "kind": "cf",
+      "title": "Forbid the use of invalidated physical slots in streaming replication.",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2023-12-06",
+      "url": "https://commitfest.postgresql.org/patch/4686/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/OS0PR01MB5716A626A4AF5814E057CEE39484A@OS0PR01MB5716.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "Zhijie Hou (houzj)",
+      "objectors": "",
+      "summary": "Forbid the use of invalidated physical slots in streaming replication.\nThreads: Forbid the use of invalidated physical slots in streaming\nreplication.",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "physical tid toast pointer"
+      ],
+      "from_hint": false,
+      "score": 0.141,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "revert:4f0b3afab4da87255ee159b96ba531157ee5af3b",
+      "kind": "revert",
+      "title": "Revert \"Change default value of default_toast_compression to \"lz4\"\"",
+      "status": "Reverted",
+      "date": "2026-03-04",
+      "first_date": "2026-03-04",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=4f0b3afab4da87255ee159b96ba531157ee5af3b",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOYmi+meTT0NbLbnVqOJD5OKwCtHL86PQ+RZZTrn6umfmHyWaw@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Change default value of default_toast_compression to \"lz4\"\"\nReverted commit(s): Change default value of default_toast_compression to \"lz4\", when available",
+      "objection": "This reverts commit 7c1849311e49, due to the fact that more than 60% of\nthe buildfarm members do not have lz4 installed.  As we are in the last\ncommit fest of the development cycle, and that it could take a couple\nof weeks to stabilize things, this change is reverted for now.\n\nThis commit will be reworked in a lighter version, as\ndefault_toast_compression's default can be changed to \"lz4\" without the\nswitch from --with-lz4 to --without-lz4.  This approach will keep the\nbuildfarm at bay, and still allow builds to take advantage of LZ4 in\nTOAST by default, as long as the code is compiled with LZ4 support.\n\nA harder requirement based on LZ4 should be achievable at some point,\nbut it is going to require some work from the buildfarm owners first.\nPerhaps this part could be revisited at the beginning of the next\ndevelopment cycle.",
+      "touch_points": [],
+      "matched_queries": [
+        "TOAST without index"
+      ],
+      "from_hint": false,
+      "score": 0.135,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:3594",
+      "kind": "cf",
+      "title": "64-bit XIDs",
+      "status": "Returned with feedback",
+      "date": "2023-12-15",
+      "first_date": "2021-12-30",
+      "url": "https://commitfest.postgresql.org/patch/3594/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CACG=ezZe1NQSCnfHOr78AtAZxJZeCvxrts0ygrxYwe=pyyjVWA@mail.gmail.com"
+      ],
+      "authors": "Aleksander Alekseev (a.alekseev), Pavel Borisov (pborisov), Konstantin Knizhnik (knizhnik), Maxim Orlov (m.orlov), Yura Sokolov (funny_falcon), Fedor Sigaev (sigaev), Alexander Korotkov (smagen), Nikita Glukhov (n.glukhov)",
+      "objectors": "",
+      "summary": "64-bit XIDs\nThreads: Add 64-bit XIDs into PostgreSQL 15",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "TOAST OID wraparound 64-bit"
+      ],
+      "from_hint": false,
+      "score": 0.128,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:3926",
+      "kind": "cf",
+      "title": "Use indexes on the subscriber when REPLICA IDENTITY is full on the publisher",
+      "status": "Returned with feedback",
+      "date": "2022-10-20",
+      "first_date": "2022-10-03",
+      "url": "https://commitfest.postgresql.org/patch/3926/",
+      "thread_urls": [],
+      "authors": "Onder Kalaci (onderkalaci)",
+      "objectors": "",
+      "summary": "Use indexes on the subscriber when REPLICA IDENTITY is full on the publisher",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "toast chunk_id index bypass"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "revert:664f01b61326eebc0d7b4ce9c89b99d3f18c3b76",
+      "kind": "revert",
+      "title": "Revert \"Fix typo in documentation of toast storage\"",
+      "status": "Reverted",
+      "date": "2018-11-26",
+      "first_date": "2018-11-26",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=664f01b61326eebc0d7b4ce9c89b99d3f18c3b76",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/154319327168.1315.1846953598601966513@wrigleys.postgresql.org"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Fix typo in documentation of toast storage\"\nReverted commit(s): Fix typo in documentation of toast storage",
+      "objection": "This reverts commit 058ef3a, per complains from Magnus Hagander and Vik\nFearing.",
+      "touch_points": [],
+      "matched_queries": [
+        "toast_flavour storage parameter"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:3495",
+      "kind": "cf",
+      "title": "Per-table storage parameters for TableAM/IndexAM extensions",
+      "status": "Returned with feedback",
+      "date": "2022-08-02",
+      "first_date": "2021-12-29",
+      "url": "https://commitfest.postgresql.org/patch/3495/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFF0-CG4KZHdtYHMsonWiXNzj16gWZpduXAn8yF7pDDub+GQMg@mail.gmail.com"
+      ],
+      "authors": "B Sadhu Prasad Patro (sadhuprasad)",
+      "objectors": "",
+      "summary": "Per-table storage parameters for TableAM/IndexAM extensions\nThreads: Per-table storage parameters for TableAM/IndexAM extensions",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "toast_flavour storage parameter"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:3035",
+      "kind": "cf",
+      "title": "Removing unused trailing linepointers from heap pages",
+      "status": "Returned with feedback",
+      "date": "2021-12-02",
+      "first_date": "2021-03-09",
+      "url": "https://commitfest.postgresql.org/patch/3035/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2WjgaQc55Y5f5CQd3L=eS5CZcff2Obxp=O6pto8-f0hC4w@mail.gmail.com"
+      ],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "",
+      "summary": "Removing unused trailing linepointers from heap pages\nThreads: Lowering the ever-growing heap->pd_lower",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "overflow pages large values heap"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:4703",
+      "kind": "cf",
+      "title": "64-bit XIDs",
+      "status": "Returned with feedback",
+      "date": "2024-09-16",
+      "first_date": "2021-12-30",
+      "url": "https://commitfest.postgresql.org/patch/4703/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CACG=ezZe1NQSCnfHOr78AtAZxJZeCvxrts0ygrxYwe=pyyjVWA@mail.gmail.com"
+      ],
+      "authors": "Aleksander Alekseev (a.alekseev), Pavel Borisov (pborisov), Konstantin Knizhnik (knizhnik), Maxim Orlov (m.orlov), Yura Sokolov (funny_falcon), Fedor Sigaev (sigaev), Alexander Korotkov (smagen), Nikita Glukhov (n.glukhov)",
+      "objectors": "",
+      "summary": "64-bit XIDs\nThreads: Add 64-bit XIDs into PostgreSQL 15",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "TOAST OID wraparound 64-bit"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:1057",
+      "kind": "cf",
+      "title": "Skip all-visible pages during second HeapScan of CIC",
+      "status": "Returned with feedback",
+      "date": "2017-03-24",
+      "first_date": "2017-02-28",
+      "url": "https://commitfest.postgresql.org/patch/1057/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABOikdO+=3=rK_Y=8o-xd5oPiNSPsoORYThJUCNE8kWm1pWOow@mail.gmail.com"
+      ],
+      "authors": "Pavan Deolasee (pavan)",
+      "objectors": "",
+      "summary": "Skip all-visible pages during second HeapScan of CIC\nThreads: Skip all-visible pages during second HeapScan of CIC",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "overflow pages large values heap"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 6,
+    "new_calls": 2,
+    "failed": 0,
+    "quotes_verified": 2,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 3
+  },
+  "precedent_cutoff": "2026-09-05",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "P1 (64-bit IDs, closed when the patch went stale) and P11 (pluggable toaster, no recorded reason) give no reason that applies here. The thread mentions an earlier Direct TOAST discussion (message #1) and overflow pages (messages #22, #29), but reports no rejection reason for either."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "Objections were found; this note does not apply."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 3,
+      "note": "Not applicable."
+    },
+    {
+      "angle": "security",
+      "objections": 1,
+      "note": "Other privilege points look settled: pg_ensure_direct_toast is superuser-only since v10, and toast_flavour needs table ownership like other reloptions."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 4,
+      "note": "Objections found; see list."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 2,
+      "note": "Two objections apply from this angle. No extension or external tool provides TID-addressed TOAST, and the pluggable toaster route [P11] was rejected, so an extension path is not proposed here."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "Two demand objections raised; design and safety concerns (identity checks, standalone REPACK of TOAST, index cleanup) belong to other angles."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 16,
+      "new_survived": 10,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "attachment limit (8) reached; v15-0009-Prune-dead-unindexed-TOAST-tuples-directly-to-LP.patch not read",
+    "attachment limit (8) reached; v15-0010-Add-direct_toast_self_prune-vectored-detoasting-.patch not read",
+    "attachment limit (8) reached; v2-0001-Refactor-detoasting-pipeline-to-unify-full-and-sl.patch not read",
+    "attachment limit (8) reached; v2-0005-Add-amcheck-verification-for-Direct-TOAST-tuples.patch not read",
+    "attachment limit (8) reached; v2-0004-Support-Direct-TOAST-in-logical-decoding-replicat.patch not read",
+    "attachment limit (8) reached; v2-0003-Implement-Direct-TOAST-core-storage-reading-and-w.patch not read",
+    "attachment limit (8) reached; v2-0006-Add-documentation-for-Direct-TOAST.patch not read",
+    "attachment limit (8) reached; v2-0002-Add-Direct-TOAST-catalog-GUC-and-reloptions-infra.patch not read",
+    "attachment limit (8) reached; v2-0007-Add-pg_ensure_direct_toast-for-in-place-legacy-TO.patch not read",
+    "attachment limit (8) reached; v2-0008-Add-backend-TOAST-architecture-documentation-and-.patch not read"
+  ],
+  "tone_lint": {
+    "fields_checked": 135,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 13,
+    "wall_ms": 248498,
+    "cost_usd": 5.975578799999999,
+    "dry_run": false
+  }
+}

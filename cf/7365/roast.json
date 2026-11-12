@@ -1,0 +1,1048 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:45:46.927Z",
+  "input": {
+    "arg": "7365",
+    "cf": {
+      "id": 7365,
+      "url": "https://commitfest.postgresql.org/patch/7365/",
+      "title": "ATTACH PARTITION cost grows linearly with pg_constraint size (seqscan in CloneFkReferenced), much worse since not-null constraints are in pg_constraint (PG 18)",
+      "status": "Needs review",
+      "authors": "Manuel Reyes Bravo (manu15)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/trinity-08d3329b-f6b2-4c11-91d7-2198e50bf4fc-1790681922354%40trinity-msg-rest-gmx-gmx-live-58cc8f554d-c56lm",
+    "subject": "ATTACH PARTITION cost grows linearly with pg_constraint size (seqscan in CloneFkReferenced), much worse since not-null constraints are in pg_constraint (PG 18)",
+    "thread_start": "2026-09-29T11:38:42Z",
+    "messages_read": 12,
+    "messages_total": 12,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": []
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection stops the proposal at levels 1a, 1b or 2. The problem is stated with a reproducer, demand is shown by a production report, and the design copies the existing contypid index. The one surviving objection, maintenance-fit-1, is a measurement request about index maintenance cost on bulk DDL. A committer who knows the catalog code must weigh that cost and sign the catalog change.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Add a catalog index on pg_constraint.confrelid to avoid seqscans",
+    "problem": "ATTACH PARTITION and CREATE TABLE ... PARTITION OF scan all of pg_constraint to find foreign keys that reference the parent, because no index covers confrelid. Since not-null constraints moved into pg_constraint in PG 18, the catalog is much larger in schemas with many partitions. The cost per ATTACH now grows with catalog size, even when no foreign key exists.",
+    "proposed_design": "The patch adds a plain non-unique catalog index on pg_constraint(confrelid), like the existing one on contypid. Lookups that filter on confrelid pass this index to systable_beginscan and check contype in the loop. v4 covers CloneFkReferenced, GetParentedForeignKeyRefs, ATPrepChangePersistence and heap_truncate_find_FKs.",
+    "user_visible_surface": [
+      "New system index on pg_constraint (confrelid); its name is not in the visible material.",
+      "Catalog version bump, left to the committer."
+    ],
+    "author_claims": [
+      "With about 1M constraints, ATTACH, DETACH, PARTITION OF, TRUNCATE and SET UNLOGGED drop from about 50-90 ms to under 2 ms, about 80 times faster.",
+      "A commit loop over an ON COMMIT DELETE ROWS table with a foreign key drops from about 3.5 s to a few ms.",
+      "Creating not-null or foreign-key constraints costs the same as before.",
+      "The index is about 6 MiB next to a 340 MiB catalog; an earlier version measured about 5% extra on bulk DDL.",
+      "Existing regression tests already exercise all call sites, so no new tests are needed."
+    ],
+    "thread_state": "Álvaro Herrera agreed with the approach and asked for the CommitFest entry, but deferred review because PG 19 and older bugs come first. v4 and Tom Lane's input are in a separate thread that is not shown.",
+    "unclear": [
+      "The v4 patch and the Tom Lane message that shaped it are not in the visible material.",
+      "The proposal does not say whether pg_upgrade or tools that list catalog indexes need changes.",
+      "The 5% bulk DDL overhead from v1 and the later claim of no cost to constraint creation are not reconciled.",
+      "The reporter's three ideas, the pg_depend lookup and the trigger-based early exit, were not measured against the index."
+    ],
+    "search_queries": [
+      "pg_constraint confrelid index",
+      "CloneFkReferenced seqscan",
+      "attach partition slow pg_constraint",
+      "partial indexes on system catalogs",
+      "new system catalog index",
+      "not-null constraints pg_constraint performance",
+      "foreign key lookup catalog index",
+      "GetParentedForeignKeyRefs seqscan"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Unreconciled cost of the full index on every constraint insert",
+      "level": "2",
+      "rubric_item": 4,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "catalog"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user restores a large schema with pg_restore, or runs a migration that creates many tables with NOT NULL columns. Each not-null row in pg_constraint now also inserts an index entry with confrelid = 0. Users without partitions or foreign keys pay this cost and gain nothing.",
+      "argument": "Message #4 measured about 5% extra on bulk DDL for v1. Message #11 says constraint creation costs the same, but shows no run that reconciles the two numbers. Message #7 notes that about 90% of the index entries are not used, so nearly all of the maintenance cost lands on DDL that never uses the index. The shape copies the existing contypid index and has support in the thread, so this is a measurement gap, not a design flaw.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4,
+        7,
+        11
+      ],
+      "author_must_show": "What is the v4 overhead on a schema-only pg_restore with about 1M not-null constraints, and why did the 5% seen in v1 go away?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "Manu",
+          "date": "2026-09-29T16:08:24Z",
+          "url": "https://www.postgresql.org/message-id/179069810491.316007.4145107668471017354%40gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Álvaro Herrera",
+          "date": "2026-09-29T18:45:31Z",
+          "url": "https://www.postgresql.org/message-id/arv-UHG6c-raryI-%40alvherre.pgsql"
+        },
+        {
+          "index": 11,
+          "from": "Manu",
+          "date": "2026-10-16T01:56:17Z",
+          "url": "https://www.postgresql.org/message-id/179211577746.206608.6783271124892214599%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #4 reports about 5% extra on bulk DDL and message #11 says constraint creation costs the same, with no run shown that explains the change. The thread weighed the cost and Álvaro accepted the approach, so this stays a measurement request.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "A new system index on pg_constraint changes the initial catalog contents and needs a catalog version bump."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "The patch adds a non-unique index on pg_constraint(confrelid)."
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The slowdown is a PG 18 regression, but a new catalog index cannot go into released branches; the entry targets version 20."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "One more catalog index to maintain, and four lookup sites now depend on it."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Every pg_constraint insert, including each not-null row, also inserts an index entry with confrelid = 0."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "What is the v4 overhead on a schema-only pg_restore with about 1M not-null constraints, and why did the 5% seen in v1 go away?",
+    "How do the pg_depend lookup and the trigger-based early exit from message #1 compare with the index on the same reproducer?",
+    "Do pg_upgrade or tools that list catalog indexes need any change for the new index?",
+    "Is any fix planned for PG 18 and 19, where the catalog index cannot be added?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Álvaro Herrera, who takes part in the thread, agreed with the approach but deferred review until PG 19 work and older bugs are done. The owner needs to know pg_constraint and the partition foreign-key code.",
+    "liability": "The owner signs for a permanent catalog index, its cost on every constraint insert, and the correctness of four converted lookups in ATTACH, DETACH, TRUNCATE and SET UNLOGGED.",
+    "author_follow_up": "The author reproduced the report, offered to test alternatives, and maintains the CommitFest entry; the brief describes a v4, so the patch has been revised several times."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "low",
+    "review_cost": "low",
+    "recommended_action": "proceed",
+    "reason": "Message #1 shows a production regression since PG 18 that affects schemas with many partitions, and the fix copies the existing contypid index. No patch text was read; review cost is judged from the brief's description of one index and four call sites."
+  },
+  "self_advice": [],
+  "provisional_note": "The v4 patch and the Tom Lane message that shaped it are not in the visible material. The four converted lookups, the index name and the contype check in each loop could not be checked.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "revert:6f8bb7c1e9610dd7af20cdaf74c4ff6e6d678d44",
+      "kind": "revert",
+      "title": "Revert structural changes to not-null constraints",
+      "status": "Reverted",
+      "date": "2024-05-13",
+      "first_date": "2023-08-25",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6f8bb7c1e9610dd7af20cdaf74c4ff6e6d678d44",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/202405110940.joxlqcx4dogd@alvherre.pgsql",
+        "https://www.postgresql.org/message-id/flat/CAKOSWNkN6HSyatuys8xZxzRCR-KL1OkHS5-b9qd9bf1Rad3PLA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20230828.161658.1184657435220765047.horikyota.ntt@gmail.com",
+        "https://www.postgresql.org/message-id/flat/d57b4a69-7394-3146-5976-9a1ef27e7972@gmail.com",
+        "https://www.postgresql.org/message-id/flat/202309051744.y4mndw5gwzhh@alvherre.pgsql",
+        "https://www.postgresql.org/message-id/flat/b2ac2392-9727-5f76-e890-721ac80c1615@gmail.com"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert structural changes to not-null constraints\nReverted commit(s): Catalog not-null constraints; Disallow changing NO INHERIT status of a not-null constraint; Fix not-null constraint test; Move privilege check to the right place; Check stack depth in new recursive functions",
+      "objection": "There are some problems with the new way to handle these constraints\nthat were detected at the last minute, and require fixes that appear too\ninvasive to be doing this late in the cycle.  Revert this (again) for\nnow, we'll try again with these problems fixed.\n\nThe following commits are reverted:\n\n    b0e96f311985  Catalog not-null constraints\n    9b581c534186  Disallow changing NO INHERIT status of a not-null constraint\n    d0ec2ddbe088  Fix not-null constraint test\n    ac22a9545ca9  Move privilege check to the right place\n    b0f7dd915bca  Check stack depth in new recursive functions\n    3af721794272  Update information_schema definition for not-null constraints\n    c3709100be73  Fix propagating attnotnull in multiple inheritance\n    d9f686a72ee9  Fix restore of not-null constraints with inheritance\n    d72d32f52d26  Don't try to assign smart names to constraints\n    0cd711271d42  Better handle indirect constraint drops\n    13daa33fa5a6  Disallow NO INHERIT not-null constraints on partitioned tables\n    d45597f72fe5  Disallow direct change of NO INHERIT of not-null constraints\n    21ac38f498b3  Fix inconsistencies in error messages",
+      "touch_points": [
+        "catalog changes",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "pg_constraint confrelid index",
+        "attach partition slow pg_constraint",
+        "not-null constraints pg_constraint performance"
+      ],
+      "from_hint": false,
+      "score": 0.338,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:3978",
+      "kind": "cf",
+      "title": "Prefetch the next tuple's memory during seqscans",
+      "status": "Withdrawn",
+      "date": "2024-01-22",
+      "first_date": "2022-10-31",
+      "url": "https://commitfest.postgresql.org/patch/3978/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAApHDvpTRx7hqFZGiZJ=d9JN4h1tzJ2=xt7bM-9XRmpVj63psQ@mail.gmail.com"
+      ],
+      "authors": "David Rowley (davidrowley), Thomas Munro (macdice)",
+      "objectors": "David Rowley",
+      "summary": "The patch adds a pg_prefetch_mem() macro and uses it in heapam.c to prefetch the next tuple's memory during page-mode sequential scans. Tuples sit in reverse order on the heap page, and the author expected CPU hardware prefetchers to miss this backward access pattern.",
+      "objection": "The author withdrew the patch. After the heapgettup()/heapgettup_pagemode refactor, he could no longer show the earlier seqscan speedup, and Apple M1 and Power8 tests showed no gain. He also came to believe that modern hardware prefetchers detect backward access patterns, and he wants to benchmark this before resubmitting.",
+      "touch_points": [],
+      "matched_queries": [
+        "CloneFkReferenced seqscan",
+        "GetParentedForeignKeyRefs seqscan"
+      ],
+      "from_hint": false,
+      "score": 0.282,
+      "enriched": true,
+      "key_quote": "The problem I'm facing is that after Melanie's recent\nrefactor work done around heapgettup() [1], I can no longer get the\nsame speedup as before with the pg_prefetch_mem().",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAApHDvqaoq7bY6OcJk3pwA%2BXL8OAWoQXcm-gcrs2xUvCso39Dw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:4369",
+      "kind": "cf",
+      "title": "pg_get_indexdef modification to access catalog based on the TxnSnapshot",
+      "status": "Returned with feedback",
+      "date": "2024-01-05",
+      "first_date": "2023-05-26",
+      "url": "https://commitfest.postgresql.org/patch/4369/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJpy0uBvAyGOEHGiZMCC+oCugi-4m4EJep-e_YR3uViChOBCfw@mail.gmail.com"
+      ],
+      "authors": "vigneshwaran C (vignesh.postgres)",
+      "objectors": "Tom Lane, Robert Haas",
+      "summary": "The patch changed pg_get_indexdef() to read catalogs with systable_beginscan() under the transaction snapshot instead of SearchSysCache(), so pg_dump would no longer get an empty definition for an index dropped during the dump. A later version registered a snapshot before catalog access and applied the same change to other pg_get_* functions.",
+      "objection": "Tom Lane objected that ALTER TABLE ALTER TYPE (RememberIndexForRebuilding) and many other SearchSysCache callers must see the latest catalog data, so cache lookups cannot be switched to a transaction snapshot everywhere. Nobody answered his comments for 3 months. Robert Haas then marked the entry Returned with feedback, saying the change is larger than a bug fix and the thread has no consensus on the design.",
+      "touch_points": [
+        "catalog changes"
+      ],
+      "matched_queries": [
+        "partial indexes on system catalogs",
+        "new system catalog index"
+      ],
+      "from_hint": false,
+      "score": 0.256,
+      "enriched": true,
+      "key_quote": "A very significant fraction of other SearchSysCache callers likewise cannot afford to see stale data.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2869995.1696561880%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:2326",
+      "kind": "cf",
+      "title": "Shared system catalog cache",
+      "status": "Returned with feedback",
+      "date": "2020-02-01",
+      "first_date": "2019-10-30",
+      "url": "https://commitfest.postgresql.org/patch/2326/",
+      "thread_urls": [],
+      "authors": "Takeshi Ideriha (ideriha)",
+      "objectors": "",
+      "summary": "Shared system catalog cache",
+      "objection": "",
+      "touch_points": [
+        "catalog changes"
+      ],
+      "matched_queries": [
+        "partial indexes on system catalogs",
+        "new system catalog index"
+      ],
+      "from_hint": false,
+      "score": 0.256,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:3086",
+      "kind": "cf",
+      "title": "auto_explain log_seqscan",
+      "status": "Returned with feedback",
+      "date": "2021-07-06",
+      "first_date": "2021-04-17",
+      "url": "https://commitfest.postgresql.org/patch/3086/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFj8pRBeP78aLc5Psd2cpbso8mY4bmTvHfayJ+yqrpoOF0v0Fw@mail.gmail.com"
+      ],
+      "authors": "Pavel Stehule (okbobcz)",
+      "objectors": "Daniel Gustafsson",
+      "summary": "The patch adds an auto_explain.log_seqscan setting that logs the plan of any query whose sequential scan returns more tuples than a given limit, even when the query is faster than log_min_duration. A matching core setting, similar to log_temp_files, was also proposed but not written.",
+      "objection": "Daniel Gustafsson argued that auto_explain is for slow queries, and that a per-node setting covering only seq scans would lead to more log_XXXnode GUCs. He also objected that the patch turns on ANALYZE when log_analyze is off, and noted missing documentation and tests. The author agreed the design was not ready, said the problem may need an executor-level tracing API, and asked to remove the patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "CloneFkReferenced seqscan",
+        "GetParentedForeignKeyRefs seqscan"
+      ],
+      "from_hint": false,
+      "score": 0.241,
+      "enriched": true,
+      "key_quote": "Looking at this I like the idea in principle, but I'm not convinced that\nauto_explain is the right tool for this.",
+      "quote_message_url": "https://www.postgresql.org/message-id/3E8BD81C-07C9-46F2-98D3-2E4EEEFB82FD%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:5782",
+      "kind": "cf",
+      "title": "foreign key on virtual generated column",
+      "status": "Withdrawn",
+      "date": "2026-09-23",
+      "first_date": "2025-05-28",
+      "url": "https://commitfest.postgresql.org/patch/5782/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CACJufxEfzfERVwoUaFODz9AOabDOLkNkfTbajB82dSJVuTQQOw@mail.gmail.com"
+      ],
+      "authors": "Jian He (stayreal)",
+      "objectors": "",
+      "summary": "The patch allows a foreign key on a virtual generated column, limited to ON UPDATE NO ACTION/RESTRICT and ON DELETE CASCADE/NO ACTION/RESTRICT. The RI check computes the generated value. ALTER COLUMN SET EXPRESSION and SET DATA TYPE then revalidate the constraint without a table rewrite.",
+      "objection": "The visible messages do not show why. The only reviewer found the patches mostly fine and raised two performance points: the RI check computes virtual columns that are not in the key, and TryReuseForeignKey always forces revalidation when a virtual column is in the key. The visible messages contain no reply from the author before the withdrawal.",
+      "touch_points": [],
+      "matched_queries": [
+        "foreign key lookup catalog index",
+        "GetParentedForeignKeyRefs seqscan"
+      ],
+      "from_hint": false,
+      "score": 0.232,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:2635",
+      "kind": "cf",
+      "title": "Change a constraint's index - ALTER TABLE ... ALTER CONSTRAINT ... USING INDEX ...",
+      "status": "Returned with feedback",
+      "date": "2020-09-30",
+      "first_date": "2020-07-05",
+      "url": "https://commitfest.postgresql.org/patch/2635/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/e759fb7631645fe75b5ad6c3e8e690e4@postgrespro.ru"
+      ],
+      "authors": "Marina Polyakova (whipping.top1991), Anna Akenteva (a.akenteva)",
+      "objectors": "Tom Lane, Alvaro Herrera, Laurenz Albe",
+      "summary": "The patch adds ALTER TABLE ... ALTER CONSTRAINT ... USING INDEX to replace the index behind an EXCLUDE, UNIQUE, PRIMARY KEY or FOREIGN KEY constraint with a similar index. The main use case is swapping a primary key index for one with INCLUDE columns, or back.",
+      "objection": "Tom Lane wanted the feature rejected because a primary key with a swapped index is no longer an accurate primary key, and information_schema cannot describe it. Alvaro Herrera and Laurenz Albe agreed that primary keys with INCLUDE columns would first need PRIMARY KEY syntax, so that pg_dump works. That leaves this command a narrow use case. The author did not answer the review, and Michael Paquier marked the entry returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_constraint confrelid index",
+        "not-null constraints pg_constraint performance"
+      ],
+      "from_hint": false,
+      "score": 0.23,
+      "enriched": true,
+      "key_quote": "TBH I think if we really wanted the feature of primary keys with\nincluded columns, we'd have to add it to the PRIMARY KEY syntax rather\nthan having an ad-hoc ALTER TABLE ALTER CONSTRAINT USING INDEX command\nto replace the index underneath.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20200907144229.GA29048%40alvherre.pgsql",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "revert:09d09d4297b9acbc2848ec35e8bf030d6c1fae18",
+      "kind": "revert",
+      "title": "Fix pg_get_constraintdef for NOT NULL constraints on domains",
+      "status": "Partially reverted",
+      "date": "2024-11-27",
+      "first_date": "2024-05-13",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=09d09d4297b9acbc2848ec35e8bf030d6c1fae18",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/AS8PR01MB75110350415AAB8BBABBA1ECFE222@AS8PR01MB7511.eurprd01.prod.exchangelabs.com",
+        "https://www.postgresql.org/message-id/flat/202405110940.joxlqcx4dogd@alvherre.pgsql"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Fix pg_get_constraintdef for NOT NULL constraints on domains\nReverted commit(s): Revert structural changes to not-null constraints",
+      "objection": "We added pg_constraint rows for all not-null constraints, first for\ntables and later for domains; but while the ones for tables were\nreverted, the ones for domains were not.  However, we did accidentally\nrevert ruleutils.c support for the ones on domains in 6f8bb7c1e961,\nwhich breaks running pg_get_constraintdef() on them.  Put that back.\n\nThis is only needed in branch 17, because we've reinstated this code in\nbranch master with commit 14e87ffa5c54.  Add some new tests in both\nbranches.\n\nI couldn't find anything else that needs de-reverting.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_constraint confrelid index",
+        "not-null constraints pg_constraint performance"
+      ],
+      "from_hint": false,
+      "score": 0.227,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "revert:ec48314708262d8ea6cdcb83f803fc83dd89e721",
+      "kind": "revert",
+      "title": "Revert per-index collation version tracking feature.",
+      "status": "Reverted",
+      "date": "2021-05-07",
+      "first_date": "2020-11-15",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ec48314708262d8ea6cdcb83f803fc83dd89e721",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGLhj5t1fcjqAu8iD9B3ixJtsTNqyCCD4V0aTO9kAKAjjA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CA+hUKGJ_hk3rU==g2FpAMChb_4i+TJacpjjqFsinY-tRM3FBmA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/3044030.1618261159@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/HK0PR01MB22744393C474D503E16C8509F4709@HK0PR01MB2274.apcprd01.prod.exchangelabs.com",
+        "https://www.postgresql.org/message-id/flat/3564817.1618420687@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20210117215940.GE8560@telsasoft.com"
+      ],
+      "authors": "Thomas Munro, Tom Lane",
+      "objectors": "",
+      "summary": "Revert per-index collation version tracking feature.\nReverted commit(s): Doc: Document known problem with Windows collation versions.; Remove no-longer-relevant test case.; Fix bogus collation-version-recording logic.; Hide internal error for pg_collation_actual_version(<bad OID>).; Suppress \"warning: variable 'collcollate' set but not used\".",
+      "objection": "Design problems were discovered in the handling of composite types and\nrecord types that would cause some relevant versions not to be recorded.\nMisgivings were also expressed about the use of the pg_depend catalog\nfor this purpose.  We're out of time for this release so we'll revert\nand try again.\n\nCommits reverted:\n\n1bf946bd: Doc: Document known problem with Windows collation versions.\ncf002008: Remove no-longer-relevant test case.\nef387bed: Fix bogus collation-version-recording logic.\n0fb0a050: Hide internal error for pg_collation_actual_version(<bad OID>).\nff942057: Suppress \"warning: variable 'collcollate' set but not used\".\nd50e3b1f: Fix assertion in collation version lookup.\nf24b1569: Rethink extraction of collation dependencies.\n257836a7: Track collation versions for indexes.\ncd6f479e: Add pg_depend.refobjversion.\n7d1297df: Remove pg_collation.collversion.",
+      "touch_points": [
+        "catalog changes"
+      ],
+      "matched_queries": [
+        "partial indexes on system catalogs",
+        "new system catalog index"
+      ],
+      "from_hint": false,
+      "score": 0.204,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:2644",
+      "kind": "cf",
+      "title": "avoid bitmapOR-ing indexes for scan conditions implied by partition constraint",
+      "status": "Returned with feedback",
+      "date": "2021-02-01",
+      "first_date": "2020-07-04",
+      "url": "https://commitfest.postgresql.org/patch/2644/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200704004503.GA23805@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby), Soumyadeep Chakraborty (soumyadeep2007), Soumyadeep Chakraborty (soumyadeepc)",
+      "objectors": "Tom Lane",
+      "summary": "The patch makes the planner skip bitmap index scans for arms of an OR clause that the partition constraint refutes, so each partition scans only the useful arms. The change lives in generate_bitmap_or_paths() in indxpath.c and targets queries with long OR lists over many partitions.",
+      "objection": "Tom Lane objected to fixing this in indxpath.c. The fix helps only bitmap scans, may repeat the same proof, cannot be turned off, leaves row estimates unchanged, and may break the loop that requires each OR arm to match an index. He proposed removing proven quals from baserestrictinfo instead, but measured about 2.5% slowdown on pgbench -S and left the direction open. The entry then sat in Waiting on Author for weeks, and Masahiko Sawada returned it with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_constraint confrelid index",
+        "attach partition slow pg_constraint"
+      ],
+      "from_hint": false,
+      "score": 0.203,
+      "enriched": true,
+      "key_quote": "I really quite dislike solving\nthis via a kluge in indxpath.c.",
+      "quote_message_url": "https://www.postgresql.org/message-id/228337.1605212074%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:1252",
+      "kind": "cf",
+      "title": "Foreign Key Arrays",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2017-08-23",
+      "url": "https://commitfest.postgresql.org/patch/1252/",
+      "thread_urls": [],
+      "authors": "Mark Rofail (markmoheb)",
+      "objectors": "",
+      "summary": "Foreign Key Arrays",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "foreign key lookup catalog index",
+        "GetParentedForeignKeyRefs seqscan"
+      ],
+      "from_hint": false,
+      "score": 0.2,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:2966",
+      "kind": "cf",
+      "title": "Foreign Key Arrays",
+      "status": "Returned with feedback",
+      "date": "2021-09-14",
+      "first_date": "2021-02-03",
+      "url": "https://commitfest.postgresql.org/patch/2966/",
+      "thread_urls": [],
+      "authors": "Mark Rofail (markmoheb)",
+      "objectors": "",
+      "summary": "Foreign Key Arrays",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "foreign key lookup catalog index",
+        "GetParentedForeignKeyRefs seqscan"
+      ],
+      "from_hint": false,
+      "score": 0.2,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:1319",
+      "kind": "cf",
+      "title": "Add ALWAYS DEFERRED option for CONSTRAINTs and CONSTRAINT TRIGGERs",
+      "status": "Returned with feedback",
+      "date": "2019-01-31",
+      "first_date": "2017-10-05",
+      "url": "https://commitfest.postgresql.org/patch/1319/",
+      "thread_urls": [],
+      "authors": "Nicolas Williams (cryptonector)",
+      "objectors": "",
+      "summary": "Add ALWAYS DEFERRED option for CONSTRAINTs and CONSTRAINT TRIGGERs",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_constraint confrelid index",
+        "not-null constraints pg_constraint performance"
+      ],
+      "from_hint": false,
+      "score": 0.185,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:4463",
+      "kind": "cf",
+      "title": "CHECK constraint deferrable Support",
+      "status": "Withdrawn",
+      "date": "2024-01-15",
+      "first_date": "2023-07-05",
+      "url": "https://commitfest.postgresql.org/patch/4463/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAPF61jBFT6iGv-Af=NrZx3vhqLYqx8WDvfjqVuRVYv2DFbbY4A@mail.gmail.com"
+      ],
+      "authors": "Himanshu Upadhyaya (himanshuu)",
+      "objectors": "Tom Lane",
+      "summary": "The patch lets CHECK constraints be declared DEFERRABLE and INITIALLY DEFERRED, as the SQL standard allows, so SET CONSTRAINTS can delay a CHECK until commit. Rows that fail a deferrable CHECK are rechecked at commit time.",
+      "objection": "Tom Lane objected that the CHECK implementation assumes constraints are immutable, and the patch does not change that assumption, so he called the feature a toy. Others then argued it should be dropped or combined with deferrable NOT NULL, which Robert Haas and Vik Fearing disputed. Dean Rasheed also reported open bugs, including a deferred constraint that still failed immediately and a wrong constraint-exclusion result. The visible messages do not show why the author withdrew the entry.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_constraint confrelid index",
+        "not-null constraints pg_constraint performance"
+      ],
+      "from_hint": false,
+      "score": 0.182,
+      "enriched": true,
+      "key_quote": "I continue to assert that basing this feature on the current CHECK implementation will produce nothing but a toy feature, that's not only of little practical use but will be an active foot-gun for people who expect it to do more than it can.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2183835.1696291717%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:3468",
+      "kind": "cf",
+      "title": "Add psql command to list constraints",
+      "status": "Rejected",
+      "date": "2022-03-28",
+      "first_date": "2021-11-15",
+      "url": "https://commitfest.postgresql.org/patch/3468/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/5e63152b-6ba8-647b-284d-dbab502c24d0@nttcom.co.jp"
+      ],
+      "authors": "Tatsuro Yamada (yamatattsu)",
+      "objectors": "Robert Haas, Justin Pryzby, Greg Stark, \"David G(dot) Johnston\"",
+      "summary": "The patch adds a psql meta-command, \\dco, that lists constraints from pg_constraint across the database, with letter suffixes to filter by constraint type. NOT NULL constraints, tab completion and tests were still missing in the posted versions.",
+      "objection": "Reviewers questioned whether the command is needed, since \\d+ on a table already shows its constraints and pg_constraint or information_schema can be queried directly. Robert Haas noted that psql shows table properties per table, that global lists such as \\dp give too much output, and that adding this command would reverse current policy. With only one review and development stalled, Greg Stark marked it rejected.",
+      "touch_points": [
+        "psql"
+      ],
+      "matched_queries": [
+        "pg_constraint confrelid index",
+        "not-null constraints pg_constraint performance"
+      ],
+      "from_hint": false,
+      "score": 0.164,
+      "enriched": true,
+      "key_quote": "My opinion on this patch is that we typically handle objects that are\nessentially table properties by showing the output in \\d+ on the\nindividual table.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoZuFqU1Ku%2BNP-cNmEfrHfwry47gY%2BWadJKbmprERB%3D%3Dqw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:2330",
+      "kind": "cf",
+      "title": "Reducing memory usage of creating foreign key between partitioned tables",
+      "status": "Rejected",
+      "date": "2020-09-12",
+      "first_date": "2019-10-23",
+      "url": "https://commitfest.postgresql.org/patch/2330/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/OSAPR01MB374809E8DE169C8BF2B82CBD9F6B0@OSAPR01MB3748.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "sho kato (kato-sho)",
+      "objectors": "",
+      "summary": "Reducing memory usage of creating foreign key between partitioned tables\nThreads: Creating foreign key on partitioned table is too slow",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "attach partition slow pg_constraint",
+        "foreign key lookup catalog index"
+      ],
+      "from_hint": false,
+      "score": 0.158,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P17",
+      "source_id": "revert:8aee330af55d8a759b2b73f5a771d9d34a7b887f",
+      "kind": "revert",
+      "title": "Revert temporal primary keys and foreign keys",
+      "status": "Reverted",
+      "date": "2024-05-16",
+      "first_date": "2024-01-19",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=8aee330af55d8a759b2b73f5a771d9d34a7b887f",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/d0b64a7a-dfe4-4b84-a906-c7dedfa40a3e@eisentraut.org",
+        "https://www.postgresql.org/message-id/flat/CA+renyUApHgSZF9-nd-a0+OPGharLQLO=mDHcY4_qQ0+noCUVg@mail.gmail.com"
+      ],
+      "authors": "Peter Eisentraut",
+      "objectors": "",
+      "summary": "Revert temporal primary keys and foreign keys\nReverted commit(s): Add stratnum GiST support function; Add temporal PRIMARY KEY and UNIQUE constraints; Fix comment on gist_stratnum_btree; Rename pg_constraint.conwithoutoverlaps to conperiod; Use daterange and YMD in without_overlaps tests instead of tsrange.",
+      "objection": "This feature set did not handle empty ranges correctly, and it's now\ntoo late for PostgreSQL 17 to fix it.\n\nThe following commits are reverted:\n\n    6db4598fcb8 Add stratnum GiST support function\n    46a0cd4cefb Add temporal PRIMARY KEY and UNIQUE constraints\n    86232a49a43 Fix comment on gist_stratnum_btree\n    030e10ff1a3 Rename pg_constraint.conwithoutoverlaps to conperiod\n    a88c800deb6 Use daterange and YMD in without_overlaps tests instead of tsrange.\n    5577a71fb0c Use half-open interval notation in without_overlaps tests\n    34768ee3616 Add temporal FOREIGN KEY contraints\n    482e108cd38 Add test for REPLICA IDENTITY with a temporal key\n    c3db1f30cba doc:  clarify PERIOD and WITHOUT OVERLAPS in CREATE TABLE\n    144c2ce0cc7 Fix ON CONFLICT DO NOTHING/UPDATE for temporal indexes",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "foreign key lookup catalog index"
+      ],
+      "from_hint": false,
+      "score": 0.142,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:4561",
+      "kind": "cf",
+      "title": "Tab completion for ATTACH PARTITION",
+      "status": "Returned with feedback",
+      "date": "2024-01-29",
+      "first_date": "2023-09-13",
+      "url": "https://commitfest.postgresql.org/patch/4561/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/d8af7ab4c4a40609f97a9d38e5735927@oss.nttdata.com"
+      ],
+      "authors": "Tung Nguyen (tngngn)",
+      "objectors": "",
+      "summary": "Tab completion for ATTACH PARTITION\nThreads: Tab completion for ATTACH PARTITION",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "attach partition slow pg_constraint"
+      ],
+      "from_hint": false,
+      "score": 0.141,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:6179",
+      "kind": "cf",
+      "title": "COPY WHERE clause generated/system column reference",
+      "status": "Withdrawn",
+      "date": "2026-01-08",
+      "first_date": "2025-10-27",
+      "url": "https://commitfest.postgresql.org/patch/6179/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CACJufxHb8YPQ095R_pYDr77W9XKNaXg5Rzy-WP525mkq+hRM3g@mail.gmail.com"
+      ],
+      "authors": "Jian He (stayreal)",
+      "objectors": "",
+      "summary": "COPY WHERE clause generated/system column reference\nThreads: COPY WHERE clause generated/system column reference",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "CloneFkReferenced seqscan"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:2976",
+      "kind": "cf",
+      "title": "Improve amcheck to check UNIQUE constraint in btree index",
+      "status": "Returned with feedback",
+      "date": "2021-04-08",
+      "first_date": "2021-02-08",
+      "url": "https://commitfest.postgresql.org/patch/2976/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALT9ZEHRn5xAM5boga0qnrCmPV52bScEK2QnQ1HmUZDD301JEg@mail.gmail.com"
+      ],
+      "authors": "Anastasia Lubennikova (lubennikovaav), Pavel Borisov (pborisov)",
+      "objectors": "",
+      "summary": "Improve amcheck to check UNIQUE constraint in btree index\nThreads: [PATCH] Improve amcheck to also check UNIQUE constraint in btree index.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_constraint confrelid index"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "revert:9ce04b50e120275afbc03ca0b80839dde3da8308",
+      "kind": "revert",
+      "title": "Revert \"Catalog NOT NULL constraints\" and fallout",
+      "status": "Reverted",
+      "date": "2023-04-12",
+      "first_date": "2023-04-07",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9ce04b50e120275afbc03ca0b80839dde3da8308",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3801207.1681057430@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CAKOSWNkN6HSyatuys8xZxzRCR-KL1OkHS5-b9qd9bf1Rad3PLA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CACA0E642A0267EDA387AF2B@%5B172.26.14.62%5D",
+        "https://www.postgresql.org/message-id/flat/AANLkTinLXMOEMz+0J29tf1POokKi4XDkWJ6-DDR9BKgU@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20110707213401.GA27098@alvh.no-ip.org",
+        "https://www.postgresql.org/message-id/flat/1343682669-sup-2532@alvh.no-ip.org",
+        "https://www.postgresql.org/message-id/flat/20220817181249.q7qvj3okywctra3c@alvherre.pgsql"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert \"Catalog NOT NULL constraints\" and fallout\nReverted commit(s): Catalog NOT NULL constraints",
+      "objection": "This reverts commit e056c557aef4 and minor later fixes thereof.\n\nThere's a few problems in this new feature -- most notably regarding\npg_upgrade behavior, but others as well.  This new feature is not in any\nway critical on its own, so instead of scrambling to fix it we revert it\nand try again in early 17 with these issues in mind.",
+      "touch_points": [
+        "catalog changes",
+        "on-disk format / pg_upgrade"
+      ],
+      "matched_queries": [
+        "not-null constraints pg_constraint performance"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:7238",
+      "kind": "cf",
+      "title": "Temporal foreign key actions",
+      "status": "Withdrawn",
+      "date": "2026-09-17",
+      "first_date": "2026-08-31",
+      "url": "https://commitfest.postgresql.org/patch/7238/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+renyUts-ksRKL3V+9kTnRCAJdb8Xc3T1L+yCVscNZQKT4Yvw@mail.gmail.com"
+      ],
+      "authors": "Paul Jungwirth (pjungwir)",
+      "objectors": "",
+      "summary": "Temporal foreign key actions\nThreads: Temporal foreign key actions",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "foreign key lookup catalog index"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "revert:a1ec7402e9a0392f95bc79542af0efcd5c6e7929",
+      "kind": "revert",
+      "title": "Revert \"Make pg_dump emit ATTACH PARTITION instead of PARTITION OF\"",
+      "status": "Reverted",
+      "date": "2019-05-06",
+      "first_date": "2019-04-24",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=a1ec7402e9a0392f95bc79542af0efcd5c6e7929",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGPqQf0iQV=PPOv2Btog9J9AwOQp6HmuVd6SbGTR_v3Zp2XT1w@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAKJS1f_1c260nOt_vBJ067AZ3JXptXVRohDVMLEBmudX1YEx-A@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20190423185007.GA27954@alvherre.pgsql"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert \"Make pg_dump emit ATTACH PARTITION instead of PARTITION OF\"\nReverted commit(s): Make pg_dump emit ATTACH PARTITION instead of PARTITION OF",
+      "objection": "... and fallout (from branches 10, 11 and master).  The change was\nill-considered, and it broke a few normal use cases; since we don't have\ntime to fix it, we'll try again after this week's minor releases.",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "attach partition slow pg_constraint"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:6101",
+      "kind": "cf",
+      "title": "use SIMD in GetPrivateRefCountEntry()",
+      "status": "Withdrawn",
+      "date": "2025-12-15",
+      "first_date": "2025-10-03",
+      "url": "https://commitfest.postgresql.org/patch/6101/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/aN_iTFXhlPDmzvvO@nathan"
+      ],
+      "authors": "Nathan Bossart (bossartn)",
+      "objectors": "",
+      "summary": "use SIMD in GetPrivateRefCountEntry()\nThreads: use SIMD in GetPrivateRefCountEntry()",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "GetParentedForeignKeyRefs seqscan"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 5,
+    "new_calls": 3,
+    "failed": 0,
+    "quotes_verified": 3,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2026-09-29",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No listed precedent matches. [P16] is about memory use when creating foreign keys between partitioned tables, a different idea, and it has no recorded reason. Message #3 mentions an earlier look at this index, which stalled because catalogs do not support partial indexes. v4 uses a plain non-unique index, as in message #11, so that blocker no longer applies."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 0,
+      "note": "From a standards and compatibility angle the user-facing contract does not change. There is no syntax, keyword, GUC, psql change or new object type, and pg_dump does not emit system catalog indexes. pg_upgrade rebuilds catalogs through initdb, and the catversion bump keeps the change master-only, which message #5 asked for. The only visible change is one more row in pg_indexes and pg_class for pg_constraint, which does not change query results."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The only persistent change is one plain non-unique btree on pg_constraint(confrelid), like the existing contypid index. It needs no new WAL record, no change to the user data format and no pg_upgrade step, because initdb builds the new cluster's catalogs. Backpatching was dropped in message #5, so there is no ABI concern. The extra WAL from catalog DDL comes with a 5% bulk DDL figure from v1 and a later claim of no cost. That conflict belongs to the performance angle and has no failure scenario on replication or on-disk state."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "No privilege or exposure aspect. The patch adds a plain catalog index on pg_constraint(confrelid) and points existing internal lookups at it; it adds no new command, function, privilege or view, and catalog contents stay visible exactly as before. Index growth follows constraint creation, which already needs table ownership, so it opens no new denial-of-service path."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 1,
+      "note": "Beyond the overhead question, the fit is good. The index copies the existing contypid index, is master-only and easy to replace once partial catalog indexes exist, adds no API or external dependency, and has support from a committer who knows the area (messages #5 and #7)."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing feature, setting or extension gives this result. The seqscan sits inside CloneFkReferenced, GetParentedForeignKeyRefs, ATPrepChangePersistence and heap_truncate_find_FKs, so only a core change can help. The one existing mechanism, pg_depend_reference_index (idea (a) in message #1), was not measured, but a plain index copies the contypid precedent, and message #11 reports that Tom Lane endorsed it."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "Demand is shown. Message #1 is a production report with a reproducer and run times growing from 1:03 to 6:16. Message #2 confirms it as a PG 18 regression, and since 14e87ffa5 the cost reaches every partitioned schema with NOT NULL columns, whether or not it uses foreign keys."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 1,
+      "new_survived": 1,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "CommitFest entry has 3 threads; only the earliest is read (https://www.postgresql.org/message-id/flat/trinity-08d3329b-f6b2-4c11-91d7-2198e50bf4fc-1790681922354%40trinity-msg-rest-gmx-gmx-live-58cc8f554d-c56lm). Others: https://www.postgresql.org/message-id/flat/179089136170.117434.3768797469846977966%40gmail.com, https://www.postgresql.org/message-id/flat/CAApHDvpxGcb-_ddd%2BqL%2BF%3DVmv4d3WZNbUCi3WQyj0HcFnC9v1g%40mail.gmail.com"
+  ],
+  "tone_lint": {
+    "fields_checked": 49,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 15,
+    "wall_ms": 86121,
+    "cost_usd": 1.6466555999999999,
+    "dry_run": false
+  }
+}

@@ -1,0 +1,1368 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:41:12.658Z",
+  "input": {
+    "arg": "7326",
+    "cf": {
+      "id": 7326,
+      "url": "https://commitfest.postgresql.org/patch/7326/",
+      "title": "Restructured Shared Buffer Hash Table",
+      "status": "Needs review",
+      "authors": "Dhruv Aron (dhruv.aron.gmail.com)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAAStW3JX_7LcCD1U%2B89vyMmLreDs0XsBU-JDdFf5PD_Woy1pag%40mail.gmail.com",
+    "subject": "Restructured Shared Buffer Hash Table",
+    "thread_start": "2026-07-07T18:41:47Z",
+    "messages_read": 30,
+    "messages_total": 30,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "lock_hold_benchmark.diff",
+      "restructured_shared_buffer_table.patch",
+      "test.diff"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The decisive objection is replication-ondisk-1. The flat table needs slot x unlinked before it is reused, message #12 rejects the spinlock-held delete that guarantees this, and no posted version carries an agreed replacement. maintenance-fit-1 adds that no check catches a later path that breaks the rule. demand-1 and prior-attempts-1 are open but do not stop the idea, since message #2 supports a separate table and the micro-benchmarks and memory saving are real.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Replace dynahash with a flat, array-based shared buffer lookup table",
+    "problem": "The shared buffer mapping table uses dynahash, whose directory, segment, bucket-chain and freelist layers the author calls excessive for this one table. Each buffer hit, insert and eviction pays that cost, and the table uses more memory than needed. The target is every workload with heavy buffer lookups, and large buffer pools in particular.",
+    "proposed_design": "buf_table.c gets its own table built on two arrays: bucket heads and entries, with entries[x] always describing buffer x. Each entry holds a BufferTag and a next index, so each bucket is a linked list over the flat arrays. Because a slot cannot hold a stale and a new entry at once, the patch moves BufTableDelete() under the buffer header spinlock in InvalidateBuffer().",
+    "user_visible_surface": [
+      "Shared memory allocation \"Shared Buffer Lookup Table\" in pg_shmem_allocations is replaced by \"Shared Buffer Lookup Buckets\" and \"Shared Buffer Lookup Entries\".",
+      "BufTableInsert/BufTableLookup/BufTableDelete keep their role; reviewer variants add delete by buffer id.",
+      "Benchmark test module buftable_bench with SQL functions buftable_bench_probe() and buftable_bench_collide(); x86_64 only."
+    ],
+    "author_claims": [
+      "Micro-benchmarks show lookup, insert and delete about 1.2 to 2.2 times faster than dynahash at 256MB to 16GB shared_buffers.",
+      "Gains shrink at 16GB in the first message's test; the author links this to cache behaviour at larger sizes.",
+      "At 128MB the table uses about half the shared memory of dynahash (Heikki's measurement).",
+      "pgbench shows no statistically significant TPS change, with small select-only gains (author's 30-run rerun).",
+      "A follow-up design resizes the table online with linear hashing, for the dynamic shared buffers work."
+    ],
+    "thread_state": "Heikki, Andres, Andrey Borodin and reviewer Alexandre Felipe replied; Andres rejects holding the header spinlock across BufTableDelete() and doubts the value next to a radix-tree redesign. Alexandre posted v6 with two-step delete and dropped his lock-free variant after CFBot failed in 027_stream_regress; no fixed author version is posted.",
+    "unclear": [
+      "The material does not show which patch version is the one under review: Dhruv's v1 or Alexandre's v6.",
+      "No final fix is agreed for the slot-reuse race without holding the spinlock during delete.",
+      "No real workload shows a measurable end-to-end gain; Andrey saw a possible simple-update regression.",
+      "The proposal does not say how this table fits with the dynamic shared buffers patch it depends on for resizing.",
+      "Andres's architectural concerns (per-relation iteration, ordered lookup, 20-byte keys) get no answer on whether this blocks them."
+    ],
+    "search_queries": [
+      "buffer mapping hash table",
+      "replace dynahash shared buffers",
+      "buf_table.c buffer lookup",
+      "BufTableLookup performance",
+      "buffer mapping radix tree",
+      "lock-free buffer lookup",
+      "resize shared buffers online",
+      "InvalidateBuffer spinlock"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P3",
+      "source_id": "cf:286",
+      "title": "drop/truncate table sucks for large values of shared buffers",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/286/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAA4eK1JPLGjpMeJ5YLNE7bpNBhP2EQe_rDR+Aw3atNfj9WkAGg@mail.gmail.com"
+      ],
+      "date": "2015-07-02",
+      "first_date": "2015-06-27",
+      "who_objected": "Tom Lane, Heikki Linnakangas",
+      "quote": "Committing a band-aid will just make it harder to pursue real fixes.",
+      "quote_url": "https://www.postgresql.org/message-id/14561.1435845813%40sss.pgh.pa.us",
+      "enriched": true,
+      "reason": "Tom Lane objected that the approach fails badly if the caller is wrong about the relation's maximum page number (for example, kernel lseek bugs). He also noted that it does not help DROP TABLESPACE or DROP DATABASE, which also scan the whole buffer pool. Heikki Linnakangas returned it with feedback, citing the issues raised, a still-unwritten alternative (delayed cleanup during the checkpoint scan), and a preference for a structure such as a radix tree that can find all buffers for a relation or database. Tom Lane added that committing a band-aid would make more complete fixes harder to pursue.",
+      "relation": "related_only",
+      "what_is_different": "P3 added a per-block lookup path for DROP/TRUNCATE, and this proposal replaces the table for every lookup. P3's reasons concern that path and do not transfer; the shared point is the stated preference for a radix-tree structure."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Slot-reuse invariant has no agreed safe design, and a miss means duplicate buffers",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "design",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "InvalidateBuffer() releases buffer x, and a concurrent backend reuses slot x before the old entry is unlinked. The bucket chain breaks, so a later BufTableLookup() misses a block that is still cached. A second buffer is then loaded for the same page, one copy's changes are lost at write-out, and the loss shows up only later as heap or index corruption, on a primary or during standby replay.",
+      "argument": "Because entries[x] must describe buffer x, a stale entry and a new entry cannot exist at the same time (message #16). The v1 fix holds the buffer header spinlock across BufTableDelete(). Andres rejects that in message #12, since an error there cannot be recovered and it risks deadlock with the partition lock. The v6 two-step delete (message #18) comes with no argument for why the invariant holds, and the CFBot failures in 027_stream_regress (message #24) show that this test does catch races in this table.",
+      "precedent_ids": [
+        "P7"
+      ],
+      "thread_message_refs": [
+        12,
+        16,
+        18,
+        24,
+        25
+      ],
+      "author_must_show": "Without the spinlock held across BufTableDelete(), what ordering of buffer header lock and partition lock stops slot x from being reused before its old entry is unlinked, including when an error is raised partway?",
+      "precedents": [
+        {
+          "id": "P7",
+          "title": "BufferAlloc: don't take two simultaneous locks",
+          "url": "https://commitfest.postgresql.org/patch/3483/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/1edbb61981fe1d99c3f20e3d56d6c88999f4227c.camel@postgrespro.ru"
+          ],
+          "date": "2022-10-12",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 12,
+          "from": "Andres Freund",
+          "date": "2026-08-11T20:50:08Z",
+          "url": "https://www.postgresql.org/message-id/bk5cbayf3q4yll4fqs2wbmonzhykg43k2k5v37vokkko53ebsd%40spcp4mxlb7hb"
+        },
+        {
+          "index": 16,
+          "from": "Dhruv Aron",
+          "date": "2026-08-13T22:49:20Z",
+          "url": "https://www.postgresql.org/message-id/CAAStW3KnhSSMywM0kTLjOQOxhm1%2B0jFEh%2BSbZMuMytRYGzLcmg%40mail.gmail.com"
+        },
+        {
+          "index": 18,
+          "from": "Alexandre Felipe",
+          "date": "2026-08-16T06:14:48Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxOPr1JZ9xhhbgyAnTt3qFmtNO-OAwoxN_sq_ug1WWma9A%40mail.gmail.com"
+        },
+        {
+          "index": 24,
+          "from": "Alexandre Felipe",
+          "date": "2026-09-21T20:51:05Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxNGtaKUs9ZqkcPhWcEJ1RFfGZHJOAqXiqTGQzCe5gv97g%40mail.gmail.com"
+        },
+        {
+          "index": 25,
+          "from": "Alexandre Felipe",
+          "date": "2026-10-11T20:40:34Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxOcd%2BJ0A8iM%3DBwwhovXoih5AOtvUcxPRbqgtn9CNAjPXQ%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #16 confirms the flat table is unsafe without the spinlock-held delete, which message #12 rejects, and no posted version carries an agreed replacement. [P7] closed for lack of a rebase and must not be used as support; the CFBot failure concerned the withdrawn lock-free variant.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Slot-reuse invariant adds a silent rule for every buffer-reuse path",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds a new path that evicts or reuses a buffer, for example shrinking shared buffers online, and releases the header lock before the mapping delete. A concurrent backend reuses slot x and cuts the old chain, so lookups miss cached pages and the same page can be read into a second buffer. Nothing asserts, and the damage shows up later as corruption.",
+      "argument": "Dynahash tolerates a stale entry and a new entry at once because it allocates from a freelist (message #16), but the flat table does not. v1 closes the race by holding the header spinlock across BufTableDelete(), which message #12 rejects as unsafe, since spinlocks have no error recovery and the change risks deadlock. The lock-free variant failed 027_stream_regress on CFBot (message #24) and was withdrawn (message #25). No posted version states the replacement protocol or how a violation would be detected.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        12,
+        16,
+        24,
+        25
+      ],
+      "author_must_show": "What protocol replaces the spinlock-held delete, and what check makes a future reuse path fail loudly if it breaks the entries[x] invariant?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 12,
+          "from": "Andres Freund",
+          "date": "2026-08-11T20:50:08Z",
+          "url": "https://www.postgresql.org/message-id/bk5cbayf3q4yll4fqs2wbmonzhykg43k2k5v37vokkko53ebsd%40spcp4mxlb7hb"
+        },
+        {
+          "index": 16,
+          "from": "Dhruv Aron",
+          "date": "2026-08-13T22:49:20Z",
+          "url": "https://www.postgresql.org/message-id/CAAStW3KnhSSMywM0kTLjOQOxhm1%2B0jFEh%2BSbZMuMytRYGzLcmg%40mail.gmail.com"
+        },
+        {
+          "index": 24,
+          "from": "Alexandre Felipe",
+          "date": "2026-09-21T20:51:05Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxNGtaKUs9ZqkcPhWcEJ1RFfGZHJOAqXiqTGQzCe5gv97g%40mail.gmail.com"
+        },
+        {
+          "index": 25,
+          "from": "Alexandre Felipe",
+          "date": "2026-10-11T20:40:34Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxOcd%2BJ0A8iM%3DBwwhovXoih5AOtvUcxPRbqgtn9CNAjPXQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "This is distinct from replication-ondisk-1 because it concerns future buffer-reuse paths, such as the shared buffers shrink planned in message #7. The thread states no protocol, and no check that fails when a new path breaks the entries[x] invariant.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No workload-level gain shown to justify a dedicated hash table",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "demand",
+      "touch_points": [
+        "maintenance_burden",
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer pushes a custom buffer mapping table on micro-benchmark numbers. Users running pgbench-like or production workloads see no TPS change, but every later bufmgr patch has to respect the new slot-reuse invariant. The project finds out when a buffer-mapping redesign has to replace or work around it.",
+      "argument": "The only end-to-end data shows no significant TPS change: the author's 30-run rerun has confidence intervals spanning zero in most cells (message #10), and Andrey saw a possible simple-update regression (message #9). The brief targets large buffer pools, but the speedup shrinks to about 1.02x for insert and delete at 16GB (message #1, message #27). Heikki asked for real-world impact (message #2), and no field report or profile with numbers has answered it. Andres questions spending review bandwidth here instead of on the architectural problems (message #12).",
+      "precedent_ids": [
+        "P3"
+      ],
+      "thread_message_refs": [
+        1,
+        2,
+        9,
+        10,
+        12,
+        27
+      ],
+      "author_must_show": "Which real workload, at which shared_buffers size, spends measurable CPU in BufTableLookup today and shows a repeatable end-to-end gain with this patch?",
+      "precedents": [
+        {
+          "id": "P3",
+          "title": "drop/truncate table sucks for large values of shared buffers",
+          "url": "https://commitfest.postgresql.org/patch/286/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CAA4eK1JPLGjpMeJ5YLNE7bpNBhP2EQe_rDR+Aw3atNfj9WkAGg@mail.gmail.com"
+          ],
+          "date": "2015-07-02",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Dhruv Aron",
+          "date": "2026-07-07T18:41:47Z",
+          "url": "https://www.postgresql.org/message-id/CAAStW3JX_7LcCD1U%2B89vyMmLreDs0XsBU-JDdFf5PD_Woy1pag%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "Heikki Linnakangas",
+          "date": "2026-07-07T19:13:48Z",
+          "url": "https://www.postgresql.org/message-id/dbbd1998-19ff-4ac2-b4b1-a39f4ec1b0f5%40iki.fi"
+        },
+        {
+          "index": 9,
+          "from": "Andrey Borodin",
+          "date": "2026-08-06T09:07:19Z",
+          "url": "https://www.postgresql.org/message-id/FE84530D-D06E-4317-A999-CE6F433E6CE3%40yandex-team.ru"
+        },
+        {
+          "index": 10,
+          "from": "Dhruv Aron",
+          "date": "2026-08-07T22:14:05Z",
+          "url": "https://www.postgresql.org/message-id/CAAStW3LMwY%3DSW7GLmn81mzQGH%3DbH%2BdwZZCrsfNbM9b7eiptLjQ%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "Andres Freund",
+          "date": "2026-08-11T20:50:08Z",
+          "url": "https://www.postgresql.org/message-id/bk5cbayf3q4yll4fqs2wbmonzhykg43k2k5v37vokkko53ebsd%40spcp4mxlb7hb"
+        },
+        {
+          "index": 27,
+          "from": "Dhruv Aron",
+          "date": "2026-10-12T20:01:50Z",
+          "url": "https://www.postgresql.org/message-id/CAAStW3KitUuDbLB17N53aGj-X89unTRpV1BYYqjSc-UV%2BXz-5w%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Heikki asked for real-world impact in message #2, and the pgbench runs in messages #9 and #10 show no significant change. The 1.02x figure at 16GB is contradicted by the later probe results (1.3 to 1.9 times), and [P3] does not bear on demand.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Tuning the hash table may delay the buffer mapping redesign",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "prior_rejection",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The flat table is committed, and the linear-hashing resize from message #7 is then built on it for dynamic shared buffers. Later, someone starts the relation-plus-block radix tree from message #12 and finds two hash-specific layers to replace. The constraint that entries[x] describes buffer x now ties bufmgr.c to the old layout.",
+      "argument": "[P3] was returned partly because a band-aid was seen to make a structure that finds all buffers of a relation harder to pursue. Andres repeats that point here in message #12: per-relation iteration, ordered lookup and 20-byte keys, plus doubt about spending effort on the current design. Message #25 answers with cost estimates for a radix tree, but the thread did not settle the point. The proposal does not say whether the flat table is a step toward the redesign or a separate path.",
+      "precedent_ids": [
+        "P3"
+      ],
+      "thread_message_refs": [
+        7,
+        12,
+        25
+      ],
+      "author_must_show": "Does the flat table, with its planned resize, make the per-relation, ordered buffer mapping in message #12 any easier or harder to build later?",
+      "precedents": [
+        {
+          "id": "P3",
+          "title": "drop/truncate table sucks for large values of shared buffers",
+          "url": "https://commitfest.postgresql.org/patch/286/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CAA4eK1JPLGjpMeJ5YLNE7bpNBhP2EQe_rDR+Aw3atNfj9WkAGg@mail.gmail.com"
+          ],
+          "date": "2015-07-02",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "Dhruv Aron",
+          "date": "2026-07-17T22:31:01Z",
+          "url": "https://www.postgresql.org/message-id/CAAStW3Kq5_55X_G74P%3DaovoDBuUEeE_pionGVQ6F_dS7BThLqg%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "Andres Freund",
+          "date": "2026-08-11T20:50:08Z",
+          "url": "https://www.postgresql.org/message-id/bk5cbayf3q4yll4fqs2wbmonzhykg43k2k5v37vokkko53ebsd%40spcp4mxlb7hb"
+        },
+        {
+          "index": 25,
+          "from": "Alexandre Felipe",
+          "date": "2026-10-11T20:40:34Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxOcd%2BJ0A8iM%3DBwwhovXoih5AOtvUcxPRbqgtn9CNAjPXQ%40mail.gmail.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Andres raises this in message #12 and the author does not answer it; message #25 only gives a reviewer's cost estimates. [P3] concerned a DROP/TRUNCATE lookup path, so it must not be used as support, and an internal table can be replaced later.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Bespoke table optimizes a design that a radix redesign would replace",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The project commits a custom hash table in buf_table.c, with resize logic to follow in buf_resize.c. A later two-layer design with per-relation and ordered lookup (message #12) must replace both and redo the invalidation protocol. Until then, DROP and TRUNCATE still scan all of shared buffers.",
+      "argument": "End-to-end, the author's 30-run pgbench shows no significant TPS change (message #10), and message #9 reports small select-only gains and a possible simple-update regression. Message #12 doubts the value of making the current design faster when the same effort could go to its architectural problems, but Heikki supports a separate implementation (message #2). [P3] was returned partly because a structure that can find all buffers for a relation was preferred, with the note that a band-aid makes real fixes harder.",
+      "precedent_ids": [
+        "P3"
+      ],
+      "thread_message_refs": [
+        2,
+        9,
+        10,
+        12
+      ],
+      "author_must_show": "Which parts of this table carry over into a per-relation, ordered lookup design, and which real workload gains enough to justify maintaining it until then?",
+      "precedents": [
+        {
+          "id": "P3",
+          "title": "drop/truncate table sucks for large values of shared buffers",
+          "url": "https://commitfest.postgresql.org/patch/286/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CAA4eK1JPLGjpMeJ5YLNE7bpNBhP2EQe_rDR+Aw3atNfj9WkAGg@mail.gmail.com"
+          ],
+          "date": "2015-07-02",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Heikki Linnakangas",
+          "date": "2026-07-07T19:13:48Z",
+          "url": "https://www.postgresql.org/message-id/dbbd1998-19ff-4ac2-b4b1-a39f4ec1b0f5%40iki.fi"
+        },
+        {
+          "index": 9,
+          "from": "Andrey Borodin",
+          "date": "2026-08-06T09:07:19Z",
+          "url": "https://www.postgresql.org/message-id/FE84530D-D06E-4317-A999-CE6F433E6CE3%40yandex-team.ru"
+        },
+        {
+          "index": 10,
+          "from": "Dhruv Aron",
+          "date": "2026-08-07T22:14:05Z",
+          "url": "https://www.postgresql.org/message-id/CAAStW3LMwY%3DSW7GLmn81mzQGH%3DbH%2BdwZZCrsfNbM9b7eiptLjQ%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "Andres Freund",
+          "date": "2026-08-11T20:50:08Z",
+          "url": "https://www.postgresql.org/message-id/bk5cbayf3q4yll4fqs2wbmonzhykg43k2k5v37vokkko53ebsd%40spcp4mxlb7hb"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of prior-attempts-1 for the redesign point and of demand-1 for the missing workload gain. It adds no separate failure scenario.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "see objection replication-ondisk-1: Slot-reuse invariant has no agreed safe design, and a miss means duplicate buffers"
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "see objection replication-ondisk-1: Slot-reuse invariant has no agreed safe design, and a miss means duplicate buffers"
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "buf_table.c gets its own hash table, and bufmgr.c gets a new ordering rule for every path that reuses a buffer."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "The patch rewrites BufTableLookup, BufTableInsert and BufTableDelete and changes buffer header lock hold time in InvalidateBuffer()."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Without the spinlock held across BufTableDelete(), what ordering of buffer header lock and partition lock stops slot x from being reused before its old entry is unlinked?",
+    "Which patch version is under review, the v1 from message #1 or the v6 with two-step delete, and does the author agree with the v6 approach?",
+    "What assertion or check makes a future buffer-reuse path, such as shrinking shared buffers online, fail loudly if it breaks the entries[x] invariant?",
+    "Which real workload, at which shared_buffers size, shows a repeatable end-to-end gain with this patch, and is the simple-update regression from message #9 reproducible?",
+    "Does the flat table, with its planned linear-hashing resize, make the per-relation, ordered buffer mapping from message #12 easier or harder to build later?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Heikki Linnakangas and Andres Freund replied in the thread; the owner must know bufmgr.c locking, buffer invalidation and eviction.",
+    "liability": "The owner signs for the correctness of the buffer mapping under concurrency for as long as the table exists. A broken chain means two buffers for one page and lost writes, found only later as corruption.",
+    "author_follow_up": "The author reran pgbench with 30 runs (message #10) and offered a follow-up resize patch, but the latest versions come from the reviewer and no fixed author version is posted."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "unclear",
+    "maintenance_burden": "medium",
+    "review_cost": "high",
+    "recommended_action": "fix design first",
+    "reason": "Every workload uses the lookup path, but pgbench shows no significant TPS change, so who gains measurably is not shown. The patch is small, but the review must prove a concurrency invariant in bufmgr.c, and the delete protocol is not yet agreed."
+  },
+  "self_advice": [],
+  "provisional_note": "Only 3 of 30 messages and no code were read, so the v6 two-step delete could not be checked against the slot-reuse race. Whether the partition lock already gives the needed exclusion on some paths could not be judged.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:5427",
+      "kind": "cf",
+      "title": "[BUG] Assert fails for local buffers in BufferIsExclusiveLocked",
+      "status": "Withdrawn",
+      "date": "2024-12-09",
+      "first_date": "2024-12-05",
+      "url": "https://commitfest.postgresql.org/patch/5427/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/19396ef77f8.1098c4a1810508.2255483659262451647@zohocorp.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "The thread first asked whether BufferIsExclusiveLocked and BufferIsDirty need to handle local buffers, since only XLogRegisterBuffer calls them. After Andres Freund said local buffers must still be supported, the author proposed fixing the assertion in BufferIsDirty, which fails for local buffers because LockBuffer takes no content lock on them.",
+      "objection": "The visible messages do not show why. Andres Freund objected to dropping local-buffer support, but the author then changed the proposal to an assertion fix, and Nazir Bilal Yavuz said the patch looked good. Nazir also pointed to a similar thread started by Daniil, and the entry was withdrawn on the day it was registered.",
+      "touch_points": [],
+      "matched_queries": [
+        "replace dynahash shared buffers",
+        "buf_table.c buffer lookup",
+        "buffer mapping radix tree"
+      ],
+      "from_hint": false,
+      "score": 0.32,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "wiki:Vacuum:1",
+      "kind": "do_not_want",
+      "title": "Auto-fill the free space map by scanning the buffer cache or by checking pages written by the background writer",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Vacuum",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Auto-fill the free space map by scanning the buffer cache or by checking pages written by the background writer\nSection: Vacuum\nLinked: Dead Space Map; Re: Automatic free space map filling",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "buffer mapping hash table",
+        "buffer mapping radix tree",
+        "lock-free buffer lookup"
+      ],
+      "from_hint": false,
+      "score": 0.282,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:286",
+      "kind": "cf",
+      "title": "drop/truncate table sucks for large values of shared buffers",
+      "status": "Returned with feedback",
+      "date": "2015-07-02",
+      "first_date": "2015-06-27",
+      "url": "https://commitfest.postgresql.org/patch/286/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAA4eK1JPLGjpMeJ5YLNE7bpNBhP2EQe_rDR+Aw3atNfj9WkAGg@mail.gmail.com"
+      ],
+      "authors": "Amit Kapila (amitkapila)",
+      "objectors": "Tom Lane, Heikki Linnakangas",
+      "summary": "Speed up DROP/TRUNCATE TABLE when shared_buffers is large by looking up each block of the relation in the buffer mapping table, instead of scanning all of shared_buffers. This path is used only when the table is smaller than a threshold (25% of shared_buffers) and shared_buffers is at least 32MB.",
+      "objection": "Tom Lane objected that the approach fails badly if the caller is wrong about the relation's maximum page number (for example, kernel lseek bugs). He also noted that it does not help DROP TABLESPACE or DROP DATABASE, which also scan the whole buffer pool. Heikki Linnakangas returned it with feedback, citing the issues raised, a still-unwritten alternative (delayed cleanup during the checkpoint scan), and a preference for a structure such as a radix tree that can find all buffers for a relation or database. Tom Lane added that committing a band-aid would make more complete fixes harder to pursue.",
+      "touch_points": [],
+      "matched_queries": [
+        "buffer mapping hash table",
+        "replace dynahash shared buffers",
+        "resize shared buffers online"
+      ],
+      "from_hint": false,
+      "score": 0.277,
+      "enriched": true,
+      "key_quote": "Committing a band-aid will just make it harder to pursue real fixes.",
+      "quote_message_url": "https://www.postgresql.org/message-id/14561.1435845813%40sss.pgh.pa.us",
+      "relevant": true
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:3181",
+      "kind": "cf",
+      "title": "Map WAL segment files on PMEM as WAL buffers",
+      "status": "Returned with feedback",
+      "date": "2022-08-01",
+      "first_date": "2021-05-19",
+      "url": "https://commitfest.postgresql.org/patch/3181/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOwnP3PHDOW=-BqutjJPN0qEdF8ocqBuOiE9bpe-_c-1bnQ1yA@mail.gmail.com"
+      ],
+      "authors": "Takashi Menjo (tmenjo)",
+      "objectors": "",
+      "summary": "The patchset maps WAL segment files that live on persistent memory (PMEM) directly into memory with libpmem and uses them as the WAL buffers, so WAL is written in place without a separate copy and write. It adds a --with-libpmem build option and a wal_pmem_map setting, and sizes the mapped buffers to min_wal_size with pre-allocation by walwriter.",
+      "objection": "No reviewer took it up. Jacob Champion returned it in a batch of patchsets that did not get enough reviewer interest, and he wrote that this was not a rejection and that there was little actionable feedback. Earlier messages only asked for build fixes, CI support and rebases, and the author did each of them.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "buffer mapping hash table",
+        "buffer mapping radix tree"
+      ],
+      "from_hint": false,
+      "score": 0.274,
+      "enriched": true,
+      "key_quote": "As discussed in [1], we're taking this opportunity to return some\npatchsets that don't appear to be getting enough reviewer interest.",
+      "quote_message_url": "https://www.postgresql.org/message-id/bdf08089-eb79-e96d-b8ce-4779000bba5a%40timescale.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:1765",
+      "kind": "cf",
+      "title": "Detect shared buffer access violations using mprotect()",
+      "status": "Returned with feedback",
+      "date": "2019-02-03",
+      "first_date": "2018-07-11",
+      "url": "https://commitfest.postgresql.org/patch/1765/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANXE4Te4G0TGq6cr0-TvwP0H4BNiK_-hB5gHe8mF+nz0mcYfMQ@mail.gmail.com"
+      ],
+      "authors": "Asim Rama Praveen (apraveen)",
+      "objectors": "Tom Lane",
+      "summary": "Add a compile-time option (-DMPROTECT_BUFFER) that uses mprotect() to mark shared buffers read-only or read-write according to pin and content-lock state, so that violations of shared buffer access rules are caught. The patch came out of a discussion of places that modify shared buffers without holding the content lock.",
+      "objection": "Tom Lane asked that the patch be restructured so that bad accesses can be caught with either Valgrind or mprotect depending on compile options, using macros such as ProtectBuffer() that expand to nothing when the feature is disabled instead of inline #ifdef blocks. He also raised the concern that buffers are not reliably aligned on system page boundaries. The author did not address this feedback before the commitfest ended, so Andres Freund marked the entry returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "replace dynahash shared buffers",
+        "resize shared buffers online"
+      ],
+      "from_hint": false,
+      "score": 0.251,
+      "enriched": true,
+      "key_quote": "It'd be better to\nset things up so that the patch adds support for catching bad accesses\nwith either valgrind or mprotect, according to compile options.",
+      "quote_message_url": "https://www.postgresql.org/message-id/22918.1547427152%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:6427",
+      "kind": "cf",
+      "title": "Auto-tune shared_buffers to use available huge pages",
+      "status": "Withdrawn",
+      "date": "2026-06-24",
+      "first_date": "2026-01-23",
+      "url": "https://commitfest.postgresql.org/patch/6427/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAO6_Xqq6w5hTY_W+gJWp29t15NRtNLSTzD6khDC=Xy2P0BWPTQ@mail.gmail.com"
+      ],
+      "authors": "Anthonin Bonnefoy (bonnefoa)",
+      "objectors": "",
+      "summary": "The patch adds a setting (first huge_pages_autotune_buffers, later shared_buffers_autotune_target) that makes Postgres raise shared_buffers at startup until the shared memory request reaches a target size, such as the huge pages given to a Kubernetes pod. It moves the existing auto-tuning of other settings into dedicated functions so they use the configured shared_buffers, and adds a checkpoint_request_size GUC.",
+      "objection": "The visible messages do not show why. Ashutosh Bapat asked whether a script that finds the right shared_buffers with postgres -C is enough. The author replied that such a script must run before every start, which Docker images, Patroni and operators do not easily allow, and the thread had no further replies before the entry was withdrawn.",
+      "touch_points": [],
+      "matched_queries": [
+        "replace dynahash shared buffers",
+        "resize shared buffers online"
+      ],
+      "from_hint": false,
+      "score": 0.25,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:3483",
+      "kind": "cf",
+      "title": "BufferAlloc: don't take two simultaneous locks",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2021-10-01",
+      "url": "https://commitfest.postgresql.org/patch/3483/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1edbb61981fe1d99c3f20e3d56d6c88999f4227c.camel@postgrespro.ru"
+      ],
+      "authors": "Yura Sokolov (funny_falcon)",
+      "objectors": "Robert Haas, Michael Paquier",
+      "summary": "The patch changes BufferAlloc so that, when it evicts a valid buffer, it releases the old buffer-mapping partition lock before it takes the new one, so it never holds two partition locks at once. Later versions also let dynahash reuse the evicted entry, and a v12 variant inserts a placeholder entry and makes concurrent inserters of the same block wait on a per-backend ConditionVariable.",
+      "objection": "The entry was returned with feedback after the patch stopped applying and the author did not rebase it after the September 2022 notice. Earlier, Robert Haas objected to the HASH_REUSE design, which splits one dynahash operation across bufmgr and dynahash, so an ereport(ERROR) between HASH_REUSE and HASH_ENTER would corrupt state. He suggested a hash_replace() call, but the author rejected it because it would need both partition locks.",
+      "touch_points": [],
+      "matched_queries": [
+        "buf_table.c buffer lookup",
+        "lock-free buffer lookup"
+      ],
+      "from_hint": false,
+      "score": 0.211,
+      "enriched": true,
+      "key_quote": "With no rebase done since this notice, I have marked this entry as\nRwF.",
+      "quote_message_url": "https://www.postgresql.org/message-id/Y0Zw3Zs2MMi3r6ji%40paquier.xyz",
+      "relevant": true
+    },
+    {
+      "id": "P8",
+      "source_id": "revert:9cf6033281fdaf938b826545a643f951086d8671",
+      "kind": "revert",
+      "title": "Revert unintentional change in increasing usage count during pin of buffers, this makes buffer access strategy have no effect.",
+      "status": "Reverted",
+      "date": "2017-03-20",
+      "first_date": "2016-04-11",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9cf6033281fdaf938b826545a643f951086d8671",
+      "thread_urls": [],
+      "authors": "Andres Freund",
+      "objectors": "",
+      "summary": "Revert unintentional change in increasing usage count during pin of buffers, this makes buffer access strategy have no effect. Change was a part of commit 48354581a49c30f5757c203415aa8412d85b0f70 during 9.6 release cycle, so backpath to 9.6\nReverted commit(s): Allow Pin/UnpinBuffer to operate in a lockfree manner.",
+      "objection": "Revert unintentional change in increasing usage count during pin of buffers,\nthis makes buffer access strategy have no effect.\nChange was a part of commit 48354581a49c30f5757c203415aa8412d85b0f70 during 9.6\nrelease cycle, so backpath to 9.6\n\n\nhttps://commitfest.postgresql.org/13/1029/",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "buf_table.c buffer lookup",
+        "lock-free buffer lookup"
+      ],
+      "from_hint": false,
+      "score": 0.191,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "revert:a16d421ca4fc639929bc964b2585e8382cf16e33",
+      "kind": "revert",
+      "title": "Revert \"Auto-tune effective_cache size to be 4x shared buffers\"",
+      "status": "Reverted",
+      "date": "2014-05-09",
+      "first_date": "2013-10-08",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=a16d421ca4fc639929bc964b2585e8382cf16e33",
+      "thread_urls": [],
+      "authors": "Bruce Momjian",
+      "objectors": "",
+      "summary": "Revert \"Auto-tune effective_cache size to be 4x shared buffers\"\nReverted commit(s): Auto-tune effective_cache size to be 4x shared buffers",
+      "objection": "This reverts commit ee1e5662d8d8330726eaef7d3110cb7add24d058, as well as\na remarkably large number of followup commits, which were mostly concerned\nwith the fact that the implementation didn't work terribly well.  It still\ndoesn't: we probably need some rather basic work in the GUC infrastructure\nif we want to fully support GUCs whose default varies depending on the\nvalue of another GUC.  Meanwhile, it also emerged that there wasn't really\nconsensus in favor of the definition the patch tried to implement (ie,\neffective_cache_size should default to 4 times shared_buffers).  So whack\nit all back to where it was.  In a followup commit, I'll do what was\nrecently agreed to, which is to simply change the default to a higher\nvalue.",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "replace dynahash shared buffers",
+        "resize shared buffers online"
+      ],
+      "from_hint": false,
+      "score": 0.168,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:4210",
+      "kind": "cf",
+      "title": "Track Oldest Initialized WAL Buffer Page",
+      "status": "Returned with feedback",
+      "date": "2023-08-03",
+      "first_date": "2023-02-07",
+      "url": "https://commitfest.postgresql.org/patch/4210/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACVgi6LirgLDZh=FdfdvGvKAD==WTOSWcQy=AtNgPDVnKw@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "Heikki Linnakangas",
+      "summary": "The patch adds an OldestInitializedPage field to XLogCtl that tracks the start address of the oldest initialized WAL buffer page, updated under WALBufMappingLock. Its purpose is to let callers check quickly, without a lock, whether a WAL record is still in the WAL buffers, and to walk the buffers from oldest to newest.",
+      "objection": "Heikki Linnakangas showed that a caller can already check whether a record is in WAL buffers by comparing xlblocks[idx] with the expected page end pointer, with an atomic read if stale results are fine. He saw no need to track OldestInitializedPage. The author did not reply, and the entry was returned with feedback after the thread stalled.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "buf_table.c buffer lookup",
+        "InvalidateBuffer spinlock"
+      ],
+      "from_hint": false,
+      "score": 0.165,
+      "enriched": true,
+      "key_quote": "But I don't see the point of tracking OldestInitializedPage. It\nseems cheap enough that we could, if there's a need for it, but I don't\nsee the need.",
+      "quote_message_url": "https://www.postgresql.org/message-id/82dad3ca-035c-c5f3-d230-ff7d11b6e573%40iki.fi",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "revert:27cb626f7a28abd18c0e8a34fc8d6674b0f6cdf3",
+      "kind": "revert",
+      "title": "revert to showing buffer counts in explain (buffers)",
+      "status": "Reverted",
+      "date": "2010-02-16",
+      "first_date": "2010-02-16",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=27cb626f7a28abd18c0e8a34fc8d6674b0f6cdf3",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "revert to showing buffer counts in explain (buffers)",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "replace dynahash shared buffers",
+        "buf_table.c buffer lookup"
+      ],
+      "from_hint": false,
+      "score": 0.15,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "wiki:Optimizer_.2F_Executor:4",
+      "kind": "do_not_want",
+      "title": "Allow shared buffer cache contents to affect index cost computations",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Optimizer_.2F_Executor",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Allow shared buffer cache contents to affect index cost computations\nSection: Optimizer / Executor",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "replace dynahash shared buffers",
+        "resize shared buffers online"
+      ],
+      "from_hint": false,
+      "score": 0.143,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:2716",
+      "kind": "cf",
+      "title": "fix spinlock contention in LogwrtResult",
+      "status": "Withdrawn",
+      "date": "2022-09-23",
+      "first_date": "2020-08-31",
+      "url": "https://commitfest.postgresql.org/patch/2716/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200831182156.GA3983@alvherre.pgsql"
+      ],
+      "authors": "Álvaro Herrera (alvherre)",
+      "objectors": "",
+      "summary": "The patch removes contention on XLogCtl's info_lck spinlock, which backends take often to read LogwrtResult. The first version added an LWLock covering LogwrtResult and LogwrtRqst; later versions turned the shared LogwrtResult fields into 64-bit atomics, as Andres Freund suggested.",
+      "objection": "The author withdrew the patch himself. In April 2022 he held it back from that cycle because the memory barrier needs were hard to get right and he did not want subtle bugs in WAL. In September 2022 he withdrew it because commit e369f3708636 made the change less critical.",
+      "touch_points": [],
+      "matched_queries": [
+        "InvalidateBuffer spinlock"
+      ],
+      "from_hint": false,
+      "score": 0.137,
+      "enriched": true,
+      "key_quote": "I realized that because of commit e369f3708636 this change is no longer\nas critical as it used to be, so I'm withdrawing this patch from the\ncommitfest.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20220923084941.g3756xqz6lwnqwso%40alvherre.pgsql",
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3792",
+      "kind": "cf",
+      "title": "Subtrans performance smoothing",
+      "status": "Withdrawn",
+      "date": "2022-09-06",
+      "first_date": "2022-08-01",
+      "url": "https://commitfest.postgresql.org/patch/3792/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANbhV-Fdnr5F0YyPAG88qhq9KhUtGMJ7ZGVKp1SD+YY12jVdPA@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon)",
+      "objectors": "",
+      "summary": "Subtrans performance smoothing\nThreads: Smoothing the subtrans performance catastrophe",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "BufTableLookup performance"
+      ],
+      "from_hint": false,
+      "score": 0.137,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:3271",
+      "kind": "cf",
+      "title": "KnownAssignedXidsGetAndSetXmin performance",
+      "status": "Returned with feedback",
+      "date": "2022-11-15",
+      "first_date": "2021-05-20",
+      "url": "https://commitfest.postgresql.org/patch/3271/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALdSSPgahNUD_=pB_j=1zSnDBaiOtqVfzo8Ejt5J_k7qZiU1Tw@mail.gmail.com"
+      ],
+      "authors": "Michail Nikolaev (nkey), Mihail Nikalayeu (mihailnikalayeu)",
+      "objectors": "",
+      "summary": "KnownAssignedXidsGetAndSetXmin performance\nThreads: Slow standby snapshot",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "BufTableLookup performance"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:6377",
+      "kind": "cf",
+      "title": "Precompute string lengths in PerformRadiusTransaction",
+      "status": "Withdrawn",
+      "date": "2026-03-25",
+      "first_date": "2026-01-05",
+      "url": "https://commitfest.postgresql.org/patch/6377/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/tencent_6B29EC4570E6F0C659B4EAA7@qq.com"
+      ],
+      "authors": "Man Zeng (zengman)",
+      "objectors": "",
+      "summary": "Precompute string lengths in PerformRadiusTransaction\nThreads: [PATCH] Precompute string lengths in PerformRadiusTransaction",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "BufTableLookup performance"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "revert:6d9751fa8fd40c988541c9c72ac7a2095ba73c19",
+      "kind": "revert",
+      "title": "Revert \"Fix link error for test_radixtree module on Windows\"",
+      "status": "Reverted",
+      "date": "2024-03-08",
+      "first_date": "2024-03-08",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6d9751fa8fd40c988541c9c72ac7a2095ba73c19",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAD21AoAMm1mQd=w4PrfrKK=OMP8j8=7ntJRPF8+=10iUuvwiCA@mail.gmail.com"
+      ],
+      "authors": "John Naylor",
+      "objectors": "",
+      "summary": "Revert \"Fix link error for test_radixtree module on Windows\"\nReverted commit(s): Fix link error for test_radixtree module on Windows",
+      "objection": "This reverts commit 9552e3ace317ac8bb0a80613c0e5cd6536c96dc8.\n\nI (john) forgot to revert this locally when a more principled\nfix was found, which has the same message title.",
+      "touch_points": [],
+      "matched_queries": [
+        "buffer mapping radix tree"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:4196",
+      "kind": "cf",
+      "title": "Optimize Numeric using fixed buffer reducing pallocs for small numbers",
+      "status": "Returned with feedback",
+      "date": "2023-09-13",
+      "first_date": "2023-02-16",
+      "url": "https://commitfest.postgresql.org/patch/4196/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/35fb0533-1e3e-42f6-b989-ce1f9b5f3ebe@app.fastmail.com"
+      ],
+      "authors": "Joel Jacobson (joeljacobson)",
+      "objectors": "",
+      "summary": "Optimize Numeric using fixed buffer reducing pallocs for small numbers\nThreads: Missing free_var() at end of accum_sum_final()?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "lock-free buffer lookup"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:6276",
+      "kind": "cf",
+      "title": "Safer hash table initialization macro",
+      "status": "Withdrawn",
+      "date": "2026-03-09",
+      "first_date": "2025-12-01",
+      "url": "https://commitfest.postgresql.org/patch/6276/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/aS2b3LoUypW1%2FGdz@ip-10-97-1-34.eu-west-3.compute.internal"
+      ],
+      "authors": "Bertrand Drouvot (bertranddrouvot.pg)",
+      "objectors": "",
+      "summary": "Safer hash table initialization macro\nThreads: Safer hash table initialization macro",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "buffer mapping hash table"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:5996",
+      "kind": "cf",
+      "title": "Fixes a trivial bug in dumped parse/query/plan trees",
+      "status": "Withdrawn",
+      "date": "2025-09-02",
+      "first_date": "2025-08-25",
+      "url": "https://commitfest.postgresql.org/patch/5996/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6EE75DFB-F4FC-4EEE-BD49-786223E469FA@gmail.com"
+      ],
+      "authors": "Chao Li (chaol)",
+      "objectors": "",
+      "summary": "Fixes a trivial bug in dumped parse/query/plan trees\nThreads: Fixes a trivial bug in dumped parse/query/plan trees",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "buffer mapping radix tree"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:2634",
+      "kind": "cf",
+      "title": "Replace spinlock with lwlock in pg_stat_statements",
+      "status": "Returned with feedback",
+      "date": "2020-09-30",
+      "first_date": "2020-06-29",
+      "url": "https://commitfest.postgresql.org/patch/2634/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2895b53b033c47ccb22972b589050dd9@EX13D05UWC001.ant.amazon.com"
+      ],
+      "authors": "Fujii Masao (masaofujii)",
+      "objectors": "",
+      "summary": "Replace spinlock with lwlock in pg_stat_statements\nThreads: track_planning causing performance regression",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "InvalidateBuffer spinlock"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:5542",
+      "kind": "cf",
+      "title": "Fix buffer pinning logic/visibility bugs in [SP-]Gist Index-Only Scans",
+      "status": "Withdrawn",
+      "date": "2026-06-08",
+      "first_date": "2021-11-03",
+      "url": "https://commitfest.postgresql.org/patch/5542/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAH2-Wz=PqOziyRSrnN5jAtfXWXY7-BJcHz9S355LH8Dt=5qxWQ@mail.gmail.com"
+      ],
+      "authors": "Peter Geoghegan (pgeoghegan), Michail Nikolaev (nkey), Matthias van de Meent (mmeent), Mihail Nikalayeu (mihailnikalayeu)",
+      "objectors": "",
+      "summary": "Fix buffer pinning logic/visibility bugs in [SP-]Gist Index-Only Scans\nThreads: Why doesn't GiST VACUUM require a super-exclusive lock, like nbtree VACUUM?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "lock-free buffer lookup"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:208",
+      "kind": "cf",
+      "title": "Improve documentation for spinlocks file",
+      "status": "Rejected",
+      "date": "2015-07-02",
+      "first_date": "2015-04-05",
+      "url": "https://commitfest.postgresql.org/patch/208/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/331112346.129305.1428259859929.JavaMail.yahoo@mail.yahoo.com"
+      ],
+      "authors": "Artem Luzyanin (aluzyanin)",
+      "objectors": "",
+      "summary": "Improve documentation for spinlocks file\nThreads: PATCH: Spinlock Documentation",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "InvalidateBuffer spinlock"
+      ],
+      "from_hint": false,
+      "score": 0.103,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "revert:772faafca1b288c4dd66b7150a7831c27b768003",
+      "kind": "revert",
+      "title": "Revert: Implement pg_wal_replay_wait() stored procedure",
+      "status": "Reverted",
+      "date": "2024-04-11",
+      "first_date": "2024-04-02",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=772faafca1b288c4dd66b7150a7831c27b768003",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/b155606b-e744-4218-bda5-29379779da1a@iki.fi",
+        "https://www.postgresql.org/message-id/flat/eb12f9b03851bb2583adab5df9579b4b@postgrespro.ru",
+        "https://www.postgresql.org/message-id/flat/202404030658.hhj3vfxeyhft@alvherre.pgsql",
+        "https://www.postgresql.org/message-id/flat/CAD21AoAx7irptnPH1OkkkNh9E0M6X-phfX7sYZfwoMsc1qV1sQ@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov",
+      "objectors": "",
+      "summary": "Revert: Implement pg_wal_replay_wait() stored procedure\nReverted commit(s): Implement pg_wal_replay_wait() stored procedure; Minor improvements for waitlsn.c; Use the pairing heap instead of a flat array for LSN replay waiters; Use an LWLock instead of a spinlock in waitlsn.c; Clarify what is protected by WaitLSNLock",
+      "objection": "This commit reverts 06c418e163, e37662f221, bf1e650806, 25f42429e2,\nee79928441, and 74eaf66f98 per review by Heikki Linnakangas.",
+      "touch_points": [],
+      "matched_queries": [
+        "InvalidateBuffer spinlock"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 6,
+    "new_calls": 2,
+    "failed": 0,
+    "quotes_verified": 1,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 2
+  },
+  "precedent_cutoff": "2026-07-07",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "Only [P3] carries a reason that still applies. The [P7] reason is a missing rebase."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 0,
+      "note": "The user-facing contract barely changes: no SQL syntax, GUC, catalog, dump or psql change. The only visible change, the split of the \"Shared Buffer Lookup Table\" row in pg_shmem_allocations into two rows, follows how shared memory allocation names already change between releases, and a committer would not block on it. The objections that matter here are about locking safety and design, which other angles cover."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "The proposal changes only shared-memory structures. It touches no on-disk format, WAL record, catalog, wire protocol or pg_upgrade path. The only exposed name change is in pg_shmem_allocations. My one objection is about an in-memory invariant whose failure leads to lost page writes."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal changes an internal shared memory structure and adds no privilege, role, SQL surface or new data exposure. A collision-based denial of service would need control over relfilenumbers, and dynahash has the same exposure, so I found no realistic failure scenario. The spinlock and error-recovery risks belong to the safety and design angle, and Andres raised them in message #12."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "Two objections from the maintenance angle. Hot-path cost for non-users is not a concern, since the change targets the lookup path for everyone and the measurements show it is faster."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing feature meets this need, so this angle raises nothing. The closest alternative is removing the directory indirection from dynahash for all shmem hash tables (message #2), but Heikki himself judged a separate table for buffer lookup worthwhile. A generic dynahash change also could not provide the entries[x]-is-buffer-x layout or the memory saving. No extension can replace buf_table.c, and radixtree.h belongs to the redesign Andres proposed (message #12), which is a design question for other angles."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "Interest in a faster buffer lookup is real: Heikki and Andres both call dynahash a poor fit here. What is missing is evidence of a workload-level benefit."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 5,
+      "new_survived": 4,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 73,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 13,
+    "wall_ms": 146264,
+    "cost_usd": 4.1177828000000005,
+    "dry_run": false
+  }
+}

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "tool": "pgroast/0.1",
-  "generated_at": "2026-11-12T02:44:14.866Z",
+  "generated_at": "2026-11-12T03:47:12.851Z",
   "input": {
     "arg": "6177",
     "cf": {
@@ -34,7 +34,7 @@
   },
   "verdict": "NEEDS-DESIGN-DISCUSSION",
   "confidence": "medium",
-  "verdict_reasoning": "Several operators report the PITR gap, so the goal is not in doubt. The design has open safety and retention points: replication-ondisk-3 (ancestor-timeline segments marked .done without proof), replication-ondisk-1 (no bound on standby WAL retention) and prior-attempts-1 (no archive_command contract for duplicates). already-exists-1 and already-exists-2 ask what shared mode saves over always mode or a smaller first step. The list needs to settle these before code review.",
+  "verdict_reasoning": "The problem is stated and three fleet operators report it, so level 1 holds. At level 2, four design points are open in v8: the archive_command contract (prior-attempts-1), the 'a' message reaching clients that did not ask (standards-compat-1), unbounded WAL retention (maintenance-fit-3) and ancestor timeline marking (replication-ondisk-3). Shared mode was set aside in message #31 in favour of always mode, so the list also needs to agree on already-exists-1. All of these are fixable.",
   "failing_level": "2",
   "levels": [
     {
@@ -55,44 +55,45 @@
   ],
   "brief": {
     "title": "Add archive_mode = shared so standbys keep WAL until the primary archives it",
-    "problem": "With streaming replication and a shared WAL archive, a promoted standby does not archive segments it received by streaming, so WAL the old primary never archived is missing and PITR has gaps. Andrey Borodin reports gaps in 1–2% of clusters after large datacenter outages. HA tools that re-archive from the standby fail when the standby has already removed those segments.",
-    "proposed_design": "A new archive_mode value, shared, makes the standby keep .ready status for streamed segments and mark them .done only when the upstream reports, through a new replication message, that it archived them. On promotion the standby archives what the primary did not. Cascading standbys relay the report downstream, and v8 adds a negotiated request, a FATAL on unarchiving upstreams and a timed fallback archiving on standbys.",
+    "problem": "With streaming replication and one WAL archive for primary and standby, a promoted standby does not archive WAL it got by streaming. Segments the primary had not archived before it failed are missing from the archive, which breaks point-in-time recovery. Borodin reports gaps in the PITR timeline for 1–2% of clusters after large datacenter outages.",
+    "proposed_design": "A new archive_mode value, shared, makes the standby mark streamed segments .ready and mark them .done only when the upstream reports them archived, so they are not removed earlier. The walsender sends the last archived segment in a new replication message, and cascading standbys relay it. On promotion the standby archives what the primary did not, and v8 adds a fallback where a standby archives itself when no reports arrive.",
     "user_visible_surface": [
-      "New archive_mode value shared, documented in a new \"Continuous archiving in standby\" section.",
-      "New walsender message Byte1('a') carrying the last archived WAL segment.",
-      "New GUC archive_status_report_interval (default 10s), which the standby also uses to request reports in v8.",
+      "archive_mode gains the value shared; Heikki's original patch also forbade on during recovery, and v8's handling of on is not stated.",
+      "New replication protocol message 'a' (WAL archival report) carrying the last archived segment, sent by the walsender.",
+      "New GUC archive_status_report_interval (default 10s) that sets report frequency; in v8 the standby also uses it to request reports.",
       "New column primary_last_archived in pg_stat_wal_receiver.",
-      "Connection rejected with FATAL when the standby requests reports and the upstream does not archive (v8-0003)."
+      "Startup fails with FATAL when a standby requests reports and the upstream does not archive."
     ],
     "author_claims": [
-      "archive_mode = always with an archive tool costs too much; in WAL-G it raises archive storage requests about 2.5 to 3 times.",
-      "Shared mode solves PITR gaps inside Postgres instead of by distributed coordination in archive tools.",
-      "v4 ran in production for about 3 to 4 months and was mostly fine, apart from the cascading and restartpoint bugs fixed later.",
-      "Several large operators report the same problem and want at least last archived WAL exposed on the standby.",
-      "Most users run a shared archive between primary and standbys (Borodin Vladimir, 2014)."
+      "Shared mode fixes PITR gaps after losing the primary, seen in 1–2% of clusters in large outages.",
+      "archive_mode = always with a deduplicating archive tool works, but would raise requests to the archive storage about 2.5 to 3 times.",
+      "Fixing this in external HA tools fails because the standby may already have removed the WAL.",
+      "v4 ran in production for about 3 to 4 months and was mostly fine, apart from the bugs fixed later.",
+      "Several operators of large fleets (Harinath Kanchu, Grigory Smolkin) report the same problem and external workarounds."
     ],
-    "thread_state": "Heikki's 2014–2015 shared mode stalled and only always was committed; Andrey Borodin revived it in 2026, and Kirill Reshke posted v6 to v8. Andrey's last review of v8 lists open issues: fallback timing after idle periods, reports disabled by wal_sender_timeout = 0, ancestor-timeline .done marking, docs, and Windows test paths.",
+    "thread_state": "Heikki proposed shared mode in 2014 but committed only always and the .partial change in 2015; Borodin revived shared mode in 2026, and Reshke posted v6 to v8. Borodin's last review of v8 lists open items: fallback timing after idle periods, report scheduling, ancestor timeline marking, missing docs and Windows test paths.",
     "unclear": [
-      "Whether the unsolicited 'a' message is now opt-in for all clients; v8 summary does not say if pg_receivewal and third-party tools still break.",
-      "No bound on WAL a standby retains while the archive is down; no cap like max_slot_wal_keep_size is described.",
-      "The proposal does not say how shared mode behaves when the standby reads WAL from the archive instead of streaming.",
-      "Fallback archiving on standby means primary and standby may archive the same segment; the required archive_command behavior for duplicates is not stated.",
-      "No committer or other senior reviewer in 2026 has commented on the design."
+      "Whether v8 makes the 'a' message opt-in for all clients, so pg_receivewal and third-party protocol clients no longer break.",
+      "No bound on WAL a shared-mode standby keeps when the archive is down; the thread offers no cap like max_slot_wal_keep_size.",
+      "Why marking an ancestor timeline's switchpoint segment as done is safe, given the ancestor filename may be absent from the archive.",
+      "How shared mode behaves when the standby falls back to reading WAL from the archive with restore_command.",
+      "The fallback archiving in v8 lets primary and cascading standby both archive, which needs an archive_command that accepts identical duplicate files.",
+      "No performance numbers for the walsender reports or the archive_status directory scans."
     ],
     "search_queries": [
       "archive_mode shared standby",
-      "standby WAL archiving promotion missing segments",
-      "archival report walsender message",
-      "primary_last_archived pg_stat_wal_receiver",
+      "standby archive WAL after promotion",
+      "shared WAL archive primary standby",
+      "archival report walsender",
+      "last archived WAL standby",
+      "WAL archive gap failover",
       "standby keep WAL until archived",
-      "archive_status ready done standby",
-      "shared WAL archive failover gaps",
-      "archive_mode always standby archiving"
+      "archive_status ready done standby"
     ]
   },
   "prior_attempts": [
     {
-      "precedent_id": "P4",
+      "precedent_id": "P1",
       "source_id": "revert:1bd42cd70abdbc946ad64c3c8eaefed4bb8b1145",
       "title": "Better fix for \"unarchived WAL files get deleted on crash recovery\" bug.",
       "kind": "revert",
@@ -107,130 +108,32 @@
       "enriched": false,
       "reason": "Revert my earlier fix for the bug that unarchived WAL files get deleted on\ncrash recovery, commit c9cc7e05c6d82a9781883a016c70d95aa4923122. We create\na .done file for files streamed or restored from archive, so the WAL file\nrecycling logic used during normal operation works just as well during\narchive recovery.\n\nPer Fujii Masao's suggestion.",
       "relation": "related_only",
-      "what_is_different": "P4 set the rule that streamed and restored segments get .done so normal recycling works in archive recovery. Shared mode reverses this for streamed segments and keeps them .ready, which needs its own recycling guarantees."
+      "what_is_different": "P1 relies on creating .done for streamed segments so that recycling in recovery works as in normal operation. Shared mode creates .ready for them instead, and the v4 XLogArchiveCheckDone bug (messages #36, #38) came from that change."
     }
   ],
   "objections": [
     {
-      "title": "Ancestor-timeline segments marked .done without proof they are archived",
+      "title": "Shared mode still needs a duplicate-tolerant archive_command, the reason it was dropped",
       "level": "2",
-      "rubric_item": 7,
-      "category": "wal_replication",
-      "touch_points": [
-        "wal_replication"
-      ],
-      "severity": "fixable",
-      "failure_scenario": "After a timeline switch the standby receives a report for the descendant timeline. It marks the ancestor's switchpoint segment .done and recycles it, but the archive holds only the descendant-named file. A later PITR with recovery_target_timeline set to the ancestor cannot find that segment, and the gap stays hidden until a restore is attempted.",
-      "argument": "Message #42 raises this as open: a report on a descendant timeline proves only the common prefix under the descendant filename. The feature exists to remove PITR gaps, so marking a file .done that may be absent from the archive breaks the invariant the mode promises. Messages #21 to #25 show that the switchpoint segment naming is subtle and that recovery depends on it.",
-      "precedent_ids": [],
-      "thread_message_refs": [
-        21,
-        25,
-        42
-      ],
-      "author_must_show": "What guarantees that the ancestor-named switchpoint segment is in the archive before the standby marks it .done, and which archive-only recovery test shows it?",
-      "precedents": [],
-      "thread_refs": [
-        {
-          "index": 21,
-          "from": "Heikki Linnakangas",
-          "date": "2015-04-22T19:01:03Z",
-          "url": "https://www.postgresql.org/message-id/5537EFEF.6060808%40iki.fi"
-        },
-        {
-          "index": 25,
-          "from": "Heikki Linnakangas",
-          "date": "2015-04-23T08:11:19Z",
-          "url": "https://www.postgresql.org/message-id/5538A927.7000407%40iki.fi"
-        },
-        {
-          "index": 42,
-          "from": "Andrey Borodin",
-          "date": "2026-07-31T10:23:51Z",
-          "url": "https://www.postgresql.org/message-id/BEFEAD83-C128-4138-A03B-B5C676BE5E58%40yandex-team.ru"
-        }
-      ],
-      "id": "replication-ondisk-3",
-      "angle": "replication-ondisk",
-      "round": 0,
-      "revised_in_round": null,
-      "status": "survived",
-      "withdrawal": null,
-      "critic": {
-        "refutation_kind": "none",
-        "reasoning": "Message #42 raises this as open and asks for an explanation or an archive-only recovery test. Nothing later in the visible thread answers it.",
-        "original_severity": null
-      },
-      "not_ranked_reason": null
-    },
-    {
-      "title": "Standby WAL retention has no bound when archive reports stop",
-      "level": "2",
-      "rubric_item": 14,
-      "category": "wal_replication",
-      "touch_points": [
-        "wal_replication",
-        "on_disk_pg_upgrade"
-      ],
-      "severity": "fixable",
-      "failure_scenario": "The archive storage goes down for a day while the primary keeps writing WAL. Every shared-mode standby keeps all streamed segments as .ready and fills pg_wal, then stops. After failover the next standby is in the same state, so the whole cluster loses availability because of a backup outage.",
-      "argument": "Message #40 reports this from production and says the downstream fork needed a SIGHUP escape hatch, because archive_mode is PGC_POSTMASTER. v8 (message #41) handles an upstream that is configured not to archive, through the FATAL and the fallback. It does not handle an upstream that is configured to archive but cannot. No cap similar to max_slot_wal_keep_size is proposed, and the docs do not describe this failure mode.",
-      "precedent_ids": [],
-      "thread_message_refs": [
-        40,
-        41
-      ],
-      "author_must_show": "What limits pg_wal growth on a shared-mode standby while archive_command fails on the primary, and how does an operator release that WAL without a restart?",
-      "precedents": [],
-      "thread_refs": [
-        {
-          "index": 40,
-          "from": "Andrey Borodin",
-          "date": "2026-07-22T11:19:11Z",
-          "url": "https://www.postgresql.org/message-id/D33EE83C-0124-48CA-B351-22B50BBD5FCD%40yandex-team.ru"
-        },
-        {
-          "index": 41,
-          "from": "Kirill Reshke",
-          "date": "2026-07-30T14:44:13Z",
-          "url": "https://www.postgresql.org/message-id/CALdSSPiVbHM9%2BXettYcOHDJ6KTLzjNEhdURwXwfzyMV-dtL1Gg%40mail.gmail.com"
-        }
-      ],
-      "id": "replication-ondisk-1",
-      "angle": "replication-ondisk",
-      "round": 0,
-      "revised_in_round": null,
-      "status": "survived",
-      "withdrawal": null,
-      "critic": {
-        "refutation_kind": "none",
-        "reasoning": "Message #40 point 7 reports this from production, and the v8 fallback does not help because the standby's archive_command fails against the same unavailable archive. No cap or runtime release is described in message #41.",
-        "original_severity": null
-      },
-      "not_ranked_reason": null
-    },
-    {
-      "title": "Duplicate archival, which stalled shared mode in 2015, is still unresolved",
-      "level": "2",
-      "rubric_item": 7,
+      "rubric_item": 12,
       "category": "prior_rejection",
       "touch_points": [
         "wal_replication",
         "maintenance_burden"
       ],
       "severity": "fixable",
-      "failure_scenario": "In a v8 setup the standby runs fallback archiving after a quiet period while the primary archives the same segment. An archive_command that refuses to overwrite, as the manual recommends, returns failure. The archiver then retries that segment forever and WAL piles up in pg_wal until someone notices the disk filling.",
-      "argument": "In message #29 Heikki confirmed that a promoted shared-mode standby gets stuck retrying segments the primary had already archived. In message #31 he cut the patch back to always, because the fix needs a duplicate-tolerant command. Message #20 asked the project not to add more cases that users must \"get right\" in archive_command. The v8 fallback (message #41) makes double archival routine, and message #42 shows its timing can race the primary, yet the proposal does not yet define the archive_command contract for identical files.",
+      "failure_scenario": "An operator follows the documented archive_command, which refuses to overwrite an existing file. The primary archives a segment and dies before its report reaches the standby, or a v8 fallback standby archives in parallel with the primary. After promotion the standby's archiver retries the same file indefinitely, .ready files pile up in pg_wal, and the operator learns of it when the disk fills.",
+      "argument": "In message #31, shared mode was set aside because always mode plus a race-free, duplicate-tolerant archive command does the job, and shared mode was kept only for its \"less strict requirements for the archive_command\". Messages #29 and #30 showed shared mode still needs that tolerance at promotion, and message #20 objected to adding more archive_command logic that users must get right. v8 widens the need, because its fallback (message #41) lets the primary and a cascading standby both archive. The author's stated gain over always mode is a 2.5-3x cut in archive requests (message #39), not a simpler archive_command.",
       "precedent_ids": [],
       "thread_message_refs": [
         20,
         29,
         30,
         31,
-        41,
-        42
+        39,
+        41
       ],
-      "author_must_show": "What exact archive_command behavior does shared mode require for a segment already archived, and how does the archiver avoid looping on it with the documented example command?",
+      "author_must_show": "With the documented example archive_command, what happens after promotion or v8 fallback when the segment already exists in the archive, and does the patch ship a command that handles this?",
       "precedents": [],
       "thread_refs": [
         {
@@ -258,16 +161,16 @@
           "url": "https://www.postgresql.org/message-id/555388AF.1080103%40iki.fi"
         },
         {
+          "index": 39,
+          "from": "Kirill Reshke",
+          "date": "2026-07-22T06:07:43Z",
+          "url": "https://www.postgresql.org/message-id/CALdSSPj5CAjdn7UGzBbMJQC4SX8tvxZ8%2B2bVU2KYngY9%2BHTvUg%40mail.gmail.com"
+        },
+        {
           "index": 41,
           "from": "Kirill Reshke",
           "date": "2026-07-30T14:44:13Z",
           "url": "https://www.postgresql.org/message-id/CALdSSPiVbHM9%2BXettYcOHDJ6KTLzjNEhdURwXwfzyMV-dtL1Gg%40mail.gmail.com"
-        },
-        {
-          "index": 42,
-          "from": "Andrey Borodin",
-          "date": "2026-07-31T10:23:51Z",
-          "url": "https://www.postgresql.org/message-id/BEFEAD83-C128-4138-A03B-B5C676BE5E58%40yandex-team.ru"
         }
       ],
       "id": "prior-attempts-1",
@@ -278,42 +181,178 @@
       "withdrawal": null,
       "critic": {
         "refutation_kind": "none",
-        "reasoning": "Message #41 says primary and cascade standby both archive under the v8 fallback, and message #29 confirms a no-overwrite command gets stuck on a duplicate. The visible thread does not state what archive_command must do with an identical existing file.",
+        "reasoning": "Message #29 confirms the archiver gets stuck on a duplicate after promotion, and message #42 shows the v8 fallback can race the primary. The proposal names no archive_command contract for shared mode, and a new patch version or documentation can state one.",
         "original_severity": null
       },
       "not_ranked_reason": null
     },
     {
-      "title": "archive_mode = always with a duplicate-tolerant archive_command already closes the gap",
+      "title": "Unsolicited 'a' replication message breaks existing physical protocol clients",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "wire_protocol",
+      "touch_points": [
+        "wire_protocol",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator runs pg_receivewal, or a third-party backup tool, with a permanent slot against a primary that has archive_mode = shared. The walsender sends an 'a' message, and the client stops with \"unrecognized streaming header\". With the retry loop it reconnects and fails again without progress, so the WAL copy silently stalls.",
+      "argument": "Message #40 reproduced this with pg_receivewal and noted that the PG 18 'p'/'s' pair is sent only on request, to avoid this hazard. Message #41 adds a standby-side request parameter in v8 but does not say whether the walsender still sends 'a' to clients that did not ask. Fixing receivelog.c covers in-core tools only. Older pg_receivewal binaries and external clients keep failing.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        40,
+        41
+      ],
+      "author_must_show": "In v8, does the walsender send 'a' only to clients that asked for it in START_REPLICATION, and what does an old pg_receivewal see?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 40,
+          "from": "Andrey Borodin",
+          "date": "2026-07-22T11:19:11Z",
+          "url": "https://www.postgresql.org/message-id/D33EE83C-0124-48CA-B351-22B50BBD5FCD%40yandex-team.ru"
+        },
+        {
+          "index": 41,
+          "from": "Kirill Reshke",
+          "date": "2026-07-30T14:44:13Z",
+          "url": "https://www.postgresql.org/message-id/CALdSSPiVbHM9%2BXettYcOHDJ6KTLzjNEhdURwXwfzyMV-dtL1Gg%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #40 reproduced the pg_receivewal failure. Message #41 adds a standby-side request, which suggests opt-in, but no message says the walsender stopped sending 'a' to clients that did not ask.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No bound on WAL a shared-mode standby keeps",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The archive storage goes down for a day. Every shared-mode standby keeps all streamed WAL and fills its disk. Because archive_mode is PGC_POSTMASTER, the operator cannot turn retention off without a restart, and HA fails over to the next standby, which repeats the cycle.",
+      "argument": "Message #40 (point 7) reports this from production and says downstream added a SIGHUP GUC to escape it. Message #41's v8 handles only an upstream that never reports. It does not cap retention when reports stop because archiving stalls. Replication slots needed max_slot_wal_keep_size for the same class of problem.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        40,
+        41
+      ],
+      "author_must_show": "What limits WAL growth on a shared-mode standby during a long archive outage, and how does an operator release it without a restart?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 40,
+          "from": "Andrey Borodin",
+          "date": "2026-07-22T11:19:11Z",
+          "url": "https://www.postgresql.org/message-id/D33EE83C-0124-48CA-B351-22B50BBD5FCD%40yandex-team.ru"
+        },
+        {
+          "index": 41,
+          "from": "Kirill Reshke",
+          "date": "2026-07-30T14:44:13Z",
+          "url": "https://www.postgresql.org/message-id/CALdSSPiVbHM9%2BXettYcOHDJ6KTLzjNEhdURwXwfzyMV-dtL1Gg%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #40, point 7, reports this from production, and v8 in message #41 covers only an upstream that never reports. A cap or a reloadable setting in a new version can fix it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Marking ancestor switchpoint segment done may leave an archive gap",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After a timeline switch, the standby marks the ancestor-timeline segment holding the switchpoint as .done because the upstream reported the descendant segment archived. If the ancestor filename was never archived, a later PITR with recovery_target_timeline set to the ancestor cannot find it.",
+      "argument": "Message #42 points out that a descendant report only proves the shared prefix exists under the descendant filename. No explanation or archive-only recovery test was given. This marks a segment as safe to recycle without proof, the gap the feature exists to prevent, and message #12 names PITR to the old timeline as a real use.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        12,
+        21,
+        42
+      ],
+      "author_must_show": "What guarantees that the ancestor-timeline filename of the switchpoint segment is in the archive before the standby recycles it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 12,
+          "from": "Michael Paquier",
+          "date": "2015-04-21T09:04:59Z",
+          "url": "https://www.postgresql.org/message-id/CAB7nPqS%3DV%3DLF-JZsv9eGF84joQ3jxugt4gkOK6kD1CiB98_vWg%40mail.gmail.com"
+        },
+        {
+          "index": 21,
+          "from": "Heikki Linnakangas",
+          "date": "2015-04-22T19:01:03Z",
+          "url": "https://www.postgresql.org/message-id/5537EFEF.6060808%40iki.fi"
+        },
+        {
+          "index": 42,
+          "from": "Andrey Borodin",
+          "date": "2026-07-31T10:23:51Z",
+          "url": "https://www.postgresql.org/message-id/BEFEAD83-C128-4138-A03B-B5C676BE5E58%40yandex-team.ru"
+        }
+      ],
+      "id": "replication-ondisk-3",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #42 raises this against v8 and the thread holds no answer or archive-only recovery test. An explanation or a test in a new version can settle it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "archive_mode = always with an idempotent archive_command already covers this",
       "level": "1b",
       "rubric_item": 12,
       "category": "does_not_fit",
       "touch_points": [
         "does_not_fit",
-        "wire_protocol",
-        "new_guc",
-        "maintenance_burden"
+        "maintenance_burden",
+        "wire_protocol"
       ],
       "severity": "fixable",
-      "failure_scenario": "An operator who runs archive_mode = always on standbys with a shared archive and a duplicate-tolerant archive_command already gets a gap-free archive after promotion. Shared mode adds a second archiving mode, a replication message, a GUC and fallback logic for the same outcome. Every later change to archiving or walsender then has two cooperating paths to keep correct.",
-      "argument": "In message #31 Heikki dropped shared mode, saying always plus a race-free archive_command that handles duplicates makes it unnecessary. The only answer is cost: about 2.5 to 3 times more archive storage requests in WAL-G (messages #32, #39). That makes always more expensive, not impossible. Shared mode does not remove the duplicate requirement either: promotion re-archives what the primary may already have stored (message #29), and v8 fallback lets primary and standby archive the same segment (message #41).",
+      "failure_scenario": "An operator sets archive_mode = always on primary and standby, with a shared archive and an archive_command that returns success when an identical file already exists. After the primary is lost, the archive has no gap. The only cost is more archive requests, so core would carry a second mode, protocol message and GUC to save storage requests.",
+      "argument": "Message #31 says that always plus a race-free, duplicate-tolerant archive_command makes shared unnecessary. Message #32 and message #39 do not say always fails; they say it costs 2.5 to 3 times more requests to the archive storage. That is a cost of one tool's design, which a HEAD check would reduce, as message #32 notes. The v8 fallback in message #41 also lets primary and cascading standby archive the same segments, so a duplicate-tolerant archive_command is needed anyway.",
       "precedent_ids": [],
       "thread_message_refs": [
-        29,
         31,
         32,
         39,
         41
       ],
-      "author_must_show": "Since shared mode still needs a duplicate-tolerant archive_command for promotion and fallback, which setups cannot use archive_mode = always, beyond the extra storage requests?",
+      "author_must_show": "Given that v8 already needs a duplicate-tolerant archive_command, what can shared mode do that archive_mode = always with that command cannot do, beyond fewer archive requests?",
       "precedents": [],
       "thread_refs": [
-        {
-          "index": 29,
-          "from": "Heikki Linnakangas",
-          "date": "2015-05-13T12:53:04Z",
-          "url": "https://www.postgresql.org/message-id/55534930.4040905%40iki.fi"
-        },
         {
           "index": 31,
           "from": "Heikki Linnakangas",
@@ -347,32 +386,79 @@
       "withdrawal": null,
       "critic": {
         "refutation_kind": "none",
-        "reasoning": "Three operators report the gap problem, so the need is common, but the only stated case against always mode is request cost. Messages #29 and #41 show shared mode still needs a duplicate-tolerant archive_command, and the thread does not say what it then saves.",
+        "reasoning": "Messages #32 and #39 state only a cost reason against always, so the question is fair. Its weight is lower because three fleet operators report the problem, and the extra requests come from always mode itself, not from one tool.",
         "original_severity": null
       },
       "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "No committer who knows archiving and timelines is engaged",
+      "level": "2",
+      "rubric_item": 16,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After commit, a report arrives that PITR to an ancestor timeline fails because the switchpoint segment was marked done but never archived under that name. The committer who pushed it must work out timeline-switch semantics alone, and the reviewers in the thread are not committers.",
+      "argument": "The 2026 thread has the authors and peer reviewers only. Heikki, who designed shared mode, dropped it in message #31, and no committer has replied since message #31. Message #42 still lists open design questions in archiver, walsender and timeline code: ancestor-timeline marking, report scheduling and fallback timing. Those are the parts that need an owner with deep knowledge.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        31,
+        42
+      ],
+      "author_must_show": "Which committer familiar with archiving and timeline switches has reviewed the v8 design, and do they agree with ancestor-timeline marking?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 31,
+          "from": "Heikki Linnakangas",
+          "date": "2015-05-13T17:23:59Z",
+          "url": "https://www.postgresql.org/message-id/555388AF.1080103%40iki.fi"
+        },
+        {
+          "index": 42,
+          "from": "Andrey Borodin",
+          "date": "2026-07-31T10:23:51Z",
+          "url": "https://www.postgresql.org/message-id/BEFEAD83-C128-4138-A03B-B5C676BE5E58%40yandex-team.ru"
+        }
+      ],
+      "id": "maintenance-fit-4",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The thread shows no committer reply after message #31, and message #42 leaves timeline and walsender questions open. Under the rubric this belongs in the committability field and must not raise the verdict.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
     },
     {
-      "title": "Exposing the upstream archive position may be enough for external tools",
+      "title": "Expose primary_last_archived and use wal_keep_size, without a new mode",
       "level": "1b",
       "rubric_item": 11,
-      "category": "desirability",
+      "category": "does_not_fit",
       "touch_points": [
         "does_not_fit",
-        "maintenance_burden",
+        "new_guc",
         "wire_protocol"
       ],
       "severity": "fixable",
-      "failure_scenario": "Core takes on WAL retention, cascading relay, request negotiation, a FATAL on connect and timed fallback archiving. The open v8 issues show these are hard to get right: idle-period races, wal_sender_timeout = 0, ancestor timelines. HA tools would have managed with a queryable primary_last_archived and a bounded retention setting.",
-      "argument": "In message #33 a second operator says that exposing last_archived_wal on the standby alone \"would unblock everyone solving this problem externally\". That is the 0002 piece. Standby-side retention does need core help, and a committer would likely ask whether that help can stay small. One candidate is a primary_last_archived column plus a retention rule, with promotion-time archiving left to the HA tool, which already re-archives from the standby (message #32).",
+      "failure_scenario": "An HA tool reads primary_last_archived on the standby, and wal_keep_size keeps recent WAL there. At promotion the tool archives the segments after the last reported one. If archive lag exceeds wal_keep_size, a gap appears, but a shared mode with the cap asked for in message #40 has the same gap.",
+      "argument": "Message #33 says that exposing last_archived_wal on the standby alone would unblock external solutions. The author's reply is that external tools fail because the standby already removed the WAL. wal_keep_size already keeps WAL on a standby, with a bound. Unbounded retention is the open operational problem in message #40, item 7.",
       "precedent_ids": [],
       "thread_message_refs": [
         32,
         33,
-        41,
-        42
+        40
       ],
-      "author_must_show": "What would HA tools still be unable to do if core only exposed primary_last_archived and held back recycling of unconfirmed segments, without fallback archiving?",
+      "author_must_show": "Why are the report message, the view column and wal_keep_size not enough for HA tools, and which failures need the in-core shared mode?",
       "precedents": [],
       "thread_refs": [
         {
@@ -388,16 +474,10 @@
           "url": "https://www.postgresql.org/message-id/41D301A5-AB81-4B21-8AC1-9DD602362D31%40apple.com"
         },
         {
-          "index": 41,
-          "from": "Kirill Reshke",
-          "date": "2026-07-30T14:44:13Z",
-          "url": "https://www.postgresql.org/message-id/CALdSSPiVbHM9%2BXettYcOHDJ6KTLzjNEhdURwXwfzyMV-dtL1Gg%40mail.gmail.com"
-        },
-        {
-          "index": 42,
+          "index": 40,
           "from": "Andrey Borodin",
-          "date": "2026-07-31T10:23:51Z",
-          "url": "https://www.postgresql.org/message-id/BEFEAD83-C128-4138-A03B-B5C676BE5E58%40yandex-team.ru"
+          "date": "2026-07-22T11:19:11Z",
+          "url": "https://www.postgresql.org/message-id/D33EE83C-0124-48CA-B351-22B50BBD5FCD%40yandex-team.ru"
         }
       ],
       "id": "already-exists-2",
@@ -408,108 +488,7 @@
       "withdrawal": null,
       "critic": {
         "refutation_kind": "none",
-        "reasoning": "Message #33, from an independent operator, says exposing the last archived segment on the standby would be enough for external solutions. The thread does not explain why the smaller piece, with or without a retention rule, cannot go first.",
-        "original_severity": null
-      },
-      "not_ranked_reason": null
-    }
-  ],
-  "other_surviving": [
-    {
-      "title": "Unsolicited 'a' walsender message breaks existing physical protocol clients",
-      "level": "2",
-      "rubric_item": 12,
-      "category": "wire_protocol",
-      "touch_points": [
-        "wire_protocol",
-        "backpatchability"
-      ],
-      "severity": "fixable",
-      "failure_scenario": "An operator sets archive_mode = shared on a primary that also serves pg_receivewal, an older pg_basebackup --wal-method=stream, or a third-party WAL receiver on a permanent slot. Each client gets Byte1('a'), reports an unrecognized header and reconnects in a loop without making progress. The operator learns this when the dedicated WAL archive stops growing.",
-      "argument": "Message #40 reproduced this with pg_receivewal and noted that the PG 18 'p'/'s' pair is sent only on request. v8-0003 adds a standby-side request (message #41), but the material does not say the walsender stops sending 'a' to clients that never asked for it. Teaching receivelog.c to skip unknown messages does not help older client binaries or tools outside the tree. A committer would likely require that 'a' be sent only after an explicit request, following the existing pattern.",
-      "precedent_ids": [],
-      "thread_message_refs": [
-        40,
-        41
-      ],
-      "author_must_show": "In v8, does any walsender send 'a' to a client that did not request reports, and how does an older pg_receivewal behave against a shared-mode primary?",
-      "precedents": [],
-      "thread_refs": [
-        {
-          "index": 40,
-          "from": "Andrey Borodin",
-          "date": "2026-07-22T11:19:11Z",
-          "url": "https://www.postgresql.org/message-id/D33EE83C-0124-48CA-B351-22B50BBD5FCD%40yandex-team.ru"
-        },
-        {
-          "index": 41,
-          "from": "Kirill Reshke",
-          "date": "2026-07-30T14:44:13Z",
-          "url": "https://www.postgresql.org/message-id/CALdSSPiVbHM9%2BXettYcOHDJ6KTLzjNEhdURwXwfzyMV-dtL1Gg%40mail.gmail.com"
-        }
-      ],
-      "id": "standards-compat-1",
-      "angle": "standards-compat",
-      "round": 0,
-      "revised_in_round": null,
-      "status": "survived",
-      "withdrawal": null,
-      "critic": {
-        "refutation_kind": "none",
-        "reasoning": "Message #41 adds a standby-side request, but it does not say the walsender stops sending 'a' to clients that did not ask. The pg_receivewal failure reproduced in message #40 is therefore not shown to be closed.",
-        "original_severity": null
-      },
-      "not_ranked_reason": "not among the strongest objections"
-    },
-    {
-      "title": "archive_status_report_interval combines three roles and can reject replication connections",
-      "level": "2",
-      "rubric_item": 10,
-      "category": "new_guc",
-      "touch_points": [
-        "new_guc",
-        "wal_replication"
-      ],
-      "severity": "fixable",
-      "failure_scenario": "A standby with archive_mode = shared connects to an upstream with archive_mode = on or off, for example during maintenance or as a middle node in an on->on->shared chain. In v8 it either gets FATAL and stops streaming or starts fallback archiving after three intervals. The operator changes the interval with a reload and nothing changes on the open connection.",
-      "argument": "The same GUC sets the walsender report frequency, serves as the standby's opt-in request, and drives the fallback timer (messages #38, #41). Message #42 notes that the deadline is ignored when wal_sender_timeout = 0, that SIGHUP does not renegotiate, and that the GUC is missing from config.sgml. A connection that streamed before now fails because of an archiving setting, which a committer would likely want as an explicit, separate option.",
-      "precedent_ids": [],
-      "thread_message_refs": [
-        38,
-        41,
-        42
-      ],
-      "author_must_show": "Why should one GUC control report frequency, opt-in negotiation and fallback timing, and why is FATAL better than a WARNING with streaming continuing?",
-      "precedents": [],
-      "thread_refs": [
-        {
-          "index": 38,
-          "from": "Kirill Reshke",
-          "date": "2026-07-20T19:20:49Z",
-          "url": "https://www.postgresql.org/message-id/CALdSSPj%3D7DnBXjFCWtTeiRrc22vHtnXUi_U9J9vd9nXvfrXyAg%40mail.gmail.com"
-        },
-        {
-          "index": 41,
-          "from": "Kirill Reshke",
-          "date": "2026-07-30T14:44:13Z",
-          "url": "https://www.postgresql.org/message-id/CALdSSPiVbHM9%2BXettYcOHDJ6KTLzjNEhdURwXwfzyMV-dtL1Gg%40mail.gmail.com"
-        },
-        {
-          "index": 42,
-          "from": "Andrey Borodin",
-          "date": "2026-07-31T10:23:51Z",
-          "url": "https://www.postgresql.org/message-id/BEFEAD83-C128-4138-A03B-B5C676BE5E58%40yandex-team.ru"
-        }
-      ],
-      "id": "standards-compat-3",
-      "angle": "standards-compat",
-      "round": 0,
-      "revised_in_round": null,
-      "status": "survived",
-      "withdrawal": null,
-      "critic": {
-        "refutation_kind": "none",
-        "reasoning": "Messages #41 and #42 confirm the GUC sets report frequency, acts as the request and drives the fallback timer, and that a reload does not renegotiate. The FATAL has a stated purpose, avoiding unbounded retention, but the thread does not weigh it against a warning.",
+        "reasoning": "Message #33 asks for this smaller step, and the thread does not say why it is not enough. The comparison is only partly fair, because wal_keep_size keeps a fixed amount and leaves a gap when archive lag exceeds it.",
         "original_severity": null
       },
       "not_ranked_reason": "not among the strongest objections"
@@ -517,85 +496,25 @@
   ],
   "refuted": [
     {
-      "title": "The 2015 conclusion that always mode suffices is not yet answered",
-      "level": "1b",
-      "rubric_item": 2,
-      "category": "prior_rejection",
-      "touch_points": [
-        "wire_protocol",
-        "maintenance_burden"
-      ],
-      "severity": "fixable",
-      "failure_scenario": "The project adds a new archive_mode value, a walsender message, a GUC and connection-level FATAL handling. The stated gain is fewer archive storage requests in one tool. Other users already get gap-free archives with always and a duplicate-tolerant command, so they gain nothing and still carry the protocol and configuration surface.",
-      "argument": "Message #31 ended the 2015 attempt by concluding that always plus a race-free, duplicate-tolerant archive_command removes the need for shared mode. The 2026 answer (messages #32, #39) is cost: 2.5 to 3 times more requests in WAL-G, and message #32 notes a HEAD check would lower it. Message #33 says exposing the last archived segment on the standby alone would unblock external solutions. A committer would likely ask whether that smaller piece, v8-0002, covers the need.",
-      "precedent_ids": [],
-      "thread_message_refs": [
-        31,
-        32,
-        33,
-        39
-      ],
-      "author_must_show": "Why can archive tools not close the gap with always mode and a cheap existence check, given primary_last_archived exposed on the standby?",
-      "precedents": [],
-      "thread_refs": [
-        {
-          "index": 31,
-          "from": "Heikki Linnakangas",
-          "date": "2015-05-13T17:23:59Z",
-          "url": "https://www.postgresql.org/message-id/555388AF.1080103%40iki.fi"
-        },
-        {
-          "index": 32,
-          "from": "Andrey Borodin",
-          "date": "2026-02-12T06:56:10Z",
-          "url": "https://www.postgresql.org/message-id/D4B53AE3-B7AF-4BE6-9CB6-44956B05DE72%40yandex-team.ru"
-        },
-        {
-          "index": 33,
-          "from": "Harinath Kanchu",
-          "date": "2026-02-20T20:57:35Z",
-          "url": "https://www.postgresql.org/message-id/41D301A5-AB81-4B21-8AC1-9DD602362D31%40apple.com"
-        },
-        {
-          "index": 39,
-          "from": "Kirill Reshke",
-          "date": "2026-07-22T06:07:43Z",
-          "url": "https://www.postgresql.org/message-id/CALdSSPj5CAjdn7UGzBbMJQC4SX8tvxZ8%2B2bVU2KYngY9%2BHTvUg%40mail.gmail.com"
-        }
-      ],
-      "id": "prior-attempts-2",
-      "angle": "prior-attempts",
-      "round": 0,
-      "revised_in_round": null,
-      "status": "refuted",
-      "withdrawal": null,
-      "critic": {
-        "refutation_kind": "not_specific",
-        "reasoning": "Duplicate of already-exists-1 for the always-mode point and of already-exists-2 for the smaller-piece point. Message #31 also says shared mode \"might still make sense as a future patch\", so it is not a conclusion against it.",
-        "original_severity": null
-      },
-      "not_ranked_reason": null
-    },
-    {
-      "title": "Fallback archiving changes the archive_command contract without documenting it",
+      "title": "Fallback archiving makes shared mode depend on duplicate-tolerant archive_command",
       "level": "2",
       "rubric_item": 12,
       "category": "design",
       "touch_points": [
-        "backpatchability"
+        "maintenance_burden"
       ],
       "severity": "fixable",
-      "failure_scenario": "A user follows the manual and writes an archive_command that refuses to overwrite an existing file. With v8 fallback archiving, the primary and a cascading standby both archive the same segment, or a promoted standby re-archives segments the dead primary already stored. The command fails on each duplicate and the archiver retries forever while pg_wal grows.",
-      "argument": "Message #29 confirms that a duplicate makes the archiver stuck, and message #41 states that in v8 both primary and cascade standby archive. The current docs tell users to refuse overwrites, and message #20 objects to adding more cases that users must handle correctly in their scripts. Message #42 says the fallback can race the primary after idle periods, so duplicates are a normal case.",
+      "failure_scenario": "A user sets up an on -> on -> shared cascade with the archive_command from the documentation, which refuses to overwrite. The v8 fallback lets the cascading standby archive segments the primary also archives. The command fails on the duplicate, the archiver retries forever, and .ready files pile up on the standby.",
+      "argument": "The 2015 design (message #1 docs) said a shared-mode standby does not archive while in recovery. Message #41 changes that, so primary and standby can archive the same file. Message #42 shows that the fallback timer can fire after an idle period while the primary is still archiving. Message #20 objected to adding more behaviour that only works if users write their archive_command correctly. Message #31 dropped shared mode for this reason and kept always.",
       "precedent_ids": [],
       "thread_message_refs": [
         20,
         29,
-        30,
+        31,
         41,
         42
       ],
-      "author_must_show": "What archive_command behavior does shared mode require for an identical existing file, and how do the documented examples change to meet it?",
+      "author_must_show": "What archive_command contract does shared mode require in v8, and how does a user with the documented non-overwriting command find out before the archiver gets stuck?",
       "precedents": [],
       "thread_refs": [
         {
@@ -611,10 +530,10 @@
           "url": "https://www.postgresql.org/message-id/55534930.4040905%40iki.fi"
         },
         {
-          "index": 30,
-          "from": "Robert Haas",
-          "date": "2015-05-13T13:29:49Z",
-          "url": "https://www.postgresql.org/message-id/CA%2BTgmoY%2Bp5oowv1%3DZ44Zu14V70XKQZBkt%2BoEmwB%2BgAYYfDAV1Q%40mail.gmail.com"
+          "index": 31,
+          "from": "Heikki Linnakangas",
+          "date": "2015-05-13T17:23:59Z",
+          "url": "https://www.postgresql.org/message-id/555388AF.1080103%40iki.fi"
         },
         {
           "index": 41,
@@ -637,33 +556,98 @@
       "withdrawal": null,
       "critic": {
         "refutation_kind": "not_specific",
-        "reasoning": "Duplicate of prior-attempts-1, which states the same duplicate-archiving scenario and the same missing archive_command contract.",
+        "reasoning": "Duplicate of prior-attempts-1, which covers both the promotion case and the v8 fallback case.",
         "original_severity": null
       },
       "not_ranked_reason": null
     },
     {
-      "title": "Fallback archiving brings back duplicate archiving that shared mode was meant to avoid",
+      "title": "Meaning of archive_mode = on during recovery is not stated",
       "level": "2",
       "rubric_item": 12,
-      "category": "design",
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user restores a base backup taken from a primary with archive_mode = on, the most common setting, and starts it as a standby or for PITR. If v8 keeps the 2015 rule, startup fails with FATAL. If v8 changes what on does in recovery, existing standbys behave differently after upgrade.",
+      "argument": "Heikki's patch forbade on in recovery (docs hunk, message #5), and message #10 pointed out that this breaks restores of existing base backups. Message #14 and message #15 asked that on keep its current behaviour. The v6 to v8 messages do not say which rule applies now.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        5,
+        10,
+        11,
+        14,
+        15
+      ],
+      "author_must_show": "In v8, does a standby with archive_mode = on start and behave exactly as in Postgres 19?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Heikki Linnakangas",
+          "date": "2014-12-19T20:56:40Z",
+          "url": "https://www.postgresql.org/message-id/54949108.3030109%40vmware.com"
+        },
+        {
+          "index": 10,
+          "from": "Michael Paquier",
+          "date": "2015-04-21T06:53:22Z",
+          "url": "https://www.postgresql.org/message-id/CAB7nPqQE179yogtg%2BnKvdwt9KROxTyt-EjumKOMbuXQtea5r3w%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Heikki Linnakangas",
+          "date": "2015-04-21T07:38:25Z",
+          "url": "https://www.postgresql.org/message-id/5535FE71.1010905%40iki.fi"
+        },
+        {
+          "index": 14,
+          "from": "Robert Haas",
+          "date": "2015-04-21T21:42:28Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmoZhcbyDBr8UdGu%3Dy5kmnVcSwcnaBqqV%3DUnP%2BoCGiNQGeQ%40mail.gmail.com"
+        },
+        {
+          "index": 15,
+          "from": "Michael Paquier",
+          "date": "2015-04-22T00:30:16Z",
+          "url": "https://www.postgresql.org/message-id/CAB7nPqRhsOHSc3zyL0qw4-CRphb-9Nm4sXhRCA4iKHUhkdFysA%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "Message #41 describes an on -> on -> shared cascade as a setup v8 handles, so a standby with archive_mode = on starts in v8. No 2026 message proposes changing what on does in recovery, so the second branch has no support.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Shared mode still needs a duplicate-tolerant archive_command",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
       "touch_points": [
         "wal_replication",
         "maintenance_burden"
       ],
       "severity": "fixable",
-      "failure_scenario": "After an idle period the primary archives a new segment, but no report reaches the standby in time, and the standby archives the same segment. If archive_command refuses to overwrite an existing file, as the docs advise, one of the two archivers fails and retries that segment forever while .ready files pile up behind it.",
-      "argument": "In message #31 Heikki kept shared mode for later because it has \"less strict requirements for the archive_command\" than always mode. The v8 fallback (message #41) has primary and standby archive the same segments again. Message #42 shows that the timer fires wrongly after idle periods and when wal_sender_timeout = 0. Messages #20 and #30 warn against leaving correct duplicate handling to user scripts, and the proposal does not state what archive_command must do with an identical existing file.",
+      "failure_scenario": "The primary archives a segment and dies before the report reaches the standby, or v8 fallback archiving runs on a cascading standby while the primary also archives. With the documented `test ! -f` style archive_command, the second copy fails. The archiver retries forever and WAL piles up on the new primary.",
+      "argument": "Message #29 confirms the archiver gets stuck in this case. Message #31 dropped shared mode because duplicate-safe archiving made it unnecessary. v8 fallback (message #41) makes double archival a normal path, and message #42 shows it can race the primary after an idle period. Message #20 objects to leaving correctness to user scripts, and the proposal still ships no duplicate-safe archive_command.",
       "precedent_ids": [],
       "thread_message_refs": [
         20,
         29,
-        30,
         31,
         41,
         42
       ],
-      "author_must_show": "What exact contract must archive_command meet under the fallback, and why does it no longer need the race-free duplicate handling that made always mode sufficient?",
+      "author_must_show": "Which archive_command is documented as correct for shared mode, and what does the archiver do when it meets an identical file already in the archive?",
       "precedents": [],
       "thread_refs": [
         {
@@ -677,12 +661,6 @@
           "from": "Heikki Linnakangas",
           "date": "2015-05-13T12:53:04Z",
           "url": "https://www.postgresql.org/message-id/55534930.4040905%40iki.fi"
-        },
-        {
-          "index": 30,
-          "from": "Robert Haas",
-          "date": "2015-05-13T13:29:49Z",
-          "url": "https://www.postgresql.org/message-id/CA%2BTgmoY%2Bp5oowv1%3DZ44Zu14V70XKQZBkt%2BoEmwB%2BgAYYfDAV1Q%40mail.gmail.com"
         },
         {
           "index": 31,
@@ -703,6 +681,52 @@
           "url": "https://www.postgresql.org/message-id/BEFEAD83-C128-4138-A03B-B5C676BE5E58%40yandex-team.ru"
         }
       ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of prior-attempts-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No bound on WAL a shared-mode standby retains",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The archive storage is down for hours while the primary keeps trying to archive. Every shared-mode standby keeps all .ready segments, and v8 fallback archiving fails against the same archive. Each standby fills its disk, and the operator finds out when replicas go down during the outage.",
+      "argument": "Message #40 reports this from production: archive_mode is PGC_POSTMASTER, so there is no runtime way out, and the authors added a downstream SIGHUP escape hatch. v8-0003 covers an upstream that does not archive at all, but not an archive that fails. Nothing like max_slot_wal_keep_size is proposed, so the setting meant to protect PITR can take down replicas too.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        40,
+        41
+      ],
+      "author_must_show": "What caps standby WAL retention when archiving fails, and how does the operator change that cap without a restart?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 40,
+          "from": "Andrey Borodin",
+          "date": "2026-07-22T11:19:11Z",
+          "url": "https://www.postgresql.org/message-id/D33EE83C-0124-48CA-B351-22B50BBD5FCD%40yandex-team.ru"
+        },
+        {
+          "index": 41,
+          "from": "Kirill Reshke",
+          "date": "2026-07-30T14:44:13Z",
+          "url": "https://www.postgresql.org/message-id/CALdSSPiVbHM9%2BXettYcOHDJ6KTLzjNEhdURwXwfzyMV-dtL1Gg%40mail.gmail.com"
+        }
+      ],
       "id": "replication-ondisk-2",
       "angle": "replication-ondisk",
       "round": 0,
@@ -711,28 +735,29 @@
       "withdrawal": null,
       "critic": {
         "refutation_kind": "not_specific",
-        "reasoning": "Duplicate of prior-attempts-1. The added point about lighter archive_command requirements than always mode is covered by already-exists-1.",
+        "reasoning": "Duplicate of maintenance-fit-3, which also describes the repeated failover.",
         "original_severity": null
       },
       "not_ranked_reason": null
     },
     {
-      "title": "Unsolicited 'a' replication message may still break other physical protocol clients",
+      "title": "Unsolicited 'a' replication message breaks existing protocol clients",
       "level": "2",
-      "rubric_item": 12,
+      "rubric_item": 10,
       "category": "wire_protocol",
       "touch_points": [
-        "wire_protocol"
+        "wire_protocol",
+        "abi_extension_api"
       ],
       "severity": "fixable",
-      "failure_scenario": "A user runs pg_receivewal or a third-party WAL receiver with a permanent slot against a shared-mode primary. The client sees an unknown 'a' header, drops the connection, and reconnects every few seconds without making progress, so the second WAL copy silently stops advancing.",
-      "argument": "Message #40 reproduced this with pg_receivewal and pointed out that PrimaryStatusUpdate is sent only on request for this reason. v8 adds a request from the standby (message #41), but neither message says that the walsender now sends 'a' only to clients that asked for it. The doc hunk in protocol.sgml still describes 'a' as a message the walsender sends unprompted.",
+      "failure_scenario": "A site runs pg_receivewal or a third-party WAL receiver with a permanent slot against a shared-mode primary. The walsender pushes an 'a' message, the client drops the connection with \"unrecognized streaming header\", and it reconnects in a loop with no progress. The site finds out when its archive or backup stops advancing.",
+      "argument": "Message #40 reproduced this against pg_receivewal. It notes that the 'p'/'s' exchange added in PG 18 is sent only on request, likely to avoid this problem. Message #41 adds a standby-side request parameter, but the material does not show that the walsender sends 'a' only to clients that asked for it. Changing receivelog.c does not fix clients outside the tree.",
       "precedent_ids": [],
       "thread_message_refs": [
         40,
         41
       ],
-      "author_must_show": "In v8, does the walsender send 'a' only after an explicit client request, and do pg_receivewal and pg_basebackup --wal-method=stream keep working against a shared-mode primary?",
+      "author_must_show": "Does v8 send the 'a' message only to clients that requested it in START_REPLICATION, so unchanged physical-protocol clients never receive it?",
       "precedents": [],
       "thread_refs": [
         {
@@ -756,44 +781,44 @@
       "withdrawal": null,
       "critic": {
         "refutation_kind": "not_specific",
-        "reasoning": "Duplicate of standards-compat-1. The protocol.sgml hunk it cites is from the 2014 patch in message #5, so it says nothing about v8.",
+        "reasoning": "Duplicate of standards-compat-1, which also covers older pg_receivewal binaries.",
         "original_severity": null
       },
       "not_ranked_reason": null
     },
     {
-      "title": "Timed fallback brings back duplicate archiving that shared mode was meant to avoid",
+      "title": "v8 fallback brings back dual archiving that shared mode was meant to avoid",
       "level": "2",
-      "rubric_item": 9,
-      "category": "maintenance_burden",
+      "rubric_item": 12,
+      "category": "design",
       "touch_points": [
         "maintenance_burden",
         "wal_replication"
       ],
       "severity": "fixable",
-      "failure_scenario": "An operator runs primary and standby in shared mode with a plain test-and-cp archive_command. After an idle period the standby archives a segment first, the primary's archive_command then fails on the existing file, and archiving stalls. The operator finds out when pg_wal fills or the archive lag alert fires.",
-      "argument": "Shared mode was meant to have lighter requirements on archive_command than `always` (message #31). v8-0003 adds standby archiving on a timer, so both nodes can archive one segment, and message #42 shows the timer already fires wrongly after idle periods. Robert Haas objected in message #20 to pushing correctness onto archive_command scripts, and the proposal still does not say what archive_command must do with duplicates. Each new state (relay, negotiation, FATAL, fallback timer) adds another place where .ready/.done handling can silently diverge.",
+      "failure_scenario": "In an on->on->shared cascade, the v8 fallback lets the cascading standby archive the same segments as the primary. An operator with a plain `test ! -f && cp` archive_command sees the archiver fail on every duplicate. WAL then piles up on the standby, and the operator finds out when the disk fills.",
+      "argument": "Message #31 kept shared mode alive because it 'has less strict requirements for the archive_command' than always. Message #41 now archives from both primary and cascading standby, so shared mode again needs an idempotent archive_command. Message #42 shows the idle-period race in the fallback timer. Once fallback can archive duplicates, the cost gap with always plus a deduplicating tool, which is the stated motivation in message #39, gets smaller.",
       "precedent_ids": [],
       "thread_message_refs": [
-        20,
         31,
+        39,
         41,
         42
       ],
-      "author_must_show": "With the fallback in place, what must archive_command do with duplicates, and how does that requirement differ from what archive_mode = always already demands?",
+      "author_must_show": "With the fallback in place, which archive_command requirements does shared mode still drop compared with always, and how often does fallback archiving run in your fleet?",
       "precedents": [],
       "thread_refs": [
-        {
-          "index": 20,
-          "from": "Robert Haas",
-          "date": "2015-04-22T18:58:54Z",
-          "url": "https://www.postgresql.org/message-id/CA%2BTgmoY7wkYi-27LOnm128RRw8cQ%3DtNhJdPGgJ0JgpQZ-uwUuA%40mail.gmail.com"
-        },
         {
           "index": 31,
           "from": "Heikki Linnakangas",
           "date": "2015-05-13T17:23:59Z",
           "url": "https://www.postgresql.org/message-id/555388AF.1080103%40iki.fi"
+        },
+        {
+          "index": 39,
+          "from": "Kirill Reshke",
+          "date": "2026-07-22T06:07:43Z",
+          "url": "https://www.postgresql.org/message-id/CALdSSPj5CAjdn7UGzBbMJQC4SX8tvxZ8%2B2bVU2KYngY9%2BHTvUg%40mail.gmail.com"
         },
         {
           "index": 41,
@@ -816,84 +841,37 @@
       "withdrawal": null,
       "critic": {
         "refutation_kind": "not_specific",
-        "reasoning": "Duplicate of prior-attempts-1. Its last sentence about each new state diverging silently names no concrete case.",
+        "reasoning": "Duplicate of prior-attempts-1. Its extra point about a smaller cost gap is not supported, because the fallback archives only when no reports arrive.",
         "original_severity": null
       },
       "not_ranked_reason": null
     },
     {
-      "title": "Standby WAL retention has no bound and no runtime escape",
+      "title": "WAL recycling gains a third mode that future changes can miss",
       "level": "2",
-      "rubric_item": 14,
-      "category": "design",
-      "touch_points": [
-        "wal_replication",
-        "maintenance_burden"
-      ],
-      "severity": "fixable",
-      "failure_scenario": "Archive storage goes down for a day. Every shared-mode standby keeps all streamed WAL as .ready, fills its disk and fails. Because archive_mode is PGC_POSTMASTER, the operator cannot turn retention off without a restart.",
-      "argument": "Andrey Borodin reports this from production in message #40 point 7, and his downstream fix was an extra SIGHUP GUC. v8 handles misconfiguration with a FATAL and a fallback. It does not cap retention while a correctly configured archive is slow or down. The design therefore creates retained state with no matching release path, unlike replication slots, which have max_slot_wal_keep_size.",
-      "precedent_ids": [],
-      "thread_message_refs": [
-        40,
-        41
-      ],
-      "author_must_show": "What limits WAL kept on a shared-mode standby while the archive is unavailable, and what does the operator see before the disk fills?",
-      "precedents": [],
-      "thread_refs": [
-        {
-          "index": 40,
-          "from": "Andrey Borodin",
-          "date": "2026-07-22T11:19:11Z",
-          "url": "https://www.postgresql.org/message-id/D33EE83C-0124-48CA-B351-22B50BBD5FCD%40yandex-team.ru"
-        },
-        {
-          "index": 41,
-          "from": "Kirill Reshke",
-          "date": "2026-07-30T14:44:13Z",
-          "url": "https://www.postgresql.org/message-id/CALdSSPiVbHM9%2BXettYcOHDJ6KTLzjNEhdURwXwfzyMV-dtL1Gg%40mail.gmail.com"
-        }
-      ],
-      "id": "maintenance-fit-2",
-      "angle": "maintenance-fit",
-      "round": 0,
-      "revised_in_round": null,
-      "status": "refuted",
-      "withdrawal": null,
-      "critic": {
-        "refutation_kind": "not_specific",
-        "reasoning": "Duplicate of replication-ondisk-1, which gives the same scenario and also notes that v8 covers only an upstream configured not to archive.",
-        "original_severity": null
-      },
-      "not_ranked_reason": null
-    },
-    {
-      "title": "No committer engaged since the 2026 revival",
-      "level": "2",
-      "rubric_item": 16,
+      "rubric_item": 9,
       "category": "maintenance_burden",
       "touch_points": [
         "maintenance_burden",
         "wal_replication"
       ],
       "severity": "fixable",
-      "failure_scenario": "The patch is committed, and later a timeline-switch case marks an ancestor segment .done that the archive lacks (message #42). A user finds the gap only during PITR months later. Nobody who reviewed the design is left to own the fix.",
-      "argument": "In the 2026 messages (#32 to #42) only the authors and their colleagues took part. The v4 production run found WAL removal and cascading bugs (messages #38, #39), and v8 still has open questions on ancestor timelines, report scheduling and archive-read recovery. This code spans the archiver, walsender, walreceiver and recovery, and few committers know all four.",
+      "failure_scenario": "A later patch changes XLogArchiveCheckDone or restartpoint recycling and tests only on and always. Shared-mode standbys then remove .ready segments before the primary archives them. Nobody notices until a PITR after failover finds a gap.",
+      "argument": "This has already happened once. Message #36 found that an existing early return in XLogArchiveCheckDone let restartpoints delete unarchived WAL, and v4 ran in production for months with that bug (message #39). A second cascading bug went unnoticed until message #38. The failure is silent, because WAL is removed and the gap only shows up at restore time.",
       "precedent_ids": [],
       "thread_message_refs": [
-        32,
+        36,
         38,
-        39,
-        42
+        39
       ],
-      "author_must_show": "Which committer familiar with archiving and recovery has reviewed the v8 design, especially the ancestor-timeline .done marking?",
+      "author_must_show": "What check makes a future change to WAL recycling fail loudly in tests or at runtime when it breaks shared-mode retention?",
       "precedents": [],
       "thread_refs": [
         {
-          "index": 32,
-          "from": "Andrey Borodin",
-          "date": "2026-02-12T06:56:10Z",
-          "url": "https://www.postgresql.org/message-id/D4B53AE3-B7AF-4BE6-9CB6-44956B05DE72%40yandex-team.ru"
+          "index": 36,
+          "from": "Jaroslav Novikov",
+          "date": "2026-03-16T09:43:15Z",
+          "url": "https://www.postgresql.org/message-id/50EF1E0E-9212-4BF2-9B2A-E38AC45D8ACD%40yandex-team.ru"
         },
         {
           "index": 38,
@@ -906,83 +884,17 @@
           "from": "Kirill Reshke",
           "date": "2026-07-22T06:07:43Z",
           "url": "https://www.postgresql.org/message-id/CALdSSPj5CAjdn7UGzBbMJQC4SX8tvxZ8%2B2bVU2KYngY9%2BHTvUg%40mail.gmail.com"
-        },
-        {
-          "index": 42,
-          "from": "Andrey Borodin",
-          "date": "2026-07-31T10:23:51Z",
-          "url": "https://www.postgresql.org/message-id/BEFEAD83-C128-4138-A03B-B5C676BE5E58%40yandex-team.ru"
         }
       ],
-      "id": "maintenance-fit-3",
+      "id": "maintenance-fit-2",
       "angle": "maintenance-fit",
       "round": 0,
       "revised_in_round": null,
       "status": "refuted",
       "withdrawal": null,
       "critic": {
-        "refutation_kind": "not_specific",
-        "reasoning": "The absence of an engaged committer is a committability note and, under the rubric, does not count against the design. Its failure scenario is the one in replication-ondisk-3, and a committer wrote the original shared-mode design.",
-        "original_severity": null
-      },
-      "not_ranked_reason": null
-    },
-    {
-      "title": "Smaller observability step is not offered as a separate first commit",
-      "level": "1b",
-      "rubric_item": 6,
-      "category": "does_not_fit",
-      "touch_points": [
-        "does_not_fit",
-        "wire_protocol"
-      ],
-      "severity": "fixable",
-      "failure_scenario": "Core adds a permanent archive_mode value with its own recovery semantics. Later, tool authors find that a queryable last-archived position on the standby would have met their needs. The project keeps the larger mode and its edge cases anyway.",
-      "argument": "Message #33 says that exposing last_archived_wal on the standby alone would let external tools solve this. Today 0002 depends on 0001. The main case against `always` is archive request cost in one tool, WAL-G (messages #32, #39), which is a property of the tool. An opt-in report message, requested like PrimaryStatusRequest (message #40), would be a general piece that could be committed first.",
-      "precedent_ids": [],
-      "thread_message_refs": [
-        32,
-        33,
-        39,
-        40
-      ],
-      "author_must_show": "Why can an opt-in archived-position report plus monitoring not land first, letting HA tools close the gap before core takes on shared mode?",
-      "precedents": [],
-      "thread_refs": [
-        {
-          "index": 32,
-          "from": "Andrey Borodin",
-          "date": "2026-02-12T06:56:10Z",
-          "url": "https://www.postgresql.org/message-id/D4B53AE3-B7AF-4BE6-9CB6-44956B05DE72%40yandex-team.ru"
-        },
-        {
-          "index": 33,
-          "from": "Harinath Kanchu",
-          "date": "2026-02-20T20:57:35Z",
-          "url": "https://www.postgresql.org/message-id/41D301A5-AB81-4B21-8AC1-9DD602362D31%40apple.com"
-        },
-        {
-          "index": 39,
-          "from": "Kirill Reshke",
-          "date": "2026-07-22T06:07:43Z",
-          "url": "https://www.postgresql.org/message-id/CALdSSPj5CAjdn7UGzBbMJQC4SX8tvxZ8%2B2bVU2KYngY9%2BHTvUg%40mail.gmail.com"
-        },
-        {
-          "index": 40,
-          "from": "Andrey Borodin",
-          "date": "2026-07-22T11:19:11Z",
-          "url": "https://www.postgresql.org/message-id/D33EE83C-0124-48CA-B351-22B50BBD5FCD%40yandex-team.ru"
-        }
-      ],
-      "id": "maintenance-fit-4",
-      "angle": "maintenance-fit",
-      "round": 0,
-      "revised_in_round": null,
-      "status": "refuted",
-      "withdrawal": null,
-      "critic": {
-        "refutation_kind": "not_specific",
-        "reasoning": "Duplicate of already-exists-2, which asks the same question and also grants that standby-side retention needs core support.",
+        "refutation_kind": "already_handled",
+        "reasoning": "Message #38 adds TAP test 056, which runs the restartpoint path where the XLogArchiveCheckDone bug removed .ready segments, and reworks the cascading tests. Message #41 registers the tests in meson.build, so a later change that breaks retention fails in CI.",
         "original_severity": null
       },
       "not_ranked_reason": null
@@ -994,31 +906,31 @@
       "id": "on_disk_pg_upgrade",
       "label": "on-disk format / pg_upgrade",
       "hit": true,
-      "reason": "Shared mode changes when the standby creates .ready and .done files and when it recycles segments in pg_wal."
+      "reason": "see objection replication-ondisk-3: Marking ancestor switchpoint segment done may leave an archive gap"
     },
     {
       "id": "wal_replication",
       "label": "WAL / replication / standby",
       "hit": true,
-      "reason": "The standby keeps streamed WAL until the upstream reports it archived, and cascading standbys relay the report."
+      "reason": "Changes when a standby marks streamed segments .ready and .done, and so when it removes WAL."
     },
     {
       "id": "wire_protocol",
       "label": "wire protocol",
       "hit": true,
-      "reason": "The patch adds walsender message Byte1('a') and, in v8, a request for it from the standby."
+      "reason": "Adds replication message 'a' (WAL archival report) sent by the walsender."
     },
     {
       "id": "catalog",
       "label": "catalog changes",
       "hit": true,
-      "reason": "The patch adds column primary_last_archived to the pg_stat_wal_receiver view."
+      "reason": "Adds column primary_last_archived to the system view pg_stat_wal_receiver."
     },
     {
       "id": "abi_extension_api",
       "label": "ABI / extension API",
-      "hit": false,
-      "reason": ""
+      "hit": true,
+      "reason": "Adds an archive_mode value in xlog.h, and external physical replication clients must handle the new message."
     },
     {
       "id": "sql_standard_syntax",
@@ -1030,7 +942,7 @@
       "id": "new_guc",
       "label": "new GUC",
       "hit": true,
-      "reason": "The patch adds archive_status_report_interval and a new archive_mode value, shared."
+      "reason": "Adds archive_status_report_interval and a new value shared for archive_mode."
     },
     {
       "id": "planner_behaviour",
@@ -1059,40 +971,40 @@
     {
       "id": "backpatchability",
       "label": "backpatchability",
-      "hit": false,
-      "reason": ""
+      "hit": true,
+      "reason": "see objection standards-compat-1: Unsolicited 'a' replication message breaks existing physical protocol clients"
     },
     {
       "id": "maintenance_burden",
       "label": "maintenance burden (\"who maintains this in 10 years\")",
       "hit": true,
-      "reason": "The mode spans archiver, walsender, walreceiver and recovery, with relay, negotiation, FATAL and timed fallback states."
+      "reason": "WAL recycling, walsender, walreceiver and timeline handling gain a third archive mode with a fallback path."
     },
     {
       "id": "hot_path_performance",
       "label": "performance on the hot path",
-      "hit": false,
-      "reason": ""
+      "hit": true,
+      "reason": "The walsender sends periodic reports and the standby scans archive_status; the thread shows no numbers."
     },
     {
       "id": "does_not_fit",
       "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
       "hit": true,
-      "reason": "archive_mode = always or an exposed primary_last_archived with external tools may cover the same need."
+      "reason": "Message #31 says archive_mode = always with a duplicate-tolerant archive_command covers the same case."
     }
   ],
   "questions": [
-    "Since promotion and the v8 fallback still need a duplicate-tolerant archive_command, which setups cannot use archive_mode = always, beyond the extra storage requests?",
-    "What guarantees that the ancestor-named switchpoint segment is in the archive before the standby marks it .done, and which archive-only recovery test shows it?",
-    "What limits pg_wal growth on a shared-mode standby while archive_command fails on the primary, and how does an operator release that WAL without a restart?",
-    "What must archive_command do with a segment that is already in the archive, and how does the documented no-overwrite example avoid an endless retry?",
-    "In v8, does any walsender send 'a' to a client that did not request it, and how does an older pg_receivewal behave against a shared-mode primary?"
+    "In v8, does the walsender send 'a' only to clients that asked for it in START_REPLICATION, and what does an old pg_receivewal see?",
+    "Which archive_command contract does shared mode need at promotion and in the v8 fallback, and does the documented non-overwriting example meet it?",
+    "What caps WAL retention on a shared-mode standby during a long archive outage, and can an operator change that cap without a restart?",
+    "What guarantees that the ancestor-timeline filename of the switchpoint segment is in the archive before the standby marks it .done?",
+    "Since v8 needs a duplicate-tolerant archive_command, what does shared mode give over archive_mode = always beyond fewer archive requests?"
   ],
   "committability": {
     "owner": "silent",
-    "owner_note": "It needs a committer who knows the archiver, walsender and walreceiver, and timeline handling in recovery. The 2014 design came from a committer, but none has commented on v6 to v8.",
-    "liability": "The owner signs for a permanent archive_mode value, a replication protocol message and a GUC. The owner also signs for PITR completeness across timeline switches, where a mistake shows only at restore time.",
-    "author_follow_up": "The authors posted v6 to v8, carried the entry through six CommitFests, and report running v4 in production for about 3 to 4 months."
+    "owner_note": "It needs a committer who knows the archiver, WAL recycling at restartpoints, timeline switches and the walsender protocol. No committer has replied since message #31.",
+    "liability": "The owner signs for a new replication message, a new GUC and a third WAL recycling mode on standbys. Errors there show up as PITR gaps at restore time or as full disks on standbys, possibly years later.",
+    "author_follow_up": "Good sign: two authors posted v6 to v8, fixed bugs found in production use of v4, and keep the CommitFest entry current."
   },
   "not_now": {
     "applies": false,
@@ -1103,14 +1015,47 @@
     "maintenance_burden": "high",
     "review_cost": "high",
     "recommended_action": "fix design first",
-    "reason": "Several operators with shared archives report PITR gaps, so the goal has users. The patch adds a protocol message, a GUC and new recovery semantics, and the co-author's own review of v8 lists open design issues that should close before a committer spends time."
+    "reason": "Operators of large fleets report PITR gaps after failover, so the goal has users. The patch touches xlog.c, walsender and walreceiver, and message #42 lists open design items, so a committer who knows the area is unlikely to start before those are settled."
   },
   "self_advice": [],
-  "provisional_note": "The v8 code was not read. Whether 'a' is sent only on request, how the fallback timer works, and how shared mode behaves when the standby restores from the archive could not be checked.",
+  "provisional_note": "No code was read, and the documentation hunks shown are from the 2015 patch, so v8 behaviour is known only from thread messages. The opt-in rule for 'a', the fallback timing and the timeline marking could not be checked.",
   "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
   "precedents_retrieved": [
     {
       "id": "P1",
+      "source_id": "revert:1bd42cd70abdbc946ad64c3c8eaefed4bb8b1145",
+      "kind": "revert",
+      "title": "Better fix for \"unarchived WAL files get deleted on crash recovery\" bug.",
+      "status": "Partially reverted",
+      "date": "2013-02-15",
+      "first_date": "2013-02-15",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1bd42cd70abdbc946ad64c3c8eaefed4bb8b1145",
+      "thread_urls": [],
+      "authors": "Heikki Linnakangas",
+      "objectors": "",
+      "summary": "Better fix for \"unarchived WAL files get deleted on crash recovery\" bug.\nReverted commit(s): Don't delete unarchived WAL files during crash recovery.",
+      "objection": "Revert my earlier fix for the bug that unarchived WAL files get deleted on\ncrash recovery, commit c9cc7e05c6d82a9781883a016c70d95aa4923122. We create\na .done file for files streamed or restored from archive, so the WAL file\nrecycling logic used during normal operation works just as well during\narchive recovery.\n\nPer Fujii Masao's suggestion.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "standby archive WAL after promotion",
+        "shared WAL archive primary standby",
+        "archival report walsender",
+        "last archived WAL standby",
+        "WAL archive gap failover",
+        "standby keep WAL until archived",
+        "archive_status ready done standby"
+      ],
+      "from_hint": false,
+      "score": 0.841,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P2",
       "source_id": "wiki:Statistics_Collector:1",
       "kind": "do_not_want",
       "title": "Track number of WAL files ready to be archived in pg_stat_archiver",
@@ -1131,23 +1076,55 @@
       ],
       "matched_queries": [
         "archive_mode shared standby",
-        "standby WAL archiving promotion missing segments",
-        "archival report walsender message",
-        "primary_last_archived pg_stat_wal_receiver",
+        "standby archive WAL after promotion",
+        "shared WAL archive primary standby",
+        "archival report walsender",
+        "last archived WAL standby",
+        "WAL archive gap failover",
         "standby keep WAL until archived",
-        "archive_status ready done standby",
-        "shared WAL archive failover gaps",
-        "archive_mode always standby archiving"
+        "archive_status ready done standby"
       ],
       "from_hint": false,
-      "score": 0.758,
+      "score": 0.774,
       "enriched": true,
       "key_quote": null,
       "quote_message_url": null,
       "relevant": false
     },
     {
-      "id": "P2",
+      "id": "P3",
+      "source_id": "revert:2cae0aeb9c61aef48b6de3fb5c4f7785a06bca0b",
+      "kind": "revert",
+      "title": "Revert \"Correct WAL space calculation formula in docs.\"",
+      "status": "Reverted",
+      "date": "2010-10-28",
+      "first_date": "2010-10-15",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=2cae0aeb9c61aef48b6de3fb5c4f7785a06bca0b",
+      "thread_urls": [],
+      "authors": "Simon Riggs",
+      "objectors": "",
+      "summary": "Revert \"Correct WAL space calculation formula in docs.\"\nReverted commit(s): Correct WAL space calculation formula in docs.",
+      "objection": "This reverts commit 915116bc62db2aaec7001bde6610128f4cbd29f9.\n\nPer discussion, the previous formula was in fact correct.\n\nhttp://archives.postgresql.org/pgsql-docs/2010-10/msg00038.php",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "standby archive WAL after promotion",
+        "shared WAL archive primary standby",
+        "archival report walsender",
+        "last archived WAL standby",
+        "WAL archive gap failover",
+        "standby keep WAL until archived"
+      ],
+      "from_hint": false,
+      "score": 0.637,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
       "source_id": "revert:348f856dc57902a8f951a570284918761da1776b",
       "kind": "revert",
       "title": "Revert addition of poorly-thought-out DUMP TIMESTAMP archive entry, which induced bug #1597 in addition to having several other misbehaviors (like labeling...",
@@ -1166,23 +1143,23 @@
       ],
       "matched_queries": [
         "archive_mode shared standby",
-        "standby WAL archiving promotion missing segments",
-        "archival report walsender message",
-        "primary_last_archived pg_stat_wal_receiver",
+        "standby archive WAL after promotion",
+        "shared WAL archive primary standby",
+        "archival report walsender",
+        "last archived WAL standby",
+        "WAL archive gap failover",
         "standby keep WAL until archived",
-        "archive_status ready done standby",
-        "shared WAL archive failover gaps",
-        "archive_mode always standby archiving"
+        "archive_status ready done standby"
       ],
       "from_hint": false,
-      "score": 0.646,
+      "score": 0.635,
       "enriched": false,
       "key_quote": null,
       "quote_message_url": null,
       "relevant": false
     },
     {
-      "id": "P3",
+      "id": "P5",
       "source_id": "wiki:Point-In-Time_Recovery_.28PITR.29:1",
       "kind": "do_not_want",
       "title": "Allow archive_mode to be changed without server restart?",
@@ -1200,77 +1177,16 @@
       ],
       "matched_queries": [
         "archive_mode shared standby",
-        "standby WAL archiving promotion missing segments",
-        "archival report walsender message",
-        "primary_last_archived pg_stat_wal_receiver",
+        "standby archive WAL after promotion",
+        "shared WAL archive primary standby",
+        "archival report walsender",
+        "last archived WAL standby",
+        "WAL archive gap failover",
         "standby keep WAL until archived",
-        "archive_status ready done standby",
-        "shared WAL archive failover gaps",
-        "archive_mode always standby archiving"
+        "archive_status ready done standby"
       ],
       "from_hint": false,
-      "score": 0.639,
-      "enriched": false,
-      "key_quote": null,
-      "quote_message_url": null,
-      "relevant": false
-    },
-    {
-      "id": "P4",
-      "source_id": "revert:1bd42cd70abdbc946ad64c3c8eaefed4bb8b1145",
-      "kind": "revert",
-      "title": "Better fix for \"unarchived WAL files get deleted on crash recovery\" bug.",
-      "status": "Partially reverted",
-      "date": "2013-02-15",
-      "first_date": "2013-02-15",
-      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1bd42cd70abdbc946ad64c3c8eaefed4bb8b1145",
-      "thread_urls": [],
-      "authors": "Heikki Linnakangas",
-      "objectors": "",
-      "summary": "Better fix for \"unarchived WAL files get deleted on crash recovery\" bug.\nReverted commit(s): Don't delete unarchived WAL files during crash recovery.",
-      "objection": "Revert my earlier fix for the bug that unarchived WAL files get deleted on\ncrash recovery, commit c9cc7e05c6d82a9781883a016c70d95aa4923122. We create\na .done file for files streamed or restored from archive, so the WAL file\nrecycling logic used during normal operation works just as well during\narchive recovery.\n\nPer Fujii Masao's suggestion.",
-      "touch_points": [
-        "WAL / replication / standby"
-      ],
-      "matched_queries": [
-        "standby WAL archiving promotion missing segments",
-        "primary_last_archived pg_stat_wal_receiver",
-        "standby keep WAL until archived",
-        "archive_status ready done standby",
-        "shared WAL archive failover gaps"
-      ],
-      "from_hint": false,
-      "score": 0.614,
-      "enriched": false,
-      "key_quote": null,
-      "quote_message_url": null,
-      "relevant": true
-    },
-    {
-      "id": "P5",
-      "source_id": "revert:2cae0aeb9c61aef48b6de3fb5c4f7785a06bca0b",
-      "kind": "revert",
-      "title": "Revert \"Correct WAL space calculation formula in docs.\"",
-      "status": "Reverted",
-      "date": "2010-10-28",
-      "first_date": "2010-10-15",
-      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=2cae0aeb9c61aef48b6de3fb5c4f7785a06bca0b",
-      "thread_urls": [],
-      "authors": "Simon Riggs",
-      "objectors": "",
-      "summary": "Revert \"Correct WAL space calculation formula in docs.\"\nReverted commit(s): Correct WAL space calculation formula in docs.",
-      "objection": "This reverts commit 915116bc62db2aaec7001bde6610128f4cbd29f9.\n\nPer discussion, the previous formula was in fact correct.\n\nhttp://archives.postgresql.org/pgsql-docs/2010-10/msg00038.php",
-      "touch_points": [
-        "WAL / replication / standby"
-      ],
-      "matched_queries": [
-        "standby WAL archiving promotion missing segments",
-        "primary_last_archived pg_stat_wal_receiver",
-        "standby keep WAL until archived",
-        "shared WAL archive failover gaps"
-      ],
-      "from_hint": false,
-      "score": 0.438,
+      "score": 0.606,
       "enriched": false,
       "key_quote": null,
       "quote_message_url": null,
@@ -1278,6 +1194,37 @@
     },
     {
       "id": "P6",
+      "source_id": "revert:b8b69d89905e04b910bcd65efce1791477b45d35",
+      "kind": "revert",
+      "title": "Revert \"Reduce checkpoints and WAL traffic on low activity database server\"",
+      "status": "Reverted",
+      "date": "2012-06-13",
+      "first_date": "2011-11-02",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=b8b69d89905e04b910bcd65efce1791477b45d35",
+      "thread_urls": [],
+      "authors": "Simon Riggs",
+      "objectors": "",
+      "summary": "Revert \"Reduce checkpoints and WAL traffic on low activity database server\"\nReverted commit(s): Reduce checkpoints and WAL traffic on low activity database server Previously, we skipped a checkpoint if no WAL had been written since last checkpoint, though this does not appear in user documentation. As of now, we skip a checkpoint until we have written at least one enough WAL to switch the next WAL file. This greatly reduces the level of activity and number of WAL messages generated by a very low activity server. This is safe because the purpose of a checkpoint is to act as a starting place for a recovery, in case of crash. This patch maintains minimal WAL volume for replay in case of crash, thus maintaining very low crash recovery time.",
+      "objection": "This reverts commit 18fb9d8d21a28caddb72c7ffbdd7b96d52ff9724.  Per\ndiscussion, it does not seem like a good idea to allow committed changes to\ngo un-checkpointed indefinitely, as could happen in a low-traffic server;\nthat makes us entirely reliant on the WAL stream with no redundancy that\nmight aid data recovery in case of disk failure.\n\nThis re-introduces the original problem of hot-standby setups generating a\nsmall continuing stream of WAL traffic even when idle, but there are other\nways to address that without compromising crash recovery, so we'll revisit\nthat issue in a future release cycle.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "standby archive WAL after promotion",
+        "shared WAL archive primary standby",
+        "last archived WAL standby",
+        "WAL archive gap failover",
+        "standby keep WAL until archived"
+      ],
+      "from_hint": false,
+      "score": 0.539,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
       "source_id": "wiki:Standby_server_mode:2",
       "kind": "do_not_want",
       "title": "Change walsender so that it applies per-role settings",
@@ -1296,42 +1243,14 @@
       ],
       "matched_queries": [
         "archive_mode shared standby",
-        "standby WAL archiving promotion missing segments",
-        "archival report walsender message",
-        "standby keep WAL until archived",
-        "archive_mode always standby archiving"
-      ],
-      "from_hint": false,
-      "score": 0.372,
-      "enriched": false,
-      "key_quote": null,
-      "quote_message_url": null,
-      "relevant": false
-    },
-    {
-      "id": "P7",
-      "source_id": "revert:b8b69d89905e04b910bcd65efce1791477b45d35",
-      "kind": "revert",
-      "title": "Revert \"Reduce checkpoints and WAL traffic on low activity database server\"",
-      "status": "Reverted",
-      "date": "2012-06-13",
-      "first_date": "2011-11-02",
-      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=b8b69d89905e04b910bcd65efce1791477b45d35",
-      "thread_urls": [],
-      "authors": "Simon Riggs",
-      "objectors": "",
-      "summary": "Revert \"Reduce checkpoints and WAL traffic on low activity database server\"\nReverted commit(s): Reduce checkpoints and WAL traffic on low activity database server Previously, we skipped a checkpoint if no WAL had been written since last checkpoint, though this does not appear in user documentation. As of now, we skip a checkpoint until we have written at least one enough WAL to switch the next WAL file. This greatly reduces the level of activity and number of WAL messages generated by a very low activity server. This is safe because the purpose of a checkpoint is to act as a starting place for a recovery, in case of crash. This patch maintains minimal WAL volume for replay in case of crash, thus maintaining very low crash recovery time.",
-      "objection": "This reverts commit 18fb9d8d21a28caddb72c7ffbdd7b96d52ff9724.  Per\ndiscussion, it does not seem like a good idea to allow committed changes to\ngo un-checkpointed indefinitely, as could happen in a low-traffic server;\nthat makes us entirely reliant on the WAL stream with no redundancy that\nmight aid data recovery in case of disk failure.\n\nThis re-introduces the original problem of hot-standby setups generating a\nsmall continuing stream of WAL traffic even when idle, but there are other\nways to address that without compromising crash recovery, so we'll revisit\nthat issue in a future release cycle.",
-      "touch_points": [
-        "WAL / replication / standby"
-      ],
-      "matched_queries": [
-        "standby WAL archiving promotion missing segments",
-        "primary_last_archived pg_stat_wal_receiver",
+        "standby archive WAL after promotion",
+        "shared WAL archive primary standby",
+        "archival report walsender",
+        "last archived WAL standby",
         "standby keep WAL until archived"
       ],
       "from_hint": false,
-      "score": 0.336,
+      "score": 0.448,
       "enriched": false,
       "key_quote": null,
       "quote_message_url": null,
@@ -1339,32 +1258,6 @@
     },
     {
       "id": "P8",
-      "source_id": "revert:fc5c1bbbeb3e00699f87407eebf2933595e9d93b",
-      "kind": "revert",
-      "title": "Revert \"Add mode where contrib installcheck runs each module in a separately named database.\"",
-      "status": "Reverted",
-      "date": "2012-12-03",
-      "first_date": "2012-12-02",
-      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=fc5c1bbbeb3e00699f87407eebf2933595e9d93b",
-      "thread_urls": [],
-      "authors": "Andrew Dunstan",
-      "objectors": "",
-      "summary": "Revert \"Add mode where contrib installcheck runs each module in a separately named database.\"\nReverted commit(s): Add mode where contrib installcheck runs each module in a separately named database.",
-      "objection": "This reverts commit e2b3c21b05c78c3a726b189242e41d4aa4422bf1.",
-      "touch_points": [],
-      "matched_queries": [
-        "archive_mode shared standby",
-        "archive_mode always standby archiving"
-      ],
-      "from_hint": false,
-      "score": 0.198,
-      "enriched": false,
-      "key_quote": null,
-      "quote_message_url": null,
-      "relevant": false
-    },
-    {
-      "id": "P9",
       "source_id": "wiki:Configuration_files:4",
       "kind": "do_not_want",
       "title": "Allow synchronous_standby_names to be disabled after communication failure with all synchronous standby servers exceeds some timeout",
@@ -1384,72 +1277,19 @@
       ],
       "matched_queries": [
         "archive_mode shared standby",
-        "archive_status ready done standby",
-        "archive_mode always standby archiving"
+        "standby archive WAL after promotion",
+        "shared WAL archive primary standby",
+        "archive_status ready done standby"
       ],
       "from_hint": false,
-      "score": 0.184,
+      "score": 0.243,
       "enriched": false,
       "key_quote": null,
       "quote_message_url": null,
       "relevant": false
     },
     {
-      "id": "P10",
-      "source_id": "wiki:Standby_server_mode:1",
-      "kind": "do_not_want",
-      "title": "Allow pg_xlogfile_name() to be used in recovery mode",
-      "status": "Not worth doing",
-      "date": null,
-      "first_date": null,
-      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Standby_server_mode",
-      "thread_urls": [],
-      "authors": "",
-      "objectors": "",
-      "summary": "Allow pg_xlogfile_name() to be used in recovery mode\nSection: Administration / Standby server mode\nLinked: Streaming replication and pg_xlogfile_name()",
-      "objection": "",
-      "touch_points": [
-        "WAL / replication / standby"
-      ],
-      "matched_queries": [
-        "archive_mode shared standby",
-        "archive_mode always standby archiving"
-      ],
-      "from_hint": false,
-      "score": 0.182,
-      "enriched": false,
-      "key_quote": null,
-      "quote_message_url": null,
-      "relevant": false
-    },
-    {
-      "id": "P11",
-      "source_id": "revert:39d0653d058b87b437be05fd295ceb5bb4e9e05c",
-      "kind": "revert",
-      "title": "Revert 1fbc30f1dca6624c01a9a6a9ff711a7036c68532 because the --enable-shared is about Plyton's configure, not ours.",
-      "status": "Reverted",
-      "date": "2012-08-30",
-      "first_date": "2012-08-30",
-      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=39d0653d058b87b437be05fd295ceb5bb4e9e05c",
-      "thread_urls": [],
-      "authors": "Bruce Momjian",
-      "objectors": "",
-      "summary": "Revert 1fbc30f1dca6624c01a9a6a9ff711a7036c68532 because the --enable-shared is about Plyton's configure, not ours.\nReverted commit(s): Remove doc mention of --enable-shared, per Tom.",
-      "objection": "Revert 1fbc30f1dca6624c01a9a6a9ff711a7036c68532 because the\n--enable-shared is about Plyton's configure, not ours.",
-      "touch_points": [],
-      "matched_queries": [
-        "archive_mode shared standby",
-        "shared WAL archive failover gaps"
-      ],
-      "from_hint": false,
-      "score": 0.179,
-      "enriched": false,
-      "key_quote": null,
-      "quote_message_url": null,
-      "relevant": false
-    },
-    {
-      "id": "P12",
+      "id": "P9",
       "source_id": "revert:2d2841a56c8fa37a5dd5c6d33488ba6ca37116ff",
       "kind": "revert",
       "title": "Continue to allow VACUUM to mark last block of index dirty even when there is no work to do.",
@@ -1464,7 +1304,7 @@
       "objection": "Continue to allow VACUUM to mark last block of index dirty\neven when there is no work to do. Further analysis required.\nRevert of patch c1458cc495ff800cd176a1c2e56d8b62680d9b71",
       "touch_points": [],
       "matched_queries": [
-        "primary_last_archived pg_stat_wal_receiver"
+        "last archived WAL standby"
       ],
       "from_hint": false,
       "score": 0.127,
@@ -1474,7 +1314,7 @@
       "relevant": false
     },
     {
-      "id": "P13",
+      "id": "P10",
       "source_id": "revert:51e888219745cf9efa41034b5411eee7e9a8f4f1",
       "kind": "revert",
       "title": "Revert part of recent include patch not ready for application.",
@@ -1499,99 +1339,47 @@
       "relevant": false
     },
     {
-      "id": "P14",
-      "source_id": "revert:02f37bd8c4bfdd35869007d142267cd9a1f671b9",
+      "id": "P11",
+      "source_id": "revert:fc5c1bbbeb3e00699f87407eebf2933595e9d93b",
       "kind": "revert",
-      "title": "Revert to the pre-8.2 method of probing for libm, that is, always include it if it links properly.",
+      "title": "Revert \"Add mode where contrib installcheck runs each module in a separately named database.\"",
       "status": "Reverted",
-      "date": "2006-11-06",
-      "first_date": "2006-11-06",
-      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=02f37bd8c4bfdd35869007d142267cd9a1f671b9",
+      "date": "2012-12-03",
+      "first_date": "2012-12-02",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=fc5c1bbbeb3e00699f87407eebf2933595e9d93b",
       "thread_urls": [],
-      "authors": "",
+      "authors": "Andrew Dunstan",
       "objectors": "",
-      "summary": "Revert to the pre-8.2 method of probing for libm, that is, always include it if it links properly.  It seems too risky to assume that standard functions like pow() are not special-cased by the compiler. Per report from Andreas Lange that build fails on Solaris cc compiler with -fast.  Even though we don't consider that a supported option, I'm worried that similar issues will arise with other compilers.",
-      "objection": "Revert to the pre-8.2 method of probing for libm, that is, always\ninclude it if it links properly.  It seems too risky to assume that\nstandard functions like pow() are not special-cased by the compiler.\nPer report from Andreas Lange that build fails on Solaris cc compiler\nwith -fast.  Even though we don't consider that a supported option,\nI'm worried that similar issues will arise with other compilers.",
+      "summary": "Revert \"Add mode where contrib installcheck runs each module in a separately named database.\"\nReverted commit(s): Add mode where contrib installcheck runs each module in a separately named database.",
+      "objection": "This reverts commit e2b3c21b05c78c3a726b189242e41d4aa4422bf1.",
       "touch_points": [],
       "matched_queries": [
-        "archive_mode always standby archiving"
+        "archive_mode shared standby"
       ],
       "from_hint": false,
-      "score": 0.095,
+      "score": 0.102,
       "enriched": false,
       "key_quote": null,
       "quote_message_url": null,
       "relevant": false
     },
     {
-      "id": "P15",
-      "source_id": "revert:28ac7972873bd314d4837807396fe44571b5cb50",
+      "id": "P12",
+      "source_id": "revert:b29e7151434b4403d70fd35da25cec585fbd3114",
       "kind": "revert",
-      "title": "Revert error message on GLOBAL/LOCAL pending further discussion",
+      "title": "Revert accidental change of WAL_DEBUG default.",
       "status": "Reverted",
-      "date": "2012-06-10",
-      "first_date": "2012-06-10",
-      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=28ac7972873bd314d4837807396fe44571b5cb50",
+      "date": "2014-06-17",
+      "first_date": "2014-06-17",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=b29e7151434b4403d70fd35da25cec585fbd3114",
       "thread_urls": [],
       "authors": "",
       "objectors": "",
-      "summary": "Revert error message on GLOBAL/LOCAL pending further discussion",
-      "objection": "",
+      "summary": "Revert accidental change of WAL_DEBUG default.",
+      "objection": "Oops.",
       "touch_points": [],
       "matched_queries": [
-        "archival report walsender message"
-      ],
-      "from_hint": false,
-      "score": 0.094,
-      "enriched": false,
-      "key_quote": null,
-      "quote_message_url": null,
-      "relevant": false
-    },
-    {
-      "id": "P16",
-      "source_id": "revert:1c8f03d4de5bca70437aaff5548a18a2d4e16a11",
-      "kind": "revert",
-      "title": "Revert dubious message wording change.",
-      "status": "Reverted",
-      "date": "2009-06-22",
-      "first_date": "2009-06-22",
-      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1c8f03d4de5bca70437aaff5548a18a2d4e16a11",
-      "thread_urls": [],
-      "authors": "",
-      "objectors": "",
-      "summary": "Revert dubious message wording change.",
-      "objection": "",
-      "touch_points": [],
-      "matched_queries": [
-        "archival report walsender message"
-      ],
-      "from_hint": false,
-      "score": 0.094,
-      "enriched": false,
-      "key_quote": null,
-      "quote_message_url": null,
-      "relevant": false
-    },
-    {
-      "id": "P17",
-      "source_id": "revert:a16d421ca4fc639929bc964b2585e8382cf16e33",
-      "kind": "revert",
-      "title": "Revert \"Auto-tune effective_cache size to be 4x shared buffers\"",
-      "status": "Reverted",
-      "date": "2014-05-09",
-      "first_date": "2013-10-08",
-      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=a16d421ca4fc639929bc964b2585e8382cf16e33",
-      "thread_urls": [],
-      "authors": "Bruce Momjian",
-      "objectors": "",
-      "summary": "Revert \"Auto-tune effective_cache size to be 4x shared buffers\"\nReverted commit(s): Auto-tune effective_cache size to be 4x shared buffers",
-      "objection": "This reverts commit ee1e5662d8d8330726eaef7d3110cb7add24d058, as well as\na remarkably large number of followup commits, which were mostly concerned\nwith the fact that the implementation didn't work terribly well.  It still\ndoesn't: we probably need some rather basic work in the GUC infrastructure\nif we want to fully support GUCs whose default varies depending on the\nvalue of another GUC.  Meanwhile, it also emerged that there wasn't really\nconsensus in favor of the definition the patch tried to implement (ie,\neffective_cache_size should default to 4 times shared_buffers).  So whack\nit all back to where it was.  In a followup commit, I'll do what was\nrecently agreed to, which is to simply change the default to a higher\nvalue.",
-      "touch_points": [
-        "new GUC"
-      ],
-      "matched_queries": [
-        "shared WAL archive failover gaps"
+        "WAL archive gap failover"
       ],
       "from_hint": false,
       "score": 0.093,
@@ -1601,7 +1389,34 @@
       "relevant": false
     },
     {
-      "id": "P18",
+      "id": "P13",
+      "source_id": "wiki:Standby_server_mode:1",
+      "kind": "do_not_want",
+      "title": "Allow pg_xlogfile_name() to be used in recovery mode",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Standby_server_mode",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Allow pg_xlogfile_name() to be used in recovery mode\nSection: Administration / Standby server mode\nLinked: Streaming replication and pg_xlogfile_name()",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "archive_mode shared standby"
+      ],
+      "from_hint": false,
+      "score": 0.091,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
       "source_id": "revert:9df492664a74a948c87232f523eea637920a516b",
       "kind": "revert",
       "title": "Revert \"Allow units to be specified in relation option setting value.\"",
@@ -1629,22 +1444,25 @@
       "relevant": false
     },
     {
-      "id": "P19",
-      "source_id": "revert:9cc0222680229c4572354cf2b3907c7ff18ad685",
+      "id": "P15",
+      "source_id": "revert:b1892aaeaaf34d8d1637221fc1cbda82ac3fcd71",
       "kind": "revert",
-      "title": "Revert previous patch to put the shared memory segment on win32 in the Global\\ namespace, because it caused permission errors on a lot of platforms.",
+      "title": "Revert WAL posix_fallocate() patches.",
       "status": "Reverted",
-      "date": "2008-10-30",
-      "first_date": "2008-10-30",
-      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9cc0222680229c4572354cf2b3907c7ff18ad685",
+      "date": "2013-09-05",
+      "first_date": "2013-07-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=b1892aaeaaf34d8d1637221fc1cbda82ac3fcd71",
       "thread_urls": [],
-      "authors": "",
+      "authors": "Jeff Davis",
       "objectors": "",
-      "summary": "Revert previous patch to put the shared memory segment on win32 in the Global\\ namespace, because it caused permission errors on a lot of platforms.",
-      "objection": "Revert previous patch to put the shared memory segment on win32\nin the Global\\ namespace, because it caused permission errors on\na lot of platforms.\n\nWe need to come up with something better for 8.4, but for now\nrevert to the pre-8.3.4 behaviour.",
-      "touch_points": [],
+      "summary": "Revert WAL posix_fallocate() patches.\nReverted commit(s): Use posix_fallocate() for new WAL files, where available.; Handle posix_fallocate() errors.",
+      "objection": "This reverts commit 269e780822abb2e44189afaccd6b0ee7aefa7ddd\nand commit 5b571bb8c8d2bea610e01ae1ee7bc05adcfff528.\n\nUnfortunately, the initial patch had insufficient performance testing,\nand resulted in a regression.\n\nPer report by Thom Brown.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "performance on the hot path"
+      ],
       "matched_queries": [
-        "standby WAL archiving promotion missing segments"
+        "WAL archive gap failover"
       ],
       "from_hint": false,
       "score": 0.086,
@@ -1654,7 +1472,7 @@
       "relevant": false
     },
     {
-      "id": "P20",
+      "id": "P16",
       "source_id": "revert:54aaef864213d7b91f1efc691d3dc93ba468815b",
       "kind": "revert",
       "title": "Revert all keepalive moves, reevaluate.",
@@ -1679,32 +1497,32 @@
       "relevant": false
     },
     {
-      "id": "P21",
-      "source_id": "revert:482e6936fa2063cd18824f15b3edd2b383cc0009",
+      "id": "P17",
+      "source_id": "revert:39d0653d058b87b437be05fd295ceb5bb4e9e05c",
       "kind": "revert",
-      "title": "Revert error message change for may/can/might --- needs discussion.",
+      "title": "Revert 1fbc30f1dca6624c01a9a6a9ff711a7036c68532 because the --enable-shared is about Plyton's configure, not ours.",
       "status": "Reverted",
-      "date": "2007-01-31",
-      "first_date": "2007-01-31",
-      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=482e6936fa2063cd18824f15b3edd2b383cc0009",
+      "date": "2012-08-30",
+      "first_date": "2012-08-30",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=39d0653d058b87b437be05fd295ceb5bb4e9e05c",
       "thread_urls": [],
-      "authors": "",
+      "authors": "Bruce Momjian",
       "objectors": "",
-      "summary": "Revert error message change for may/can/might --- needs discussion.",
-      "objection": "",
+      "summary": "Revert 1fbc30f1dca6624c01a9a6a9ff711a7036c68532 because the --enable-shared is about Plyton's configure, not ours.\nReverted commit(s): Remove doc mention of --enable-shared, per Tom.",
+      "objection": "Revert 1fbc30f1dca6624c01a9a6a9ff711a7036c68532 because the\n--enable-shared is about Plyton's configure, not ours.",
       "touch_points": [],
       "matched_queries": [
-        "archival report walsender message"
+        "archive_mode shared standby"
       ],
       "from_hint": false,
-      "score": 0.077,
+      "score": 0.084,
       "enriched": false,
       "key_quote": null,
       "quote_message_url": null,
       "relevant": false
     },
     {
-      "id": "P22",
+      "id": "P18",
       "source_id": "revert:8b43e325ebfab423c937ce384bcdaf70ed0b462e",
       "kind": "revert",
       "title": "Revert to our pre-7.4 behavior of identifying Unix-socket connections in ps status as '[local]', not as 'localhost' as the code has been doing recently.",
@@ -1729,50 +1547,52 @@
       "relevant": false
     },
     {
-      "id": "P23",
-      "source_id": "revert:7af352d0913b77f387a489cd79b54b040cbee7e8",
+      "id": "P19",
+      "source_id": "revert:248365f2c64fb8ce94c28c680d95a279dd07953a",
       "kind": "revert",
-      "title": "Revert off setting mention for client_min_messages.",
+      "title": "Revert wrong SCO OpenServer report, update comments and improve formatting a bit.  Regenerate INSTALL.",
       "status": "Reverted",
-      "date": "2003-01-28",
-      "first_date": "2003-01-28",
-      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=7af352d0913b77f387a489cd79b54b040cbee7e8",
+      "date": "2001-04-06",
+      "first_date": "2001-04-06",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=248365f2c64fb8ce94c28c680d95a279dd07953a",
       "thread_urls": [],
       "authors": "",
       "objectors": "",
-      "summary": "Revert off setting mention for client_min_messages.",
-      "objection": "Set log_min_error_messages to the proper and agreed-upon default, PANIC\n(off).  (BACKPATCH)",
+      "summary": "Revert wrong SCO OpenServer report, update comments and improve formatting a bit.  Regenerate INSTALL.",
+      "objection": "Revert wrong SCO OpenServer report, update comments and improve formatting\na bit.  Regenerate INSTALL.",
       "touch_points": [],
       "matched_queries": [
-        "archival report walsender message"
+        "archival report walsender"
       ],
       "from_hint": false,
-      "score": 0.065,
+      "score": 0.075,
       "enriched": false,
       "key_quote": null,
       "quote_message_url": null,
       "relevant": false
     },
     {
-      "id": "P24",
-      "source_id": "revert:60e42602a01b710b9489fb679405f5e21eea8704",
+      "id": "P20",
+      "source_id": "revert:303a257b5fece11ed774359b8f564ba9e694f35a",
       "kind": "revert",
-      "title": "revert last change",
+      "title": "Revert ill-starred change of 13-Feb-02:",
       "status": "Reverted",
-      "date": "2001-12-13",
-      "first_date": "2001-12-13",
-      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=60e42602a01b710b9489fb679405f5e21eea8704",
+      "date": "2004-01-14",
+      "first_date": "2004-01-14",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=303a257b5fece11ed774359b8f564ba9e694f35a",
       "thread_urls": [],
       "authors": "",
       "objectors": "",
-      "summary": "revert last change",
-      "objection": "",
-      "touch_points": [],
+      "summary": "Revert ill-starred change of 13-Feb-02: it appeared to fix a problem of incorrect permissions checking, but in fact disabled most all permissions checks for view updates.  This corrects problems reported by Sergey Yatskevich among others, at the cost of re-introducing the problem previously reported by Tim Burgess.  However, since we'd lived with that problem for quite awhile without knowing it, we can live with it awhile longer until a proper fix can be made in 7.5.",
+      "objection": "Revert ill-starred change of 13-Feb-02: it appeared to fix a problem of\nincorrect permissions checking, but in fact disabled most all permissions\nchecks for view updates.  This corrects problems reported by Sergey\nYatskevich among others, at the cost of re-introducing the problem\npreviously reported by Tim Burgess.  However, since we'd lived with that\nproblem for quite awhile without knowing it, we can live with it awhile\nlonger until a proper fix can be made in 7.5.",
+      "touch_points": [
+        "planner"
+      ],
       "matched_queries": [
-        "primary_last_archived pg_stat_wal_receiver"
+        "archival report walsender"
       ],
       "from_hint": false,
-      "score": 0.063,
+      "score": 0.067,
       "enriched": false,
       "key_quote": null,
       "quote_message_url": null,
@@ -1795,38 +1615,38 @@
   "roaster_notes": [
     {
       "angle": "prior-attempts",
-      "objections": 2,
-      "note": "The thread contains its own prior attempt, Heikki's 2014-2015 shared mode (messages #5 to #31). Only always mode was committed, and the 2026 work revives that shared mode."
+      "objections": 1,
+      "note": "The thread holds its own prior attempt: Heikki's 2014-2015 shared mode, cut back to always mode in message #31 and revived in message #32. The objection above covers the reason it was set aside."
     },
     {
       "angle": "standards-compat",
       "objections": 3,
-      "note": "The objections cover wire protocol, archive_command contract and GUC semantics. Unbounded WAL retention is left to the safety angle."
+      "note": "Objections listed; config.sgml and monitoring.sgml docs for the new GUC and column are still missing per message #42, so the full user-facing contract cannot be checked yet."
     },
     {
       "angle": "replication-ondisk",
       "objections": 4,
-      "note": "Objections stay inside replication and persistent state. Behaviour when the standby switches from streaming to restore_command (message #4, still open in message #39) could not be judged from the material."
+      "note": ""
     },
     {
       "angle": "security",
       "objections": 0,
-      "note": "The proposal has no real privilege or exposure aspect. The 'a' message travels only over replication connections, which already need the REPLICATION privilege, and it carries the last archived segment name, which pg_stat_archiver already shows. The primary_last_archived column has the same low sensitivity. Unbounded WAL retention on a standby comes from an archive outage or from configuration set by the administrator, and no unprivileged user can trigger it. The other parts, the standby's fallback archive_command and duplicate archiving, use commands the administrator sets. Their risks are about archive integrity and availability, which other angles cover. One point could not be checked without the code: whether primary_last_archived follows the existing pg_read_all_stats filtering in pg_stat_wal_receiver."
+      "note": "Within the security angle I found no new exposure. The 'a' message travels only on replication connections, which already need the REPLICATION attribute. primary_last_archived matches last_archived_wal, which pg_stat_archiver already shows, and archive_command stays under superuser control. Unbounded WAL retention on a standby is an availability problem caused by an archive outage or a wrong configuration, not by an unprivileged user, so it belongs to the design angle."
     },
     {
       "angle": "maintenance-fit",
       "objections": 4,
-      "note": "Objections were raised. Wire-protocol breakage of pg_receivewal is left to other angles."
+      "note": "Four objections listed. The demand is real: several large fleets report it in messages #33, #37 and #39."
     },
     {
       "angle": "already-exists",
       "objections": 2,
-      "note": "Two objections from the already-exists angle; no listed precedent applies."
+      "note": "Two objections from the already-exists angle. Both rest on mechanisms the thread itself names, and neither is fatal."
     },
     {
       "angle": "demand",
       "objections": 0,
-      "note": "The material shows demand from several independent operators. Message #32 reports PITR gaps in 1-2% of clusters after datacenter outages, message #37 describes tens of thousands of clusters that work around the problem by external synchronization, and message #33 reports the same production problem from a separate group. Messages #1 and #2 describe a shared archive as a common setup. The workaround in use today, archive_mode = always, is said to cost about 2.5 to 3 times more archive storage requests (message #39). Message #33 says exposing the upstream's last archived WAL on the standby would already help, so a narrower first step may be worth discussing. That is a scope and design question, not missing demand."
+      "note": "The material shows real, independent demand. Borodin reports PITR gaps in 1–2% of clusters after large outages (message #32), and Kanchu (message #33) and Smolkin (message #37, tens of thousands of clusters) report the same gap and external workarounds. Heikki called the shared-archive setup very common in 2014 (message #1). The archive_mode = always workaround costs about 2.5 to 3 times the archive requests (message #39). Costs fall mostly on shared-mode users; protocol and retention risks belong to other angles."
     }
   ],
   "rounds_requested": 0,
@@ -1834,8 +1654,8 @@
     {
       "round": 0,
       "kind": "initial",
-      "llm_calls": 10,
-      "new_objections": 15,
+      "llm_calls": 9,
+      "new_objections": 14,
       "new_survived": 7,
       "revised": 0,
       "withdrawn": 0,
@@ -1845,14 +1665,28 @@
   ],
   "invariants_loaded": [],
   "warnings": [
-    "CommitFest entry has 2 threads; only the earliest is read (https://www.postgresql.org/message-id/flat/548AF1CB.80702%40vmware.com). Others: https://www.postgresql.org/message-id/flat/EBB5D20D-8630-4557-999F-999BAD90BCCF%40yandex-team.ru"
+    "CommitFest entry has 2 threads; only the earliest is read (https://www.postgresql.org/message-id/flat/548AF1CB.80702%40vmware.com). Others: https://www.postgresql.org/message-id/flat/EBB5D20D-8630-4557-999F-999BAD90BCCF%40yandex-team.ru",
+    "tone lint: 2 finding(s) remain after the repair call; see tone_lint in roast.json before forwarding this text"
   ],
   "tone_lint": {
-    "fields_checked": 126,
-    "hits_found": 0,
-    "sentences_rewritten": 0,
-    "repair_call": "not needed",
-    "remaining": []
+    "fields_checked": 121,
+    "hits_found": 2,
+    "sentences_rewritten": 2,
+    "repair_call": "done",
+    "remaining": [
+      {
+        "path": "refuted[2].failure_scenario",
+        "rule": "exclamation mark",
+        "match": "!",
+        "sentence": "With the documented `test !"
+      },
+      {
+        "path": "refuted[5].failure_scenario",
+        "rule": "exclamation mark",
+        "match": "!",
+        "sentence": "An operator with a plain `test !"
+      }
+    ]
   },
   "sanitizer": {
     "urls_removed": [],
@@ -1862,8 +1696,8 @@
   },
   "stats": {
     "llm_calls": 13,
-    "wall_ms": 158005,
-    "cost_usd": 4.0932721999999995,
+    "wall_ms": 206014,
+    "cost_usd": 3.9049992000000002,
     "dry_run": false
   }
 }

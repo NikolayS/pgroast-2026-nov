@@ -1,0 +1,1170 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:38:33.375Z",
+  "input": {
+    "arg": "7305",
+    "cf": {
+      "id": 7305,
+      "url": "https://commitfest.postgresql.org/patch/7305/",
+      "title": "Add get_actual_variable_range index page read limit (complements existing VISITED_PAGES_LIMIT)",
+      "status": "Needs review",
+      "authors": "Peter Geoghegan (pgeoghegan)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAH2-Wzkt1WkKp4VRJu3qHfmKXc8W%2BXYv1RXg5d2d3fSvAeO%3Drg%40mail.gmail.com",
+    "subject": "Problems with get_actual_variable_range's VISITED_PAGES_LIMIT",
+    "thread_start": "2026-02-09T23:14:27Z",
+    "messages_read": 12,
+    "messages_total": 12,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v1-0001-Limit-get_actual_variable_range-leaf-page-reads.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "The problem is real and agreed: Tom Lane confirmed it in message #2, and the demand angle found a production case. The one surviving objection, prior-attempts-1, is a fixable design point. INDEX_PAGES_LIMIT = 3 can end the probe where master finds the true endpoint, and no posted numbers measure how often. The objectors to the earlier design have not replied to the revised one, so a committer who knows the planner must judge that trade-off.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Limit leaf page reads in get_actual_variable_range with INDEX_PAGES_LIMIT",
+    "problem": "The planner's get_actual_variable_range can read an unbounded number of index leaf pages when many index tuples are marked LP_DEAD, because VISITED_PAGES_LIMIT counts only heap page visits. Queue-like tables, such as those in Mark Callaghan's insert benchmark and possibly TPC-C's order table, suffer high planning latency as a result.",
+    "proposed_design": "The patch adds INDEX_PAGES_LIMIT, set to 3, which counts leaf pages that return zero matching items. The scan gives up when the count hits the limit, and the planner falls back to pg_statistic. VISITED_PAGES_LIMIT stays as is, and only nbtree's _bt_readnextpage counts pages, so the first leaf page read is never counted.",
+    "user_visible_surface": [
+      "C API: new scan descriptor field in relscan.h, named xs_index_pages_limit in an earlier version, that callers set to ask the index AM to stop early.",
+      "No SQL, GUC, catalog or protocol change."
+    ],
+    "author_claims": [
+      "For the earlier single-leaf-page design, EXPLAIN latency with 20% deleted tuples was about 10 times lower than master, with no change when there are no dead tuples.",
+      "With the new limit, standbys keep today's behavior, because LP_DEAD bits are not set or used there and each page usually returns a match.",
+      "Counting only in _bt_readnextpage adds no overhead to simple point queries.",
+      "Reading more than a few empty leaf pages at the end of the index indicates a pathological case, so reading more pages is unlikely to find a value.",
+      "The patch no longer depends on the index prefetching work, because the slot-based table AM index scan interface is now committed."
+    ],
+    "thread_state": "Tom Lane objected to the first single-page design and Andres Freund doubted index cost as a proxy for heap cost; the author then changed to the complementary limit. Neither has replied to the revised design, and Rui Zhao is listed as reviewer with no review posted.",
+    "unclear": [
+      "The thread has no benchmark numbers for the v1 design; all posted numbers are for the earlier single-page design.",
+      "The proposal does not say how often get_actual_variable_range now fails to get an estimate, which is Tom Lane's main concern.",
+      "The proposal does not say how the value 3 was chosen.",
+      "The proposal does not say what happens with index AMs other than nbtree.",
+      "The proposal does not say whether the fix is meant for back branches."
+    ],
+    "search_queries": [
+      "get_actual_variable_range VISITED_PAGES_LIMIT",
+      "get_actual_variable_range dead index tuples",
+      "planner index endpoint probe slow",
+      "selectivity estimation actual min max index",
+      "planning time dead tuples btree",
+      "LP_DEAD killed tuples planner",
+      "limit index pages read planning",
+      "histogram endpoint index scan cost"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Revised limit still gives up early, and no failure-rate data answers message #2",
+      "level": "2",
+      "rubric_item": 4,
+      "category": "planner_behaviour",
+      "touch_points": [
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A batch insert at the high end of a timestamp index rolls back on a unique conflict. Later planning calls kill those entries and find more than three leaf pages with no live items. The planner falls back to a stale pg_statistic maximum. Range queries on recent rows get underestimated, and the DBA sees a bad plan with no sign of the cause.",
+      "argument": "In message #2, Tom Lane rejected the single-page design for its higher chance of getting no estimate, and suggested a limit of about a thousand dead entries. Message #7 gave the rollback case above. INDEX_PAGES_LIMIT counts empty pages, so three sparse pages holding a few dead entries trigger it as easily as three full ones. Message #8 argues the case is short-lived, but neither objector replied to v1, and all posted numbers are for the earlier design.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        7,
+        8,
+        9,
+        12
+      ],
+      "author_must_show": "With INDEX_PAGES_LIMIT = 3, how often does get_actual_variable_range return no estimate in the rollback and queue cases where master finds the true endpoint?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Tom Lane",
+          "date": "2026-02-10T00:39:33Z",
+          "url": "https://www.postgresql.org/message-id/3613043.1770683973%40sss.pgh.pa.us"
+        },
+        {
+          "index": 7,
+          "from": "Andres Freund",
+          "date": "2026-03-10T22:08:35Z",
+          "url": "https://www.postgresql.org/message-id/4s3vd2rjll4vgnhdnajrqwsnhnmnmtmjtwjngfsrzmjx3nrxvp%40la2vohpjojnk"
+        },
+        {
+          "index": 8,
+          "from": "Peter Geoghegan",
+          "date": "2026-03-13T01:13:40Z",
+          "url": "https://www.postgresql.org/message-id/CAH2-WzkmWviX6fGwJ_a775WMQ5-Qvg_FPXg%3D5wA4DMDeScmURw%40mail.gmail.com"
+        },
+        {
+          "index": 9,
+          "from": "Peter Geoghegan",
+          "date": "2026-06-23T20:06:13Z",
+          "url": "https://www.postgresql.org/message-id/CAH2-WzmugSOCGw-%2BmjocGRXBbwSevjMJ41dLaF0ukJzUGEKF%3DQ%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "Peter Geoghegan",
+          "date": "2026-09-15T16:01:17Z",
+          "url": "https://www.postgresql.org/message-id/CAH2-Wz%3DJ2d3TFJ1QLTia5Hr-kJXk%2BURBT8h10vGi6hO82L3kjw%40mail.gmail.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The limit counts leaf pages with zero matching items, so a rolled-back batch spanning a few leaf pages can end the probe where master finds the endpoint. Message #8's answer covers only workloads that retry, and no posted numbers measure the revised design.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Existing range queries can lose actual-endpoint estimates with no way back",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "planner_behaviour",
+      "touch_points": [
+        "planner_behaviour",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "On a primary, a batch insert of a few thousand rows at the high end of a key rolls back, and a later planner probe marks those entries LP_DEAD. Today the next probe walks past them cheaply and finds the real max. With the patch it stops after 3 empty leaf pages and falls back to the stale pg_statistic max, so `where id > $recent` gets a near-zero row estimate and a bad plan.",
+      "argument": "Andres Freund described this case in message #7 and noted that inserts are where stale stats give the worst estimates. Message #8 answers that retries will soon refill the end of the index, but that only applies to workloads that retry, and nobody replied to the revised design. Posted numbers cover only the earlier design, and no numbers show how often endpoint lookups now fail. Users get no setting to restore today's behaviour. Message #4 raised the same point, and the proposal does not say whether back branches would get this change.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4,
+        7,
+        8,
+        9
+      ],
+      "author_must_show": "In workloads without a queue pattern, such as rolled-back batch inserts, how often does INDEX_PAGES_LIMIT now make get_actual_variable_range fall back to pg_statistic, compared with master?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "Jakub Wartak",
+          "date": "2026-02-10T09:26:22Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmwjmGBWvPx6%3DqFRXJhm%3DsCrUyE7pPiPGA454LDdKemtQg%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Andres Freund",
+          "date": "2026-03-10T22:08:35Z",
+          "url": "https://www.postgresql.org/message-id/4s3vd2rjll4vgnhdnajrqwsnhnmnmtmjtwjngfsrzmjx3nrxvp%40la2vohpjojnk"
+        },
+        {
+          "index": 8,
+          "from": "Peter Geoghegan",
+          "date": "2026-03-13T01:13:40Z",
+          "url": "https://www.postgresql.org/message-id/CAH2-WzkmWviX6fGwJ_a775WMQ5-Qvg_FPXg%3D5wA4DMDeScmURw%40mail.gmail.com"
+        },
+        {
+          "index": 9,
+          "from": "Peter Geoghegan",
+          "date": "2026-06-23T20:06:13Z",
+          "url": "https://www.postgresql.org/message-id/CAH2-WzmugSOCGw-%2BmjocGRXBbwSevjMJ41dLaF0ukJzUGEKF%3DQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of prior-attempts-1, which states the same rollback scenario and the same missing failure-rate data. The added points about a setting and back branches name no separate failure.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Scan-descriptor limit has an nbtree-only contract that can drop silently",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later rework of nbtree scans, such as the amgetbatch prefetching work, moves page reads out of _bt_readnextpage and the new limit stops being counted. Ordinary tests and benchmarks stay green. Queue-table users see planning latency rise again after an upgrade, and nobody notices until a field report arrives.",
+      "argument": "The patch adds a generic field in relscan.h, but only nbtree's _bt_readnextpage honors it, and other ordered index AMs ignore it with no error. Message #5 and message #12 say the prefetching work will keep reshaping this code. Nothing in the proposal makes a forgotten counter fail loudly. The author knows nbtree well, which lowers the risk but does not define the contract for other AMs or future scan paths.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        5,
+        9,
+        12
+      ],
+      "author_must_show": "What documented index AM contract and regression test make the leaf-page limit fail visibly if a future nbtree scan path or another ordered AM stops honoring it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Peter Geoghegan",
+          "date": "2026-03-10T21:00:48Z",
+          "url": "https://www.postgresql.org/message-id/CAH2-Wz%3DoN%2B4%2BYFkJ%3DPijR5srTjBefVZfgV6zz0PU40pu1ntxMQ%40mail.gmail.com"
+        },
+        {
+          "index": 9,
+          "from": "Peter Geoghegan",
+          "date": "2026-06-23T20:06:13Z",
+          "url": "https://www.postgresql.org/message-id/CAH2-WzmugSOCGw-%2BmjocGRXBbwSevjMJ41dLaF0ukJzUGEKF%3DQ%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "Peter Geoghegan",
+          "date": "2026-09-15T16:01:17Z",
+          "url": "https://www.postgresql.org/message-id/CAH2-Wz%3DJ2d3TFJ1QLTia5Hr-kJXk%2BURBT8h10vGi6hO82L3kjw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "An index AM or scan path that ignores the field behaves as master does today, so no new failure arises, and the patch comment shows the committed xs_visited_pages_limit follows the same pattern. The patch was carried inside the prefetching series through v28, by the same author.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The patch adds a scan descriptor field in relscan.h that only nbtree honors."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": true,
+      "reason": "get_actual_variable_range falls back to pg_statistic after three empty leaf pages, which changes row estimates for existing queries."
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The proposal does not say whether back branches get the fix, and the relscan.h struct change would need an ABI-safe form there."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "A second hard-coded limit, counted only in _bt_readnextpage, must survive later reworks of nbtree scans."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "The patch adds counting in _bt_readnextpage, which every nbtree scan that moves to a next leaf page runs."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "With INDEX_PAGES_LIMIT = 3, how often does get_actual_variable_range return no estimate in the rollback and queue cases where master finds the true endpoint?",
+    "What are the planning latency numbers for the v1 design, since all posted numbers are for the earlier single-leaf-page design?",
+    "How was the value 3 chosen, and how do failure rate and latency change with a larger value?",
+    "Why does the limit count empty leaf pages instead of dead index entries skipped, as message #2 suggested with a threshold of about a thousand?",
+    "Is the fix meant for back branches, and if so, how does the relscan.h field change stay ABI-safe there?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Peter Geoghegan wrote the patch and works in nbtree; Tom Lane took part in message #2. Someone who knows selfuncs.c and planner estimation should agree to the estimate-loss trade-off.",
+    "liability": "The owner signs for plan regressions when the probe gives up early and the planner uses a stale pg_statistic endpoint. That lasts as long as the hard-coded limit exists.",
+    "author_follow_up": "The author changed the design after the objections in the thread and posted v1 in message #12, which suggests continued work."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "low",
+    "review_cost": "low",
+    "recommended_action": "proceed",
+    "reason": "Queue-like tables are common, and the thread shows a published benchmark and a production report. The patch is small, adds no SQL or GUC surface, and needs failure-rate numbers for the revised design before commit."
+  },
+  "self_advice": [],
+  "provisional_note": "No code was read. Whether the counter covers all nbtree scan paths (backward scans, parallel scans, array keys) and adds no cost for ordinary scans could not be checked.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:2302",
+      "kind": "cf",
+      "title": "Remove size limitations of vacuums dead_tuples array",
+      "status": "Returned with feedback",
+      "date": "2019-11-30",
+      "first_date": "2019-10-09",
+      "url": "https://commitfest.postgresql.org/patch/2302/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANwKhkO7+FzZsS_cbDFRKb-M3vVhWksfEcZamnjDqxDF6XgCUg@mail.gmail.com"
+      ],
+      "authors": "Ants Aasma (ants)",
+      "objectors": "Tomas Vondra",
+      "summary": "The patch lets vacuum's dead_tuples array grow past 1 GiB of maintenance_work_mem (about 179M tuples) by using MemoryContextAllocHuge. It also changes array indexing to size_t to remove a second limit at 12 GiB.",
+      "objection": "Tomas Vondra pointed to an earlier, unfinished thread on the same goal that discussed replacing the simple array with another data structure. The author said he would continue that earlier work, and Michael Paquier then marked this entry returned with feedback. No technical objection to the patch itself appears in the visible messages.",
+      "touch_points": [],
+      "matched_queries": [
+        "get_actual_variable_range dead index tuples",
+        "planning time dead tuples btree",
+        "LP_DEAD killed tuples planner"
+      ],
+      "from_hint": false,
+      "score": 0.365,
+      "enriched": true,
+      "key_quote": "There was a fairly long discussion about how to best do that (using other data structure, not just a simple array).",
+      "quote_message_url": "https://www.postgresql.org/message-id/20191010140508.zb22rihya6nmchwd%40development",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "revert:9d20b0ec8f2af43041b1a65e5fcd91acc47e9ace",
+      "kind": "revert",
+      "title": "Revert \"Avoid spurious deadlocks when upgrading a tuple lock\"",
+      "status": "Reverted",
+      "date": "2019-06-17",
+      "first_date": "2019-06-13",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9d20b0ec8f2af43041b1a65e5fcd91acc47e9ace",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/E1hbXKQ-0003g1-0C@gemulon.postgresql.org",
+        "https://www.postgresql.org/message-id/flat/B9C9D7CD-EB94-4635-91B6-E558ACEC0EC3@hintbits.com"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert \"Avoid spurious deadlocks when upgrading a tuple lock\"\nReverted commit(s): Silence compiler warning; Avoid spurious deadlocks when upgrading a tuple lock",
+      "objection": "This reverts commits 3da73d6839dc and de87a084c0a5.\n\nThis code has some tricky corner cases that I'm not sure are correct and\nnot properly tested anyway, so I'm reverting the whole thing for next\nweek's releases (reintroducing the deadlock bug that we set to fix).\nI'll try again afterwards.",
+      "touch_points": [],
+      "matched_queries": [
+        "get_actual_variable_range dead index tuples",
+        "planning time dead tuples btree",
+        "LP_DEAD killed tuples planner"
+      ],
+      "from_hint": false,
+      "score": 0.329,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "revert:efcbb76efe406d59c2ba8b4a09e04c01158ba575",
+      "kind": "revert",
+      "title": "Revert \"Test that vacuum removes tuples older than OldestXmin\"",
+      "status": "Reverted",
+      "date": "2024-07-22",
+      "first_date": "2024-07-19",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=efcbb76efe406d59c2ba8b4a09e04c01158ba575",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/614152.1721580711@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CAAKRu_apNU2MPBK96V+bXjTq0RiZ-=A4ZTaysakpx9jxbq1dbQ@mail.gmail.com"
+      ],
+      "authors": "Melanie Plageman",
+      "objectors": "",
+      "summary": "Revert \"Test that vacuum removes tuples older than OldestXmin\"\nReverted commit(s): Test that vacuum removes tuples older than OldestXmin",
+      "objection": "This reverts commit aa607980aee08416211f003ab41aa750f5559712.\n\nThis test proved to be unstable on the buildfarm, timing out before the\nstandby could catch up on 32-bit machines where more rows were required\nand failing to reliably trigger multiple index vacuum rounds on 64-bit\nmachines where fewer rows should be required.\n\nBecause the instability is only known to be present on versions of\nPostgres with TIDStore used for dead TID storage by vacuum, this is only\nbeing reverted on master and REL_17_STABLE.\n\nAs having this coverage may be valuable, there is a discussion on the\nthread of possible ways to stabilize the test. If that happens, a fixed\ntest can be committed again.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "get_actual_variable_range dead index tuples",
+        "planning time dead tuples btree",
+        "LP_DEAD killed tuples planner"
+      ],
+      "from_hint": false,
+      "score": 0.298,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "revert:f0e6d6d3c909e14eedd370dd77d7111c2ae24c02",
+      "kind": "revert",
+      "title": "Revert \"Get rid of the \"new\" and \"old\" entries in a view's rangetable.\"",
+      "status": "Reverted",
+      "date": "2023-01-12",
+      "first_date": "2023-01-12",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f0e6d6d3c909e14eedd370dd77d7111c2ae24c02",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+HiwqEf7gPN4Hn+LoZ4tP2q_Qt7n3vw7-6fJKOf92tSEnX6Gg@mail.gmail.com"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Get rid of the \"new\" and \"old\" entries in a view's rangetable.\"\nReverted commit(s): Get rid of the \"new\" and \"old\" entries in a view's rangetable.",
+      "objection": "This reverts commit 1b4d280ea1eb7ddb2e16654d5fa16960bb959566.\nIt's broken the buildfarm members that run cross-version-upgrade tests,\nbecause they're not prepared to deal with cosmetic differences between\nCREATE VIEW commands emitted by older servers and HEAD.  Even if we had\na solution to that, which we don't, it'd take some time to roll it out\nto the affected animals.  This improvement isn't valuable enough to\njustify addressing that problem on an emergency basis, so revert it\nfor now.",
+      "touch_points": [],
+      "matched_queries": [
+        "get_actual_variable_range VISITED_PAGES_LIMIT",
+        "get_actual_variable_range dead index tuples"
+      ],
+      "from_hint": false,
+      "score": 0.227,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:3894",
+      "kind": "cf",
+      "title": "Remove dead macro exec_subplan_get_plan",
+      "status": "Rejected",
+      "date": "2023-04-04",
+      "first_date": "2022-09-05",
+      "url": "https://commitfest.postgresql.org/patch/3894/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/85a0be98-a6d3-4760-952b-9cebdc51adfb@Spark"
+      ],
+      "authors": "Mingli Zhang (zml)",
+      "objectors": "",
+      "summary": "The patch removes the macro exec_subplan_get_plan, which no code uses anymore. Richard Guo suggested using the similar macro planner_subplan_get_plan where code now fetches subplans by hand.",
+      "objection": "Tom Lane asked whether the PlannedStmt->subplans list was still needed or whether the accessors should use the macro again; the author showed that the list is still used. Nobody pursued the patch after September 2022, so the commitfest manager marked it rejected. He judged that removing unused macros is not worth the effort unless it is part of a larger patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "get_actual_variable_range dead index tuples",
+        "planning time dead tuples btree"
+      ],
+      "from_hint": false,
+      "score": 0.225,
+      "enriched": true,
+      "key_quote": "I think the conclusion here was that the actual list is still used and\ncleaning up unused macros isn't worth the hassle unless it's part of\nsome larger patch?",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAM-w4HPXRVr0br5Kq80FuYpQmcsF9eXEDa-GzXxmZ_SFa-gnag%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:2947",
+      "kind": "cf",
+      "title": "Full support for index LP_DEAD hint bits on standby",
+      "status": "Returned with feedback",
+      "date": "2022-04-07",
+      "first_date": "2021-01-18",
+      "url": "https://commitfest.postgresql.org/patch/2947/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANtu0oiP18H31dSaEzn0B0rW6tA_q1G7=9Y92+US_WHGOoQevg@mail.gmail.com"
+      ],
+      "authors": "Michail Nikolaev (nkey), Mihail Nikalayeu (mihailnikalayeu)",
+      "objectors": "Peter Geoghegan",
+      "summary": "Let index scans on a hot standby use and set index LP_DEAD hint bits, which are currently ignored during recovery. The first design added a WAL record carrying a hint-bit xmin horizon tied to hot_standby_feedback; it was later reworked to mask primary-set hint bits in full-page images and let the standby set its own bits only when minRecoveryPoint makes it safe.",
+      "objection": "Late in the cycle Peter Geoghegan reviewed the patch; his review is visible only as quoted in the author's reply. He questioned whether the lockless algorithm using pg_memory_barrier() was correct, pointed out a problem with LP_DEAD bits on posting lists during posting list splits, and said the patch had serious design flaws. In his visible message he said the area carries a real risk of hidden data corruption bugs, that few committers could evaluate such a patch, and that the problem needed better explanation. A test added by the patch was also failing intermittently, and the author moved the entry back to Waiting on Author.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "planner"
+      ],
+      "matched_queries": [
+        "get_actual_variable_range dead index tuples",
+        "LP_DEAD killed tuples planner"
+      ],
+      "from_hint": false,
+      "score": 0.218,
+      "enriched": true,
+      "key_quote": "You must understand that this whole area is *scary*. The potential for\nserious data corruption bugs is very real.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAH2-Wz%3DO3-kyBZw5dTZkgVMkvF5MiMUpNPTQ0k8WLf-tkhMjBg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "revert:c7111d11b188bd631a63c98e9aab8532176007c3",
+      "kind": "revert",
+      "title": "Revert buggy optimization of index scans",
+      "status": "Reverted",
+      "date": "2016-03-03",
+      "first_date": "2014-11-18",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=c7111d11b188bd631a63c98e9aab8532176007c3",
+      "thread_urls": [],
+      "authors": "Simon Riggs",
+      "objectors": "",
+      "summary": "Revert buggy optimization of index scans\nReverted commit(s): Reduce btree scan overhead for < and > strategies",
+      "objection": "606c0123d627 attempted to reduce cost of index scans using > and <\nstrategies, though got that completely wrong in a few complex cases.\n\nRevert whole patch until we find a safe optimization.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "planner index endpoint probe slow",
+        "histogram endpoint index scan cost"
+      ],
+      "from_hint": false,
+      "score": 0.207,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "revert:2b7206a9935c915155a2c71e4658638de98ad440",
+      "kind": "revert",
+      "title": "Revert change to autodetect '__getopt_initialized' variable ... turns out glibc doesn't actually export this variable, so we need a different solution.",
+      "status": "Reverted",
+      "date": "2001-10-20",
+      "first_date": "2001-10-20",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=2b7206a9935c915155a2c71e4658638de98ad440",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert change to autodetect '__getopt_initialized' variable ... turns out glibc doesn't actually export this variable, so we need a different solution.",
+      "objection": "Revert change to autodetect '__getopt_initialized' variable ... turns\nout glibc doesn't actually export this variable, so we need a different\nsolution.",
+      "touch_points": [],
+      "matched_queries": [
+        "get_actual_variable_range VISITED_PAGES_LIMIT",
+        "get_actual_variable_range dead index tuples"
+      ],
+      "from_hint": false,
+      "score": 0.2,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:4711",
+      "kind": "cf",
+      "title": "Adjust tuples estimate for appendrel",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-12-12",
+      "url": "https://commitfest.postgresql.org/patch/4711/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/d2f06ddc-a8d4-48ea-893b-a95255c632b9@loxodata.com"
+      ],
+      "authors": "Richard Guo (richardguo)",
+      "objectors": "",
+      "summary": "The patch sets an appendrel's tuples estimate to the sum of the tuples of its live child relations instead of to its rows estimate. This lets estimate_num_groups() apply the formula from 84f9a35e3 to appendrels, which reduces the over-estimate of distinct groups that made the planner under-cost incremental sort.",
+      "objection": "The visible messages do not show why. Andrei Lepikhov supported committing the patch but asked for a regression test that checks the appendrel->tuples change directly, and the author had said he could not devise one. After that the discussion moved to wider ndistinct estimation ideas, and no later message from the author is shown.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "planning time dead tuples btree",
+        "LP_DEAD killed tuples planner"
+      ],
+      "from_hint": false,
+      "score": 0.177,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "revert:29904f5f2fdafbbb96ef3685fd361053b061aeb1",
+      "kind": "revert",
+      "title": "Revert \"Disallow infinite endpoints in generate_series() for timestamps.\"",
+      "status": "Reverted",
+      "date": "2022-05-09",
+      "first_date": "2022-04-20",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=29904f5f2fdafbbb96ef3685fd361053b061aeb1",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3603504.1652068977@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CADkLM=dzw0Pvdqp5yWKxMd+VmNkAMhG=4ku7GnCZxebWnzmz3Q@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/91B44E7B-68D5-448F-95C8-B4B3B0F5DEAF@duckdblabs.com"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Disallow infinite endpoints in generate_series() for timestamps.\"\nReverted commit(s): Disallow infinite endpoints in generate_series() for timestamps.",
+      "objection": "This reverts commit eafdf9de06e9b60168f5e47cedcfceecdc6d4b5f\nand its back-branch counterparts.  Corey Huinker pointed out that\nwe'd discussed this exact change back in 2016 and rejected it,\non the grounds that there's at least one usage pattern with LIMIT\nwhere an infinite endpoint can usefully be used.  Perhaps that\nargument needs to be re-litigated, but there's no time left before\nour back-branch releases.  To keep our options open, restore the\nstatus quo ante; if we do end up deciding to change things, waiting\none more quarter won't hurt anything.\n\nRather than just doing a straight revert, I added a new test case\ndemonstrating the usage with LIMIT.  That'll at least remind us of\nthe issue if we forget again.",
+      "touch_points": [],
+      "matched_queries": [
+        "planner index endpoint probe slow"
+      ],
+      "from_hint": false,
+      "score": 0.137,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:2113",
+      "kind": "cf",
+      "title": "Remove page-read callback from XLogReaderState",
+      "status": "Returned with feedback",
+      "date": "2021-10-04",
+      "first_date": "2019-04-18",
+      "url": "https://commitfest.postgresql.org/patch/2113/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20190418.210257.43726183.horiguchi.kyotaro@lab.ntt.co.jp"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti)",
+      "objectors": "",
+      "summary": "The patch removes the page-read callback (and later the open and close segment callbacks) from XLogReaderState. XLogReadRecord becomes a state machine that returns XLREAD_NEED_DATA, and the caller then loads WAL pages itself.",
+      "objection": "Thomas Munro committed a squashed version in April 2021, and it was later reverted. The author's note mentions a possible defect on one platform but does not give the cause. In September 2021 Thomas Munro pointed the author to a message from Andres Freund that the author had not seen and had not yet answered, and the entry was then returned with feedback. The visible messages do not show the content of that message or the exact reason for the revert.",
+      "touch_points": [],
+      "matched_queries": [
+        "limit index pages read planning"
+      ],
+      "from_hint": false,
+      "score": 0.135,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:2959",
+      "kind": "cf",
+      "title": "Improve join selectivity estimation using extended statistics",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-01-27",
+      "url": "https://commitfest.postgresql.org/patch/2959/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/71d67391-16a9-3e5e-b5e4-8f7fd32cc1b2@postgrespro.ru"
+      ],
+      "authors": "Konstantin Knizhnik (knizhnik)",
+      "objectors": "Tomas Vondra, Ibrar Ahmed",
+      "summary": "The patch uses per-table extended statistics, mainly functional dependencies, when it estimates join selectivity in clausesel.c. It also tries to combine join clauses with relation-level filters in calc_joinrel_size_estimate to estimate conditional probabilities.",
+      "objection": "Tomas Vondra found the design at the wrong level of abstraction. Clausesel.c handled extended statistics directly, dependencies were applied clause by clause in a fixed order and only on the inner relation, and he proposed handling all join clauses for a pair of relations at once in extended_stats.c. The author agreed it could be done better but posted no new version. In July the patch no longer compiled, and it still did not one commitfest later, so it was returned with feedback.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "selectivity estimation actual min max index"
+      ],
+      "from_hint": false,
+      "score": 0.135,
+      "enriched": true,
+      "key_quote": "The patch includes some *very* interesting ideas, but I think it's does them too late and at the wrong level of abstraction.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2a7a4c58-d9b4-5529-945a-0dcba6f6ef22%40enterprisedb.com",
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:3821",
+      "kind": "cf",
+      "title": "Patch to implement missing join selectivity estimation for range types",
+      "status": "Returned with feedback",
+      "date": "2024-04-09",
+      "first_date": "2022-06-30",
+      "url": "https://commitfest.postgresql.org/patch/3821/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB4o4asMq3k6HN9WfDsssQ5DDVfAziB4TpiFJ8RBJgZTVuwC7g@mail.gmail.com"
+      ],
+      "authors": "Mahmoud SAKR (mahmsakr), Diogo Repas (diogo.repas), Maxime Schoemans (mschoema), Zhicheng Luo (zcsysu.163.com)",
+      "objectors": "Tom Lane, vignesh C, jian he, Tomas Vondra",
+      "summary": "The patch adds join selectivity estimation for range and multirange operators such as <<, >>, &&, &<, &>, @> and <@, using the existing bounds histograms instead of the constant 0.005. A multirange is treated as its bounding range.",
+      "objection": "After the January 2024 revision, the CFBot still showed an AddressSanitizer abort in calc_hist_join_selectivity, and the authors did not post a fix. The function was still duplicated in rangetypes_selfuncs.c and multirangetypes_selfuncs.c, which Tomas Vondra, Tom Lane and jian he asked to remove. jian he also asked for estimate-ratio tests in place of the 3-way join plans, and the thread ends with no reply from the authors.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "selectivity estimation actual min max index"
+      ],
+      "from_hint": false,
+      "score": 0.131,
+      "enriched": true,
+      "key_quote": "I also agree with the upthread criticism that having two identical functions in different source files will be a maintenance nightmare.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2516071.1699991181%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:4419",
+      "kind": "cf",
+      "title": "Use ReadRecentBuffer() for btree root page",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-06-27",
+      "url": "https://commitfest.postgresql.org/patch/4419/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20230627020546.t6z4tntmj7wmjrfh@awork3.anarazel.de"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "Andres Freund",
+      "summary": "Cache the btree root page's buffer ID per relation and use ReadRecentBuffer() in _bt_getroot() to skip the buffer mapping lookup. To make that scale, ReadRecentBuffer() would pin with PinBuffer() instead of taking the buffer header spinlock, which also bumps the usage count.",
+      "objection": "Andres Freund objected to keeping the cached root buffer in rd_amcache, because each access method would then duplicate the same code. He suggested putting the fields in RelationData instead. Thomas Munro answered with an experimental LRU of recent lookups, and Andres said that should be a separate facility. No revised patch followed, so in January 2024 the entry was set to Waiting on Author, and the visible messages show no reply after that.",
+      "touch_points": [],
+      "matched_queries": [
+        "limit index pages read planning"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": true,
+      "key_quote": "I am wondering if we don't want something more generic than stashing this in rd_amcache.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20230629153948.rk7re27qz3qresdt%40awork3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:2759",
+      "kind": "cf",
+      "title": "Suggesting an improvement for indexonlyscan cost",
+      "status": "Withdrawn",
+      "date": "2020-10-13",
+      "first_date": "2020-09-29",
+      "url": "https://commitfest.postgresql.org/patch/2759/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANugjhuT6qxvvC9N6WEq4FfLCa94MNeG5sfOuG=b4sGpYKt2hQ@mail.gmail.com"
+      ],
+      "authors": "Hamid Akhtar (hamidakhtar)",
+      "objectors": "",
+      "summary": "Suggesting an improvement for indexonlyscan cost\nThreads: Improved Cost Calculation for IndexOnlyScan",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "histogram endpoint index scan cost"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:3906",
+      "kind": "cf",
+      "title": "introduce optimized linear search functions that return index of matching element",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-09-17",
+      "url": "https://commitfest.postgresql.org/patch/3906/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20220917052903.GA3172400@nathanxps13"
+      ],
+      "authors": "Masahiko Sawada (masahikosawada), Nathan Bossart (bossartn)",
+      "objectors": "",
+      "summary": "introduce optimized linear search functions that return index of matching element\nThreads: introduce optimized linear search functions that return index of\nmatching element",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "planner index endpoint probe slow"
+      ],
+      "from_hint": false,
+      "score": 0.116,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:5607",
+      "kind": "cf",
+      "title": "SIMD optimization for list_sort and tuple-sort",
+      "status": "Withdrawn",
+      "date": "2025-08-06",
+      "first_date": "2024-11-21",
+      "url": "https://commitfest.postgresql.org/patch/5607/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CO6PR11MB5620E3878444C023A7C8CA9C95222@CO6PR11MB5620.namprd11.prod.outlook.com",
+        "https://www.postgresql.org/message-id/flat/CO1PR11MB506011C3052AE779750D9789EDA02@CO1PR11MB5060.namprd11.prod.outlook.com"
+      ],
+      "authors": "Rakshit R (rakshtr)",
+      "objectors": "",
+      "summary": "SIMD optimization for list_sort and tuple-sort\nThreads: SIMD optimization for list_sort; Proposal for optimizations with simd enabled sort",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "LP_DEAD killed tuples planner"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:1513",
+      "kind": "cf",
+      "title": "OFFSET optimisation for IndexScan using visibility map",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2018-01-31",
+      "url": "https://commitfest.postgresql.org/patch/1513/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANtu0oi3a1Rf1PVsBufQbm+g9ytSv75+kp7kJYvK5C1qF_0Siw@mail.gmail.com"
+      ],
+      "authors": "Michail Nikolaev (nkey)",
+      "objectors": "",
+      "summary": "OFFSET optimisation for IndexScan using visibility map\nThreads: [WIP PATCH] Index scan offset optimisation using visibility map",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "planner index endpoint probe slow"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:2386",
+      "kind": "cf",
+      "title": "Using multicolumn statistics for more precise join selectivity estimatation",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2019-10-14",
+      "url": "https://commitfest.postgresql.org/patch/2386/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/196f1e1a-5464-ed07-ab3c-0c9920564af7@postgrespro.ru"
+      ],
+      "authors": "Konstantin Knizhnik (knizhnik)",
+      "objectors": "",
+      "summary": "Using multicolumn statistics for more precise join selectivity estimatation\nThreads: Columns correlation and adaptive query optimization",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "selectivity estimation actual min max index"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:2043",
+      "kind": "cf",
+      "title": "Bloom index cost model",
+      "status": "Returned with feedback",
+      "date": "2019-09-30",
+      "first_date": "2019-02-12",
+      "url": "https://commitfest.postgresql.org/patch/2043/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/dc54f6e8-c6bf-6869-08c2-de855de470ae@gmx.net"
+      ],
+      "authors": "Jeff Janes (jjanes)",
+      "objectors": "",
+      "summary": "Bloom index cost model\nThreads: Bloom index cost model seems to be wrong",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "histogram endpoint index scan cost"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "revert:9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "kind": "revert",
+      "title": "Fix index-only scan plans, take 2.",
+      "status": "Partially reverted",
+      "date": "2022-01-03",
+      "first_date": "2022-01-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3179992.1641150853@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/17350-b5bdcf476e5badbb@postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Fix index-only scan plans, take 2.\nReverted commit(s): Fix index-only scan plans when not all index columns can be returned.",
+      "objection": "Commit 4ace45677 failed to fix the problem fully, because the\nsame issue of attempting to fetch a non-returnable index column\ncan occur when rechecking the indexqual after using a lossy index\noperator.  Moreover, it broke EXPLAIN for such indexquals (which\nindicates a gap in our test cases :-().\n\nRevert the code changes of 4ace45677 in favor of adding a new field\nto struct IndexOnlyScan, containing a version of the indexqual that\ncan be executed against the index-returned tuple without using any\nnon-returnable columns.  (The restrictions imposed by check_index_only\nguarantee this is possible, although we may have to recompute indexed\nexpressions.)  Support construction of that during setrefs.c\nprocessing by marking IndexOnlyScan.indextlist entries as resjunk\nif they can't be returned, rather than removing them entirely.\n(We could alternatively require setrefs.c to look up the IndexOptInfo\nagain, but abusing resjunk this way seems like a reasonably safe way\nto avoid needing to do that.)\n\nThis solution isn't great from an API-stability standpoint: if there\nare any extensions out there that build IndexOnlyScan structs directly,\nthey'll be broken in the next minor releases.  However, only a very\ninvasive extension would be likely to do such a thing.  There's no\nchange in the Path representation, so typical planner extensions\nshouldn't have a problem.\n\nAs before, back-patch to all supported branches.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "limit index pages read planning"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:5516",
+      "kind": "cf",
+      "title": "quick and dirty fix: Quadratic planning time for ordered paths over partitioned tables",
+      "status": "Rejected",
+      "date": "2025-02-03",
+      "first_date": "2025-01-22",
+      "url": "https://commitfest.postgresql.org/patch/5516/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALzhyqzmZ6b9Sbp4jCORJV48t4kz2a1EqR3z4DUxX4RfRYR2xA@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "quick and dirty fix: Quadratic planning time for ordered paths over partitioned tables\nThreads: Quadratic planning time for ordered paths over partitioned tables",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "planning time dead tuples btree"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:5238",
+      "kind": "cf",
+      "title": "Add parallel columns for seq scan and index scan on pg_stat_all_tables and _indexes",
+      "status": "Returned with feedback",
+      "date": "2024-12-11",
+      "first_date": "2024-08-29",
+      "url": "https://commitfest.postgresql.org/patch/5238/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAECtzeXXuMkw-RVGTWvHGOJsmFdsRY+jK0ndQa80sw46y2uvVQ@mail.gmail.com"
+      ],
+      "authors": "Guillaume Lelarge (gleu)",
+      "objectors": "",
+      "summary": "Add parallel columns for seq scan and index scan on pg_stat_all_tables and _indexes\nThreads: Add parallel columns for seq scan and index scan on\npg_stat_all_tables and _indexes",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "histogram endpoint index scan cost"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:29",
+      "kind": "cf",
+      "title": "Avoiding plan disasters with LIMIT",
+      "status": "Returned with feedback",
+      "date": "2015-05-08",
+      "first_date": "2014-09-18",
+      "url": "https://commitfest.postgresql.org/patch/29/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/541A2335.3060100@agliodbs.com"
+      ],
+      "authors": "Simon Riggs (simon)",
+      "objectors": "",
+      "summary": "Avoiding plan disasters with LIMIT\nThreads: Yet another abort-early plan disaster on 9.3",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "limit index pages read planning"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 8,
+    "new_calls": 0,
+    "failed": 0,
+    "quotes_verified": 0,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 0
+  },
+  "precedent_cutoff": "2026-02-09",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "No precedent found in the index. The thread names commit 9c6ad5eaa9, which added VISITED_PAGES_LIMIT, as background (messages #1 and #4). Message #4 calls it a quick backpatchable fix, which this patch extends rather than reverses."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 1,
+      "note": "The proposal adds no SQL, GUC, catalog, dump or psql surface, so the only compatibility concern from this angle is the planner behaviour change for existing queries."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The patch changes no on-disk format, WAL record, catalog or wire protocol. It adds only a scan descriptor field in relscan.h, which is a normal change on master. On a hot standby, LP_DEAD bits are not used, so as message #9 says the new limit rarely triggers there and behaviour stays as today. The nbtree VACUUM bookkeeping invariant does not apply, because the patch does not change VACUUM. If the fix is later proposed for back branches, the relscan.h struct change would need an ABI-safe form, but the proposal does not ask for a backpatch."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal has no privilege or exposure aspect. It adds an internal limit on leaf page reads during planner endpoint probes, with no new SQL, GUC, catalog, role or protocol surface, and it lowers rather than raises the work an unprivileged user can trigger by planning a query."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 1,
+      "note": "From the maintenance angle the cost looks small: there is no GUC, catalog or SQL surface, and the extra work sits in _bt_readnextpage only. The nbtree VACUUM invariant does not apply because this is a planner-time scan. The author is the committer who owns the area."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "I found no existing Postgres feature, setting or extension that bounds leaf page reads in get_actual_variable_range, and the limit lives inside planner and nbtree code that no hook reaches. Aggressive vacuuming of queue tables only reduces how often the problem occurs, and the new limit extends VISITED_PAGES_LIMIT instead of adding a second way to do the same job."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "The material shows real demand: Mark Callaghan's published benchmark, Tom Lane agreeing the problem exists (message #2), and Jakub Wartak's production case where planning took about 27 minutes (message #4). The patch has no user-visible surface, and the open questions are about how often estimates fail, which other angles cover."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 3,
+      "new_survived": 1,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [
+    "invariants/nbtree.md"
+  ],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 60,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 11,
+    "wall_ms": 122114,
+    "cost_usd": 1.589591,
+    "dry_run": false
+  }
+}

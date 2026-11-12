@@ -1,0 +1,1037 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:33:35.893Z",
+  "input": {
+    "arg": "7257",
+    "cf": {
+      "id": 7257,
+      "url": "https://commitfest.postgresql.org/patch/7257/",
+      "title": "Fix use-after-free after failed pg_checksum_init",
+      "status": "Needs review",
+      "authors": "Yuriy Grigoryev (ju.grigorev)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/9d69505e8d4948048e8401165ca4c3b8%40localhost.localdomain",
+    "subject": "[PATCH] Fix use-after-free after failed pg_checksum_init",
+    "thread_start": "2026-08-17T06:40:08Z",
+    "messages_read": 6,
+    "messages_total": 6,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v3-0001-Fix-UAF-after-failed-pg_checksum_init.patch",
+      "v1-0001-Fix-UAF-after-failed-pg_checksum_init.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NO-FUNDAMENTAL-OBJECTION",
+  "confidence": "medium",
+  "verdict_reasoning": "No objection survived the critic. The only one raised, maintenance-fit-1 on the linker-substituted test mock, was refuted because both failure modes are loud and the point is test-level. The fix clears a dangling pointer, frees a leaked context, and makes pg_combinebackup exit on checksum errors as basebackup and pg_verifybackup do. A committer agreed with the goal in message #2 and the brief reports v3 as mostly ready.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Fix use-after-free after failed pg_checksum_init in pg_combinebackup",
+    "problem": "pg_checksum_init() frees the SHA context when pg_cryptohash_init() fails but leaves context->raw_context.c_sha2 dangling. pg_combinebackup ignores the -1 return and later calls pg_checksum_update() or pg_checksum_final() with that pointer. The bug affects frontend OpenSSL builds when EVP_DigestInit_ex() fails after a successful create, and pg_checksum_final() also leaks the SHA context when finalization fails.",
+    "proposed_design": "pg_checksum_init() sets the SHA pointer to NULL after freeing it. pg_checksum_final() frees and clears the SHA context after the switch, whether finalization succeeds or fails. pg_combinebackup checks every pg_checksum_init() and pg_checksum_final() result and exits with pg_fatal, as basebackup and pg_verifybackup do.",
+    "user_visible_surface": [
+      "pg_combinebackup exits with an error such as \"could not initialize checksum of file\" instead of continuing after a checksum init or final failure.",
+      "pg_checksum_final() in src/common now always frees and clears the SHA context, which changes the cleanup contract for frontend callers.",
+      "New uninstalled test program test_checksum_helper and TAP test t/015_checksum_helper.pl in src/bin/pg_combinebackup."
+    ],
+    "author_claims": [
+      "create_manifest_writer() always uses SHA256, so the bug is reachable without --manifest-checksums=sha256.",
+      "Non-OpenSSL builds do not hit the path, because the in-core cryptohash does not fail after create.",
+      "The success path has no performance or user-visible change.",
+      "The new test fails with master's checksum_helper.c and passes with the patch for all four SHA variants.",
+      "The fix should be back-patched to 17, where pg_combinebackup was added; the author later left this open."
+    ],
+    "thread_state": "Daniel Gustafsson calls v3 mostly ready but asks for a clearer if/else with an Assert, a Makefile rule name fix, and one helper call per test case. Raja Sai pranav tested v2 and found it correct; back-patching is still undecided.",
+    "unclear": [
+      "The thread does not show a v4 that answers Daniel's comments of 2026-11-06.",
+      "Nobody has decided whether to back-patch to 17, and Daniel finds the risk/reward unfavorable for so rare an error.",
+      "The material does not say whether the linker-mock test approach works on Windows or other platforms the buildfarm covers.",
+      "The thread does not say whether out-of-tree callers of pg_checksum_final() rely on the old cleanup behaviour."
+    ],
+    "search_queries": [
+      "pg_checksum_init use-after-free",
+      "pg_combinebackup checksum error handling",
+      "checksum_helper dangling pointer",
+      "pg_cryptohash_init failure OpenSSL",
+      "frontend mock cryptohash test",
+      "pg_checksum_final leak",
+      "backup manifest checksum failure",
+      "static analyzer frontend fix"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Linker-substituted cryptohash mock is a new, fragile test mechanism",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch makes checksum_helper.c call another cryptohash function, or moves symbols between cryptohash objects in libpgcommon. test_checksum_helper then fails to link with duplicate symbols, or links the real provider without notice. The committer finds out from buildfarm failures, perhaps only on MSVC or meson animals.",
+      "argument": "The test links the real checksum_helper.c against test copies of the pg_cryptohash_* API, so the test depends on which object files the static library resolution pulls in. No existing test in the tree uses symbol substitution this way. Message #4 tested only autoconf on Linux, and message #5 added meson on Linux. Nothing in the thread covers Windows linkers, and the committer of a back-branch-candidate fix would own any breakage.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        4,
+        5
+      ],
+      "author_must_show": "Does the mock link correctly on MSVC and macOS with meson, and what keeps it in step when the cryptohash API or checksum_helper.c changes?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Grigorev Jurij",
+          "date": "2026-08-25T10:27:01Z",
+          "url": "https://www.postgresql.org/message-id/32c8477cd5b4469e853420930cdb1d95%40localhost.localdomain"
+        },
+        {
+          "index": 4,
+          "from": "Raja Sai pranav",
+          "date": "2026-11-04T11:56:17Z",
+          "url": "https://www.postgresql.org/message-id/CAPHduZApDmn%2BQRLbvMWQwGH5KF46ww_kTdrNNvbHuY23i8tKJg%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Grigorev Jurij",
+          "date": "2026-11-06T02:11:36Z",
+          "url": "https://www.postgresql.org/message-id/55101c47505048eb91bc7a9bd40baaa9%40localhost.localdomain"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "Both outcomes in the scenario are loud: a link error or a failing test, so item 9 does not fail. Daniel Gustafsson reviewed the v3 test and asked only for small changes; untested Windows linking is a test-level question outside levels 1-2.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "pg_checksum_final() in src/common now always frees and clears the SHA context, which changes the cleanup contract for callers."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "Message #1 asks for a back-patch to 17; message #2 calls the risk/reward unfavorable, and the question is still open."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "The patch adds test_checksum_helper, a test program that links checksum_helper.c against mock pg_cryptohash_* functions."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Is there a v4 that answers the review comments of 2026-11-06 on the if/else with an Assert, the Makefile rule name, and one helper call per test case?",
+    "Should the fix go to 17 and later, and if so, does the back-branch version include the new test program or only the code change?",
+    "Does test_checksum_helper link and run with the mock cryptohash functions on Windows and macOS, under both meson and autoconf?",
+    "Does any in-tree or known out-of-tree caller of pg_checksum_final() use the SHA context after the call and so depend on the old cleanup behaviour?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Daniel Gustafsson reviewed the patch in message #2 and, per the brief, calls v3 mostly ready. The owner needs to know the frontend cryptohash and OpenSSL code and the backup tools.",
+    "liability": "The owner signs for the changed cleanup contract of pg_checksum_final() in src/common, for the new mock-linked test program on all buildfarm platforms, and for any back-branch destabilization if the fix goes to 17.",
+    "author_follow_up": "The author answered review within a day in message #3 and, per the brief, posted up to v3 with a reworked function and a new test. The thread shows no v4 yet for the latest comments."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "low",
+    "review_cost": "low",
+    "recommended_action": "proceed",
+    "reason": "The error path needs an OpenSSL init or final failure, which message #2 calls unlikely, so few users will ever hit it. The v3 patch is about 16 KiB over nine files in pg_combinebackup and one src/common file, and a committer is already reviewing it."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read, so this review could not check that every fallible pg_checksum_init() and pg_checksum_final() call in pg_combinebackup is covered, or that no caller frees the context a second time. Only three of six messages were visible.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:1462",
+      "kind": "cf",
+      "title": "Checksums for slru files",
+      "status": "Returned with feedback",
+      "date": "2018-03-02",
+      "first_date": "2017-12-31",
+      "url": "https://commitfest.postgresql.org/patch/1462/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/fec4857dbb1ddaccaafc6f6c7f71f0a7@postgrespro.ru"
+      ],
+      "authors": "Ivan Kartyshov (fenimorkin)",
+      "objectors": "Alexander Korotkov, Thomas Munro, Andres Freund",
+      "summary": "The patch adds a checksum in the last 2 bytes of every SLRU page, computed on write and verified on read when data checksums are enabled. A new GUC, ignore_slru_checksum_failure, turns verification failures into warnings, like ignore_checksum_failure does for relations.",
+      "objection": "Reviewers asked for pg_upgrade support that moves existing SLRU data to the smaller usable page size, plus tests for it. They also found SLRU per-page macros the patch did not update. The author did not reply, and the patch was returned with feedback after a commitfest in Waiting on Author with no progress.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_checksum_init use-after-free",
+        "pg_combinebackup checksum error handling",
+        "pg_checksum_final leak",
+        "backup manifest checksum failure"
+      ],
+      "from_hint": false,
+      "score": 0.379,
+      "enriched": true,
+      "key_quote": "This patch is in the 2018-03 CF, but I don't see any progress since the\nlast comments. As it has been Waiting on author since the last CF, I\nthink we should mark this as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20180302012510.fuywatza6slrj2nq%40alap3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:2369",
+      "kind": "cf",
+      "title": "Online checksums verification",
+      "status": "Returned with feedback",
+      "date": "2020-11-05",
+      "first_date": "2019-12-06",
+      "url": "https://commitfest.postgresql.org/patch/2369/",
+      "thread_urls": [],
+      "authors": "Julien Rouhaud (rjuju)",
+      "objectors": "",
+      "summary": "Online checksums verification",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_checksum_init use-after-free",
+        "pg_combinebackup checksum error handling",
+        "pg_checksum_final leak",
+        "backup manifest checksum failure"
+      ],
+      "from_hint": false,
+      "score": 0.376,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:1733",
+      "kind": "cf",
+      "title": "Online verification of checksums",
+      "status": "Returned with feedback",
+      "date": "2019-04-09",
+      "first_date": "2018-07-26",
+      "url": "https://commitfest.postgresql.org/patch/1733/",
+      "thread_urls": [],
+      "authors": "Michael Banck (mbanck)",
+      "objectors": "",
+      "summary": "Online verification of checksums",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_checksum_init use-after-free",
+        "pg_checksum_final leak",
+        "backup manifest checksum failure"
+      ],
+      "from_hint": false,
+      "score": 0.267,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:1682",
+      "kind": "cf",
+      "title": "SLRU data page checksums",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2017-12-31",
+      "url": "https://commitfest.postgresql.org/patch/1682/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/fec4857dbb1ddaccaafc6f6c7f71f0a7@postgrespro.ru"
+      ],
+      "authors": "",
+      "objectors": "Thomas Munro, Alexander Korotkov",
+      "summary": "Add checksums to SLRU pages (clog, multixact, commit timestamps, subtrans and similar), stored in the last two bytes of each page, computed on write and verified on read when data checksums are enabled. A new GUC, ignore_slru_checksum_failure, would turn verification failures into warnings.",
+      "objection": "The shown messages do not include a closing decision, but they record unresolved problems. Thomas Munro pointed out that SLRU pages have no full-page-write protection, so a torn page after power loss would fail checksum verification and could stop recovery, and whole-page checksums are incompatible with the incremental redo of SLRU pages. Earlier, Alexander Korotkov noted that pg_upgrade support for the changed usable page size was missing. Andres Freund backed a different approach, adding regular page headers to SLRU blocks, which Shawn Debnath said he was working on.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_checksum_init use-after-free",
+        "pg_checksum_final leak",
+        "backup manifest checksum failure"
+      ],
+      "from_hint": false,
+      "score": 0.245,
+      "enriched": true,
+      "key_quote": "With your patch, a torn SLRU page can cause recovery to fail.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAEepm%3D1e91zMk-vZszCOGDtKd%3DDhMLQjgENRSxcbSEhxuEPpfA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:2248",
+      "kind": "cf",
+      "title": "Refactoring of connection with password prompt loop for frontends",
+      "status": "Returned with feedback",
+      "date": "2019-09-27",
+      "first_date": "2019-08-22",
+      "url": "https://commitfest.postgresql.org/patch/2248/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20190822074558.GG1683@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Alvaro Herrera",
+      "summary": "Consolidate the repeated frontend pattern of connecting to the backend with a password-prompt retry loop (used in several client tools) into a single shared routine in src/fe_utils. The patch unified error handling across tools but left out pg_dumpall and the code paths that prompt for a password before the first connection attempt.",
+      "objection": "The author marked it returned with feedback himself. Open design questions remained: an unresolved XXX comment, and the handling of tools (vacuumlo, scripts/common.c, pg_dump) that prompt for a password before the first connection or reuse it across connections. Resolving these needed further work to avoid password exposure hazards. The patch also drew little review attention.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "frontend mock cryptohash test",
+        "static analyzer frontend fix"
+      ],
+      "from_hint": false,
+      "score": 0.233,
+      "enriched": true,
+      "key_quote": "For now I am switching the patch as returned with feedback as there is\nmuch more to consider.  And it did not attract much attention either.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20190927071401.GG8485%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:2927",
+      "kind": "cf",
+      "title": "Report tranche ID and LWLock pointer in LWLock static tracepoints",
+      "status": "Returned with feedback",
+      "date": "2021-04-07",
+      "first_date": "2020-12-19",
+      "url": "https://commitfest.postgresql.org/patch/2927/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGRY4nxJo+-HCC2i5H93ttSZ4gZO-FSddCwvkb-qAfQ1zdXd1w@mail.gmail.com"
+      ],
+      "authors": "Craig Ringer (ringerc)",
+      "objectors": "Peter Eisentraut",
+      "summary": "The patch set adds the LWLock pointer and the numeric tranche ID to each LWLock static tracepoint, so traces can tell individual locks apart and compare them across processes. It also fixes misplaced tracepoints, adds a single tracepoint for all acquires and releases plus start markers for timing, and adds comments on LWLock tranches.",
+      "objection": "Two parts were committed by Peter Eisentraut: the removal of the wrong lwlock__acquire tracepoint in LWLockWaitForVar, and the move of TRACE_POSTGRESQL_LWLOCK_RELEASE. In his last review he reported that patch 0002 did not build on macOS because uint64 was used in the probe definitions, and that the probe changes had no documentation. He also asked for a different argument order and whether both tranche name and tranche ID are needed. The visible messages show no new version after that review.",
+      "touch_points": [],
+      "matched_queries": [
+        "checksum_helper dangling pointer",
+        "static analyzer frontend fix"
+      ],
+      "from_hint": false,
+      "score": 0.179,
+      "enriched": true,
+      "key_quote": "First, a problem:  0002 doesn't build on macOS, because uint64 has been\nused in the probe definitions.",
+      "quote_message_url": "https://www.postgresql.org/message-id/558b02ca-2795-3b6d-6ce6-c1e13da2f5b5%40enterprisedb.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:3852",
+      "kind": "cf",
+      "title": "pg_checksum: add test for coverage",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-08-29",
+      "url": "https://commitfest.postgresql.org/patch/3852/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAcByaLPAK1e-Mpa5WUBATQsvXdiP5FXNX6+yqTrFZxg0vpngw@mail.gmail.com"
+      ],
+      "authors": "DongWook Lee (dongwooklee)",
+      "objectors": "Daniel Gustafsson",
+      "summary": "The patch adds TAP tests that run pg_checksums with --progress and with --verbose to raise code coverage. The author reported line coverage going from 77.9% to 87.7%.",
+      "objection": "Daniel Gustafsson said the tests run more code but do not check that the output is correct, so they add little real coverage. The test descriptions also wrongly said --progress and --verbose enable verification, which is only the default mode. The author did not reply, and Michael Paquier returned the entry with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_checksum_init use-after-free",
+        "backup manifest checksum failure"
+      ],
+      "from_hint": false,
+      "score": 0.179,
+      "enriched": true,
+      "key_quote": "As written these tests aren't providing more coverage, they run more code but\nthey don't ensure that the produced output is correct.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2EFDD8CB-025E-48E0-8E69-E0D31FDF2025%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:4951",
+      "kind": "cf",
+      "title": "teach pg_combinebackup to detect deleted files where possible",
+      "status": "Withdrawn",
+      "date": "2024-08-21",
+      "first_date": "2024-04-11",
+      "url": "https://commitfest.postgresql.org/patch/4951/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/9badd24d-5bd9-4c35-ba85-4c38a2feb73e@pgmasters.net"
+      ],
+      "authors": "Robert Haas (rhaas)",
+      "objectors": "Robert Haas",
+      "summary": "pg_combinebackup would look up every file of the final input backup in its backup_manifest and warn about manifest entries that are missing on disk. This catches files deleted from the most recent backup, without reading or checksumming file contents.",
+      "objection": "Robert Haas withdrew the patch because no one besides David Steele asked for it. He had mixed feelings about it: the check covers only missing files in the final backup and may give users a false sense of security, and pg_verifybackup already does full verification. Amul Sul reviewed the code but took no position on the idea.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_combinebackup checksum error handling"
+      ],
+      "from_hint": false,
+      "score": 0.143,
+      "enriched": true,
+      "key_quote": "Nobody else has responded. Hence, I'm withdrawing this patch.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoaK0i2%2B%2BsXsi_xqNpPDFa8Rg_v_z-kBpV20L4Ez_oDqYQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:6666",
+      "kind": "cf",
+      "title": "change SOFT_ERROR_OCCURRED to a static inline function",
+      "status": "Withdrawn",
+      "date": "2026-08-07",
+      "first_date": "2026-03-24",
+      "url": "https://commitfest.postgresql.org/patch/6666/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAZLFmSGti716gWeY=DCZ9TTVOixnHZ4_4V4tDzoeE86D64vOA@mail.gmail.com"
+      ],
+      "authors": "Nathan Bossart (bossartn)",
+      "objectors": "Nathan Bossart",
+      "summary": "Change the SOFT_ERROR_OCCURRED macro to a static inline function that takes a Node *, so the compiler catches a wrong argument like the fcinfo->args bug fixed in timestamptz_date. Callers that pass an ErrorSaveContext * would get explicit casts to Node *.",
+      "objection": "Peter Eisentraut suggested changing the escontext field to Node * instead of adding casts. Nathan Bossart, who proposed the change, found that alternative too invasive for the gain: it needs more memory management and casts back to ErrorSaveContext * in many places. Typing the field as ErrorSaveContext * still needs casts to Node *, unless the function accepts void *, which defeats the type check. The thread ends there, and the entry was withdrawn.",
+      "touch_points": [],
+      "matched_queries": [
+        "static analyzer frontend fix"
+      ],
+      "from_hint": false,
+      "score": 0.136,
+      "enriched": true,
+      "key_quote": "I started looking at this, but it seems to be a rather invasive change for\nthe level of gain.",
+      "quote_message_url": "https://www.postgresql.org/message-id/acQ06D_Lz6V93gDg%40nathan",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:2719",
+      "kind": "cf",
+      "title": "Fix checksum verification in base backups for zero page headers",
+      "status": "Returned with feedback",
+      "date": "2021-09-13",
+      "first_date": "2020-09-01",
+      "url": "https://commitfest.postgresql.org/patch/2719/",
+      "thread_urls": [],
+      "authors": "Michael Banck (mbanck)",
+      "objectors": "",
+      "summary": "Fix checksum verification in base backups for zero page headers",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "backup manifest checksum failure"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "revert:fe0a1dc52c7332a65b44db8e8408a5fd1d8fc8fb",
+      "kind": "revert",
+      "title": "Revert \"Change SHA2 implementation based on OpenSSL to use EVP digest routines\"",
+      "status": "Reverted",
+      "date": "2020-09-29",
+      "first_date": "2020-09-28",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=fe0a1dc52c7332a65b44db8e8408a5fd1d8fc8fb",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200928073330.GC2316@paquier.xyz",
+        "https://www.postgresql.org/message-id/flat/20200924025314.GE7405@paquier.xyz",
+        "https://www.postgresql.org/message-id/flat/20180911030250.GA27115@paquier.xyz"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Change SHA2 implementation based on OpenSSL to use EVP digest routines\"\nReverted commit(s): Change SHA2 implementation based on OpenSSL to use EVP digest routines",
+      "objection": "This reverts commit e21cbb4, as the switch to EVP routines requires a\nmore careful design where we would need to have at least our wrapper\nroutines return a status instead of issuing an error by themselves to\nlet the caller do the error handling.  The memory handling was also\nincorrect and could cause leaks in the backend if a failure happened,\nrequiring most likely a callback to do the necessary cleanup as the only\nclean way to be able to allocate an EVP context requires the use of an\nallocation within OpenSSL.  The potential rework of the wrappers also\nimpacts the fallback implementation when not building with OpenSSL.\n\nOriginally, prairiedog has reported a compilation failure, but after\ndiscussion with Tom Lane this needs a better design.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_cryptohash_init failure OpenSSL"
+      ],
+      "from_hint": false,
+      "score": 0.13,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P12",
+      "source_id": "revert:21ef4d4d897563adb2f7920ad53b734950f1e0a4",
+      "kind": "revert",
+      "title": "Revert \"libpqwalreceiver: Convert to libpq-be-fe-helpers.h\"",
+      "status": "Reverted",
+      "date": "2024-01-23",
+      "first_date": "2023-01-24",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=21ef4d4d897563adb2f7920ad53b734950f1e0a4",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20231231.200741.1078989336605759878.horikyota.ntt@gmail.com",
+        "https://www.postgresql.org/message-id/flat/20220925232237.p6uskba2dw6fnwj2@awork3.anarazel.de"
+      ],
+      "authors": "Andres Freund",
+      "objectors": "",
+      "summary": "Revert \"libpqwalreceiver: Convert to libpq-be-fe-helpers.h\"\nReverted commit(s): libpqwalreceiver: Convert to libpq-be-fe-helpers.h",
+      "objection": "This reverts commit 728f86fec65537eade8d9e751961782ddb527934.\n\nThe signal handling was a few bricks shy of a load in that commit,\nwhich made the walreceiver non-responsive to SIGTERM while it was\nwaiting for the connection to be established. That prevented a standby\nfrom being promoted.\n\nSince it was non-essential refactoring, let's revert it to make v16\nwork the same as earlier releases. I reverted it in 'master' too, to\nkeep the branches in sync. The refactoring was a good idea as such,\nbut it needs a bit more work. Once we have developed a complete patch\nwith this issue fixed, let's re-apply that to 'master'.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "checksum_helper dangling pointer"
+      ],
+      "from_hint": false,
+      "score": 0.129,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:2082",
+      "kind": "cf",
+      "title": "Mingw: Fix import library extension, build actual static libraries",
+      "status": "Returned with feedback",
+      "date": "2019-09-30",
+      "first_date": "2019-03-07",
+      "url": "https://commitfest.postgresql.org/patch/2082/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2a6c418e-373b-8466-fcb8-ce729aab255f@gmail.com"
+      ],
+      "authors": "Sandro Mani (sandrom)",
+      "objectors": "Peter Eisentraut, Noah Misch",
+      "summary": "The patch changes MinGW builds to give import libraries the .dll.a extension instead of .a, matching downstream workarounds in Fedora and Arch Linux packages. A second patch builds real static libraries next to the DLLs, which it describes as modeled on the AIX case in Makefile.shlib.",
+      "objection": "Peter Eisentraut found nothing in the MinGW documentation to support the .dll.a naming, since its examples match the current naming, and he asked the author for a source. Noah Misch pointed out that Postgres does not build static libraries on AIX, so the premise of the second patch was wrong. He also noted that static and import libraries would need different names. The visible thread shows no reply from the author before the entry was returned with feedback.",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "static analyzer frontend fix"
+      ],
+      "from_hint": false,
+      "score": 0.127,
+      "enriched": true,
+      "key_quote": "All their examples match our existing naming.",
+      "quote_message_url": "https://www.postgresql.org/message-id/96c89900-98c4-dc39-e60c-4d600bcfeceb%402ndquadrant.com",
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3877",
+      "kind": "cf",
+      "title": "vacuumlo: add test to vacuumlo for test coverage",
+      "status": "Returned with feedback",
+      "date": "2023-01-31",
+      "first_date": "2022-09-03",
+      "url": "https://commitfest.postgresql.org/patch/3877/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAcBya+fQ1RCoPi5UmrrCTbi_tjWs0Xgw0pbmp3bgAAfYjfKyg@mail.gmail.com"
+      ],
+      "authors": "DongWook Lee (dongwooklee)",
+      "objectors": "",
+      "summary": "vacuumlo: add test to vacuumlo for test coverage\nThreads: vacuumlo: add test to vacuumlo for test coverage",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "frontend mock cryptohash test"
+      ],
+      "from_hint": false,
+      "score": 0.126,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:2038",
+      "kind": "cf",
+      "title": "Row Level Security, leakproof-ness, and performance implications",
+      "status": "Rejected",
+      "date": "2019-03-19",
+      "first_date": "2019-02-19",
+      "url": "https://commitfest.postgresql.org/patch/2038/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2811772.0XtDgEdalL@peanuts2"
+      ],
+      "authors": "Joe Conway (jconway)",
+      "objectors": "",
+      "summary": "Row Level Security, leakproof-ness, and performance implications\nThreads: Row Level Security − leakproof-ness and performance implications",
+      "objection": "",
+      "touch_points": [
+        "security / privileges",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "pg_checksum_final leak"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "revert:7ca548f23a60887541493b2da47f2b2720c35ee3",
+      "kind": "revert",
+      "title": "Revert non-text output formats for pg_dumpall",
+      "status": "Reverted",
+      "date": "2026-06-18",
+      "first_date": "2026-02-26",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=7ca548f23a60887541493b2da47f2b2720c35ee3",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20260607000218.96.noahmisch@microsoft.com",
+        "https://www.postgresql.org/message-id/flat/cb103623-8ee6-4ba5-a2c9-f32e3a4933fa@dunslane.net",
+        "https://www.postgresql.org/message-id/flat/740033.1772142754@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/016819c0-666e-42a8-bfc8-2b93fd8d0176@eisentraut.org",
+        "https://www.postgresql.org/message-id/flat/CAKYtNArdcc5kx1MdTtTKFNYiauo3=zCA-NB0LmBCW-RU_kSb3A@mail.gmail.com"
+      ],
+      "authors": "Andrew Dunstan",
+      "objectors": "",
+      "summary": "Revert non-text output formats for pg_dumpall\nReverted commit(s): Add non-text output formats to pg_dumpall; Clean up nodes that  are no longer of use in 007_pgdumpall.pl; Fix casting away const-ness in pg_restore.c; Improve writing map.dat preamble; pg_restore: add --no-globals option to skip globals",
+      "objection": "This reverts the non-text (custom/directory/tar) output format support\nfor pg_dumpall added by 763aaa06f03 and its feature-specific follow-ups,\nin line with Noah Misch's post-commit review which recommends reverting\nand finishing the work through the commitfest.\n\nScope is deliberately minimal: only the feature itself is removed.\nIndependent improvements that merely touched the same files, or that were\ncommitted alongside the feature but do not depend on its design, are\npreserved.\n\nReverted (the feature):\n\n  763aaa06f03  Add non-text output formats to pg_dumpall\n  d6d9b96b404  Clean up nodes that are no longer of use in 007_pgdumpall.pl\n  01c729e0c7a  Fix casting away const-ness in pg_restore.c\n  c7572cd48d3  Improve writing map.dat preamble\n  3c19983cc08  pg_restore: add --no-globals option to skip globals\n  abff4492d02  Fix options listing of pg_restore --no-globals\n  bb53b8d359d  Fix small memory leak in get_dbname_oid_list_from_mfile()\n  a793677e57b  pg_restore: Remove dead code in restore_all_databases()\n  a198c26dede  pg_dumpall: simplify coding of dropDBs()\n  ec80215c033  pg_restore: Remove unnecessary strlen() calls in options parsing\n\nPreserved (independent of the feature):\n\n  b2898baaf7e  the check_mut_excl_opts() helper in src/fe_utils/option_utils.c\n               and its use in pg_dump\n  7c8280eeb58  pg_dump's conflicting-option refactor (and tests 002/005)\n  be0d0b457cb  pg_dumpall's rejection of --clean together with --data-only\n               (re-expressed directly, since pg_dumpall.c is otherwise\n               returned to its pre-feature state)\n  74b4438a70b  the dangling-grantor-OID GRANT fix (back-patched through 16)\n  273d26b75e7, d4cb9c37765  independent pg_restore.sgml clarifications\n\nBecause the feature restructured pg_dumpall.c and pg_restore.c (pg_restore's\nmain() was split into restore_one_database() plus a dispatcher) and\ninterleaved its option checks with the conflicting-option refactor in the\nsame regions, the cosmetic check_mut_excl_opts() reflow of those two files'\noption blocks is inseparable from the feature and comes out with it; the\nbehavior is unchanged.  The reusable helper and pg_dump's use of it are\nunaffected.",
+      "touch_points": [
+        "pg_dump / restore",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "checksum_helper dangling pointer"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:6462",
+      "kind": "cf",
+      "title": "pg_upgrade: fix memory leak in SLRU I/O code",
+      "status": "Withdrawn",
+      "date": "2026-02-05",
+      "first_date": "2026-02-04",
+      "url": "https://commitfest.postgresql.org/patch/6462/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/5DED17B4-D948-4C0B-9DE1-A915D0BFAA54@gmail.com"
+      ],
+      "authors": "Chao Li (chaol)",
+      "objectors": "",
+      "summary": "pg_upgrade: fix memory leak in SLRU I/O code\nThreads: pg_upgrade: fix memory leak in SLRU I/O code",
+      "objection": "",
+      "touch_points": [
+        "on-disk format / pg_upgrade"
+      ],
+      "matched_queries": [
+        "pg_checksum_final leak"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "revert:6cb1b632b354518a595f1b23bfbac28a798f7f1c",
+      "kind": "revert",
+      "title": "Revert \"Add basic TAP tests for the low-level backup method\"",
+      "status": "Reverted",
+      "date": "2024-03-14",
+      "first_date": "2024-03-14",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6cb1b632b354518a595f1b23bfbac28a798f7f1c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/f20fcc82-dadb-478d-beb4-1e2ffb0ace76@pgmasters.net"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Add basic TAP tests for the low-level backup method\"\nReverted commit(s): Add basic TAP tests for the low-level backup method",
+      "objection": "This reverts commit 99b4a63bef94.  The test is proving to be unstable,\nso revert it for now.\n\nOne of the failures seen involves the cluster started without the\nbackup_label, where the archives of the primary are overwritten, causing\nrecovery failures on Windows.  This is simple to fix, but there is\nanother issue that's creeping behind in the form of an \"invalid data in\nfile\" ERROR when parsing the backup_label for the second recovery case,\nas an effect of the backup_label data written after retrieving its\ncontents from pg_backup_stop().\n_\nPer buildfarm member sidewinder.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "backup manifest checksum failure"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:2308",
+      "kind": "cf",
+      "title": "Fix base backup checksum verification for random or zero page headers",
+      "status": "Returned with feedback",
+      "date": "2020-07-30",
+      "first_date": "2019-10-18",
+      "url": "https://commitfest.postgresql.org/patch/2308/",
+      "thread_urls": [],
+      "authors": "Michael Banck (mbanck)",
+      "objectors": "",
+      "summary": "Fix base backup checksum verification for random or zero page headers",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "backup manifest checksum failure"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "revert:6741cfa5964768279a13e01e46931664fe0903a4",
+      "kind": "revert",
+      "title": "Revert \"Only provide new libpq sslpasskey hook for openssl-enabled builds\"",
+      "status": "Reverted",
+      "date": "2020-04-17",
+      "first_date": "2020-04-17",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6741cfa5964768279a13e01e46931664fe0903a4",
+      "thread_urls": [],
+      "authors": "Andrew Dunstan",
+      "objectors": "",
+      "summary": "Revert \"Only provide new libpq sslpasskey hook for openssl-enabled builds\"\nReverted commit(s): Only provide new libpq sslpasskey hook for openssl-enabled builds",
+      "objection": "This reverts commit 9e24109f1a4e4d8d1d372b004d6a0dd06e673fe7.\n\nThis caused build errors when building without openssl, and it's\nsimplest just to revert it.",
+      "touch_points": [
+        "wire protocol / libpq",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "pg_cryptohash_init failure OpenSSL"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "revert:dccee0f2b72648b8b3c42883a7d99210eb813f30",
+      "kind": "revert",
+      "title": "Revert \"Test replay of regression tests.\"",
+      "status": "Reverted",
+      "date": "2022-01-14",
+      "first_date": "2022-01-14",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=dccee0f2b72648b8b3c42883a7d99210eb813f30",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKG+GBC-6QhOKt6Y7ccrXSjbRHB7Di295=0rAGhE7a7hSrQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CA+hUKGKpRWQ9SxdxxDmTBCJoR0YnFpMBe7kyzY8SUQk+Heskxg@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro",
+      "objectors": "",
+      "summary": "Revert \"Test replay of regression tests.\"\nReverted commit(s): Test replay of regression tests.",
+      "objection": "This reverts commit 123828a7fa563025d0ceee10cf1b2a253cd05319.",
+      "touch_points": [],
+      "matched_queries": [
+        "frontend mock cryptohash test"
+      ],
+      "from_hint": false,
+      "score": 0.112,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:45",
+      "kind": "cf",
+      "title": "Logical Replication Helper Functions",
+      "status": "Rejected",
+      "date": "2015-02-16",
+      "first_date": "2014-12-15",
+      "url": "https://commitfest.postgresql.org/patch/45/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/548E785C.2080904@2ndquadrant.com"
+      ],
+      "authors": "Petr Jelínek (pjmodos)",
+      "objectors": "",
+      "summary": "Logical Replication Helper Functions\nThreads: Logical Replication Helpers WIP for discussion",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "checksum_helper dangling pointer"
+      ],
+      "from_hint": false,
+      "score": 0.112,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:5506",
+      "kind": "cf",
+      "title": "Avoid possible null pointer dereference",
+      "status": "Withdrawn",
+      "date": "2025-02-06",
+      "first_date": "2025-01-04",
+      "url": "https://commitfest.postgresql.org/patch/5506/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEudQApsZ8sdoRsn_oE=KEwkSMjh-sgsjuGWaE6CmHwQ+3xt1g@mail.gmail.com"
+      ],
+      "authors": "Ranier Vilela (raniervilela)",
+      "objectors": "",
+      "summary": "Avoid possible null pointer dereference\nThreads: Avoid possible deference NULL pointer (src/backend/optimizer/path/allpaths.c)",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "checksum_helper dangling pointer"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:2810",
+      "kind": "cf",
+      "title": "OpenSSL 3.0.0 compatibility",
+      "status": "Withdrawn",
+      "date": "2021-03-10",
+      "first_date": "2020-05-28",
+      "url": "https://commitfest.postgresql.org/patch/2810/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/FEF81714-D479-4512-839B-C769D2605F8A@yesql.se"
+      ],
+      "authors": "Daniel Gustafsson (d_gustafsson)",
+      "objectors": "",
+      "summary": "OpenSSL 3.0.0 compatibility\nThreads: OpenSSL 3.0.0 compatibility",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_cryptohash_init failure OpenSSL"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 6,
+    "new_calls": 2,
+    "failed": 0,
+    "quotes_verified": 2,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2026-08-17",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found. The one retrieved row, [P11], reverted a 2020 switch to OpenSSL EVP routines because the wrappers raised errors instead of returning a status. This patch adds the status checks that design asked for, so the recorded reason does not apply. Neither the thread nor the patch prose points to an earlier discussion of this fix."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 0,
+      "note": "From the standards and compatibility angle there is nothing to object to: the patch adds no syntax, GUC, catalog object, psql behaviour or dump format, and pg_combinebackup now stops with pg_fatal, as basebackup and pg_verifybackup already do (message #1, #2). The pg_checksum_final() change frees and clears a SHA context that callers could not free before, so an out-of-tree caller that touches the pointer afterwards sees NULL, not freed memory. [P11] is about backend EVP error handling and does not apply here."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "This angle finds no objection, because the patch changes no on-disk format, WAL record, catalog, wire protocol or struct layout. pg_combinebackup's output, including backup_manifest, is unchanged on success, and on failure the program now exits with pg_fatal. The pg_checksum_final() change leaves pg_checksum_context unchanged and only frees and clears the SHA pointer on the failure path, so a later pg_cryptohash_free() on the cleared pointer should do nothing. [P11] concerns backend OpenSSL wrapper design and does not apply here."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal has no privilege or exposure aspect. pg_combinebackup is a frontend tool run by the backup operator on files they already own, and the bug needs an OpenSSL init failure that an unprivileged database user cannot trigger. The fix adds error exits and pointer clearing, with no new access, data exposure or resource use. Back-patching is a stability question, which other angles cover."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 1,
+      "note": "The fix itself is small and matches basebackup and pg_verifybackup, and a committer (message #2, #6) is engaged. Only the test harness carries long-run cost. P11 is about EVP wrapper design and does not apply."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "This is a bug fix for a dangling pointer and a leak in src/common/checksum_helper.c, plus missing return-value checks in pg_combinebackup. No existing feature, option or extension covers it. The new mock test harness is not a second injection-point mechanism, because injection points are backend-only and raise errors instead of returning -1 (message #3), and the harness follows the test_escape pattern. [P11] concerns the OpenSSL EVP wrapper design, not this fix."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "This is a memory-safety fix, so it needs no user demand to justify it. A committer (message #2, #6) agreed that pg_combinebackup should fail like basebackup does, and the cost falls only on the error path. Back-patch value and the new test program's upkeep belong to other angles."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 1,
+      "new_survived": 0,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 50,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 13,
+    "wall_ms": 105279,
+    "cost_usd": 1.2693548,
+    "dry_run": false
+  }
+}

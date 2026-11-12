@@ -1,0 +1,1227 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:47:20.116Z",
+  "input": {
+    "arg": "7376",
+    "cf": {
+      "id": 7376,
+      "url": "https://commitfest.postgresql.org/patch/7376/",
+      "title": "Reduce LWLockWaitListLock() cache-line contention with adaptive spin reads",
+      "status": "Needs review",
+      "authors": "Andrew Kim (andrewk1), Baohong Min (minbaohong), Jun Jin (jun-intel)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CH0PR11MB53947D1A122373D7CB2E22D6E9C02%40CH0PR11MB5394.namprd11.prod.outlook.com",
+    "subject": "[PATCH] Reduce LWLockWaitListLock() cache-line contention with adaptive spin reads",
+    "thread_start": "2026-07-23T02:39:10Z",
+    "messages_read": 11,
+    "messages_total": 11,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "LWLockWaitListLock-adaptive-spin-reads-v1.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "No objection survived at levels 1a or 1b: the problem is stated, and three independent parties measured gains on large x86 and Arm machines. The one surviving objection, prior-attempts-1, is a fixable design point: the constants 5 and 256 are empirical, and no acquisition-latency numbers are posted. A committer who knows lwlock.c would have to judge whether the tested hardware is enough. The promised v2 is not posted, so this judgement covers v1 only.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Adaptive state re-reads in LWLockWaitListLock() to cut cache-line contention",
+    "problem": "On large multi-socket machines, backends spinning in LWLockWaitListLock() re-read lock->state on every spin, so the cache line bounces between cores and sockets. The authors report that pgbench TPC-B throughput drops at high client counts on a 2-socket Xeon. Perf shows LWLockWaitListLock() as a top symbol.",
+    "proposed_design": "v1 re-reads lock->state only once every spins_per_lock_read spins, with a backend-local interval that grows by 5 up to 256 under heavy contention and shrinks by 1 otherwise. It also lowers MIN_DELAY_USEC in s_lock.c from 1000 to 100 microseconds, which affects every perform_spin_delay() caller. The locking primitive does not change.",
+    "user_visible_surface": [],
+    "author_claims": [
+      "pgbench TPC-B on a 2-socket, 240-vCPU Xeon gains 1.11x to 1.59x at 120 to 1000 clients.",
+      "Throughput at 8 to 64 clients is unchanged within noise.",
+      "The values 5 and 256 were chosen empirically, and nearby values such as 3, 6, 300 or 500 work as well.",
+      "A backend-wide interval is tuned by the most contended lock, and its gain outweighs added latency on other LWLocks.",
+      "A reviewer measured up to 59% higher peak throughput on 192-core Graviton V3, with no regressions on small systems."
+    ],
+    "thread_state": "Jakub Wartak and wenhui qiu reviewed v1, and Haris Okanovic benchmarked it on Arm. The author promised v2: drop the MIN_DELAY_USEC change, make the interval per-tranche, re-read state after sleeps. No v2 is posted yet.",
+    "unclear": [
+      "No v2 exists, so the per-tranche design and its memory or code cost are unknown.",
+      "The material does not show how fast the interval recovers when contention falls, which wenhui qiu asked to see.",
+      "The material gives no acquisition-latency numbers, only throughput.",
+      "Without a forced re-read after pg_usleep(), a waiter can sleep many times after release and possibly reach s_lock_stuck().",
+      "No results cover single-socket AMD, POWER, or operating systems other than Linux.",
+      "The material does not say whether per-architecture tuning, for example by PAUSE latency, is planned."
+    ],
+    "search_queries": [
+      "LWLock wait list spinlock contention",
+      "LWLockWaitListLock performance",
+      "spin delay backoff s_lock",
+      "MIN_DELAY_USEC spins_per_delay",
+      "cache line bouncing NUMA lwlock",
+      "adaptive spinning lock state",
+      "futex LWLock wait list",
+      "lwlock scalability many cores"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P2",
+      "source_id": "cf:5210",
+      "title": "remove adaptive spins_per_delay code",
+      "kind": "cf",
+      "status": "Withdrawn",
+      "url": "https://commitfest.postgresql.org/patch/5210/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/Zs37z9t4KD94H9BE@nathan"
+      ],
+      "date": "2024-11-03",
+      "first_date": "2024-08-27",
+      "who_objected": "Andres Freund",
+      "quote": "So finding a good value probably isn't easy.",
+      "quote_url": "https://www.postgresql.org/message-id/w272rwzgxf3s7n7ufobhqf5uce2hq5zvhtn2ku4unyfau6qjm2%40ds4n6lzgjvnm",
+      "enriched": true,
+      "reason": "Andres Freund reported that on multi-socket machines, some spins_per_delay values made contended performance much worse, and good values differ from those on smaller machines. Chiplet-based server CPUs behave the same way, so one fixed value is hard to choose. Nathan Bossart agreed and turned to other approaches, such as exponential backoff. No message states the reason for the withdrawal.",
+      "relation": "related_only",
+      "what_is_different": "P2 tried to remove the adaptive spins_per_delay and fix its value. This patch adds a separate adaptive read interval, but the bounds that drive it are fixed constants."
+    },
+    {
+      "precedent_id": "P12",
+      "source_id": "cf:1166",
+      "title": "Fix LWLock degradation on NUMA",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/1166/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2968c0be065baab8865c4c95de3f435c@postgrespro.ru"
+      ],
+      "date": "2018-11-30",
+      "first_date": "2017-06-05",
+      "who_objected": "",
+      "quote": null,
+      "quote_url": null,
+      "enriched": false,
+      "reason": "",
+      "relation": "similar_idea",
+      "what_is_different": "It targets the same problem, contended LWLock throughput on NUMA. The corpus does not record its design or why it was returned, so no lesson can be drawn from it."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Fixed spin constants may not carry over across CPU types, as [P2] found",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "prior_rejection",
+      "touch_points": [
+        "hot_path_performance",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user on a chiplet-based x86 server, or a CPU with a different PAUSE cost, upgrades. With the interval near 256, waiters notice lock release later, so moderately contended LWLocks see higher acquisition latency. The user finds out only as a throughput or latency regression after the upgrade.",
+      "argument": "[P2] stopped hard-wiring spins_per_delay because good values on multi-socket machines differ from those on smaller ones. This patch adds new fixed constants (threshold 5, step +5/-1, cap 256), and message #9 calls them empirical. The tests cover two-socket Xeon, Graviton and old Sandy Bridge, but give throughput only, not acquisition latency, which message #7 asked for. Messages #3 and #6 report that a related LWLockWaitListLock() change regressed on x86, so it is now limited to aarch64.",
+      "precedent_ids": [
+        "P2"
+      ],
+      "thread_message_refs": [
+        3,
+        6,
+        7,
+        9
+      ],
+      "author_must_show": "Do 5 and 256 hold up on single-socket chiplet x86 and on CPUs with different PAUSE latency, measured as acquisition latency as well as throughput?",
+      "precedents": [
+        {
+          "id": "P2",
+          "title": "remove adaptive spins_per_delay code",
+          "url": "https://commitfest.postgresql.org/patch/5210/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/Zs37z9t4KD94H9BE@nathan"
+          ],
+          "date": "2024-11-03",
+          "status": "Withdrawn"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "\"Okanovic, Haris\"",
+          "date": "2026-09-18T21:11:30Z",
+          "url": "https://www.postgresql.org/message-id/MN7PR18MB660231D56BF8FD8839F98F539DA8872%40MN7PR18MB660231.namprd18.prod.outlook.com"
+        },
+        {
+          "index": 6,
+          "from": "Jakub Wartak",
+          "date": "2026-10-01T09:22:42Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmy8nmL0urEER4tqOboUVwpa3gROwG2%3DE7PmZ6O9nZ6hqw%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "wenhui qiu",
+          "date": "2026-10-02T03:08:26Z",
+          "url": "https://www.postgresql.org/message-id/CAGjGUAJAYx2T_GRizy4mSAnNfA4h88g3KZDQA3WFViU6UhGdQQ%40mail.gmail.com"
+        },
+        {
+          "index": 9,
+          "from": "\"Min, Baohong\"",
+          "date": "2026-10-10T06:34:38Z",
+          "url": "https://www.postgresql.org/message-id/CH0PR11MB539472114723348A411EC11AE9912%40CH0PR11MB5394.namprd11.prod.outlook.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #9 calls 5 and 256 empirical, and the acquisition-latency numbers that message #7 asked for are not posted. The futex-mutex regression in messages #3 and #6 concerns a different mechanism and must not be used as support.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Hard-coded constants 5 and 256 tuned on a few large machines",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user on a single-socket chiplet AMD server or a POWER machine upgrades, and the interval climbs toward 256 on a lock that frees quickly. Each acquisition then waits longer before it sees the release. Nothing logs or fails, so the regression shows up years later as an unexplained throughput report.",
+      "argument": "Message #9 says 5 and 256 were picked empirically, and that 3, 6, 300 or 500 work as well, which means no model ties them to PAUSE latency or core count. Message #6 notes that PAUSE cost differs even between Intel generations, and message #7 asks for acquisition-latency numbers, which are still missing. The tested set is two x86 NUMA boxes and Graviton. [P2] shows that spin parameters good on multi-socket machines differ from those on smaller ones, and that one fixed value is hard to choose.",
+      "precedent_ids": [
+        "P2"
+      ],
+      "thread_message_refs": [
+        6,
+        7,
+        9
+      ],
+      "author_must_show": "What rule ties 5 and 256 to hardware, and which results show no latency regression on single-socket AMD, POWER and non-Linux systems?",
+      "precedents": [
+        {
+          "id": "P2",
+          "title": "remove adaptive spins_per_delay code",
+          "url": "https://commitfest.postgresql.org/patch/5210/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/Zs37z9t4KD94H9BE@nathan"
+          ],
+          "date": "2024-11-03",
+          "status": "Withdrawn"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 6,
+          "from": "Jakub Wartak",
+          "date": "2026-10-01T09:22:42Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmy8nmL0urEER4tqOboUVwpa3gROwG2%3DE7PmZ6O9nZ6hqw%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "wenhui qiu",
+          "date": "2026-10-02T03:08:26Z",
+          "url": "https://www.postgresql.org/message-id/CAGjGUAJAYx2T_GRizy4mSAnNfA4h88g3KZDQA3WFViU6UhGdQQ%40mail.gmail.com"
+        },
+        {
+          "index": 9,
+          "from": "\"Min, Baohong\"",
+          "date": "2026-10-10T06:34:38Z",
+          "url": "https://www.postgresql.org/message-id/CH0PR11MB539472114723348A411EC11AE9912%40CH0PR11MB5394.namprd11.prod.outlook.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of prior-attempts-1, which makes the same point about the empirical constants, [P2] and the missing latency numbers.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Layered heuristic in a function with competing redesigns",
+      "level": "2",
+      "rubric_item": 5,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The adaptive re-read lands, then the aarch64-only futex wait list from message #3 or a lockless queue follows in LWLockWaitListLock(). Each layer was benchmarked alone. When a regression appears on one platform, nobody can tell which heuristic causes it, and removing either one costs a new benchmarking round.",
+      "argument": "Message #3 describes a futex-mutex change to the same function, limited to aarch64 because it regresses on x86_64, and message #8 proposes a wait-list buffer. The thread does not say whether this patch is meant as the long-term answer or a stopgap, or how it would combine with a different wait-list design. No committer who knows lwlock.c has engaged yet, and message #10 says committers are busy elsewhere.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        8,
+        10
+      ],
+      "author_must_show": "How does the adaptive interval interact with the futex-mutex variant, and would it be removed or kept if a wait-list redesign went in?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "\"Okanovic, Haris\"",
+          "date": "2026-09-18T21:11:30Z",
+          "url": "https://www.postgresql.org/message-id/MN7PR18MB660231D56BF8FD8839F98F539DA8872%40MN7PR18MB660231.namprd18.prod.outlook.com"
+        },
+        {
+          "index": 8,
+          "from": "Alexandre Felipe",
+          "date": "2026-10-05T09:07:19Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxN_YMmcL8550D02h1X29iQHeFNXq9xthohhmmEiGqT3uQ%40mail.gmail.com"
+        },
+        {
+          "index": 10,
+          "from": "Jakub Wartak",
+          "date": "2026-10-13T09:08:58Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmzY%2BBLxXYM4AGDQgnmeVF4wfgi7cXqsSmrZZJrmfH2MiA%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The scenario depends on patches that are not committed: the futex-mutex variant is a separate aarch64-only proposal and message #8 is a draft idea. The lack of an engaged committer belongs to committability and does not show a design flaw.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "The patch adds an adaptive heuristic with fixed constants (5, 256) to lwlock.c that later hardware may need retuned."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "The patch changes the spin loop in LWLockWaitListLock(), and v1 lowers MIN_DELAY_USEC for every perform_spin_delay() caller."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Do 5 and 256 hold up on single-socket chiplet x86 and on CPUs with a different PAUSE latency?",
+    "What are the LWLock acquisition-latency numbers, as opposed to throughput, with the interval near 256 on a moderately contended lock?",
+    "How many spins does the interval take to return to 1 after contention falls, and what does a waiter lose in that period?",
+    "What memory and code cost does the per-tranche interval planned for v2 add, and does it change any struct that extensions see?",
+    "Is per-architecture tuning of the constants planned, or is one pair of values meant to serve all platforms?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "It needs a committer who knows lwlock.c and the spin-delay code in s_lock.c, with access to large multi-socket hardware. None has spoken in the visible thread.",
+    "liability": "The owner signs for LWLock wait-list behaviour on every platform, including hardware nobody tested. A regression there would be silent, and the constants may need retuning as CPUs change.",
+    "author_follow_up": "The authors promised a v2 that drops the MIN_DELAY_USEC change, makes the interval per-tranche and re-reads state after sleeps. No v2 is posted yet."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "proceed",
+    "reason": "Gains of 1.11x to 1.59x on a 240-vCPU Xeon and up to 59% on 192-core Graviton matter to users of large machines, and reviewers are active. The patch is small, but it changes a hot spin loop, so review needs benchmarks on more hardware and a posted v2."
+  },
+  "self_advice": [],
+  "provisional_note": "The v2 design (per-tranche interval, re-read after pg_usleep()) is not posted, and only 3 of 11 messages were shown. The code was not read, so the interaction with spins_per_delay and s_lock_stuck() could not be checked.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:2634",
+      "kind": "cf",
+      "title": "Replace spinlock with lwlock in pg_stat_statements",
+      "status": "Returned with feedback",
+      "date": "2020-09-30",
+      "first_date": "2020-06-29",
+      "url": "https://commitfest.postgresql.org/patch/2634/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2895b53b033c47ccb22972b589050dd9@EX13D05UWC001.ant.amazon.com"
+      ],
+      "authors": "Fujii Masao (masaofujii)",
+      "objectors": "bttanakahbk, Fujii Masao, Michael Paquier",
+      "summary": "The patch (pgss_lwlock) replaces the per-entry spinlock in pg_stat_statements with an LWLock, to reduce contention in pgss_store() that track_planning made worse. The benchmark that motivated it showed about a 45% TPS drop at 128 or more connections in a fully-cached pgbench select-only test on v13beta1.",
+      "objection": "A benchmark by bttanakahbk showed no gain from the patch and a drop of more than 50% in TPS with a \"SELECT 1;\" workload, regardless of track_planning. The author, Fujii Masao, then concluded that replacing the spinlock with an LWLock is not the right approach. Alternatives (two spinlocks per entry, atomics for the counters) were discussed but not built. Michael Paquier marked the entry Returned with Feedback because the discussion had stalled and the patch was incorrect.",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "LWLock wait list spinlock contention",
+        "spin delay backoff s_lock",
+        "MIN_DELAY_USEC spins_per_delay",
+        "adaptive spinning lock state",
+        "futex LWLock wait list"
+      ],
+      "from_hint": false,
+      "score": 0.468,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:5210",
+      "kind": "cf",
+      "title": "remove adaptive spins_per_delay code",
+      "status": "Withdrawn",
+      "date": "2024-11-03",
+      "first_date": "2024-08-27",
+      "url": "https://commitfest.postgresql.org/patch/5210/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/Zs37z9t4KD94H9BE@nathan"
+      ],
+      "authors": "Nathan Bossart (bossartn)",
+      "objectors": "Andres Freund",
+      "summary": "The patch removes the adaptive spins_per_delay logic in the spinlock code (finish_spin_delay) and hard-wires spins_per_delay at a fixed value. The premise is that the adaptive scheme was designed for single-processor hardware and may push spins_per_delay too low under contention.",
+      "objection": "Andres Freund reported that on multi-socket machines, some spins_per_delay values made contended performance much worse, and good values differ from those on smaller machines. Chiplet-based server CPUs behave the same way, so one fixed value is hard to choose. Nathan Bossart agreed and turned to other approaches, such as exponential backoff. No message states the reason for the withdrawal.",
+      "touch_points": [],
+      "matched_queries": [
+        "spin delay backoff s_lock",
+        "MIN_DELAY_USEC spins_per_delay",
+        "adaptive spinning lock state"
+      ],
+      "from_hint": false,
+      "score": 0.409,
+      "enriched": true,
+      "key_quote": "So finding a good value probably isn't easy.",
+      "quote_message_url": "https://www.postgresql.org/message-id/w272rwzgxf3s7n7ufobhqf5uce2hq5zvhtn2ku4unyfau6qjm2%40ds4n6lzgjvnm",
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:4768",
+      "kind": "cf",
+      "title": "A infrastructure to detect misuse of spin lock easier",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2024-01-04",
+      "url": "https://commitfest.postgresql.org/patch/4768/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/87plyhvama.fsf@163.com"
+      ],
+      "authors": "Andy Fan (andy2)",
+      "objectors": "",
+      "summary": "The thread started with a proposal to make s_lock_stuck a WARNING in production builds instead of a PANIC. It became an assert-build mechanism that tracks whether a spinlock or buffer header lock is held and fails when code holding one calls errstart, waits for an LWLock, or takes another spinlock.",
+      "objection": "The visible messages do not show why. Andres Freund raised API and performance concerns on v9, and the last visible message is Andy Fan posting v10 in reply, with no later review shown before the entry was returned with feedback in October 2024.",
+      "touch_points": [],
+      "matched_queries": [
+        "spin delay backoff s_lock",
+        "MIN_DELAY_USEC spins_per_delay",
+        "adaptive spinning lock state"
+      ],
+      "from_hint": false,
+      "score": 0.395,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:2927",
+      "kind": "cf",
+      "title": "Report tranche ID and LWLock pointer in LWLock static tracepoints",
+      "status": "Returned with feedback",
+      "date": "2021-04-07",
+      "first_date": "2020-12-19",
+      "url": "https://commitfest.postgresql.org/patch/2927/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGRY4nxJo+-HCC2i5H93ttSZ4gZO-FSddCwvkb-qAfQ1zdXd1w@mail.gmail.com"
+      ],
+      "authors": "Craig Ringer (ringerc)",
+      "objectors": "Peter Eisentraut",
+      "summary": "The patch set adds the LWLock pointer and the numeric tranche ID to each LWLock static tracepoint, so traces can tell individual locks apart and compare them across processes. It also fixes misplaced tracepoints, adds a single tracepoint for all acquires and releases plus start markers for timing, and adds comments on LWLock tranches.",
+      "objection": "Two parts were committed by Peter Eisentraut: the removal of the wrong lwlock__acquire tracepoint in LWLockWaitForVar, and the move of TRACE_POSTGRESQL_LWLOCK_RELEASE. In his last review he reported that patch 0002 did not build on macOS because uint64 was used in the probe definitions, and that the probe changes had no documentation. He also asked for a different argument order and whether both tranche name and tranche ID are needed. The visible messages show no new version after that review.",
+      "touch_points": [],
+      "matched_queries": [
+        "LWLock wait list spinlock contention",
+        "cache line bouncing NUMA lwlock",
+        "futex LWLock wait list",
+        "lwlock scalability many cores"
+      ],
+      "from_hint": false,
+      "score": 0.381,
+      "enriched": true,
+      "key_quote": "First, a problem:  0002 doesn't build on macOS, because uint64 has been\nused in the probe definitions.",
+      "quote_message_url": "https://www.postgresql.org/message-id/558b02ca-2795-3b6d-6ce6-c1e13da2f5b5%40enterprisedb.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:2576",
+      "kind": "cf",
+      "title": "Add LWLock blocker(s) information",
+      "status": "Returned with feedback",
+      "date": "2020-11-18",
+      "first_date": "2020-06-02",
+      "url": "https://commitfest.postgresql.org/patch/2576/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/71779d05-3a9b-b897-f54d-16ffedcc896b@amazon.com"
+      ],
+      "authors": "Bertrand Drouvot (bdrouvot)",
+      "objectors": "Robert Haas, Andres Freund",
+      "summary": "The patch adds the last holder PID, the last holder mode and the number of holders to each LWLock, and copies this data into the waiting backend's PGPROC. A new function, pg_lwlock_blocking_pid, shows this blocker information for a backend that waits on an LWLock.",
+      "objection": "Robert Haas and Andres Freund objected to making LWLock bigger; the patch adds about 12 bytes, which works against past effort to fit BufferDesc into one cache line. Both doubted that the patch has no cost under heavy LWLock contention. Robert Haas also asked how much it adds over sampling wait events, and Andres Freund said such cases need stack information, which an external script can collect. Heikki Linnakangas closed the entry, citing this consensus.",
+      "touch_points": [],
+      "matched_queries": [
+        "LWLock wait list spinlock contention",
+        "cache line bouncing NUMA lwlock",
+        "futex LWLock wait list",
+        "lwlock scalability many cores"
+      ],
+      "from_hint": false,
+      "score": 0.345,
+      "enriched": true,
+      "key_quote": "There's been significant work done over the years to get the size of\nan LWLock down; I'm not very enthusiastic about making it bigger\nagain.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmobjva3roo5tO16ii_D_9VnPxWWhiW%3DK_WakbKcQ0yqkdA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:2716",
+      "kind": "cf",
+      "title": "fix spinlock contention in LogwrtResult",
+      "status": "Withdrawn",
+      "date": "2022-09-23",
+      "first_date": "2020-08-31",
+      "url": "https://commitfest.postgresql.org/patch/2716/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200831182156.GA3983@alvherre.pgsql"
+      ],
+      "authors": "Álvaro Herrera (alvherre)",
+      "objectors": "",
+      "summary": "The patch removes contention on XLogCtl's info_lck spinlock, which backends take often to read LogwrtResult. The first version added an LWLock covering LogwrtResult and LogwrtRqst; later versions turned the shared LogwrtResult fields into 64-bit atomics, as Andres Freund suggested.",
+      "objection": "The author withdrew the patch himself. In April 2022 he held it back from that cycle because the memory barrier needs were hard to get right and he did not want subtle bugs in WAL. In September 2022 he withdrew it because commit e369f3708636 made the change less critical.",
+      "touch_points": [],
+      "matched_queries": [
+        "LWLock wait list spinlock contention",
+        "spin delay backoff s_lock",
+        "adaptive spinning lock state"
+      ],
+      "from_hint": false,
+      "score": 0.314,
+      "enriched": true,
+      "key_quote": "I realized that because of commit e369f3708636 this change is no longer\nas critical as it used to be, so I'm withdrawing this patch from the\ncommitfest.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20220923084941.g3756xqz6lwnqwso%40alvherre.pgsql",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:373",
+      "kind": "cf",
+      "title": "Additional LWLOCK_STATS statistics",
+      "status": "Rejected",
+      "date": "2015-12-22",
+      "first_date": "2015-09-15",
+      "url": "https://commitfest.postgresql.org/patch/373/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/55F82AE1.3010407@redhat.com"
+      ],
+      "authors": "Jesper Pedersen (jpedersen)",
+      "objectors": "Robert Haas, Michael Paquier",
+      "summary": "Extend the LWLOCK_STATS debug build to record, per LWLock, the maximum number of consecutive shared and exclusive acquisitions and the maximum number of waiters in the queue. The data was meant to be visualised (e.g. with flame graphs) to understand how locks contend with each other under load.",
+      "objection": "Robert Haas questioned whether the patch was meant for commit and objected that it would substantially increase the overhead of running with LWLOCK_STATS. The author agreed it could be rejected unless other LWLOCK_STATS users wanted the extra data, and Michael Paquier marked it rejected because the logging overhead could not be ignored. The author offered to put the feature behind a separate #define, but that was not done in this entry.",
+      "touch_points": [],
+      "matched_queries": [
+        "LWLock wait list spinlock contention",
+        "cache line bouncing NUMA lwlock",
+        "futex LWLock wait list",
+        "lwlock scalability many cores"
+      ],
+      "from_hint": false,
+      "score": 0.295,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:3983",
+      "kind": "cf",
+      "title": "Lockless queue of waiters based on atomic operations for LWLock",
+      "status": "Returned with feedback",
+      "date": "2024-01-26",
+      "first_date": "2022-10-31",
+      "url": "https://commitfest.postgresql.org/patch/3983/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALT9ZEEz+=Nepc5eti6x531q64Z6+DxtP3h-h_8O5HDdtkJcPw@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov (smagen), Pavel Borisov (pborisov)",
+      "objectors": "",
+      "summary": "Store the head and tail of the LWLock wait queue in a 64-bit atomic lock state, so that waiters are added and removed with CAS operations and LWLockWaitListLock is no longer needed. The patch builds on ideas from OrioleDB and showed gains with about 1000 pgbench connections, with a small regression near 20 connections.",
+      "objection": "The thread went idle for more than a year after v6 in November 2022, and no reviewer took the patch forward. vignesh C returned it in the commitfest for lack of interest. Earlier, Andres Freund noted that the approach needs O(waiters) atomic operations instead of O(1), which may explain the regression, but the visible messages do not show this point deciding the outcome.",
+      "touch_points": [],
+      "matched_queries": [
+        "LWLock wait list spinlock contention",
+        "futex LWLock wait list"
+      ],
+      "from_hint": false,
+      "score": 0.251,
+      "enriched": true,
+      "key_quote": "I have returned this patch in commitfest as nobody had shown any\ninterest in pursuing it.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALDaNm2vk_NkwtNdUZNHi9wcfOb9xTBcTCVGdtXCgiPgKgzzGg%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P9",
+      "source_id": "revert:772faafca1b288c4dd66b7150a7831c27b768003",
+      "kind": "revert",
+      "title": "Revert: Implement pg_wal_replay_wait() stored procedure",
+      "status": "Reverted",
+      "date": "2024-04-11",
+      "first_date": "2024-04-02",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=772faafca1b288c4dd66b7150a7831c27b768003",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/b155606b-e744-4218-bda5-29379779da1a@iki.fi",
+        "https://www.postgresql.org/message-id/flat/eb12f9b03851bb2583adab5df9579b4b@postgrespro.ru",
+        "https://www.postgresql.org/message-id/flat/202404030658.hhj3vfxeyhft@alvherre.pgsql",
+        "https://www.postgresql.org/message-id/flat/CAD21AoAx7irptnPH1OkkkNh9E0M6X-phfX7sYZfwoMsc1qV1sQ@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov",
+      "objectors": "",
+      "summary": "Revert: Implement pg_wal_replay_wait() stored procedure\nReverted commit(s): Implement pg_wal_replay_wait() stored procedure; Minor improvements for waitlsn.c; Use the pairing heap instead of a flat array for LSN replay waiters; Use an LWLock instead of a spinlock in waitlsn.c; Clarify what is protected by WaitLSNLock",
+      "objection": "This commit reverts 06c418e163, e37662f221, bf1e650806, 25f42429e2,\nee79928441, and 74eaf66f98 per review by Heikki Linnakangas.",
+      "touch_points": [],
+      "matched_queries": [
+        "LWLock wait list spinlock contention",
+        "futex LWLock wait list"
+      ],
+      "from_hint": false,
+      "score": 0.248,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:5763",
+      "kind": "cf",
+      "title": "remove ISB in AArch64's spin_delay() implementation",
+      "status": "Returned with feedback",
+      "date": "2025-08-19",
+      "first_date": "2025-04-29",
+      "url": "https://commitfest.postgresql.org/patch/5763/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGnuAhW+b3smF7jGP7ijhdoUc3w1tw462OqTyEpwJtpmjaAtwA@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "remove ISB in AArch64's spin_delay() implementation\nThreads: Remove Instruction Synchronization Barrier in spin_delay() for ARM64 architecture",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "spin delay backoff s_lock",
+        "MIN_DELAY_USEC spins_per_delay"
+      ],
+      "from_hint": false,
+      "score": 0.247,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:208",
+      "kind": "cf",
+      "title": "Improve documentation for spinlocks file",
+      "status": "Rejected",
+      "date": "2015-07-02",
+      "first_date": "2015-04-05",
+      "url": "https://commitfest.postgresql.org/patch/208/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/331112346.129305.1428259859929.JavaMail.yahoo@mail.yahoo.com"
+      ],
+      "authors": "Artem Luzyanin (aluzyanin)",
+      "objectors": "",
+      "summary": "Improve documentation for spinlocks file\nThreads: PATCH: Spinlock Documentation",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "LWLock wait list spinlock contention",
+        "spin delay backoff s_lock",
+        "adaptive spinning lock state"
+      ],
+      "from_hint": false,
+      "score": 0.218,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:1166",
+      "kind": "cf",
+      "title": "Fix LWLock degradation on NUMA",
+      "status": "Returned with feedback",
+      "date": "2018-11-30",
+      "first_date": "2017-06-05",
+      "url": "https://commitfest.postgresql.org/patch/1166/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2968c0be065baab8865c4c95de3f435c@postgrespro.ru"
+      ],
+      "authors": "Yura Sokolov (funny_falcon)",
+      "objectors": "",
+      "summary": "Fix LWLock degradation on NUMA\nThreads: Fix performance degradation of contended LWLock on NUMA",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "cache line bouncing NUMA lwlock",
+        "futex LWLock wait list"
+      ],
+      "from_hint": false,
+      "score": 0.208,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:2092",
+      "kind": "cf",
+      "title": "minimizing pg_stat_statements.track='none' performance overhead",
+      "status": "Withdrawn",
+      "date": "2019-04-15",
+      "first_date": "2019-03-27",
+      "url": "https://commitfest.postgresql.org/patch/2092/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/BN8PR21MB1217B003C4F79DE230AA36B9B1580@BN8PR21MB1217.namprd21.prod.outlook.com"
+      ],
+      "authors": "Raymond Martin (ramarti)",
+      "objectors": "",
+      "summary": "minimizing pg_stat_statements.track='none' performance overhead\nThreads: minimizing pg_stat_statements performance overhead",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "LWLockWaitListLock performance",
+        "MIN_DELAY_USEC spins_per_delay"
+      ],
+      "from_hint": false,
+      "score": 0.175,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:984",
+      "kind": "cf",
+      "title": "LWLock optimization for Power processors",
+      "status": "Returned with feedback",
+      "date": "2017-08-30",
+      "first_date": "2017-02-03",
+      "url": "https://commitfest.postgresql.org/patch/984/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAPpHfdsKrh7c7P8-5eG-qW3VQobybbwqH=gL5Ck+dOES-gBbFg@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov (smagen)",
+      "objectors": "",
+      "summary": "LWLock optimization for Power processors\nThreads: LWLock optimization for multicore Power machines",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "futex LWLock wait list",
+        "lwlock scalability many cores"
+      ],
+      "from_hint": false,
+      "score": 0.146,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:3792",
+      "kind": "cf",
+      "title": "Subtrans performance smoothing",
+      "status": "Withdrawn",
+      "date": "2022-09-06",
+      "first_date": "2022-08-01",
+      "url": "https://commitfest.postgresql.org/patch/3792/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANbhV-Fdnr5F0YyPAG88qhq9KhUtGMJ7ZGVKp1SD+YY12jVdPA@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon)",
+      "objectors": "",
+      "summary": "Subtrans performance smoothing\nThreads: Smoothing the subtrans performance catastrophe",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "LWLockWaitListLock performance"
+      ],
+      "from_hint": false,
+      "score": 0.137,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:3651",
+      "kind": "cf",
+      "title": "Improving connection scalability",
+      "status": "Rejected",
+      "date": "2022-08-01",
+      "first_date": "2022-05-24",
+      "url": "https://commitfest.postgresql.org/patch/3651/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEudQAr+EH0YxUDpG0=dTOQ6HsfC715A1Z-b2GBm2UD1WjE6Aw@mail.gmail.com"
+      ],
+      "authors": "Ranier Vilela (raniervilela)",
+      "objectors": "",
+      "summary": "Improving connection scalability\nThreads: Improving connection scalability (src/backend/storage/ipc/procarray.c)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "lwlock scalability many cores"
+      ],
+      "from_hint": false,
+      "score": 0.137,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:5865",
+      "kind": "cf",
+      "title": "Backpatching injection point core facilities to REL_17_STABLE",
+      "status": "Withdrawn",
+      "date": "2025-08-17",
+      "first_date": "2025-06-27",
+      "url": "https://commitfest.postgresql.org/patch/5865/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/aF5jmjBHjTWZ8dDL@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Backpatching injection point core facilities to REL_17_STABLE\nThreads: Backpatching injection point core facilities to REL_17_STABLE",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "lwlock scalability many cores"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:4727",
+      "kind": "cf",
+      "title": "Exponential backoff for auth_delay",
+      "status": "Returned with feedback",
+      "date": "2024-04-07",
+      "first_date": "2023-12-27",
+      "url": "https://commitfest.postgresql.org/patch/4727/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/658c4eab.050a0220.731ff.011e@mx.google.com"
+      ],
+      "authors": "Michael Banck (mbanck)",
+      "objectors": "",
+      "summary": "Exponential backoff for auth_delay\nThreads: [PATCH] Exponential backoff for auth_delay",
+      "objection": "",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "spin delay backoff s_lock"
+      ],
+      "from_hint": false,
+      "score": 0.129,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:3271",
+      "kind": "cf",
+      "title": "KnownAssignedXidsGetAndSetXmin performance",
+      "status": "Returned with feedback",
+      "date": "2022-11-15",
+      "first_date": "2021-05-20",
+      "url": "https://commitfest.postgresql.org/patch/3271/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALdSSPgahNUD_=pB_j=1zSnDBaiOtqVfzo8Ejt5J_k7qZiU1Tw@mail.gmail.com"
+      ],
+      "authors": "Michail Nikolaev (nkey), Mihail Nikalayeu (mihailnikalayeu)",
+      "objectors": "",
+      "summary": "KnownAssignedXidsGetAndSetXmin performance\nThreads: Slow standby snapshot",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "LWLockWaitListLock performance"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:6377",
+      "kind": "cf",
+      "title": "Precompute string lengths in PerformRadiusTransaction",
+      "status": "Withdrawn",
+      "date": "2026-03-25",
+      "first_date": "2026-01-05",
+      "url": "https://commitfest.postgresql.org/patch/6377/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/tencent_6B29EC4570E6F0C659B4EAA7@qq.com"
+      ],
+      "authors": "Man Zeng (zengman)",
+      "objectors": "",
+      "summary": "Precompute string lengths in PerformRadiusTransaction\nThreads: [PATCH] Precompute string lengths in PerformRadiusTransaction",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "LWLockWaitListLock performance"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:5703",
+      "kind": "cf",
+      "title": "NUMA shared memory interleaving",
+      "status": "Returned with feedback",
+      "date": "2025-07-07",
+      "first_date": "2025-04-16",
+      "url": "https://commitfest.postgresql.org/patch/5703/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKZiRmw6i1W1AwXxa-Asrn8wrVcVH3TO715g_MCoowTS9rkGyw@mail.gmail.com"
+      ],
+      "authors": "Jakub Wartak (jakub.wartak.tomtom)",
+      "objectors": "",
+      "summary": "NUMA shared memory interleaving\nThreads: NUMA shared memory interleaving",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "cache line bouncing NUMA lwlock"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:974",
+      "kind": "cf",
+      "title": "Cache line alignment of PGXACT",
+      "status": "Returned with feedback",
+      "date": "2017-09-22",
+      "first_date": "2016-08-19",
+      "url": "https://commitfest.postgresql.org/patch/974/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAPpHfdtJY4zOEDsjad6J5AyZMqZcv6gSY9AkKpA7qN3jyQ2+1Q@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov (smagen)",
+      "objectors": "",
+      "summary": "Cache line alignment of PGXACT\nThreads: Should we cacheline align PGXACT?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "cache line bouncing NUMA lwlock"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:2381",
+      "kind": "cf",
+      "title": "remove single character literal tokens from the core grammar",
+      "status": "Rejected",
+      "date": "2020-01-18",
+      "first_date": "2019-12-16",
+      "url": "https://commitfest.postgresql.org/patch/2381/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CACPNZCvG3rYfw-L-b9eaxtdDvgkOwz4U3TFriUVBOhKcuOBRkw@mail.gmail.com"
+      ],
+      "authors": "John Naylor (john.naylor)",
+      "objectors": "",
+      "summary": "remove single character literal tokens from the core grammar\nThreads: small Bison optimization: remove single character literal tokens",
+      "objection": "",
+      "touch_points": [
+        "SQL syntax / standard"
+      ],
+      "matched_queries": [
+        "lwlock scalability many cores"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:6171",
+      "kind": "cf",
+      "title": "Make pg_numa_init() cope with Docker",
+      "status": "Withdrawn",
+      "date": "2026-01-29",
+      "first_date": "2025-04-07",
+      "url": "https://commitfest.postgresql.org/patch/6171/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/E1u1tr8-003BbN-2E@gemulon.postgresql.org"
+      ],
+      "authors": "Christoph Berg (myon)",
+      "objectors": "",
+      "summary": "Make pg_numa_init() cope with Docker\nThreads: pgsql: Introduce pg_shmem_allocations_numa view",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "cache line bouncing NUMA lwlock"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 6,
+    "new_calls": 2,
+    "failed": 0,
+    "quotes_verified": 1,
+    "quotes_dropped": 1,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 5
+  },
+  "precedent_cutoff": "2026-07-23",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "One objection. [P8] (lockless wait queue) was returned for lack of interest, and this thread has active reviewers, so that reason does not carry over. [P10] and [P14] share only the topic area."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 0,
+      "note": "The proposal has no user-facing contract: no syntax, no GUC, no catalog or pg_dump change, no psql or client-visible behaviour, and v1 touches only lwlock.c and s_lock.c. The global MIN_DELAY_USEC change is the only cross-caller behaviour change, and message #11 commits to dropping it, so nothing is left for the standards and compatibility angle."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The v1 patch changes only backend-local spin behaviour in lwlock.c and a delay constant in s_lock.c, so it touches no persistent or cross-node state. It adds no on-disk format, WAL record, catalog change, protocol message or exported struct change. The promised per-tranche v2 has not been posted, so its shared-memory layout and extension ABI effects could not be checked."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal only changes how often a backend re-reads lock->state while spinning, plus the spin-delay floor in s_lock.c. It adds no privilege, no new user-visible object and no new information exposure. The risk of a waiter reaching s_lock_stuck() is a safety issue that the thread already raised (messages #7, #10) and that v2 is meant to fix, so it is not a privilege question."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "Two objections raised. The MIN_DELAY_USEC change and the missing re-read after pg_usleep() are left out because message #11 commits to fixing both in v2."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing feature, setting or extension changes how often LWLockWaitListLock() re-reads lock->state, and this spin loop cannot be changed from outside core. The adaptive spins_per_delay in s_lock.c controls when a waiter sleeps, not how often it reads the lock, and reviewers already raised how the two interact (messages #7 and #10)."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "The thread shows real demand from independent sources: the Intel authors (message #1), an AWS benchmark of 59% on 192-core Graviton (message #3), and an EnterpriseDB reviewer measuring +12% on plain pgbench -S (message #6). Large multi-socket and cloud machines with hundreds of clients are a common production setup, and reviewers report no loss on small systems, so the cost does not fall on non-users."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 3,
+      "new_survived": 1,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 61,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 13,
+    "wall_ms": 133580,
+    "cost_usd": 1.7602508000000003,
+    "dry_run": false
+  }
+}

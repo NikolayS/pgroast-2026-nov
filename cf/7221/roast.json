@@ -1,0 +1,1297 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:30:41.844Z",
+  "input": {
+    "arg": "7221",
+    "cf": {
+      "id": 7221,
+      "url": "https://commitfest.postgresql.org/patch/7221/",
+      "title": "pg_rewind: file sync bypass and findLastCheckpoint boundary crash",
+      "status": "Needs review",
+      "authors": "Srinath Reddy (srinath-reddy-sadipiralla)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAFC%2Bb6qpqH4E22-PAemSby8Yv_2Z_8PUy8XrUmpW9Ot_efKdug%40mail.gmail.com",
+    "subject": "[BUG] pg_rewind: file sync bypass and findLastCheckpoint boundary crash",
+    "thread_start": "2026-08-30T04:45:13Z",
+    "messages_read": 2,
+    "messages_total": 2,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v1-0001-Fix-pg_rewind-file-sync-bypass-and-findLastCheckpoin.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "low",
+  "verdict_reasoning": "Level 1b is where a committer would stop. already-exists-1 says a cleanly stopped old primary started as a standby follows the new timeline today, and the thread shows only a postgresql.auto.conf difference. standards-compat-1 says the planned switchover changes from no writes to a file copy, and the thread does not weigh that. Only the author has posted, so the verdict rests on what the thread does not yet show.",
+  "failing_level": "1b",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "failed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "not_evaluated"
+    }
+  ],
+  "brief": {
+    "title": "pg_rewind: sync files when target WAL ends at the divergence point",
+    "problem": "When a primary shuts down cleanly and a standby is promoted, the target's WAL ends exactly at the divergence point, and pg_rewind exits with no rewind needed. The target then lacks the new timeline history file and non-WAL-logged changes such as postgresql.auto.conf, and pg_control keeps the old timeline and state. This affects anyone who rewinds a cleanly stopped old primary.",
+    "proposed_design": "The patch removes the early exit for target_wal_endrec == divergerec, so pg_rewind runs the file sync whenever timelines differ. That exposes a failure in findLastCheckpoint(), whose backward read at divergerec hits unwritten WAL. When that first backward read fails at the fork point, findLastCheckpoint() falls back to a forward scan from the pg_control checkpoint LSN to find the last common checkpoint.",
+    "user_visible_surface": [
+      "pg_rewind no longer reports that no rewind is needed when target WAL ends at the divergence point; it copies files and updates pg_control instead."
+    ],
+    "author_claims": [
+      "The early exit leaves the target without the source's timeline history file, non-WAL-logged file changes and an updated pg_control.",
+      "Removing the early exit alone makes pg_rewind fail with \"invalid record length ... expected at least 24, got 0\".",
+      "The forward-scan fallback finds the last common checkpoint correctly in this case.",
+      "A new TAP test, using ALTER SYSTEM right after promotion, shows the file-sync failure on master."
+    ],
+    "thread_state": "Only the author has posted; the second message just adds the missing link to the related thread. No reviewer has replied, and CFbot reported that the patch needs a rebase.",
+    "unclear": [
+      "The patch does not say whether the old early-exit behaviour was intended, or whether users depend on pg_rewind doing nothing in this case.",
+      "The proposal does not say what the forward scan does if no checkpoint is found, or how it handles a damaged or missing WAL segment.",
+      "The material does not say whether the fix should be back-patched, though it is tagged as a bug fix.",
+      "The patch does not say whether the fallback runs only when the read error is at forkptr, or for any backward read error.",
+      "The material does not show how much data a full file sync now copies in this case, compared with doing nothing."
+    ],
+    "search_queries": [
+      "pg_rewind no rewind required",
+      "pg_rewind clean shutdown promoted standby",
+      "pg_rewind timeline history file missing",
+      "findLastCheckpoint backward scan",
+      "pg_rewind divergence point WAL end",
+      "pg_rewind postgresql.auto.conf sync",
+      "pg_rewind pg_control timeline update"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P8",
+      "source_id": "cf:6041",
+      "title": "Fix pg_rewind false positives caused by shutdown-only WAL",
+      "kind": "cf",
+      "status": "Withdrawn",
+      "url": "https://commitfest.postgresql.org/patch/6041/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFC+b6rsM+WUoph-aPk5sz4cPzaQ4XkRDNwCJ5nG5+HsRQ=j8A@mail.gmail.com"
+      ],
+      "date": "2026-05-01",
+      "first_date": "2025-09-06",
+      "who_objected": "Robert Haas",
+      "quote": "But I do not think we can do that, because (1) those WAL records might do important things like update the control file and (2) the server will not be OK with ignoring those WAL records even if pg_rewind decides that they are not important.",
+      "quote_url": "https://www.postgresql.org/message-id/CA%2BTgmoYYvYShoRKK6%3D8PX-BYBarFXjrGB%2BcBBRjX-SkMfd0Nrg%40mail.gmail.com",
+      "enriched": true,
+      "reason": "Robert Haas objected to the premise. The shutdown checkpoint updates the control file, and that change matters when deciding whether servers are in sync. Even if pg_rewind ignored those records, the restarted old primary still refuses to follow the new timeline. He also noted that the patch did not skip the RUNNING_XACTS record and did not check the rmgr ID, and he saw no workaround; a later patch from another poster got no reply before the entry was withdrawn.",
+      "relation": "related_only",
+      "what_is_different": "P8 made pg_rewind skip shutdown-only WAL so that fewer cases need a rewind. This patch does the opposite: it runs the file sync and updates pg_control in a case that used to exit early, which agrees with P8's objection."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Clean switchover already works by starting the old primary as standby",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "desirability",
+      "touch_points": [
+        "does_not_fit",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After a clean switchover, an operator adds standby.signal and primary_conninfo to the old primary and starts it, and it follows the new timeline. With the patch, a pg_rewind run in the same state copies files and rewrites pg_control through a new forward-scan path. A regression there breaks a switchover that needed no rewind at all.",
+      "argument": "In this case the old primary's WAL ends at the divergence point, so it can follow the new timeline. Recovery fetches the timeline history file from the new primary or the archive and switches timelines itself. Message #1 lists the missing history file, pg_control state and postgresql.auto.conf, but the first two are already handled by recovery. The third is a configuration difference, and standbys often keep their own settings on purpose. So the gap is convenience in tooling that always runs pg_rewind, and the material does not show anything that cannot be done today.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "What concrete failure does a user hit when the old primary is started as a standby without pg_rewind after a clean switchover, which recovery cannot already handle?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Srinath Reddy Sadipiralla",
+          "date": "2026-08-30T04:45:13Z",
+          "url": "https://www.postgresql.org/message-id/CAFC%2Bb6qpqH4E22-PAemSby8Yv_2Z_8PUy8XrUmpW9Ot_efKdug%40mail.gmail.com"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "A cleanly stopped old primary started with standby.signal fetches the history file and follows the new timeline, and recovery updates pg_control. The thread shows only a postgresql.auto.conf difference, so it shows no failure that needs the file sync.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Planned switchover now rewrites the old primary's files and pg_control",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "desirability",
+      "touch_points": [
+        "backpatchability",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An HA tool stops the primary cleanly, promotes a standby, then runs pg_rewind as a routine step. Today pg_rewind reports that no rewind is required and leaves the old primary alone. After the patch it overwrites postgresql.auto.conf and other config files with the new primary's copies and rewrites pg_control, and operators find out when the old primary starts with settings they did not choose.",
+      "argument": "A clean stop followed by promotion is the normal planned switchover, so this is the common path. Message #1 treats copying postgresql.auto.conf as the desired result. But in this case some setups may rely on pg_rewind leaving the old primary untouched. The patch touches no documentation files, so neither the pg_rewind docs nor any release note would describe the change.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "Which tools or scripts run pg_rewind after a clean switchover, and does each of them expect the old primary's config files to be overwritten?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Srinath Reddy Sadipiralla",
+          "date": "2026-08-30T04:45:13Z",
+          "url": "https://www.postgresql.org/message-id/CAFC%2Bb6qpqH4E22-PAemSby8Yv_2Z_8PUy8XrUmpW9Ot_efKdug%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "pg_rewind already copies config files in every real rewind, so tools that run it must cope with that today. But the clean-switchover case changes from no writes to a file copy, and the thread does not weigh that change.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "Error-triggered fallback in findLastCheckpoint where the checkpoint is already known",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A target with a zeroed or torn WAL page near the fork point hits a backward-read failure at forkptr. The fallback treats this as a clean shutdown and scans forward, so pg_rewind continues where it now stops with an error. The user learns of the damage only if the rewound server later fails recovery.",
+      "argument": "The commit message says the forward scan starts when the first backward read fails at forkptr \"due to unwritten WAL\". The proposal does not say how the code tells unwritten WAL apart from damaged WAL, so the rule rests on the shape of an xlogreader error. When target_wal_endrec == divergerec, pg_rewind.c already knows this case, and the last common checkpoint is the target's pg_control checkpoint. Handling it there avoids a second scan mode in findLastCheckpoint that every future xlogreader change would have to keep working.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "Why not take the last common checkpoint from the target's pg_control in pg_rewind.c when target_wal_endrec equals divergerec, instead of adding an error-triggered forward scan to findLastCheckpoint?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Srinath Reddy Sadipiralla",
+          "date": "2026-08-30T04:45:13Z",
+          "url": "https://www.postgresql.org/message-id/CAFC%2Bb6qpqH4E22-PAemSby8Yv_2Z_8PUy8XrUmpW9Ot_efKdug%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The commit message does not say how the fallback tells end of written WAL from a damaged record at forkptr. After a clean shutdown the pg_control checkpoint is the shutdown checkpoint that ends at divergerec, so the suggested alternative is sound.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Bug-fix tag implies back-patching a behaviour change",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user applies a minor update to a supported branch and keeps the same switchover script. pg_rewind used to exit early in this case, but now it runs a file sync. The user learns about the change only when the old primary comes back with replaced config files or a different pg_control state.",
+      "argument": "The CommitFest entry is tagged Bugfix, and message #1 calls the early exit a bug. The proposal does not say whether the early exit was intended, or which branches should get the fix. A committer would likely ask for this to go to master only, since stable branches should not change visible behaviour.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "Is this change meant for master only, and if so, what do users on stable branches do today when the history file is missing after a clean switchover?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Srinath Reddy Sadipiralla",
+          "date": "2026-08-30T04:45:13Z",
+          "url": "https://www.postgresql.org/message-id/CAFC%2Bb6qpqH4E22-PAemSby8Yv_2Z_8PUy8XrUmpW9Ot_efKdug%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The scenario needs a back-patch, and the proposal does not include one. The CommitFest entry sets target version 20, and the behaviour change on master is covered by standards-compat-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Clean-shutdown case goes from no writes to a full rewind",
+      "level": "1b",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An HA tool rewinds a cleanly stopped old primary with --source-server, and the network drops during the copy. Today pg_rewind writes nothing in this case. With the patch the data directory is left half-synced, and the operator learns this when the old primary will not start and needs a new base backup.",
+      "argument": "The patch makes pg_rewind change the data directory in the safest failover case, which today has no write risk. The material does not show that the unchanged old primary fails to follow the new timeline. A standby can fetch the history file over streaming or through restore_command. The TAP test shows only a postgresql.auto.conf difference, and copying the source's configuration is a side effect that many users do not want.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "Which concrete failure does an unrewound, cleanly stopped old primary hit when it starts as a standby on the new timeline, and why is a full sync needed rather than only the history file and pg_control?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Srinath Reddy Sadipiralla",
+          "date": "2026-08-30T04:45:13Z",
+          "url": "https://www.postgresql.org/message-id/CAFC%2Bb6qpqH4E22-PAemSby8Yv_2Z_8PUy8XrUmpW9Ot_efKdug%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of already-exists-1 for the main question, which is what fails without a rewind. The interrupted-copy risk is the same one every pg_rewind run already has, and the copy is of changed files, so it is smaller than a full rewind.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Forward-scan fallback has no stated trigger or result check",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A target WAL segment near the fork point is missing or damaged, so the backward read at forkptr fails. The fallback scans forward from the pg_control checkpoint and picks a checkpoint without checking it. pg_rewind then writes a backup_label and pg_control that start replay from the wrong place, and the error shows up only at startup or as silent divergence.",
+      "argument": "The commit message says the fallback runs when the read fails at forkptr \"due to unwritten WAL\". It does not say how that error is told apart from a missing or corrupt segment. It also does not say whether the scan stops at forkptr, checks the timeline, or fails when no checkpoint is found. In the clean-shutdown case, the pg_control checkpoint may already be the last common checkpoint. If so, no extra WAL read is needed.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "How does the fallback tell end of written WAL from a missing or damaged segment, and why is the pg_control shutdown checkpoint not used directly when it ends at divergerec?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Srinath Reddy Sadipiralla",
+          "date": "2026-08-30T04:45:13Z",
+          "url": "https://www.postgresql.org/message-id/CAFC%2Bb6qpqH4E22-PAemSby8Yv_2Z_8PUy8XrUmpW9Ot_efKdug%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1, which states the same trigger question and names the pg_control alternative. The claim that the scan picks a checkpoint without checking it cannot be verified from the patch prose.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Behaviour change in a bug-fix entry affects HA tools if back-patched",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After a minor upgrade, a failover manager that relied on \"no rewind required\" leaving the target untouched runs pg_rewind. pg_rewind now overwrites postgresql.auto.conf with the source's copy and sets pg_control to DB_IN_ARCHIVE_RECOVERY. The old primary starts with the wrong settings and must reach the source's minRecoveryPoint before it accepts reads.",
+      "argument": "The entry is tagged Bugfix and targets 20, but the material does not say whether it is meant for back branches. The old exit had an explicit Assert and branch, so it may have been intended, and the patch does not discuss this. No reviewer has replied yet, so nobody has weighed the change against existing tooling.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "Is this meant for back branches, and how would tools that depend on the target being untouched in the equal-LSN case learn about and handle the change?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Srinath Reddy Sadipiralla",
+          "date": "2026-08-30T04:45:13Z",
+          "url": "https://www.postgresql.org/message-id/CAFC%2Bb6qpqH4E22-PAemSby8Yv_2Z_8PUy8XrUmpW9Ot_efKdug%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-3",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1 for the effect on HA tools. The back-patch part depends on a step nobody proposed, since the entry sets target version 20.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No user-visible failure shown for the clean switchover case",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator does a planned switchover, pg_rewind reports no rewind needed, and the operator starts the old primary with standby.signal. The material does not show what then goes wrong for that operator, or when they would notice.",
+      "argument": "The thread lists missing artifacts: the history file, postgresql.auto.conf and the pg_control timeline. It does not show a failure that follows from them. In the usual setup, a standby that follows the latest timeline fetches the history file from the new primary and moves to the new timeline during recovery. The only failure shown is an ALTER SYSTEM change made on the new primary after promotion (message #1), and no field report or second user appears.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "Which switchover procedure fails today after the no-rewind exit, what error does the operator see, and has anyone reported it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Srinath Reddy Sadipiralla",
+          "date": "2026-08-30T04:45:13Z",
+          "url": "https://www.postgresql.org/message-id/CAFC%2Bb6qpqH4E22-PAemSby8Yv_2Z_8PUy8XrUmpW9Ot_efKdug%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of already-exists-1, which asks the same question about what fails without a rewind and gives the recovery mechanism in more detail.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Every clean switchover now gets config files overwritten",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "desirability",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site keeps per-node settings in postgresql.conf, pg_hba.conf or postgresql.auto.conf and runs pg_rewind as part of its switchover script. After the patch, the no-op case copies the source's files over the target's. The old primary starts with the new primary's settings, and the operator finds out when replication or access behaves differently.",
+      "argument": "Today a clean switchover leaves the target's files alone. The patch removes that exit for everyone (commit message point 1) to help users who changed non-WAL-logged files after promotion. The cost falls on every user of the common planned-switchover path, including tools that treat the no-op result as the expected outcome. The proposal does not say whether that path depends on doing nothing, and the brief lists this as unclear.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "How many switchover users want config files copied in this case, compared with those who rely on pg_rewind leaving the target untouched?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Srinath Reddy Sadipiralla",
+          "date": "2026-08-30T04:45:13Z",
+          "url": "https://www.postgresql.org/message-id/CAFC%2Bb6qpqH4E22-PAemSby8Yv_2Z_8PUy8XrUmpW9Ot_efKdug%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1. Both describe config files overwritten on a clean switchover that today leaves the target untouched.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "pg_rewind now rewrites the target's pg_control and copies files in a case where it wrote nothing before."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "The patch changes how findLastCheckpoint() reads target WAL and how an old primary is prepared to follow a new timeline."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The entry is tagged Bugfix but changes visible pg_rewind behaviour; it sets target version 20 and does not mention back branches."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "findLastCheckpoint() gains a second, error-triggered forward-scan mode that later xlogreader changes must keep working."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "Starting the cleanly stopped old primary as a standby may already cover this case without pg_rewind."
+    }
+  ],
+  "questions": [
+    "What concrete failure does a user hit when a cleanly stopped old primary starts as a standby without pg_rewind, which recovery cannot already handle?",
+    "Was the early exit for target_wal_endrec == divergerec intended, and do any tools rely on pg_rewind leaving the target untouched in that case?",
+    "Which files does the sync copy in this case, and why is copying the source's postgresql.auto.conf over the target's the wanted result?",
+    "Why not take the last common checkpoint from the target's pg_control when target_wal_endrec equals divergerec, instead of adding a forward scan to findLastCheckpoint()?",
+    "How does the fallback tell end of written WAL from a missing or damaged segment at forkptr, and what happens if the forward scan finds no checkpoint?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "It needs a committer who knows pg_rewind, timeline switching and the xlogreader code. Only the author has posted in the thread.",
+    "liability": "The owner signs for pg_rewind's behaviour on the planned-switchover path, which HA tools run routinely, and for the forward-scan path in findLastCheckpoint() for as long as it exists.",
+    "author_follow_up": "No clear sign. The author posted twice on the same day, and the rebase that CFbot asked for on 2026-09-15 is not visible in the thread."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "unclear",
+    "maintenance_burden": "low",
+    "review_cost": "medium",
+    "recommended_action": "fix design first",
+    "reason": "The patch is small and touches only pg_rewind, but it changes the result of the common planned-switchover case and reads WAL in a new way. The thread must first show what fails today and whether the checkpoint can come from pg_control."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, I could not check how the fallback detects end of written WAL, where the forward scan stops, or which files the sync copies in this case. The linked thread from message #2 is not in the material.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:6811",
+      "kind": "cf",
+      "title": "pg_rewind does not rewind diverging timelines",
+      "status": "Withdrawn",
+      "date": "2026-05-29",
+      "first_date": "2026-04-30",
+      "url": "https://commitfest.postgresql.org/patch/6811/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAN305gBeJr8m7ZRW9mH0zakEFR4hDUPDo8fJRKJOHWMORG5_Bg@mail.gmail.com"
+      ],
+      "authors": "Mats Kindahl (matski)",
+      "objectors": "",
+      "summary": "The patch stores a UUID for each timeline in the timeline history file, so pg_rewind can tell apart two servers that were promoted to the same TLI on their own. When the TLIs match but the UUIDs differ, pg_rewind goes back to the last timeline where both the TLI and the UUID match and rewinds from there.",
+      "objection": "The visible messages do not show why. The reviewers asked only for small fixes, and the author made them. The last message reports that the new 005_same_timeline test fails on Windows CI because the restore_command path is mangled, and no reply follows before the entry was withdrawn.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_rewind no rewind required",
+        "pg_rewind clean shutdown promoted standby",
+        "pg_rewind timeline history file missing",
+        "pg_rewind divergence point WAL end",
+        "pg_rewind postgresql.auto.conf sync",
+        "pg_rewind pg_control timeline update"
+      ],
+      "from_hint": false,
+      "score": 0.843,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:1343",
+      "kind": "cf",
+      "title": "Restrict pg_rewind to specified/needed directories",
+      "status": "Returned with feedback",
+      "date": "2018-02-01",
+      "first_date": "2017-10-28",
+      "url": "https://commitfest.postgresql.org/patch/1343/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAN-RpxDPE4baiMMJ6TLd6AiUvrG=YrC05tGxrgp4aUutH9j5TQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAN-RpxD1Mg4KAhPBx8x9sFmeVizdY1aJvv0iE25m6dKUNG_H8g@mail.gmail.com"
+      ],
+      "authors": "Chris Travers (einhverfr)",
+      "objectors": "Michael Paquier, David Steele, Stephen Frost",
+      "summary": "The patch makes pg_rewind synchronize only a fixed list of directories (base, global, pg_wal, pg_xact and other WAL-related directories), so it no longer copies logs, replication slots or configuration files from the source. The list of files is fetched with one query per listed directory.",
+      "objection": "Reviewers objected to an include list: a directory missing from it, such as one added by a new feature or an extension, can make a rewind silently corrupt. They asked pg_rewind to reuse the exclude list that base backups already use, by moving it to common code, and to add an option for more exclusions. The patch stayed in Waiting on Author, and Michael Paquier returned it with feedback and said he would work on the exclude-list approach himself.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_rewind no rewind required",
+        "pg_rewind clean shutdown promoted standby",
+        "pg_rewind timeline history file missing",
+        "pg_rewind divergence point WAL end",
+        "pg_rewind postgresql.auto.conf sync",
+        "pg_rewind pg_control timeline update"
+      ],
+      "from_hint": false,
+      "score": 0.58,
+      "enriched": true,
+      "key_quote": "Forgetting something in the\nexclusion list just makes the process less efficient while forgetting\nsomething in the inclusion list may mean breakage.",
+      "quote_message_url": "https://www.postgresql.org/message-id/b984796f-3177-67c7-a09b-0050d3440ef0%40pgmasters.net",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:1302",
+      "kind": "cf",
+      "title": "Make pg_rewind not copy useless WALs",
+      "status": "Returned with feedback",
+      "date": "2018-01-31",
+      "first_date": "2017-09-16",
+      "url": "https://commitfest.postgresql.org/patch/1302/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/7c50423.5ad0.15e8b308b2f.Coremail.chjischj@163.com",
+        "https://www.postgresql.org/message-id/flat/4fe58b67.7d.15ed3cc12a7.Coremail.chjischj@163.com"
+      ],
+      "authors": "Chen huajun (chenhuajun)",
+      "objectors": "",
+      "summary": "Change pg_rewind so it skips WAL segments that come before the divergence point, which the target already has. It also skips segments after the source's current WAL insert location, such as recycled future segments.",
+      "objection": "The visible messages do not show why. The last shown message, from Alexander Korotkov, says the code looks good but the patch lacks documentation updates, including the paragraph that says which files pg_rewind copies. No later reply from the author is shown before the entry was returned with feedback.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_rewind no rewind required",
+        "pg_rewind clean shutdown promoted standby",
+        "pg_rewind timeline history file missing",
+        "pg_rewind divergence point WAL end",
+        "pg_rewind postgresql.auto.conf sync",
+        "pg_rewind pg_control timeline update"
+      ],
+      "from_hint": false,
+      "score": 0.569,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:2063",
+      "kind": "cf",
+      "title": "Data-only mode for pg_rewind",
+      "status": "Returned with feedback",
+      "date": "2019-08-01",
+      "first_date": "2019-03-17",
+      "url": "https://commitfest.postgresql.org/patch/2063/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAN-RpxCT4uH4nfrx4k3h+5TAJHGUDL0hqhaTAXSzmzVtLGfp8w@mail.gmail.com"
+      ],
+      "authors": "Chris Travers (einhverfr)",
+      "objectors": "Michael Paquier, Thomas Munro",
+      "summary": "The patch adds a --data-only flag to pg_rewind so that it rewinds only the minimal set of files needed, leaving other files in the data directory untouched. Default behavior stays the same.",
+      "objection": "Thomas Munro marked the entry Returned with feedback because the author did not respond to his July request for a rebase of the bitrotted patch. Earlier, Michael Paquier objected that the approach can break pg_rewind when a newly added data directory folder holds non-replaceable data needed at the start of recovery, and that it adds maintenance burden. Stephen Frost supported the goal and suggested a canonical list of required files.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_rewind no rewind required",
+        "pg_rewind clean shutdown promoted standby",
+        "pg_rewind timeline history file missing",
+        "pg_rewind divergence point WAL end",
+        "pg_rewind postgresql.auto.conf sync",
+        "pg_rewind pg_control timeline update"
+      ],
+      "from_hint": false,
+      "score": 0.531,
+      "enriched": true,
+      "key_quote": "I set this to \"Returned with feedback\" due to lack of response.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BhUKGKauyfUs4%3D8oyZxcEv%3Dg3sxL4ET9Ybzbf9HdQ0ce%3DBC7A%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:2059",
+      "kind": "cf",
+      "title": "Add tablespace tap test to pg_rewind",
+      "status": "Returned with feedback",
+      "date": "2019-05-10",
+      "first_date": "2019-03-08",
+      "url": "https://commitfest.postgresql.org/patch/2059/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGRcZQXA-4hrCQy1xOAJ7WwBpEWEJJvgAU2dsNQr13C+6J8izQ@mail.gmail.com"
+      ],
+      "authors": "Shaoqi Bai (baishaoqi)",
+      "objectors": "Michael Paquier, Kyotaro HORIGUCHI",
+      "summary": "The patch adds a TAP test for pg_rewind that checks tablespaces created before and after standby promotion, modeled on 002_databases.pl. It extends RewindTest.pm, PostgresNode.pm and RecursiveCopy.pm so a standby can be built with tablespace mapping and symlinks can be copied.",
+      "objection": "The test setup made the primary, the backup and the standbys share the same tablespace paths, so multiple standbys from one backup would use one tablespace directory and the source and target servers would overwrite each other. A correct test needs a tablespace mapping option for the file-level backup routines in RecursiveCopy.pm and PostgresNode::init_from_backup, and an option in pg_rewind similar to pg_basebackup's --tablespace-mapping. Michael Paquier judged this a large amount of work that may be hard to justify.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_rewind no rewind required",
+        "pg_rewind clean shutdown promoted standby",
+        "pg_rewind timeline history file missing",
+        "pg_rewind divergence point WAL end",
+        "pg_rewind postgresql.auto.conf sync",
+        "pg_rewind pg_control timeline update"
+      ],
+      "from_hint": false,
+      "score": 0.493,
+      "enriched": true,
+      "key_quote": "And on top of that there is of course the argument of pg_rewind which\nwould need an option similar to pg_basebackup's --tablespace-mapping\nso as a target instance does not finish by using the same tablespace\npath as the source where there is a tablespace of difference during\nthe operation.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20190510115301.GD1498%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:3800",
+      "kind": "cf",
+      "title": "Avoid Copying WAL Segments Before Divergence to Speed Up pg_rewind",
+      "status": "Returned with feedback",
+      "date": "2022-11-30",
+      "first_date": "2022-06-30",
+      "url": "https://commitfest.postgresql.org/patch/3800/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/181b4c6fa9c.b8b725681941212.7547232617810891479@viggy28.dev"
+      ],
+      "authors": "vignesh ravichandran (vigneshravichandran), Justin Kwan (justinpkwan.outlook.com)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch makes pg_rewind skip copying WAL segments that come before the segment holding the last common checkpoint, since source and target share them. The author reported that WAL files are over 95% of the data pg_rewind copies in their setups.",
+      "objection": "The author did not answer Michael Paquier's review of 2022-10-06, so the entry was marked returned with feedback. That review asked for tests that use command_checks_all() instead of reading log files, and an assertion that the WAL segment exists on both sides. It also asked about segments with older timelines and for WAL segments to be tracked in file_entry_t. Alexander Korotkov saw no design objections in the thread.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "pg_rewind no rewind required",
+        "pg_rewind clean shutdown promoted standby",
+        "pg_rewind divergence point WAL end",
+        "pg_rewind postgresql.auto.conf sync",
+        "pg_rewind pg_control timeline update"
+      ],
+      "from_hint": false,
+      "score": 0.477,
+      "enriched": true,
+      "key_quote": "This review has been done a few weeks ago, and there has been no\nupdate since, so I am marking this entry as returned with feedback in\nthe CF app.",
+      "quote_message_url": "https://www.postgresql.org/message-id/Y4cAQVJc10IeA0M7%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:4559",
+      "kind": "cf",
+      "title": "pg_rewind with cascade standby doesn't work well",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-09-07",
+      "url": "https://commitfest.postgresql.org/patch/4559/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMyC8qqnxBVjAM+a5WgQ+bFSvd2ZoA_wuzEDo-y8_jbLCtHbjQ@mail.gmail.com"
+      ],
+      "authors": "Masaki Kuwamura (mackyson)",
+      "objectors": "Ilya Gladyshev",
+      "summary": "When a cascading standby replays the end-of-recovery record of its upstream's promotion, the patch has it request an immediate restartpoint. The control file then shows the new timeline, so pg_rewind can use the standby as source right away instead of reporting \"same timeline\". An earlier version set minRecoveryPoint and minRecoveryPointTLI in xlog_redo, but that broke crash recovery.",
+      "objection": "The last review came in July 2024 and no author reply is visible before the entry was returned. That review found that v3 no longer applied to master. It asked whether making WAL replay wait for the restartpoint hurts performance, and noted the behaviour change was not documented. It also proposed a less invasive fix, where pg_rewind detects the case and runs a checkpoint on the standby.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_rewind no rewind required",
+        "pg_rewind clean shutdown promoted standby",
+        "pg_rewind divergence point WAL end",
+        "pg_rewind postgresql.auto.conf sync",
+        "pg_rewind pg_control timeline update"
+      ],
+      "from_hint": false,
+      "score": 0.474,
+      "enriched": true,
+      "key_quote": "Regarding the approach to force a checkpoint on every restartpoint record, I wonder if it has any performance implications, since now the WAL replay will wait for the restartpoint to finish as opposed to it happening in the background.",
+      "quote_message_url": "https://www.postgresql.org/message-id/735FA63F-296A-4895-93B6-80F202EC5B1C%40gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:6041",
+      "kind": "cf",
+      "title": "Fix pg_rewind false positives caused by shutdown-only WAL",
+      "status": "Withdrawn",
+      "date": "2026-05-01",
+      "first_date": "2025-09-06",
+      "url": "https://commitfest.postgresql.org/patch/6041/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFC+b6rsM+WUoph-aPk5sz4cPzaQ4XkRDNwCJ5nG5+HsRQ=j8A@mail.gmail.com"
+      ],
+      "authors": "Srinath Reddy (srinath-reddy-sadipiralla)",
+      "objectors": "Robert Haas",
+      "summary": "The patch changes how pg_rewind finds the end of WAL on the target, so that a shutdown checkpoint written after the divergence point does not by itself make a rewind necessary. pg_rewind would scan backward from the last checkpoint to the last record that is not shutdown-related.",
+      "objection": "Robert Haas objected to the premise. The shutdown checkpoint updates the control file, and that change matters when deciding whether servers are in sync. Even if pg_rewind ignored those records, the restarted old primary still refuses to follow the new timeline. He also noted that the patch did not skip the RUNNING_XACTS record and did not check the rmgr ID, and he saw no workaround; a later patch from another poster got no reply before the entry was withdrawn.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_rewind clean shutdown promoted standby",
+        "pg_rewind divergence point WAL end"
+      ],
+      "from_hint": false,
+      "score": 0.263,
+      "enriched": true,
+      "key_quote": "But I do not think we can do that, because (1) those WAL records might do important things like update the control file and (2) the server will not be OK with ignoring those WAL records even if pg_rewind decides that they are not important.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoYYvYShoRKK6%3D8PX-BYBarFXjrGB%2BcBBRjX-SkMfd0Nrg%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:2990",
+      "kind": "cf",
+      "title": "speed up pg_rewind by using copy_file_range() and skipping some fsync",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-01-27",
+      "url": "https://commitfest.postgresql.org/patch/2990/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/7C1703E7-F3F3-43FA-86EB-177C671BF33C@vmware.com"
+      ],
+      "authors": "Paul Guo (paulguo-vmware)",
+      "objectors": "",
+      "summary": "speed up pg_rewind by using copy_file_range() and skipping some fsync\nThreads: Two patches to speed up pg_rewind.",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "pg_rewind timeline history file missing",
+        "pg_rewind postgresql.auto.conf sync"
+      ],
+      "from_hint": false,
+      "score": 0.195,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:5238",
+      "kind": "cf",
+      "title": "Add parallel columns for seq scan and index scan on pg_stat_all_tables and _indexes",
+      "status": "Returned with feedback",
+      "date": "2024-12-11",
+      "first_date": "2024-08-29",
+      "url": "https://commitfest.postgresql.org/patch/5238/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAECtzeXXuMkw-RVGTWvHGOJsmFdsRY+jK0ndQa80sw46y2uvVQ@mail.gmail.com"
+      ],
+      "authors": "Guillaume Lelarge (gleu)",
+      "objectors": "",
+      "summary": "Add parallel columns for seq scan and index scan on pg_stat_all_tables and _indexes\nThreads: Add parallel columns for seq scan and index scan on\npg_stat_all_tables and _indexes",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "findLastCheckpoint backward scan"
+      ],
+      "from_hint": false,
+      "score": 0.144,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:4502",
+      "kind": "cf",
+      "title": "Archive current timeline history file on archiver startup if needed",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2023-08-10",
+      "url": "https://commitfest.postgresql.org/patch/4502/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/BYAPR05MB6454BB023C78A0D33B0D56D4BD12A@BYAPR05MB6454.namprd05.prod.outlook.com"
+      ],
+      "authors": "Jimmy Yih (jyih)",
+      "objectors": "",
+      "summary": "Archive current timeline history file on archiver startup if needed\nThreads: Should the archiver process always make sure that the timeline\nhistory files exist in the archive?",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_rewind timeline history file missing"
+      ],
+      "from_hint": false,
+      "score": 0.129,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:4629",
+      "kind": "cf",
+      "title": "Add recovery to pg_control and remove backup_label",
+      "status": "Withdrawn",
+      "date": "2024-01-28",
+      "first_date": "2023-10-26",
+      "url": "https://commitfest.postgresql.org/patch/4629/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2daf8adc-8db7-4204-a7f2-a7e94e2bfa4b@pgmasters.net"
+      ],
+      "authors": "David Steele (dsteele)",
+      "objectors": "",
+      "summary": "Add recovery to pg_control and remove backup_label\nThreads: Add recovery to pg_control and remove backup_label",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_rewind pg_control timeline update"
+      ],
+      "from_hint": false,
+      "score": 0.129,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:db8db624e826efbe16aab1ae921bae071f98f099",
+      "kind": "revert",
+      "title": "Revert \"Switch TAP tests of pg_rewind to use a role with minimal permissions\"",
+      "status": "Reverted",
+      "date": "2019-04-13",
+      "first_date": "2019-04-12",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=db8db624e826efbe16aab1ae921bae071f98f099",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3cd43d33-f415-cc41-ade3-7230ab15b2c9@2ndQuadrant.com",
+        "https://www.postgresql.org/message-id/flat/20190411041336.GM2728@paquier.xyz"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Switch TAP tests of pg_rewind to use a role with minimal permissions\"\nReverted commit(s): Switch TAP tests of pg_rewind to use a role with minimal permissions",
+      "objection": "This reverts commit d4e2a84, which added a new user with limited\npermissions to run the TAP tests of pg_rewind.  Buildfarm machine\nmembers on Windows jacana and bowerbird have been complaining about\nthat, the new role not being able to run the rewind because SSPI is not\nconfigured to allow it.\n\nFixing the test requires passing down directly the new user to\npg_regress with --create-role so as SSPI can work properly.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "pg_rewind no rewind required"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:1741",
+      "kind": "cf",
+      "title": "Index Skip Scan",
+      "status": "Returned with feedback",
+      "date": "2022-03-24",
+      "first_date": "2018-06-18",
+      "url": "https://commitfest.postgresql.org/patch/1741/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/707b6f68-16fa-7aa7-96e5-eeb4865e6a30@redhat.com",
+        "https://www.postgresql.org/message-id/flat/1e59d800b38141c5af2ad3a64cf9758e@opammb0562.comp.optiver.com",
+        "https://www.postgresql.org/message-id/flat/20200609102247.jdlatmfyeecg52fi@localhost",
+        "https://www.postgresql.org/message-id/flat/CAH2-WzmUscvoxVkokHxP=uPTDjSi0tJkFpUPD-CeA35dvn-CMw@mail.gmail.com"
+      ],
+      "authors": "Dmitry Dolgov (erthalion), Thomas Munro (macdice), Jesper Pedersen (jpedersen)",
+      "objectors": "",
+      "summary": "Index Skip Scan\nThreads: Index Skip Scan; RE: Index Skip Scan; Index Skip Scan (new UniqueKeys); MDAM techniques and Index Skip Scan patch",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "findLastCheckpoint backward scan"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:1755",
+      "kind": "cf",
+      "title": "Tid range scan",
+      "status": "Returned with feedback",
+      "date": "2019-12-01",
+      "first_date": "2018-08-12",
+      "url": "https://commitfest.postgresql.org/patch/1755/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMyN-kB-nFTkF=VA_JPwFNo08S0d-Yk0F741S2B7LDmYAi8eyA@mail.gmail.com"
+      ],
+      "authors": "Edmund Horner (ejrh)",
+      "objectors": "",
+      "summary": "Tid range scan\nThreads: Tid scan improvements",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "findLastCheckpoint backward scan"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:1146",
+      "kind": "cf",
+      "title": "Index Only Scan support for cube",
+      "status": "Rejected",
+      "date": "2017-09-20",
+      "first_date": "2017-05-23",
+      "url": "https://commitfest.postgresql.org/patch/1146/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJEAwVEmONZo_h8Gv4JFeYTtuca1BTvxsQosz6HTaWJx_O0Q-w@mail.gmail.com"
+      ],
+      "authors": "Andrey Borodin (x4m)",
+      "objectors": "",
+      "summary": "Index Only Scan support for cube\nThreads: Index Only Scan support for cube",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "findLastCheckpoint backward scan"
+      ],
+      "from_hint": false,
+      "score": 0.092,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:3871",
+      "kind": "cf",
+      "title": "num_sa_scans in genericcostestimate",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-08-21",
+      "url": "https://commitfest.postgresql.org/patch/3871/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMkU=1zaB2JV9O=XxGn7AqUEw_nB7zo-ExTiT40OnkJZ596qbg@mail.gmail.com"
+      ],
+      "authors": "Jeff Janes (jjanes)",
+      "objectors": "",
+      "summary": "num_sa_scans in genericcostestimate\nThreads: num_sa_scans in genericcostestimate",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "findLastCheckpoint backward scan"
+      ],
+      "from_hint": false,
+      "score": 0.086,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:738",
+      "kind": "cf",
+      "title": "Index Only Scan for index expressions",
+      "status": "Returned with feedback",
+      "date": "2016-09-28",
+      "first_date": "2016-08-15",
+      "url": "https://commitfest.postgresql.org/patch/738/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/57B23C4F.7000304@postgrespro.ru"
+      ],
+      "authors": "Ildar Musin (i.musin)",
+      "objectors": "",
+      "summary": "Index Only Scan for index expressions\nThreads: Index Onlys Scan for expressions",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "findLastCheckpoint backward scan"
+      ],
+      "from_hint": false,
+      "score": 0.084,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:3213",
+      "kind": "cf",
+      "title": "Allow providing restore_command as a command line option to pg_rewind",
+      "status": "Rejected",
+      "date": "2022-04-07",
+      "first_date": "2021-06-18",
+      "url": "https://commitfest.postgresql.org/patch/3213/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3A92BBEF-D0A6-42BE-8A5E-D90ED829A41C@yandex-team.ru"
+      ],
+      "authors": "Alexey Kondratov (ololobus)",
+      "objectors": "",
+      "summary": "Allow providing restore_command as a command line option to pg_rewind\nThreads: Supply restore_command to pg_rewind via CLI argument",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_rewind timeline history file missing"
+      ],
+      "from_hint": false,
+      "score": 0.08,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:699",
+      "kind": "cf",
+      "title": "Optimization for lazy_scan_heap",
+      "status": "Returned with feedback",
+      "date": "2016-10-03",
+      "first_date": "2016-08-04",
+      "url": "https://commitfest.postgresql.org/patch/699/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAD21AoD1MEqz9-biWkfvErQ_S7meGqHSUoA6CfuDF93ik4SZrQ@mail.gmail.com"
+      ],
+      "authors": "Masahiko Sawada (masahikosawada)",
+      "objectors": "",
+      "summary": "Optimization for lazy_scan_heap\nThreads: Optimization for lazy_scan_heap",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "findLastCheckpoint backward scan"
+      ],
+      "from_hint": false,
+      "score": 0.078,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:850",
+      "kind": "cf",
+      "title": "Scan key push down to heap",
+      "status": "Returned with feedback",
+      "date": "2016-12-21",
+      "first_date": "2016-10-11",
+      "url": "https://commitfest.postgresql.org/patch/850/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFiTN-sZnFVMdDyGaRttV29PmM6VE=3R+r2DQTeK_=WM92ohKg@mail.gmail.com"
+      ],
+      "authors": "Dilip Kumar (dilip.kumar)",
+      "objectors": "",
+      "summary": "Scan key push down to heap\nThreads: Proposal: scan key push down to heap [WIP]",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "findLastCheckpoint backward scan"
+      ],
+      "from_hint": false,
+      "score": 0.069,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 6,
+    "new_calls": 2,
+    "failed": 0,
+    "quotes_verified": 2,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 3
+  },
+  "precedent_cutoff": "2026-08-30",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No listed precedent was rejected for a reason that applies here. P8's objection, that control-file state matters when deciding whether servers are in sync, supports this patch's premise. P7 and P1 cover other pg_rewind cases (cascading source, same-TLI forks), and their reasons do not carry over. Message #1 says the bug was found while working on another thread, and message #2 links it. The material does not show what that thread contains."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "Two objections from the compatibility angle. No new syntax, GUC, catalog object or psql change is proposed."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 3,
+      "note": "Three objections are listed. Without the code I could not check how the fallback decides it is at end of WAL, or which files the sync copies in this case."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal has no privilege or exposure aspect. pg_rewind is an operator tool that runs with access to the target data directory and the source connection or directory, and the patch only makes it run its normal file sync in one more case, with no new privilege, role, setting or path for unprivileged users."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 1,
+      "note": "Only one maintenance objection, and it is fixable. The change is confined to pg_rewind, adds no hot-path cost, GUC, catalog or external dependency, and fixes a real gap. No committer has engaged yet, which bears on committability rather than merit."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "One objection from this angle. The findLastCheckpoint() fallback only matters once the early exit is removed, so it stands or falls with the objection."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "Two objections are listed."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 9,
+      "new_objections": 9,
+      "new_survived": 3,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 91,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 15,
+    "wall_ms": 170398,
+    "cost_usd": 1.2938786000000002,
+    "dry_run": false
+  }
+}

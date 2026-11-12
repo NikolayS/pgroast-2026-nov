@@ -1,0 +1,1108 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:45:03.655Z",
+  "input": {
+    "arg": "7362",
+    "cf": {
+      "id": 7362,
+      "url": "https://commitfest.postgresql.org/patch/7362/",
+      "title": "Halve memory allocation for toast_flatten_tuple",
+      "status": "Needs review",
+      "authors": "Pavel Borisov (pborisov)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CALT9ZEG8W0-xVCYQmxebYQ55fE-SJmKOTrBqgMbcVekhGNMaAw%40mail.gmail.com",
+    "subject": "[PATCH] Halve peak memory allocation for toast_flatten_tuple",
+    "thread_start": "2026-09-21T16:26:19Z",
+    "messages_read": 3,
+    "messages_total": 3,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v2-0001-Halve-peak-memory-allocation-for-toast_flatten_tu.patch",
+      "v1-0001-Halve-peak-memory-allocation-for-toast_flatten_tu.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection is fatal, and no level fails. The problem is stated, and message #2 independently confirms the memory cut. Two fixable design points remain: the stub header must predict what detoast_external_attr() returns (maintenance-fit-1), and every heap_form_tuple() caller now takes the _attr path without CPU numbers (maintenance-fit-2). demand-1 is open but does not block review, because the thread shows no field report either way.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Halve peak memory of toast_flatten_tuple by detoasting in place",
+    "problem": "toast_flatten_tuple() holds every detoasted external value and the result tuple at once, so peak memory is about 2x the tuple. The author says this mainly hurts logical replication with REPLICA IDENTITY FULL on tables with several large toasted columns, where every UPDATE/DELETE flattens the old tuple.",
+    "proposed_design": "The patch computes the tuple layout first, passing a header-only stub per external attribute through a new heap_form_tuple_attr() with skip_copy=true, which records each attribute's destination. It then detoasts one attribute at a time straight into its slot and frees it. INDIRECT externals are still detoasted inline as before.",
+    "user_visible_surface": [
+      "New C function heap_form_tuple_attr() with skip_copy and attr_data_out arguments; heap_form_tuple() becomes a wrapper.",
+      "New _attr variants of fill_val() and heap_fill_tuple() in heaptuple.c, declared through htup_details.h."
+    ],
+    "author_claims": [
+      "Peak memory drops from 2x the tuple to 1x the tuple plus one detoasted value.",
+      "The result tuple is byte-identical to the old code path, including short-header varlena packing.",
+      "The extra per-attribute cost is negligible next to the toast-fetch I/O.",
+      "Other callers, catcache loading and PL/pgSQL record assignment, handle small tuples where the difference is negligible."
+    ],
+    "thread_state": "The reviewer, Johannes Edmeier, measured a 25 to 44% cut inside the function and up to 28% in backend peak RSS, and suggested heap_form_tuple_attr(); v2 adopts it. CFbot reports that the patch needs a rebase, and nobody has commented on v2.",
+    "unclear": [
+      "The material does not say whether the stub header can ever differ from what detoast_external_attr() returns, for example with lz4 or a concurrently changed toast value.",
+      "The material does not say what the new test in src/test/subscription/t/100_bugs.pl checks.",
+      "No CPU or latency numbers exist for many small external attributes, where the per-attribute stub cost is not offset by large I/O.",
+      "The material does not say whether heap_form_tuple_attr() is exported for extensions or meant as internal only."
+    ],
+    "search_queries": [
+      "toast_flatten_tuple memory",
+      "detoast peak memory reduction",
+      "replica identity full toast memory",
+      "heap_form_tuple fill in place",
+      "logical decoding old tuple toasted columns",
+      "heap_fill_tuple refactor",
+      "reduce memory detoasting large values"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "No field report shows this memory peak hurts anyone",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "maintenance_burden",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer reworks heap_form_tuple(), fill_val() and heap_fill_tuple() into _attr variants for a narrow workload: REPLICA IDENTITY FULL tables with several large toasted columns. Users of that workload saw no failure before. Everyone else carries the reshaped core tuple-forming code and its new arguments in later patches and back-patches.",
+      "argument": "The only numbers come from one synthetic single-row test in message #2, and none come from a production system. Message #1 calls the 2x peak a strain but cites no out-of-memory report, -bugs thread or user complaint. The gain needs two or more large external columns: with one column the cut is 0%, and backend RSS drops 6 to 19% at a 96 MB payload. The cost lands in heaptuple.c, which every heap_form_tuple() caller uses, so non-users carry the maintenance.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "Which production systems using REPLICA IDENTITY FULL hit memory limits or OOM during toast_flatten_tuple(), and how large were their old tuples?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Pavel Borisov",
+          "date": "2026-09-21T16:26:19Z",
+          "url": "https://www.postgresql.org/message-id/CALT9ZEG8W0-xVCYQmxebYQ55fE-SJmKOTrBqgMbcVekhGNMaAw%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "Johannes Edmeier",
+          "date": "2026-10-15T13:43:21Z",
+          "url": "https://www.postgresql.org/message-id/CAHYEV2tW%2BogNGXC7tnVL17Q6J26S-2R7%2BvBCkFEsd_VTwUiWiA%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The independent measurements in message #2 confirm the 2x peak and a 28% RSS cut, but the thread cites no production case or user report. The statement that users \"saw no failure before\" is not in the material and must not be used as support.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Stub headers must track detoast output with no loud failure",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds a compression method or a new external varlena kind and changes what detoast_external_attr() returns. The stub logic in heaptoast.c is not updated, so the layout reserves a different size than the detoasted value needs. The write overruns the result tuple or leaves invalid data in it, and users find out from corrupted rows on a subscriber.",
+      "argument": "The design needs the stub header to predict the size and compression tag that detoast_external_attr() will return. That is a second copy of detoast format knowledge, kept in a different file. The commit message already treats INDIRECT as a case the stub cannot predict, which shows the prediction is fragile. The prose does not mention a runtime check that compares the detoasted length with the reserved space before the copy.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3
+      ],
+      "author_must_show": "Does v2 check, in production builds, that each detoasted value's length equals the reserved stub size and raise an error before it writes, not after?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Pavel Borisov",
+          "date": "2026-09-21T16:26:19Z",
+          "url": "https://www.postgresql.org/message-id/CALT9ZEG8W0-xVCYQmxebYQ55fE-SJmKOTrBqgMbcVekhGNMaAw%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Pavel Borisov",
+          "date": "2026-10-15T15:12:29Z",
+          "url": "https://www.postgresql.org/message-id/CALT9ZEEiDGAjG65B%2B15-RcHf1g3DN2uqf3K0SbTE5QgLstnwVw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The commit message says the stub header must match what detoast_external_attr() returns, and it excludes INDIRECT because the stub cannot predict that case. The prose mentions no runtime length check before the write, so the question stands.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Every heap_form_tuple() call now goes through the new _attr path",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "heap_form_tuple() and heap_fill_tuple() run for nearly every tuple that executor nodes, COPY and catalog code build. After v2, each call goes through the _attr variants, which take extra skip_copy and attr_data arguments. If those are not fully compiled away, a bulk INSERT ... SELECT or COPY into a wide table gets slower for users who never flatten a toasted tuple.",
+      "argument": "Measurements in message #2 cover only toast_flatten_tuple() memory, not the CPU cost of the shared fill path. The new arguments exist for one caller, but the cost of the shared path falls on all callers. A committer would likely ask for a micro-benchmark of heap_form_tuple() on many-column tuples before and after.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        3
+      ],
+      "author_must_show": "What is the measured cost of heap_form_tuple() and heap_fill_tuple() on a wide, many-attribute tuple before and after v2, for example in a COPY benchmark?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Johannes Edmeier",
+          "date": "2026-10-15T13:43:21Z",
+          "url": "https://www.postgresql.org/message-id/CAHYEV2tW%2BogNGXC7tnVL17Q6J26S-2R7%2BvBCkFEsd_VTwUiWiA%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Pavel Borisov",
+          "date": "2026-10-15T15:12:29Z",
+          "url": "https://www.postgresql.org/message-id/CALT9ZEEiDGAjG65B%2B15-RcHf1g3DN2uqf3K0SbTE5QgLstnwVw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "In v2 heap_form_tuple() and heap_fill_tuple() become wrappers around the _attr variants, so every caller takes the new path. The thread has memory numbers only, and the author's cost claim covers the flatten path, not the shared fill path.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "The flattened old tuple for REPLICA IDENTITY FULL is written to WAL and decoded by logical replication."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "htup_details.h declares the new heap_form_tuple_attr() and the _attr variants of heap_fill_tuple() and fill_val()."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The patch reshapes fill_val() and heap_fill_tuple() in heaptuple.c, so later fixes there apply differently to older branches."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "The stub logic in heaptoast.c is a second copy of what detoast_external_attr() returns and must stay in step with it."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "heap_form_tuple() and heap_fill_tuple() become wrappers around the _attr variants, so every tuple-forming caller takes the new path."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "see objection demand-1: No field report shows this memory peak hurts anyone"
+    }
+  ],
+  "questions": [
+    "Does v2 check in production builds that each detoasted value's length equals the space reserved by its stub, and raise an error before it writes?",
+    "What does heap_form_tuple() cost on a wide, many-attribute tuple before and after v2, for example in a COPY benchmark?",
+    "Which production systems with REPLICA IDENTITY FULL hit memory limits during toast_flatten_tuple(), and how large were their old tuples?",
+    "What is the CPU cost of v2 when a tuple has many small external attributes, where the per-attribute stub work is not hidden by large toast fetches?",
+    "Is heap_form_tuple_attr() meant as an API for extensions, or as an internal helper for toast_flatten_tuple() only?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "It needs a committer who knows the heap tuple forming code in heaptuple.c and the TOAST code. The visible thread has the author and one reviewer, and no such committer has spoken.",
+    "liability": "The owner signs for the correctness of every tuple formed through the shared fill path and for the old tuples that REPLICA IDENTITY FULL writes to WAL. The stub logic must be kept in step with detoast_external_attr() for as long as both exist.",
+    "author_follow_up": "The author posted v2 on the same day as the review in message #2. The CFbot rebase request of 2026-11-11 has no reply yet."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "proceed",
+    "reason": "The gain needs two or more large external columns and mainly helps REPLICA IDENTITY FULL tables, but message #2 measured up to 28% lower backend peak RSS. The patch is about 19 KiB, adds no user-visible surface, and changes shared code in heaptuple.c, so it needs a rebase and the two design answers."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, nobody can confirm that the stub header always matches the detoasted value, or that a mismatch raises an error before the write. The compiled cost of the extra arguments in the shared fill path is also unknown.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:2981",
+      "kind": "cf",
+      "title": "partial heap only tuples",
+      "status": "Returned with feedback",
+      "date": "2021-11-04",
+      "first_date": "2021-02-09",
+      "url": "https://commitfest.postgresql.org/patch/2981/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2ECBBCA0-4D8D-4841-8872-4A5BBDC063D2@amazon.com"
+      ],
+      "authors": "Nathan Bossart (bossartn)",
+      "objectors": "",
+      "summary": "The patch adds partial heap only tuples (PHOT), so an update creates new index tuples only for indexes whose columns changed, and those index tuples point to the new heap tuple. Index scans follow a PHOT chain only while their own indexed columns stay unchanged, and pruning of PHOT chains is restricted.",
+      "objection": "The patch stopped applying to HEAD, and the entry was set to Waiting for Author in July 2021. No updated patch was posted, so the entry was returned with feedback in November 2021. The visible messages show design concerns, such as index create/drop handling and long-term heap fragmentation, but no objection that decided the outcome.",
+      "touch_points": [],
+      "matched_queries": [
+        "heap_form_tuple fill in place",
+        "heap_fill_tuple refactor"
+      ],
+      "from_hint": false,
+      "score": 0.267,
+      "enriched": true,
+      "key_quote": "As no update has been posted, the patch still doesn't apply.",
+      "quote_message_url": "https://www.postgresql.org/message-id/9417DBC8-0C3F-49FD-893D-1C833F8EA5F3%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:6221",
+      "kind": "cf",
+      "title": "Refactor how we form HeapTuples for CatalogTuple(Insert|Update)",
+      "status": "Withdrawn",
+      "date": "2026-01-30",
+      "first_date": "2025-11-14",
+      "url": "https://commitfest.postgresql.org/patch/6221/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2C5C8B8D-8B36-4547-88EB-BDCF9A7C8D94@greg.burd.me"
+      ],
+      "authors": "Greg Burd (gregburd)",
+      "objectors": "Andres Freund, Tom Lane",
+      "summary": "The patch adds macros in htup.h and a heap_update_tuple() function so that catalog code records the columns it changes in a Bitmapset and passes it to CatalogTupleUpdate(). simple_heap_update() then uses that set instead of calling HeapDetermineColumnsInfo() under the page lock, and the patch converts nearly all catalog update call sites.",
+      "objection": "Andres Freund asked whether avoiding some comparisons during catalog changes was worth this many changes. Tom Lane said a system-wide API change costs a lot of review work, breaks pending patches and extensions, and makes back-patching harder for years, so it would need very large performance gains. He also questioned the switch from bool arrays to a Bitmapset, which adds a palloc. The author agreed the gains would not be large and withdrew the patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "heap_form_tuple fill in place",
+        "heap_fill_tuple refactor"
+      ],
+      "from_hint": false,
+      "score": 0.258,
+      "enriched": true,
+      "key_quote": "With that in mind, you'd have to show *massive* performance improvements for it to have any chance of getting accepted. Frankly I doubt it can possibly clear that bar.",
+      "quote_message_url": "https://www.postgresql.org/message-id/1868696.1769799245%40sss.pgh.pa.us",
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:4440",
+      "kind": "cf",
+      "title": "Forcing new tuples of updates off the page",
+      "status": "Withdrawn",
+      "date": "2024-03-15",
+      "first_date": "2023-07-05",
+      "url": "https://commitfest.postgresql.org/patch/4440/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAA-aLv6sYZ5XnuYrytTjxZumBh3KrdyMRmasxHfgaKf-HJrNpw@mail.gmail.com"
+      ],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "Robert Haas, Andres Freund",
+      "summary": "The patch adds a table storage parameter, local_update_limit, that keeps an update from placing the new tuple on the old tuple's page when that page lies beyond a set size, so the tuple moves to an earlier page found through the FSM. Users could then shrink a bloated table through normal UPDATE traffic and vacuum truncation, without the exclusive locks of VACUUM FULL or CLUSTER.",
+      "objection": "Robert Haas and Andres Freund objected that users have no good way to pick a fixed page limit. A limit set too low or left in place as the table grows causes pointless non-HOT updates and index bloat. Andres Freund proposed basing the decision on relation size against free space known to the FSM, and Laurenz Albe agreed and set the entry to waiting for author. The author withdrew the patch because he lacked the time and expertise for that rewrite.",
+      "touch_points": [],
+      "matched_queries": [
+        "heap_form_tuple fill in place",
+        "heap_fill_tuple refactor"
+      ],
+      "from_hint": false,
+      "score": 0.227,
+      "enriched": true,
+      "key_quote": "If we can't, then I think we're asking the user to figure out a value that we don't have any idea how to compute ourselves.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoZ-QNvOB9BniBUK7gpB%3DjEG58-Z5nrwo3ctRCsMKa9erQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:4734",
+      "kind": "cf",
+      "title": "Tidy fill hstv array (src/backend/access/heap/pruneheap.c)",
+      "status": "Returned with feedback",
+      "date": "2024-03-04",
+      "first_date": "2023-12-28",
+      "url": "https://commitfest.postgresql.org/patch/4734/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEudQArhe-JXZU6O-XoiwzTS7x1xXd=0=yJh9yC1T3v6XxSYBw@mail.gmail.com"
+      ],
+      "authors": "Ranier Vilela (raniervilela)",
+      "objectors": "John Naylor, \"Andrey M(dot) Borodin\", Andres Freund",
+      "summary": "The patch changed heap_page_prune() to fill the whole presult->htsv array with -1 using memset() up front, so the per-item loop no longer sets -1 on each item. It also removed the comment explaining why the array is left uninitialized.",
+      "objection": "John Naylor said the change only moves the work to another place, removes a useful comment, and comes with no evidence that it is faster. Andrey M. Borodin returned the entry and asked for stronger evidence. He then offered to reopen it, but Andres Freund replied that memset() writes the whole array even when there are far fewer items, still needs the branch, and may be bound by memory bandwidth.",
+      "touch_points": [],
+      "matched_queries": [
+        "heap_form_tuple fill in place",
+        "heap_fill_tuple refactor"
+      ],
+      "from_hint": false,
+      "score": 0.177,
+      "enriched": true,
+      "key_quote": "I took a glance into the patch, and I would agree that setting field nonzero values with memset() is somewhat unusual. Please provide stronger evidence to do so.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2D923D65-5D29-475E-BF9C-990623BC4CF5%40yandex-team.ru",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:1486",
+      "kind": "cf",
+      "title": "Refuse setting toast.* reloptions when TOAST relation does not exist",
+      "status": "Returned with feedback",
+      "date": "2018-04-10",
+      "first_date": "2018-01-17",
+      "url": "https://commitfest.postgresql.org/patch/1486/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3413542.LWpeoxCNq5@x200m"
+      ],
+      "authors": "Nikolay Shaplov (nataraj)",
+      "objectors": "Robert Haas, Tom Lane",
+      "summary": "The patch makes setting or changing a toast.* reloption raise an error when the table has no TOAST relation. Today such a value is accepted and then lost, so pg_dump does not keep it and it has no effect if toastable columns are added later.",
+      "objection": "Robert Haas pointed out that the rules for whether a table gets a TOAST table can change between major releases, so a pg_dump and restore of a table with a toast.* option could fail after an upgrade. Tom Lane added that the choice can differ on different hardware and opposed a hard error, though a warning might be acceptable. The CF manager returned the patch because there was no consensus on whether it was useful or correct; alternatives such as creating the TOAST relation when a toast.* option is set were left for a new patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "toast_flatten_tuple memory",
+        "replica identity full toast memory"
+      ],
+      "from_hint": false,
+      "score": 0.163,
+      "enriched": true,
+      "key_quote": "If a table with that\ndefinition has a toast.* option set, then upgrading from release X to\nrelease X+1 via pg_dump and restore will fail.  That's bad.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoYTnV-2aVkAcpp7T5b%2Bq0w6s2saYiR-SD8maPxDVOyyAA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:157",
+      "kind": "cf",
+      "title": "GIN fillfactor",
+      "status": "Rejected",
+      "date": "2015-07-21",
+      "first_date": "2014-11-21",
+      "url": "https://commitfest.postgresql.org/patch/157/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB7nPqR36boo_qNnkGzq53vLwET5_E9bXJsusojGqN2TopXx9w@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun), Alexander Korotkov (smagen)",
+      "objectors": "Heikki Linnakangas",
+      "summary": "Add a fillfactor storage parameter to GIN indexes so that index build leaves free space on pages, and apply it to the page split ratio in dataPlaceToPageLeaf. The default was debated between 100, which matches the packed 9.4 indexes, and 90.",
+      "objection": "No benchmark showed that the option improves performance. Heikki Linnakangas tested random updates and found that GIN indexes do not bloat after build, because posting tree pages already keep some free space, so he concluded the option is not useful in practice. Alexander Korotkov showed one case with bloat but agreed it was probably not worth it without real use cases.",
+      "touch_points": [],
+      "matched_queries": [
+        "heap_form_tuple fill in place",
+        "heap_fill_tuple refactor"
+      ],
+      "from_hint": false,
+      "score": 0.161,
+      "enriched": true,
+      "key_quote": "Based on this, I think we should just drop this patch. It's not useful in\npractice.",
+      "quote_message_url": "https://www.postgresql.org/message-id/55AE1370.8090804%40iki.fi",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:2412",
+      "kind": "cf",
+      "title": "[doc] vacuum full, fillfactor, and \"extra space\"",
+      "status": "Returned with feedback",
+      "date": "2020-08-02",
+      "first_date": "2019-12-27",
+      "url": "https://commitfest.postgresql.org/patch/2412/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20191227023134.GC12890@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "Peter Eisentraut",
+      "summary": "The patch rewrites the VACUUM FULL text in the VACUUM reference page so that it no longer says the table is rewritten \"with no extra space\". It moves VACUUM FULL to its own paragraph and says the new file keeps free space as set by fillfactor.",
+      "objection": "Peter Eisentraut found the new text no clearer: it made VACUUM FULL sound as if its main purpose were to leave fillfactor room, and he preferred keeping \"no extra space\" with fillfactor in a parenthetical note. The author did not reply to his review or to later reminders, so the entry stayed Waiting on Author and was closed as Returned with Feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "heap_form_tuple fill in place",
+        "heap_fill_tuple refactor"
+      ],
+      "from_hint": false,
+      "score": 0.152,
+      "enriched": true,
+      "key_quote": "The fillfactor stuff\nis valid to be mentioned, but the way it's being proposed makes it sound\nlike the main purpose of VACUUM FULL is to bloat the table to make\nfillfactor room.",
+      "quote_message_url": "https://www.postgresql.org/message-id/313bd4cc-8ef4-1d75-7cac-c30635298aa0%402ndquadrant.com",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:13",
+      "kind": "cf",
+      "title": "Fillfactor for GIN indexes",
+      "status": "Rejected",
+      "date": "2015-01-16",
+      "first_date": "2014-11-21",
+      "url": "https://commitfest.postgresql.org/patch/13/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB7nPqR36boo_qNnkGzq53vLwET5_E9bXJsusojGqN2TopXx9w@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Robert Haas",
+      "summary": "Add fillfactor as a storage parameter for GIN indexes, controlling how full pages are packed at index build time and, in later versions, the split ratio of posting-tree pages. Revised versions applied fillfactor only to posting trees and debated whether the default should be 100 (matching 9.4 index sizes) or 90 (matching btree).",
+      "objection": "No test results or benchmarks were provided showing that a fillfactor parameter improves GIN index performance, although an earlier reviewer had asked for them and got no reply. Robert Haas objected on that basis. The author agreed that no such benchmark existed and that he had no time to work on it soon, and asked for the patch to be rejected.",
+      "touch_points": [],
+      "matched_queries": [
+        "heap_form_tuple fill in place",
+        "heap_fill_tuple refactor"
+      ],
+      "from_hint": false,
+      "score": 0.148,
+      "enriched": true,
+      "key_quote": "There's only value in adding a fillfactor parameter to GIN indexes if\nit improves performance.  There are no benchmarks showing it does.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoY-oUWTR8XQHULag9oV_6tKLmii_5K%3DA%2Bftjrq51YMxCw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:5068",
+      "kind": "cf",
+      "title": "Allow logical decoding to output generated columns",
+      "status": "Returned with feedback",
+      "date": "2024-12-10",
+      "first_date": "2023-08-01",
+      "url": "https://commitfest.postgresql.org/patch/5068/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/B80D17B2-2C8E-4C7D-87F2-E5B4BE3C069E@gmail.com"
+      ],
+      "authors": "Peter Smith (smithpb2250), Shubham Khanna (skhanna), Shlok Kyal (shlokkyal)",
+      "objectors": "",
+      "summary": "Allow logical decoding to output generated columns\nThreads: Pgoutput not capturing the generated columns",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical decoding old tuple toasted columns"
+      ],
+      "from_hint": false,
+      "score": 0.144,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:3978",
+      "kind": "cf",
+      "title": "Prefetch the next tuple's memory during seqscans",
+      "status": "Withdrawn",
+      "date": "2024-01-22",
+      "first_date": "2022-10-31",
+      "url": "https://commitfest.postgresql.org/patch/3978/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAApHDvpTRx7hqFZGiZJ=d9JN4h1tzJ2=xt7bM-9XRmpVj63psQ@mail.gmail.com"
+      ],
+      "authors": "David Rowley (davidrowley), Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Prefetch the next tuple's memory during seqscans\nThreads: Prefetch the next tuple's memory during seqscans",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "toast_flatten_tuple memory"
+      ],
+      "from_hint": false,
+      "score": 0.141,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:3926",
+      "kind": "cf",
+      "title": "Use indexes on the subscriber when REPLICA IDENTITY is full on the publisher",
+      "status": "Returned with feedback",
+      "date": "2022-10-20",
+      "first_date": "2022-10-03",
+      "url": "https://commitfest.postgresql.org/patch/3926/",
+      "thread_urls": [],
+      "authors": "Onder Kalaci (onderkalaci)",
+      "objectors": "",
+      "summary": "Use indexes on the subscriber when REPLICA IDENTITY is full on the publisher",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "replica identity full toast memory"
+      ],
+      "from_hint": false,
+      "score": 0.137,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:4324",
+      "kind": "cf",
+      "title": "XLog size reductions: smaller XLogRecordBlockHeader",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-05-18",
+      "url": "https://commitfest.postgresql.org/patch/4324/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2WjuJqVeB6EUZ1z75_ittk54H6Lk7WtwRskEeGtZubr4bQ@mail.gmail.com"
+      ],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "",
+      "summary": "XLog size reductions: smaller XLogRecordBlockHeader\nThreads: XLog size reductions: smaller XLRec block header for PG17",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "detoast peak memory reduction"
+      ],
+      "from_hint": false,
+      "score": 0.13,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:efcbb76efe406d59c2ba8b4a09e04c01158ba575",
+      "kind": "revert",
+      "title": "Revert \"Test that vacuum removes tuples older than OldestXmin\"",
+      "status": "Reverted",
+      "date": "2024-07-22",
+      "first_date": "2024-07-19",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=efcbb76efe406d59c2ba8b4a09e04c01158ba575",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/614152.1721580711@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CAAKRu_apNU2MPBK96V+bXjTq0RiZ-=A4ZTaysakpx9jxbq1dbQ@mail.gmail.com"
+      ],
+      "authors": "Melanie Plageman",
+      "objectors": "",
+      "summary": "Revert \"Test that vacuum removes tuples older than OldestXmin\"\nReverted commit(s): Test that vacuum removes tuples older than OldestXmin",
+      "objection": "This reverts commit aa607980aee08416211f003ab41aa750f5559712.\n\nThis test proved to be unstable on the buildfarm, timing out before the\nstandby could catch up on 32-bit machines where more rows were required\nand failing to reliably trigger multiple index vacuum rounds on 64-bit\nmachines where fewer rows should be required.\n\nBecause the instability is only known to be present on versions of\nPostgres with TIDStore used for dead TID storage by vacuum, this is only\nbeing reverted on master and REL_17_STABLE.\n\nAs having this coverage may be valuable, there is a discussion on the\nthread of possible ways to stabilize the test. If that happens, a fixed\ntest can be committed again.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical decoding old tuple toasted columns"
+      ],
+      "from_hint": false,
+      "score": 0.13,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3673",
+      "kind": "cf",
+      "title": "Reducing Memory Consumption (aset and generation)",
+      "status": "Rejected",
+      "date": "2022-07-12",
+      "first_date": "2022-06-05",
+      "url": "https://commitfest.postgresql.org/patch/3673/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEudQApQk5OHj3ik6H2cq1Td_cX6-j3DCWLq7VTebXaaNtC9LQ@mail.gmail.com"
+      ],
+      "authors": "Ranier Vilela (raniervilela)",
+      "objectors": "",
+      "summary": "Reducing Memory Consumption (aset and generation)\nThreads: Reducing Memory Consumption (aset and generation)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "reduce memory detoasting large values"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:775",
+      "kind": "cf",
+      "title": "Write Amplification Reduction Method (WARM)",
+      "status": "Returned with feedback",
+      "date": "2017-10-02",
+      "first_date": "2016-08-31",
+      "url": "https://commitfest.postgresql.org/patch/775/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABOikdMNy6yowA+wTGK9RVd8iw+CzqHeQSGpW7Yka_4RSZ_LOQ@mail.gmail.com"
+      ],
+      "authors": "Pavan Deolasee (pavan)",
+      "objectors": "",
+      "summary": "Write Amplification Reduction Method (WARM)\nThreads: Patch: Write Amplification Reduction Method (WARM)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "detoast peak memory reduction"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:4386",
+      "kind": "cf",
+      "title": "XLog size reductions: Reduced XLog record header size",
+      "status": "Returned with feedback",
+      "date": "2024-04-09",
+      "first_date": "2023-06-20",
+      "url": "https://commitfest.postgresql.org/patch/4386/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2WgcW5SkPO_TGTqirRcCS_FN0xEZqUsXDE6pPz2TYzXQBA@mail.gmail.com"
+      ],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "",
+      "summary": "XLog size reductions: Reduced XLog record header size\nThreads: XLog size reductions: Reduced XLog record header size for PG17",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "detoast peak memory reduction"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:2428",
+      "kind": "cf",
+      "title": "explain to report bucket and memory stats for TupleHashTable nodes",
+      "status": "Returned with feedback",
+      "date": "2020-07-23",
+      "first_date": "2020-01-03",
+      "url": "https://commitfest.postgresql.org/patch/2428/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200103161925.GM12066@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "",
+      "summary": "explain to report bucket and memory stats for TupleHashTable nodes\nThreads: explain HashAggregate to report bucket and memory stats",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "toast_flatten_tuple memory"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:2044",
+      "kind": "cf",
+      "title": "propagating replica identity to partitions",
+      "status": "Returned with feedback",
+      "date": "2019-09-11",
+      "first_date": "2019-02-04",
+      "url": "https://commitfest.postgresql.org/patch/2044/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/201902041630.gpadougzab7v@alvherre.pgsql"
+      ],
+      "authors": "Álvaro Herrera (alvherre)",
+      "objectors": "",
+      "summary": "propagating replica identity to partitions\nThreads: propagating replica identity to partitions",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "replica identity full toast memory"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:6723",
+      "kind": "cf",
+      "title": "Make transformAExprIn() return a flattened bool expression directly",
+      "status": "Withdrawn",
+      "date": "2026-07-11",
+      "first_date": "2026-04-24",
+      "url": "https://commitfest.postgresql.org/patch/6723/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/tencent_2A6E0E34ED9E42AF0A1D6A6553B465DAF109@qq.com"
+      ],
+      "authors": "ChangAo Chen (chenchangao)",
+      "objectors": "",
+      "summary": "Make transformAExprIn() return a flattened bool expression directly\nThreads: Make transformAExprIn() return a flattened bool expression directly",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "toast_flatten_tuple memory"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:286",
+      "kind": "cf",
+      "title": "drop/truncate table sucks for large values of shared buffers",
+      "status": "Returned with feedback",
+      "date": "2015-07-02",
+      "first_date": "2015-06-27",
+      "url": "https://commitfest.postgresql.org/patch/286/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAA4eK1JPLGjpMeJ5YLNE7bpNBhP2EQe_rDR+Aw3atNfj9WkAGg@mail.gmail.com"
+      ],
+      "authors": "Amit Kapila (amitkapila)",
+      "objectors": "",
+      "summary": "drop/truncate table sucks for large values of shared buffers\nThreads: drop/truncate table sucks for large values of shared buffers",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "reduce memory detoasting large values"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:4200",
+      "kind": "cf",
+      "title": "pg_upgrade data type check connection overhead reduction",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2023-02-17",
+      "url": "https://commitfest.postgresql.org/patch/4200/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/BBB4C76F-D416-4F9F-949E-DBE950D37787@yesql.se"
+      ],
+      "authors": "Daniel Gustafsson (d_gustafsson)",
+      "objectors": "",
+      "summary": "pg_upgrade data type check connection overhead reduction\nThreads: Reducing connection overhead in pg_upgrade compat check phase",
+      "objection": "",
+      "touch_points": [
+        "on-disk format / pg_upgrade"
+      ],
+      "matched_queries": [
+        "detoast peak memory reduction"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:2330",
+      "kind": "cf",
+      "title": "Reducing memory usage of creating foreign key between partitioned tables",
+      "status": "Rejected",
+      "date": "2020-09-12",
+      "first_date": "2019-10-23",
+      "url": "https://commitfest.postgresql.org/patch/2330/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/OSAPR01MB374809E8DE169C8BF2B82CBD9F6B0@OSAPR01MB3748.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "sho kato (kato-sho)",
+      "objectors": "",
+      "summary": "Reducing memory usage of creating foreign key between partitioned tables\nThreads: Creating foreign key on partitioned table is too slow",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "reduce memory detoasting large values"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:6682",
+      "kind": "cf",
+      "title": "Fix TOCTOU race in ReplicationSlotsComputeRequiredLSN()",
+      "status": "Withdrawn",
+      "date": "2026-04-17",
+      "first_date": "2026-04-17",
+      "url": "https://commitfest.postgresql.org/patch/6682/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CACSdjfMQYL3DV-3inrxdReqpFMOky4JxLbN0gTTY+qGJqrUJXw@mail.gmail.com"
+      ],
+      "authors": "JoongHyuk Shin (shin)",
+      "objectors": "",
+      "summary": "Fix TOCTOU race in ReplicationSlotsComputeRequiredLSN()\nThreads: [PATCH] Fix TOCTOU race in ReplicationSlotsComputeRequiredLSN()",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "replica identity full toast memory"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:700",
+      "kind": "cf",
+      "title": "Refactoring of heapam code",
+      "status": "Returned with feedback",
+      "date": "2016-09-26",
+      "first_date": "2016-08-05",
+      "url": "https://commitfest.postgresql.org/patch/700/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/d7e41e76-e565-8bc0-4e97-bd3d127a7507@postgrespro.ru"
+      ],
+      "authors": "Anastasia Lubennikova (lubennikovaav)",
+      "objectors": "",
+      "summary": "Refactoring of heapam code\nThreads: Refactoring of heapam code.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "heap_fill_tuple refactor"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 8,
+    "new_calls": 0,
+    "failed": 0,
+    "quotes_verified": 0,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2026-09-21",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "The only listed precedent, [P2], changed how catalog code forms tuples for updates and converted nearly all call sites. Its recorded objection is the cost of a system-wide API change. This proposal adds heap_form_tuple_attr() and keeps heap_form_tuple() as a wrapper, so existing callers and extensions stay unchanged. No precedent found, and the thread points to no earlier discussion of the same idea."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 0,
+      "note": "The patch changes no SQL syntax, GUC, catalog, dump output, psql behaviour or wire format, and heap_form_tuple() keeps its signature as a wrapper, so existing callers and extensions compile unchanged. The claimed byte-identical result tuple means nothing changes on disk or on the replication stream. [P2] does not fit because it rejected a system-wide API change, which this patch does not make. Whether heap_form_tuple_attr() should be exported to extensions is an internal API question for another angle."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The patch changes only in-backend memory use during toast_flatten_tuple(), with no change to on-disk format, WAL record types, catalogs or protocol, and the author claims the result is byte-identical. The one persistent path is the REPLICA IDENTITY FULL old tuple written to WAL. A wrong stub length would corrupt that WAL data, but toast values are immutable and the commit message explains the compressed and INDIRECT cases, so I have no concrete failure scenario. heap_form_tuple() keeps its signature, so the new heap_form_tuple_attr() adds API without breaking extensions. Without the code I could not check one point: whether the per-attribute detoast length is checked against the stub size at runtime, not only by assertion."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal changes only how a backend allocates memory while flattening a tuple. It adds no privilege, no new exposure and no user-controlled input path, and toast pointers come from stored data, not from users. One point could not be checked without the code: whether the patch errors out cleanly when the fetched value's length differs from the stub size, for example with corrupted toast data. That is a safety question for the design and implementation reviewers, not a privilege issue."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "Two fixable design concerns only. The idea fits core, an independent reviewer measured the memory gain, and the API change adds functions without changing existing callers."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing feature, setting or extension gives this result. The patch lowers peak memory inside toast_flatten_tuple(), which only core code can change. REPLICA IDENTITY USING INDEX avoids flattening the old tuple, but only for tables with a suitable unique index, and FULL exists for the tables that lack one. heap_form_tuple_attr() extends the existing heap_form_tuple() path as a wrapper and does not add a second way to form tuples. [P2] concerns a catalog-wide API change and does not apply here."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "One objection. The problem is stated and the reviewer measured the gain, but neither shows users who need it."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 3,
+      "new_survived": 3,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "synthesis said NEEDS-COMMITTER-EYES but listed a level 1b objection (demand-1); changed to NEEDS-DESIGN-DISCUSSION"
+  ],
+  "tone_lint": {
+    "fields_checked": 59,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 12,
+    "wall_ms": 105602,
+    "cost_usd": 1.0386162,
+    "dry_run": false
+  }
+}

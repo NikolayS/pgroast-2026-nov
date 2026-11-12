@@ -1,0 +1,998 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:43:03.206Z",
+  "input": {
+    "arg": "7348",
+    "cf": {
+      "id": 7348,
+      "url": "https://commitfest.postgresql.org/patch/7348/",
+      "title": "Table sync race with REFRESH PUBLICATION",
+      "status": "Needs review",
+      "authors": "Ayush Tiwari (aytiwari)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAJTYsWWJfq%3DM5U9h7sJFcQ%2BLPwq76CzLTzQbkRQPTJJ47SGxWw%40mail.gmail.com",
+    "subject": "[PATCH] Table sync race with REFRESH PUBLICATION",
+    "thread_start": "2026-09-25T19:13:42Z",
+    "messages_read": 6,
+    "messages_total": 6,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v3-0001-Recheck-table-sync-state-after-refresh.patch",
+      "v3-0002-Test-table-sync-after-a-concurrent-refresh.patch",
+      "0002-Test-table-sync-after-a-concurrent-refresh.patch",
+      "0001-Recheck-table-sync-state-after-refresh.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NO-FUNDAMENTAL-OBJECTION",
+  "confidence": "medium",
+  "verdict_reasoning": "No objection survived at levels 1a, 1b or 2. The problem is stated with a reproduction, and the fix re-reads one pg_subscription_rel state under a lock the apply worker already takes, following the sequence-side fix in dca73f7dd03. Confidence is medium because no code was read and only one reviewer has confirmed that the state check is enough without the LSN check.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Recheck table sync state under lock after concurrent REFRESH PUBLICATION",
+    "problem": "An apply worker caches a table's SYNCDONE state, then waits for the subscription lock while ALTER SUBSCRIPTION ... REFRESH PUBLICATION removes the table. The worker then tries to mark the missing pg_subscription_rel row READY and errors out, and with disable_on_error the whole subscription is disabled. If two refreshes remove and re-add the table, the old state could skip the new initial copy.",
+    "proposed_design": "After taking the subscription lock in ProcessSyncingTablesForApply(), the apply worker reads the table's sync state again. It skips origin cleanup and the READY update unless the state is still SYNCDONE, and logs a DEBUG1 message when it skips. v1 also rechecked the sync LSN, but v2 dropped that check after review.",
+    "user_visible_surface": [
+      "New DEBUG1 log message when the apply worker skips the READY transition for a removed or re-added table.",
+      "Test patch adds an injection point in tablesync.c before the apply worker locks the subscription."
+    ],
+    "author_claims": [
+      "The race disables the whole subscription when disable_on_error = true, including unrelated tables.",
+      "An existence-only check is not enough, because a removed and re-added table would skip its new initial copy.",
+      "An LLM-assisted review reproduced the missing-row error, and the author tested the remove/re-add case by hand.",
+      "There is no field report of the issue that the author knows of.",
+      "The table-side issue predates the sequence-side fix in dca73f7dd03."
+    ],
+    "thread_state": "Peter Smith reviewed v1, the author applied his comments in v2, and Peter Smith called 0001 good but asked for more reviewers. The author posted v3 with simpler tests and said the test patch is not meant to be committed.",
+    "unclear": [
+      "The thread does not say which branches are affected or which ones the fix targets for back-patching.",
+      "The thread does not show the re-add case being tested in an automated way, and v3 leaves it out of the TAP test.",
+      "Only one reviewer has confirmed that the state check alone is safe without the LSN check.",
+      "The thread does not say whether the v3 test adds a new injection point that would ship in tablesync.c."
+    ],
+    "search_queries": [
+      "tablesync race refresh publication",
+      "apply worker SYNCDONE READY",
+      "pg_subscription_rel row missing",
+      "alter subscription refresh concurrent",
+      "disable_on_error subscription disabled",
+      "logical replication table sync state recheck",
+      "subscription lock tablesync race"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P3",
+      "source_id": "cf:3842",
+      "title": "Fix alter subscription concurrency errors",
+      "kind": "cf",
+      "status": "Withdrawn",
+      "url": "https://commitfest.postgresql.org/patch/3842/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/HE1PR8303MB0075BF78AF1BE904050DA16BF7729@HE1PR8303MB0075.EURPRD83.prod.outlook.com"
+      ],
+      "date": "2023-03-28",
+      "first_date": "2022-08-25",
+      "who_objected": "Amit Kapila, Alvaro Herrera, Tom Lane",
+      "quote": "I think the patch as-submitted is pretty uninteresting, mainly because the design of adding bespoke lock code for subscription objects doesn't scale.",
+      "quote_url": "https://www.postgresql.org/message-id/956468.1679335244%40sss.pgh.pa.us",
+      "enriched": true,
+      "reason": "Reviewers objected that adding lock-and-retry lookup code specific to subscriptions does not scale, since the same problem affects other object types. Alvaro Herrera suggested using get_object_address() instead, and Tom Lane added that this might first require improving its error reporting. The author did not post an updated version for several commitfests. He then said his own test-flakiness problem had been worked around and that he was not motivated to address the issue for all DDL commands, and the entry was withdrawn.",
+      "relation": "related_only",
+      "what_is_different": "P3 added new lock-and-retry lookup code for subscription DDL, modeled on dbcommands.c. This proposal adds no lock code: it re-reads one pg_subscription_rel state under the existing lock in the apply worker, following the sequence-side fix in dca73f7dd03."
+    }
+  ],
+  "objections": [],
+  "other_surviving": [],
+  "refuted": [],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "The fix changes how the logical replication apply worker moves a table from SYNCDONE to READY in tablesync.c."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "The apply worker re-reads the pg_subscription_rel state under the subscription lock; the catalog schema does not change."
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The CommitFest entry targets stable branches, but the thread does not name the affected branches."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "v3-0002 adds an injection point in tablesync.c that would ship if the test patch were committed."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Which branches have the race, and which branches does the fix target for back-patching?",
+    "When the apply worker skips origin cleanup, does ALTER SUBSCRIPTION ... REFRESH PUBLICATION still drop the tablesync origin and slot for the removed table?",
+    "Can a re-added table reach SYNCDONE again while the apply worker still waits for the subscription lock, which would make the state check alone insufficient?",
+    "Should the remove and re-add case have an automated test, given that it protects against a skipped initial copy?",
+    "If the test patch is not committed, what keeps this recheck from being removed by a later change to ProcessSyncingTablesForApply()?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "Someone who knows the logical replication tablesync and apply worker code. The visible thread shows one reviewer, Peter Smith, who asked for more reviewers.",
+    "liability": "The owner signs for the SYNCDONE to READY step on every branch that gets the fix, including that a skipped READY update never leaves a table without its initial copy or an orphaned origin.",
+    "author_follow_up": "The author posted v2 the same day as the review and then v3 with simpler tests, and offered to send more tests on request."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "low",
+    "review_cost": "low",
+    "recommended_action": "proceed",
+    "reason": "The race needs a REFRESH PUBLICATION at a narrow moment and has no field report, but with disable_on_error it disables the whole subscription. The fix is about 2.4 KB in one file and follows an existing pattern, so a second review by someone who knows tablesync.c is cheap."
+  },
+  "self_advice": [],
+  "provisional_note": "No code was read. Two points depend on it: whether the state check alone covers the remove and re-add case, and whether the refresh drops the origin and slot that the apply worker now skips.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:4077",
+      "kind": "cf",
+      "title": "Apply worker fails if a relation is missing on subscriber even if refresh publication has not been refreshed yet",
+      "status": "Withdrawn",
+      "date": "2022-12-27",
+      "first_date": "2022-12-22",
+      "url": "https://commitfest.postgresql.org/patch/4077/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGPVpCQtF8LTM8svXdqMcMw8EmX4cNH=tGjwBW6ukJo2PEQcng@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "Amit Kapila",
+      "summary": "The patch would let the logical replication apply worker skip changes for tables that were added to a publication but are not yet in pg_subscription_rel on the subscriber, because ALTER SUBSCRIPTION ... REFRESH PUBLICATION has not been run. It would log a warning instead of failing repeatedly when such a table is missing on the subscriber.",
+      "objection": "Amit Kapila questioned whether the current ERROR behavior should be changed when no specific use case had been given. He noted that users can avoid the failure loop with the disable_on_error subscription parameter, and that silently skipping changes could surprise users whose subscriber-side setup is incomplete. The author said he had no specific use case, and the entry was withdrawn.",
+      "touch_points": [],
+      "matched_queries": [
+        "tablesync race refresh publication",
+        "apply worker SYNCDONE READY",
+        "pg_subscription_rel row missing",
+        "alter subscription refresh concurrent"
+      ],
+      "from_hint": false,
+      "score": 0.475,
+      "enriched": true,
+      "key_quote": "I see your point but not sure if it is worth changing the\ncurrent behavior without any specific use case which we want to\naddress with this change.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAA4eK1KSEL%2Bb81L47MpdVCY79n0QgboxF6XTEjSc0ZcLkDzyWQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "revert:dde9a87d4d02a67a5bd459045f03a6f467a00a80",
+      "kind": "revert",
+      "title": "Revert \"Reject concurrent sequence refreshes\".",
+      "status": "Reverted",
+      "date": "2026-07-18",
+      "first_date": "2026-07-15",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=dde9a87d4d02a67a5bd459045f03a6f467a00a80",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3614163.1784163070@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20260710045217.f0.noahmisch@microsoft.com"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Revert \"Reject concurrent sequence refreshes\".\nReverted commit(s): Reject concurrent sequence refreshes.",
+      "objection": "This reverts commit f38afa4abb04e85530c94b88daf11c089375daca.\n\nThat commit fixed a race that could leave stale sequence values on the\nsubscriber after 'ALTER SUBSCRIPTION ... REFRESH SEQUENCES'. It did so by\nraising an ERROR during 'ALTER SUBSCRIPTION ... REFRESH SEQUENCES'\nwhenever a sequence synchronization worker was already running for the\nsubscription.\n\nThat approach caused intermittent buildfarm failures, because the existing\ntests did not ensure the sequencesync worker had stopped before executing\n'ALTER SUBSCRIPTION ... REFRESH SEQUENCES'. While discussing how to fix\nthe tests, we concluded that blocking the command while a sequencesync\nworker is running is inconvenient for users. So we will fix the original\nrace differently in a follow-up commit.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "tablesync race refresh publication",
+        "alter subscription refresh concurrent"
+      ],
+      "from_hint": false,
+      "score": 0.285,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:3842",
+      "kind": "cf",
+      "title": "Fix alter subscription concurrency errors",
+      "status": "Withdrawn",
+      "date": "2023-03-28",
+      "first_date": "2022-08-25",
+      "url": "https://commitfest.postgresql.org/patch/3842/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/HE1PR8303MB0075BF78AF1BE904050DA16BF7729@HE1PR8303MB0075.EURPRD83.prod.outlook.com"
+      ],
+      "authors": "Jelte Fennema-Nio (jeltef)",
+      "objectors": "Amit Kapila, Alvaro Herrera, Tom Lane",
+      "summary": "The patch fixed \"tuple concurrently updated\" errors from concurrent ALTER/DROP SUBSCRIPTION statements on the same subscription by re-fetching the subscription tuple after acquiring its lock, using a retry loop modeled on dbcommands.c. A later version also allowed ALTER SUBSCRIPTION ... OWNER TO to run concurrently with the other subscription commands.",
+      "objection": "Reviewers objected that adding lock-and-retry lookup code specific to subscriptions does not scale, since the same problem affects other object types. Alvaro Herrera suggested using get_object_address() instead, and Tom Lane added that this might first require improving its error reporting. The author did not post an updated version for several commitfests. He then said his own test-flakiness problem had been worked around and that he was not motivated to address the issue for all DDL commands, and the entry was withdrawn.",
+      "touch_points": [],
+      "matched_queries": [
+        "alter subscription refresh concurrent",
+        "disable_on_error subscription disabled"
+      ],
+      "from_hint": false,
+      "score": 0.264,
+      "enriched": true,
+      "key_quote": "I think the patch as-submitted is pretty uninteresting, mainly because the\ndesign of adding bespoke lock code for subscription objects doesn't scale.",
+      "quote_message_url": "https://www.postgresql.org/message-id/956468.1679335244%40sss.pgh.pa.us",
+      "relevant": true
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:3062",
+      "kind": "cf",
+      "title": "tablesync early exit",
+      "status": "Withdrawn",
+      "date": "2022-04-05",
+      "first_date": "2021-03-07",
+      "url": "https://commitfest.postgresql.org/patch/3062/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHut+Pt39PbQs0SxT9RMM89aYiZoQ0Kw46YZSkKZwK8z5HOr3g@mail.gmail.com"
+      ],
+      "authors": "Peter Smith (smithpb2250)",
+      "objectors": "Amit Kapila",
+      "summary": "The patch makes a tablesync worker call process_syncing_tables() before it enters the apply main loop, so a worker with nothing left to do exits early. The author presented it as a small optimization and as a cleaner split of work between tablesync and apply workers.",
+      "objection": "Amit Kapila objected that exiting before the tablesync worker receives any message skips changes up to the LSN where the copy finished. That is safe with the current code but would lose changes for the table in a design where the apply worker applies streamed in-progress transactions, which had already been proposed on -hackers. The saving was only the work to receive messages for one transaction, so the author withdrew the patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "tablesync race refresh publication",
+        "subscription lock tablesync race"
+      ],
+      "from_hint": false,
+      "score": 0.235,
+      "enriched": true,
+      "key_quote": "As per my understanding, this is safe as per the current code but it\ncan't be guaranteed for future implementations and the amount of extra\nwork is additional work to receive the messages for one transaction.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAA4eK1Kp3m-3U2F_LFfTG18TMPTekRNy_J08YZ5GV%2B55nvvuyw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:3354",
+      "kind": "cf",
+      "title": "add subscription TAP test option \"vcregress subscriptioncheck\" for MSVC builds",
+      "status": "Returned with feedback",
+      "date": "2022-02-07",
+      "first_date": "2021-10-05",
+      "url": "https://commitfest.postgresql.org/patch/3354/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACW1g-6U9SC5a=Q7niE9CE_uZOaUEMoh19T2ND_h6qT-yw@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "Andrew Dunstan",
+      "summary": "Add a \"subscriptioncheck\" option to vcregress.pl so that MSVC builds can run the subscription TAP tests with one command, like \"recoverycheck\". Later the thread moved to a documentation patch that describes \"vcregress taptest\" for Windows.",
+      "objection": "Andrew Dunstan objected to adding more special targets to vcregress.pl, because the generic taptest option already runs any TAP test set with \"vcregress taptest src/test/subscription\". The author agreed and switched to a documentation patch. Juan José Santamaría Flecha reviewed that patch and asked for a typo fix and new wording, and the visible messages show no revised version.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_subscription_rel row missing",
+        "disable_on_error subscription disabled"
+      ],
+      "from_hint": false,
+      "score": 0.202,
+      "enriched": true,
+      "key_quote": "I would actually prefer to reduce the number of special things in\nvcregress.pl rather than add more.",
+      "quote_message_url": "https://www.postgresql.org/message-id/08b92a12-624a-fdb1-082e-ee7115f4820e%40dunslane.net",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:3243",
+      "kind": "cf",
+      "title": "Add statistics refresh materialized view",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-07-08",
+      "url": "https://commitfest.postgresql.org/patch/3243/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6fe02a8ab3b2b0801933b9cabfab62cf@oss.nttdata.com"
+      ],
+      "authors": "Yuki Seino (seinoyu)",
+      "objectors": "Fujii Masao",
+      "summary": "Add per-view statistics for REFRESH MATERIALIZED VIEW (execution count and last refresh time) to the statistics collector, exposed as new columns in pg_stat_all_tables and its user/sys variants. The aim was to record when and how often each materialized view was refreshed without relying on pg_stat_statements.",
+      "objection": "Fujii Masao objected that adding columns to pg_stat_all_tables for one utility command is a poor design: it singles out REFRESH MATERIALIZED VIEW over commands such as TRUNCATE or CLUSTER, would lead to many per-command columns, and the columns would be useless for most entries, which are tables. He also suggested that pg_stat_statements and log_statement could already provide the information per view. The author agreed that these tools may be sufficient for most use cases and withdrew the proposal, and the entry was marked Returned with Feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "tablesync race refresh publication",
+        "alter subscription refresh concurrent"
+      ],
+      "from_hint": false,
+      "score": 0.192,
+      "enriched": true,
+      "key_quote": "It's not good design to add new columns per utility command into\npg_stat_all_tables. Otherwise pg_stat_all_tables will have to have lots of\ncolumns to expose the stats of many utility commands at last.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2262038c-7465-e588-5bcf-1df66d5eef45%40oss.nttdata.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:2928",
+      "kind": "cf",
+      "title": "EXPLAIN/EXPLAIN ANALYZE REFRESH MATERIALIZED VIEW",
+      "status": "Rejected",
+      "date": "2021-07-10",
+      "first_date": "2020-12-22",
+      "url": "https://commitfest.postgresql.org/patch/2928/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACU71s91G1EOzo-Xx7Z4mvF0dKq-mYeP5u4nikJWxPNRSA@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "Tom Lane, John Naylor",
+      "summary": "Allow EXPLAIN and EXPLAIN ANALYZE on REFRESH MATERIALIZED VIEW, showing the plan of the view's defining SELECT (plain EXPLAIN without refreshing, EXPLAIN ANALYZE performing the refresh), analogous to existing EXPLAIN support for CREATE TABLE AS / CREATE MATERIALIZED VIEW. A companion patch refactored ExecRefreshMatView into smaller functions.",
+      "objection": "Tom Lane objected that supporting EXPLAIN would bind REFRESH MATERIALIZED VIEW to having an explainable SQL plan, constraining future implementations such as incremental view maintenance, while offering little beyond explaining the view's query directly; the author agreed to withdraw the feature. The leftover refactoring patch was also not taken, because John Naylor judged it would conflict with the refactoring in the pending incremental view maintenance patch without helping it.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "tablesync race refresh publication",
+        "alter subscription refresh concurrent"
+      ],
+      "from_hint": false,
+      "score": 0.178,
+      "enriched": true,
+      "key_quote": "The problem with it is that it\nbinds us to the assumption that REFRESH MATERIALIZED VIEW has an\nexplainable plan.",
+      "quote_message_url": "https://www.postgresql.org/message-id/3058977.1615837538%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:1248",
+      "kind": "cf",
+      "title": "Subscription code improvements",
+      "status": "Returned with feedback",
+      "date": "2018-04-07",
+      "first_date": "2017-07-07",
+      "url": "https://commitfest.postgresql.org/patch/1248/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/4c6e7ab3-091e-6336-df38-28937b153e64@2ndquadrant.com"
+      ],
+      "authors": "Petr Jelínek (pjmodos), Masahiko Sawada (masahikosawada)",
+      "objectors": "Peter Eisentraut",
+      "summary": "Petr Jelinek posted a set of logical replication subscription patches: cleaner worker exit messages, a split of SetSubscriptionRelState into separate add and update functions, transactional stopping of workers in ALTER/DROP SUBSCRIPTION, syscache access to pg_subscription without a database connection, and finer-grained subscription locking. Masahiko Sawada later took over the remaining patches for the PG11 cycle.",
+      "objection": "Part of the set was committed: the transactional worker stop in August 2017, and the message and SetSubscriptionRelState patches in April 2018. The remaining patches, the syscache change and the finer-grained locking, were not committed. Peter Eisentraut found that the locking patch no longer applied and that the syscache patch was of little use without it, and he did not want to review that much code so late. Earlier he had asked what the patches fixed, and the entry had waited on the author since the November commitfest.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_subscription_rel row missing",
+        "disable_on_error subscription disabled"
+      ],
+      "from_hint": false,
+      "score": 0.17,
+      "enriched": true,
+      "key_quote": "0004 doesn't apply anymore, 0003 doesn't seem to be very useful without 0004, as I understand it.",
+      "quote_message_url": "https://www.postgresql.org/message-id/48a987d6-f456-aa67-08f8-185e44c12790%402ndquadrant.com",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:1605",
+      "kind": "cf",
+      "title": "Allow granting of permission to REFRESH MATERIALIZED VIEW, CLUSTER, and REINDEX",
+      "status": "Returned with feedback",
+      "date": "2018-11-30",
+      "first_date": "2018-03-18",
+      "url": "https://commitfest.postgresql.org/patch/1605/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMsGm5d3wKaM2ZHV-ZdE_xBsMGOcFqY-BiyJretS0Pc582tr=Q@mail.gmail.com"
+      ],
+      "authors": "Isaac Morland (ijmorlan)",
+      "objectors": "Tom Lane",
+      "summary": "Make REFRESH MATERIALIZED VIEW, CLUSTER and REINDEX grantable to non-owners, instead of being limited to the table owner, by changing the shared permission check RangeVarCallbackOwnsTable(). The preliminary patch reused the TRUNCATE privilege as a proof of concept; the intended design was a single new table privilege (e.g. REFRESH) covering all three operations.",
+      "objection": "Tom Lane objected to spending one of the four free AclMode privilege bits on this, to reusing TRUNCATE, and to the backward-compatibility effect on existing owner ACLs after upgrade. The discussion then turned to how to extend the privilege-bit space (widening AclMode to 64 bits, a varlena aclitem, or a larger fixed-size aclitem) and whether to use one MAINTAIN privilege or finer-grained ones, without reaching agreement. The CommitFest manager noted no activity over two commitfests and that the thread agreed only that the problem of adding privileges extensibly had to be solved first; after no response, the entry was returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "tablesync race refresh publication",
+        "alter subscription refresh concurrent"
+      ],
+      "from_hint": false,
+      "score": 0.156,
+      "enriched": true,
+      "key_quote": "So I can't see using one of them up for\nREFRESH, let alone using three of them up for REFRESH, CLUSTER and\nREINDEX.",
+      "quote_message_url": "https://www.postgresql.org/message-id/18391.1521419120%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:793",
+      "kind": "cf",
+      "title": "Generic type subscription",
+      "status": "Returned with feedback",
+      "date": "2017-01-31",
+      "first_date": "2016-09-09",
+      "url": "https://commitfest.postgresql.org/patch/793/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+q6zcVDuGBv=M0FqBYX8DPebS3F_0KQ6OVFobGJPM507_SZ_w@mail.gmail.com"
+      ],
+      "authors": "Dmitry Dolgov (erthalion)",
+      "objectors": "",
+      "summary": "Generic type subscription\nThreads: [PATCH] Generic type subscription",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_subscription_rel row missing",
+        "disable_on_error subscription disabled"
+      ],
+      "from_hint": false,
+      "score": 0.153,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:5895",
+      "kind": "cf",
+      "title": "PG 18 beta1 release notes misses mention of pg_noreturn",
+      "status": "Rejected",
+      "date": "2025-09-01",
+      "first_date": "2025-07-02",
+      "url": "https://commitfest.postgresql.org/patch/5895/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGRrpzbkRiCw4qgpJWe4ee1OQarqVgSGhULX16=JdhNSYgXOGQ@mail.gmail.com"
+      ],
+      "authors": "Steve Chávez (steve-chavez)",
+      "objectors": "",
+      "summary": "PG 18 beta1 release notes misses mention of pg_noreturn\nThreads: PG 18 beta1 release notes misses mention of pg_noreturn",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_subscription_rel row missing"
+      ],
+      "from_hint": false,
+      "score": 0.146,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:7042",
+      "kind": "cf",
+      "title": "Logical Replication - revisit `is_table_publication` function implementation",
+      "status": "Withdrawn",
+      "date": "2026-08-19",
+      "first_date": "2026-04-07",
+      "url": "https://commitfest.postgresql.org/patch/7042/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHut+Pti83yGaV5-DZU=AvJHxFDuoKW8_pjSedRham8SgZxLYA@mail.gmail.com"
+      ],
+      "authors": "Peter Smith (smithpb2250)",
+      "objectors": "",
+      "summary": "Logical Replication - revisit `is_table_publication` function implementation\nThreads: Logical Replication - revisit `is_table_publication` function implementation",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical replication table sync state recheck"
+      ],
+      "from_hint": false,
+      "score": 0.136,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:ac230cd3ce93c4752489564cfe6b37b584a465ac",
+      "kind": "revert",
+      "title": "Revert \"Validate subscription conninfo on owner change\"",
+      "status": "Reverted",
+      "date": "2026-08-05",
+      "first_date": "2026-07-23",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ac230cd3ce93c4752489564cfe6b37b584a465ac",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/e103ae8daf74485e0c0ebde297fae735d38f54d1.camel@j-davis.com",
+        "https://www.postgresql.org/message-id/flat/CAHGQGwFGa6+wWVgUmZPFwN=fBY59mYPkMK3=TxT=Pv5C1mNNRQ@mail.gmail.com"
+      ],
+      "authors": "Fujii Masao",
+      "objectors": "",
+      "summary": "Revert \"Validate subscription conninfo on owner change\"\nReverted commit(s): Validate subscription conninfo on owner change",
+      "objection": "This reverts commit 1c9c35890421e96a91129b51f2c6446a6d95af95.\n\nRaising errors during OWNER TO can cause problems during restore. An\nupcoming commit will avoid other errors that can happen in this path.",
+      "touch_points": [],
+      "matched_queries": [
+        "disable_on_error subscription disabled"
+      ],
+      "from_hint": false,
+      "score": 0.136,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3393",
+      "kind": "cf",
+      "title": "Synchronize logical replication slots from primary to standby",
+      "status": "Returned with feedback",
+      "date": "2022-02-18",
+      "first_date": "2021-10-31",
+      "url": "https://commitfest.postgresql.org/patch/3393/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/514f6f2f-6833-4539-39f1-96cd1e011f23@enterprisedb.com"
+      ],
+      "authors": "Peter Eisentraut (petere)",
+      "objectors": "",
+      "summary": "Synchronize logical replication slots from primary to standby\nThreads: Synchronizing slots from primary to standby",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical replication table sync state recheck"
+      ],
+      "from_hint": false,
+      "score": 0.135,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "revert:19e57f4f78e4354d9a21c284868373d28bb0d368",
+      "kind": "revert",
+      "title": "Revert \"vacuumdb: Add option for analyzing only relations missing stats.\"",
+      "status": "Reverted",
+      "date": "2025-03-07",
+      "first_date": "2025-03-07",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=19e57f4f78e4354d9a21c284868373d28bb0d368",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/Z5O1bpcwDrMgyrYy@nathan"
+      ],
+      "authors": "Nathan Bossart",
+      "objectors": "",
+      "summary": "Revert \"vacuumdb: Add option for analyzing only relations missing stats.\"\nReverted commit(s): vacuumdb: Add option for analyzing only relations missing stats.",
+      "objection": "This reverts commit 5f8eb25706b62923c53172e453c8a4dedd877a3d, which in\nmy branch by mistake.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_subscription_rel row missing"
+      ],
+      "from_hint": false,
+      "score": 0.132,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:6682",
+      "kind": "cf",
+      "title": "Fix TOCTOU race in ReplicationSlotsComputeRequiredLSN()",
+      "status": "Withdrawn",
+      "date": "2026-04-17",
+      "first_date": "2026-04-17",
+      "url": "https://commitfest.postgresql.org/patch/6682/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CACSdjfMQYL3DV-3inrxdReqpFMOky4JxLbN0gTTY+qGJqrUJXw@mail.gmail.com"
+      ],
+      "authors": "JoongHyuk Shin (shin)",
+      "objectors": "",
+      "summary": "Fix TOCTOU race in ReplicationSlotsComputeRequiredLSN()\nThreads: [PATCH] Fix TOCTOU race in ReplicationSlotsComputeRequiredLSN()",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "subscription lock tablesync race"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:5648",
+      "kind": "cf",
+      "title": "Warning for Datatype mismatch between subscriber table and publisher table for logical replication",
+      "status": "Returned with feedback",
+      "date": "2025-05-13",
+      "first_date": "2025-03-11",
+      "url": "https://commitfest.postgresql.org/patch/5648/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAh00ETfXo7VLXy61oHL_u3vGKeer=HVjQ4GeS2UHiB=nXCbWQ@mail.gmail.com"
+      ],
+      "authors": "BharatDB PG (bharatdbpg)",
+      "objectors": "",
+      "summary": "Warning for Datatype mismatch between subscriber table and publisher table for logical replication\nThreads: Re: Test mail for pgsql-hackers",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical replication table sync state recheck"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:5459",
+      "kind": "cf",
+      "title": "Parallel tests publication and subscription might fail due to concurrent tuple update",
+      "status": "Rejected",
+      "date": "2025-03-27",
+      "first_date": "2024-12-15",
+      "url": "https://commitfest.postgresql.org/patch/5459/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/18dcfb7f-5deb-4487-ae22-a2c16839519a@gmail.com"
+      ],
+      "authors": "Jelte Fennema-Nio (jeltef)",
+      "objectors": "",
+      "summary": "Parallel tests publication and subscription might fail due to concurrent tuple update\nThreads: Parallel tests publication and subscription might fail due to\nconcurrent tuple update",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "alter subscription refresh concurrent"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:6707",
+      "kind": "cf",
+      "title": "Bug in ALTER SUBSCRIPTION ... SERVER / ... CONNECTION with broken old server",
+      "status": "Withdrawn",
+      "date": "2026-06-22",
+      "first_date": "2026-04-22",
+      "url": "https://commitfest.postgresql.org/patch/6707/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/D908370F-2695-4231-851D-17179A6A6F2A@gmail.com"
+      ],
+      "authors": "Chao Li (chaol)",
+      "objectors": "",
+      "summary": "Bug in ALTER SUBSCRIPTION ... SERVER / ... CONNECTION with broken old server\nThreads: Bug in ALTER SUBSCRIPTION ... SERVER / ... CONNECTION with broken old\nserver",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "alter subscription refresh concurrent"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:6145",
+      "kind": "cf",
+      "title": "Fix race condition in SSI when reading PredXact->SxactGlobalXmin",
+      "status": "Withdrawn",
+      "date": "2025-10-22",
+      "first_date": "2025-09-04",
+      "url": "https://commitfest.postgresql.org/patch/6145/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEkjoh2X8yL9TKrQKx6SL6gtMNuZsyH8K-+rE78EwdOv4oXjSA@mail.gmail.com"
+      ],
+      "authors": "Josh Curtis (joshcurtis)",
+      "objectors": "",
+      "summary": "Fix race condition in SSI when reading PredXact->SxactGlobalXmin\nThreads: Fix race condition in SSI when reading PredXact->SxactGlobalXmin",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "subscription lock tablesync race"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:4225",
+      "kind": "cf",
+      "title": "Allow logical replication via inheritance root table",
+      "status": "Returned with feedback",
+      "date": "2023-08-31",
+      "first_date": "2022-12-09",
+      "url": "https://commitfest.postgresql.org/patch/4225/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAWbhmiRRJDzbA4fv0vAViu_wfoeYqtT+VYOOu7845WO-yT35w@mail.gmail.com"
+      ],
+      "authors": "Jacob Champion (jchampion)",
+      "objectors": "",
+      "summary": "Allow logical replication via inheritance root table\nThreads: RFC: logical publication via inheritance root?",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical replication table sync state recheck"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "revert:96b665083eb72570e226cf2d25c960b3acc62040",
+      "kind": "revert",
+      "title": "Revert \"Avoid creating archive status \".ready\" files too early\"",
+      "status": "Reverted",
+      "date": "2021-09-04",
+      "first_date": "2021-08-23",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=96b665083eb72570e226cf2d25c960b3acc62040",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210831042949.52eqp5xwbxgrfank@alap3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/CBDDFA01-6E40-46BB-9F98-9340F4379505@amazon.com"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert \"Avoid creating archive status \".ready\" files too early\"\nReverted commit(s): Avoid creating archive status \".ready\" files too early",
+      "objection": "This reverts commit 515e3d84a0b5 and equivalent commits in back\nbranches.  This solution to the problem has a number of problems, so\nwe'll try again with a different approach.\n\nPer note from Andres Freund",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "apply worker SYNCDONE READY"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "revert:51e888219745cf9efa41034b5411eee7e9a8f4f1",
+      "kind": "revert",
+      "title": "Revert part of recent include patch not ready for application.",
+      "status": "Reverted",
+      "date": "2006-07-14",
+      "first_date": "2006-07-14",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=51e888219745cf9efa41034b5411eee7e9a8f4f1",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert part of recent include patch not ready for application.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "apply worker SYNCDONE READY"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "revert:eb5f4d6c5cece3e3fa80a506153e5202b093b7ca",
+      "kind": "revert",
+      "title": "Revert ill-fated patch to release exclusive lock early after vacuum truncates a table.  Introduces race condition, as shown by buildfarm failures.",
+      "status": "Reverted",
+      "date": "2007-09-20",
+      "first_date": "2007-09-20",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=eb5f4d6c5cece3e3fa80a506153e5202b093b7ca",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert ill-fated patch to release exclusive lock early after vacuum truncates a table.  Introduces race condition, as shown by buildfarm failures.",
+      "objection": "Revert ill-fated patch to release exclusive lock early after vacuum\ntruncates a table.  Introduces race condition, as shown by buildfarm\nfailures.",
+      "touch_points": [],
+      "matched_queries": [
+        "subscription lock tablesync race"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 8,
+    "new_calls": 0,
+    "failed": 0,
+    "quotes_verified": 0,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 2
+  },
+  "precedent_cutoff": "2026-09-25",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent's recorded reason applies. P3 died over new subscription-specific lock code, and this proposal adds none. P2 reverted a fix that raised an error in ALTER SUBSCRIPTION ... REFRESH SEQUENCES, while this proposal only skips the READY update in the worker and leaves the user command alone. The thread itself cites dca73f7dd03 as the model (messages #1 and #2), not as an earlier failed attempt."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 0,
+      "note": "From the standards and compatibility angle, this bug fix has nothing to object to. It adds no syntax, GUC, catalog object or psql change, and dump/restore is not involved; the only user-visible change is a DEBUG1 message, and stopping the subscription from being disabled is the intended result. The thread does not yet name the target back branches, and the v3 test would add an injection point to tablesync.c, but the author says the test is not meant to be committed."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The fix adds a catalog re-read under an existing lock and changes no on-disk format, WAL record, catalog schema, protocol message or exported API, so back-patching is not blocked by ABI. Not checkable without code: that ALTER SUBSCRIPTION ... REFRESH PUBLICATION still drops the tablesync origin and slot when the apply worker skips origin cleanup."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal has no privilege or exposure aspect. Only the subscription owner or a superuser can run ALTER SUBSCRIPTION ... REFRESH PUBLICATION, and the fix only makes the apply worker skip a catalog update; it adds no new grant, role or default. The DEBUG1 message goes to the server log and names only the relation OID and subscription. The test injection point exists only in builds with injection points enabled."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 0,
+      "note": "From the maintenance angle, this is a small recheck of the sync state under a lock the code already takes. It follows the pattern of the sequence-side fix in dca73f7dd03 and adds a catalog read only on the rare SYNCDONE to READY step, so it adds no hot-path cost and no new API, GUC or catalog. [P3] does not apply because the patch adds no new lock code. [P2] concerns blocking a user command and does not apply either. Two committability points remain: no committer has engaged yet, since only Peter Smith reviewed (message #4), and v3-0002 adds an injection point in tablesync.c that would ship if the test patch were committed, although message #5 says it is not meant to be."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "This is a bug fix inside the apply worker, and no existing feature, setting or extension can stop the worker from updating a pg_subscription_rel row that is gone. The fix follows the sequence-side recheck in dca73f7dd03 and adds no second mechanism, so item 12 is met, and [P3] (bespoke lock code) does not apply because the patch reuses the existing subscription lock."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "This is a small bug fix in tablesync.c, not a feature, so the demand test does not apply in the usual way. The material shows a real failure: a concurrent REFRESH PUBLICATION makes the apply worker error out, disable_on_error then disables the whole subscription, and a re-added table can skip its initial copy. Message #4 confirms the reproduction. The fix adds one catalog read after a lock the worker already takes, so non-users pay almost nothing. The missing field report (messages #1 and #5) weakens the case for the injection-point test, not for the fix."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 7,
+      "new_objections": 0,
+      "new_survived": 0,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 47,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 10,
+    "wall_ms": 69088,
+    "cost_usd": 0.7782248,
+    "dry_run": false
+  }
+}

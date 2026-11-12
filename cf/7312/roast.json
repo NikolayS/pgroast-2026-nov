@@ -1,0 +1,1355 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:39:51.390Z",
+  "input": {
+    "arg": "7312",
+    "cf": {
+      "id": 7312,
+      "url": "https://commitfest.postgresql.org/patch/7312/",
+      "title": "BUG #19686: Rolling back SET TABLESPACE",
+      "status": "Needs review",
+      "authors": "Manuel Reyes Bravo (manu15)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAE8JnxP%2BUbdj-kaxfgNt%3D3_FzD3GgOc3gEvPAvrXKfgTgH2q5w%40mail.gmail.com",
+    "subject": "BUG #19686: Rolling back SET TABLESPACE",
+    "thread_start": "2026-09-16T22:06:34Z",
+    "messages_read": 33,
+    "messages_total": 33,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v4-copy-indices-on-alter-table-set-tablespace.patch",
+      "v1-0001-nbtree-skip-insertion-of-existing-tuples.patch",
+      "v1-0002-logging-and-testcase.patch",
+      "v1-0004-establish-expected-tablespace.out.patch",
+      "v1-0003-fix-deferred-relation-copy.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "The bug is real and committers in the thread back the eager index copy, so levels 1a and 1b pass. Two fixable design points remain at level 2, both about the shortcut and the back branches: standards-compat-1 (space needs depend on the protocol message type) and replication-ondisk-1 (an uninitialized isTopLevel from an extension caller can skip the copy). No committer has replied to v6 or v7, so the choice between them is still open.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Fix index corruption after rolling back ALTER TABLE SET TABLESPACE",
+    "problem": "ALTER TABLE ... SET TABLESPACE gives the heap a new relfilenode but leaves indexes on their old files. If the transaction then writes to the table and aborts, the heap changes vanish but the index entries survive, so later inserts reuse freed TIDs. This gives assertion failures in nbtree, duplicate rows in gist and wrong query results.",
+    "proposed_design": "The current patch (v7) gives each index a new relfilenumber, copied within the index's own tablespace, when the table is moved, so heap and index files roll back together. The copy is skipped for a plain single-table SET TABLESPACE sent alone as a simple Query outside a transaction block with no ddl_command_end trigger, and for index files created in the current subtransaction.",
+    "user_visible_surface": [
+      "ALTER TABLE/ALTER MATERIALIZED VIEW ... SET TABLESPACE copies the table's indexes in some cases, so it needs free space in the indexes' own tablespace.",
+      "More WAL and one AccessExclusiveLock per index when the indexes are copied.",
+      "Back branches: a new field at the end of AlterTableUtilityContext, which extensions such as TimescaleDB and Apache AGE build.",
+      "New backend accessor IsExtendedQueryMessage() in postgres.c."
+    ],
+    "author_claims": [
+      "v7 passes check-world, a randomized savepoint test of 40,000 transactions, standby, crash and wal_level=minimal checks on master and REL_14 to REL_19.",
+      "The index copy made the ALTER at most about 1.7 times slower in the author's tests.",
+      "v7 keeps master's behavior for batches in pgJDBC, pgx and psycopg; v6 left the move committed after a later failure.",
+      "Extensions built against unpatched headers run unchanged on patched back branches.",
+      "The deferred-copy design passed 13 pinned-buffer scenarios, which the author offers as a possible v8 for 19 and master."
+    ],
+    "thread_state": "Tom Lane, Andres Freund and Michael Paquier rejected copying at commit and backed eager index copy with Andres's two shortcuts; Shihao Zhong reviewed v5 to v7. Open: v6 versus v7, the space cost on a full index tablespace, and whether a deferred copy is worth another look for 19.",
+    "unclear": [
+      "No committer has replied to v6, v7 or the renewed deferred-copy question.",
+      "The material has no documentation hunk for the new space needs or the shortcut rules.",
+      "Whether the back branches should take the AlterTableUtilityContext change or always copy the indexes is still open.",
+      "The pinned-buffer tests cover only btree and hash in one backend."
+    ],
+    "search_queries": [
+      "alter table set tablespace rollback",
+      "set tablespace index corruption",
+      "tablespace move indexes relfilenode",
+      "defer file copy until commit",
+      "set tablespace move indexes together",
+      "index heap inconsistency after abort",
+      "AlterTableUtilityContext isTopLevel",
+      "relfilenode rewrite subtransaction abort"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Back-branch ABI change lets an uninitialized field skip the copy",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "backpatchability",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension built against unpatched minor-release headers fills AlterTableUtilityContext on the stack and calls AlterTable() for SET TABLESPACE. The new trailing isTopLevel field holds uninitialized stack memory, so the shortcut may be taken where it should not be. A later write and abort in that statement leave stale index entries, found later as wrong results or nbtree assertion failures.",
+      "argument": "Message #28 says an uninitialized value \"can at worst skip the copy, as today\", but today's behavior is the corruption the patch fixes. So an old-header build silently keeps the bug on a patched server, and nothing reports it. The material does not say which other conditions, such as the simple-Query and transaction-block checks, still guard this path when the caller is an extension. The author already offers to always copy in back branches (message #28), which avoids the struct change.",
+      "precedent_ids": [
+        "P24"
+      ],
+      "thread_message_refs": [
+        28,
+        31
+      ],
+      "author_must_show": "With an uninitialized isTopLevel from an extension caller, which independent check still forces the index copy, or will back branches always copy instead?",
+      "precedents": [
+        {
+          "id": "P24",
+          "title": "Fix index-only scan plans, take 2.",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9a3ddeb519e8d91b670fa923619b212a9670389c",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/3179992.1641150853@sss.pgh.pa.us",
+            "https://www.postgresql.org/message-id/flat/17350-b5bdcf476e5badbb@postgresql.org"
+          ],
+          "date": "2022-01-03",
+          "status": "Partially reverted"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 28,
+          "from": "Manu",
+          "date": "2026-10-04T08:25:06Z",
+          "url": "https://www.postgresql.org/message-id/179110230672.1690838.3721224931432361508%40gmail.com"
+        },
+        {
+          "index": 31,
+          "from": "Manu",
+          "date": "2026-10-14T06:04:54Z",
+          "url": "https://www.postgresql.org/message-id/179195789433.990372.6387431139267045114%40gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #28 accepts that an uninitialized isTopLevel can skip the copy, which leaves the bug in place for that caller without any error. P24 must not be used as support, because it records a minor-release struct change that the project accepted.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Space needs of SET TABLESPACE depend on the client protocol",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "wire_protocol",
+        "sql_standard_syntax"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After a minor update, an application sends a plain `alter table t set tablespace ts` through pgJDBC or pgx while the volume holding the indexes is nearly full. The ALTER now fails with \"could not extend file\", but the same statement typed in psql succeeds. The DBA finds this at the next routine move, on a back branch.",
+      "argument": "With v7, whether the indexes are copied depends on the wire message type (simple Query or extended protocol), not only on what the SQL says. Message #32 shows a single extended-protocol ALTER failing with ENOSPC where master succeeds. Existing top-level checks such as PreventInTransactionBlock use isTopLevel and XACT_FLAGS_NEEDIMMEDIATECOMMIT, and v7 adds a new IsExtendedQueryMessage() accessor in their place. No committer has ruled on v6 versus v7 (messages #29 to #31), and the material has no documentation hunk for the new space rule.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        28,
+        29,
+        30,
+        31,
+        32,
+        33
+      ],
+      "author_must_show": "Why should a minor release make the same SET TABLESPACE need extra space in the index tablespace only for extended-protocol clients, and where will users read about it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 28,
+          "from": "Manu",
+          "date": "2026-10-04T08:25:06Z",
+          "url": "https://www.postgresql.org/message-id/179110230672.1690838.3721224931432361508%40gmail.com"
+        },
+        {
+          "index": 29,
+          "from": "shihao zhong",
+          "date": "2026-10-04T19:14:42Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqSwuvuYrKdf5o9Jn%3DJqkdO7YT0%2BnTS6L9tf_%2BHu-_gWaQ%40mail.gmail.com"
+        },
+        {
+          "index": 30,
+          "from": "Manu",
+          "date": "2026-10-04T20:04:18Z",
+          "url": "https://www.postgresql.org/message-id/179114425825.497956.17396695057926688547%40gmail.com"
+        },
+        {
+          "index": 31,
+          "from": "Manu",
+          "date": "2026-10-14T06:04:54Z",
+          "url": "https://www.postgresql.org/message-id/179195789433.990372.6387431139267045114%40gmail.com"
+        },
+        {
+          "index": 32,
+          "from": "shihao zhong",
+          "date": "2026-10-18T04:39:40Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqRKCNG1LKBV7d98QSdZKf1iT8Qb7LM9jTDKofn33hdsyw%40mail.gmail.com"
+        },
+        {
+          "index": 33,
+          "from": "Manu",
+          "date": "2026-10-18T16:45:31Z",
+          "url": "https://www.postgresql.org/message-id/179234193175.237803.1636724777877426621%40gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #32 shows a single extended-protocol ALTER failing with ENOSPC where master succeeds, and no committer has chosen between v6 and v7. One correction: v7 keeps the isTopLevel test and adds IsExtendedQueryMessage() to it, so the accessor does not replace it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Minor release makes SET TABLESPACE fail on a full index volume",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "on_disk_pg_upgrade",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A maintenance job, sent through a driver over the extended protocol, moves a large table off a nearly full volume where its indexes also live. After the minor upgrade, the ALTER copies every index into that same volume and fails with ENOSPC, where the previous minor release succeeded. The operator finds out when the job fails during a space emergency.",
+      "argument": "Messages #32 and #33 confirm that the copy goes into the indexes' own tablespace, needs about the full index size there, and fails where master succeeds. The case in v7 covers most driver traffic, since only a single simple-Query statement takes the shortcut. Each copy also adds WAL equal to the index size for standbys to replay (message #28). The material has no documentation hunk or release note for this, and no committer has weighed it for back branches.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        17,
+        28,
+        32,
+        33
+      ],
+      "author_must_show": "How will users on back branches learn that SET TABLESPACE now needs free space equal to the indexes on their current volume, and is that acceptable in a minor release?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 17,
+          "from": "Alexandre Felipe",
+          "date": "2026-10-02T08:35:32Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxOfc_2w87qxU-T%2BDNuHkzPR54a6Sj0p8%3DvDB9SY2bB%2BkA%40mail.gmail.com"
+        },
+        {
+          "index": 28,
+          "from": "Manu",
+          "date": "2026-10-04T08:25:06Z",
+          "url": "https://www.postgresql.org/message-id/179110230672.1690838.3721224931432361508%40gmail.com"
+        },
+        {
+          "index": 32,
+          "from": "shihao zhong",
+          "date": "2026-10-18T04:39:40Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqRKCNG1LKBV7d98QSdZKf1iT8Qb7LM9jTDKofn33hdsyw%40mail.gmail.com"
+        },
+        {
+          "index": 33,
+          "from": "Manu",
+          "date": "2026-10-18T16:45:31Z",
+          "url": "https://www.postgresql.org/message-id/179234193175.237803.1636724777877426621%40gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1, with the same single extended-protocol ALTER scenario. Tom Lane, Andres Freund and Michael Paquier already weighed the general space and WAL cost of the eager copy in messages #9, #10, #21 and #23.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "The index-copy shortcut depends on listing every later writer",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later release adds a new event trigger type, or a new way for an ALTER or the protocol to run code after the move in the same transaction. Nobody updates the shortcut test, so the indexes are not copied. A user who writes to the table from that code and then aborts gets stale index entries, and finds out through wrong results or an nbtree assertion.",
+      "argument": "The skip is safe only if nothing writes to the table between the move and the commit. The thread found three such writers one after another: a sql_drop trigger (message #25), a CHECK on an inheritance child (message #26) and a pipeline commit (message #28). Each needed a new guard. Nothing fails loudly when a future writer is missed, and the regression tests cover only the cases known today.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        21,
+        25,
+        26,
+        28
+      ],
+      "author_must_show": "What makes the shortcut fail safe when a future feature adds a writer after the move, rather than relying on later patches to update the condition?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 21,
+          "from": "Andres Freund",
+          "date": "2026-10-02T18:30:33Z",
+          "url": "https://www.postgresql.org/message-id/apatdp3ikxzpotmbsd5dfgocimljrtenuyjgmvnuk3njoworw7%40xatncdnxgpwy"
+        },
+        {
+          "index": 25,
+          "from": "shihao zhong",
+          "date": "2026-10-03T04:26:03Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqRNC2X1RR3Bt1gA3NwG5k0WQQSRxS71hVnCekFwPx_cYw%40mail.gmail.com"
+        },
+        {
+          "index": 26,
+          "from": "Manu",
+          "date": "2026-10-03T14:39:17Z",
+          "url": "https://www.postgresql.org/message-id/179103835723.49042.1921055480892788753%40gmail.com"
+        },
+        {
+          "index": 28,
+          "from": "Manu",
+          "date": "2026-10-04T08:25:06Z",
+          "url": "https://www.postgresql.org/message-id/179110230672.1690838.3721224931432361508%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "Message #26 stops listing writers: v6 allows the shortcut only for a plain single-table SET TABLESPACE, and v7 narrows it to a lone simple Query. The remaining event trigger case is superuser-only, which Andres accepted in message #21.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Back branches read a new struct field extensions never set",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension built against unpatched minor-release headers fills AlterTableUtilityContext on the stack and calls AlterTable(). The patched server reads isTopLevel past the end of the struct, gets a nonzero value, and skips the index copy inside a transaction block. A later abort leaves the corruption this patch exists to fix.",
+      "argument": "Message #28 says an uninitialized value 'can at worst skip the copy, as today'. That means the fix can silently fail to apply for extension callers on a minor release, with no error. The author tested TimescaleDB and Apache AGE, but other callers outside core may exist. Message #28 also offers always copying in back branches, which avoids reading the field at all.",
+      "precedent_ids": [
+        "P24"
+      ],
+      "thread_message_refs": [
+        28
+      ],
+      "author_must_show": "Why should back branches read a field that extension callers do not initialize, instead of always copying the indexes there?",
+      "precedents": [
+        {
+          "id": "P24",
+          "title": "Fix index-only scan plans, take 2.",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9a3ddeb519e8d91b670fa923619b212a9670389c",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/3179992.1641150853@sss.pgh.pa.us",
+            "https://www.postgresql.org/message-id/flat/17350-b5bdcf476e5badbb@postgresql.org"
+          ],
+          "date": "2022-01-03",
+          "status": "Partially reverted"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 28,
+          "from": "Manu",
+          "date": "2026-10-04T08:25:06Z",
+          "url": "https://www.postgresql.org/message-id/179110230672.1690838.3721224931432361508%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1, which also notes that the material does not say whether the transaction-block and simple-Query checks still guard an extension caller.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "DDL cost and space needs now depend on the wire protocol",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden",
+        "wire_protocol"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA rehearses ALTER TABLE ... SET TABLESPACE in psql on a nearly full index volume, and it succeeds without copying. The same migration later runs through pgJDBC or Flyway over the extended protocol, copies the indexes into the old volume, and fails with 'could not extend file'. Master succeeds in both cases.",
+      "argument": "v7 adds IsExtendedQueryMessage() so that tablecmds.c changes behavior based on the protocol message type. That is a new dependency from DDL execution on postgres.c protocol state, and other code paths do not follow this pattern. Messages #32 and #33 confirm the ENOSPC failure for a single extended-protocol ALTER. The cost lands on most driver users, because most drivers use the extended protocol.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        28,
+        29,
+        32,
+        33
+      ],
+      "author_must_show": "Is there an existing command whose resource use depends on simple versus extended protocol, and why is this coupling acceptable for future maintainers?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 28,
+          "from": "Manu",
+          "date": "2026-10-04T08:25:06Z",
+          "url": "https://www.postgresql.org/message-id/179110230672.1690838.3721224931432361508%40gmail.com"
+        },
+        {
+          "index": 29,
+          "from": "shihao zhong",
+          "date": "2026-10-04T19:14:42Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqSwuvuYrKdf5o9Jn%3DJqkdO7YT0%2BnTS6L9tf_%2BHu-_gWaQ%40mail.gmail.com"
+        },
+        {
+          "index": 32,
+          "from": "shihao zhong",
+          "date": "2026-10-18T04:39:40Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqRKCNG1LKBV7d98QSdZKf1iT8Qb7LM9jTDKofn33hdsyw%40mail.gmail.com"
+        },
+        {
+          "index": 33,
+          "from": "Manu",
+          "date": "2026-10-18T16:45:31Z",
+          "url": "https://www.postgresql.org/message-id/179234193175.237803.1636724777877426621%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1, which covers the same protocol-dependent ENOSPC failure. The claim that no other code path depends on protocol state is not shown in the material.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "Each index gets a new relfilenumber and a copied file when its table moves."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "Each index copy writes WAL of about the index size, which standbys replay."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": true,
+      "reason": "v7 skips the index copy only for a lone simple Query, using the new IsExtendedQueryMessage()."
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "Back branches add a field at the end of AlterTableUtilityContext, which extensions build."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": true,
+      "reason": "see objection standards-compat-1: Space needs of SET TABLESPACE depend on the client protocol"
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The fix targets REL_14 to REL_19, with new space needs and a struct change in minor releases."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "The shortcut conditions in tablecmds.c depend on protocol state and event trigger checks."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "With an uninitialized isTopLevel from an extension built against unpatched headers, which independent check still forces the index copy?",
+    "Should back branches always copy the indexes and leave AlterTableUtilityContext unchanged, as message #28 offers?",
+    "Is it acceptable in a minor release that a single extended-protocol SET TABLESPACE fails with ENOSPC where master succeeds (message #32)?",
+    "Where will users read that SET TABLESPACE can need free space of about the index size in the indexes' own tablespace, and when the shortcut applies?",
+    "Which version is proposed for commit: v6, v7, or a deferred-copy v8 for 19 and master?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Tom Lane, Andres Freund and Michael Paquier set the eager-copy direction in the thread, but none has replied to v6, v7 or the deferred-copy question. The owner needs to know tablecmds.c, relation storage and back-branch ABI rules.",
+    "liability": "A back-patched corruption fix in REL_14 to REL_19: new space and WAL cost for SET TABLESPACE, a struct change extensions see, and shortcut conditions that must stay correct as protocol and trigger code change.",
+    "author_follow_up": "Good sign: the author produced seven versions, tested back branches, drivers and extensions, and offers a v8."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "proceed",
+    "reason": "This fixes reproducible index corruption and wrong results (message #1), and committers already agreed on the eager copy. The patch touches mainly tablecmds.c, but the back-branch and shortcut choices need a committer's ruling."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, it could not be checked whether any non-plain ALTER path or extension caller still reaches the shortcut, or whether WAL replay of the index copies is correct. The pinned-buffer tests for the deferred copy cover only btree and hash in one backend.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "revert:155c0f24b7d370eb57fb8dde0447e11e41c405c2",
+      "kind": "revert",
+      "title": "Revert change to ALTER TABLESPACE summary.",
+      "status": "Reverted",
+      "date": "2014-11-14",
+      "first_date": "2014-11-14",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=155c0f24b7d370eb57fb8dde0447e11e41c405c2",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert change to ALTER TABLESPACE summary.",
+      "objection": "When ALTER TABLESPACE MOVE ALL was changed to be ALTER TABLE ALL IN\nTABLESPACE, the ALTER TABLESPACE summary should have been adjusted back\nto its original definition.\n\nPatch by Thom Brown (thanks!).",
+      "touch_points": [],
+      "matched_queries": [
+        "alter table set tablespace rollback",
+        "tablespace move indexes relfilenode",
+        "set tablespace move indexes together",
+        "AlterTableUtilityContext isTopLevel"
+      ],
+      "from_hint": false,
+      "score": 0.348,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:16",
+      "kind": "cf",
+      "title": "Allow TOAST tables to be moved to a different tablespace",
+      "status": "Rejected",
+      "date": "2015-01-16",
+      "first_date": "2011-10-07",
+      "url": "https://commitfest.postgresql.org/patch/16/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/4E8F1666.2060409@gmail.com"
+      ],
+      "authors": "Alex Shulgin (ash), Julien Tachoires (julmon)",
+      "objectors": "Robert Haas, Andreas Karlsson",
+      "summary": "The patch lets a TOAST table have its own tablespace, separate from its main table. It adds ALTER TABLE ... SET TABLE TABLESPACE and SET TOAST TABLESPACE, while plain SET TABLESPACE still moves both.",
+      "objection": "In 2012 Robert Haas judged the use case too hypothetical and suggested Returned with Feedback plus a Todo entry. Alex Shulgin rebased it in 2014, and Andreas Karlsson's review found a broken pg_dump, a failing regression test, an ALTER INDEX bug and missing materialized view support. Michael Paquier then marked it returned with feedback, and the visible messages show no revised patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "alter table set tablespace rollback",
+        "tablespace move indexes relfilenode",
+        "set tablespace move indexes together"
+      ],
+      "from_hint": false,
+      "score": 0.291,
+      "enriched": true,
+      "key_quote": "I share the feeling that it could possibly be useful under some set\nof circumstances, but it doesn't seem prudent to add features because\nthere might hypothetically be a use case.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoa8PnNSNs24yLt48F_BSWH%3DnneFjZrqEd%2B8KQ8sH1PwtA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:3382",
+      "kind": "cf",
+      "title": "Add support for ALTER INDEX .. ALTER [COLUMN] col_num {SET,RESET}",
+      "status": "Withdrawn",
+      "date": "2021-11-01",
+      "first_date": "2021-10-29",
+      "url": "https://commitfest.postgresql.org/patch/3382/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/YXuCDicA8rq4iryZ@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Alexander Korotkov",
+      "summary": "Add `alter index ... alter [column] col_num set/reset (...)` so opclass parameters on an index column can be changed after `create index`, using a column number as `set statistics` does. The patch stores the new values in pg_attribute attoptions, checks them with index_opclass_options(), and does not rebuild the index.",
+      "objection": "Changing an opclass parameter such as siglen without a rebuild leaves the index inconsistent with its options. Nathan Bossart reproduced test failures in hstore after `alter index hidx alter column 1 set (siglen=100)`, which went away after a REINDEX. Alexander Korotkov said the known uses for opclass options all need a rebuild and suggested keeping the options immutable until real cases for mutable ones appear. The author agreed the patch was not enough, and the entry was withdrawn.",
+      "touch_points": [],
+      "matched_queries": [
+        "alter table set tablespace rollback",
+        "set tablespace index corruption",
+        "set tablespace move indexes together"
+      ],
+      "from_hint": false,
+      "score": 0.289,
+      "enriched": true,
+      "key_quote": "All these cases require index rebuild to change the opclass option.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAPpHfdtwR9P1EXJPJoNx4jxOeooo%3DYToBHOTsUFsGkgOnmqr-w%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:216",
+      "kind": "cf",
+      "title": "default_index_tablespace",
+      "status": "Returned with feedback",
+      "date": "2015-06-14",
+      "first_date": "2015-04-15",
+      "url": "https://commitfest.postgresql.org/patch/216/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/b040657607ba76fc55a311bbcec69da4@adv-solutions.net"
+      ],
+      "authors": "Jose Luis Tallon (jltallon)",
+      "objectors": "Tom Lane",
+      "summary": "Add a new GUC, default_index_tablespace, so that indexes are created by default in a chosen tablespace (for example one on SSD) rather than in the table's tablespace, without specifying TABLESPACE on each CREATE INDEX. If the new setting is unset, the code falls back to default_tablespace.",
+      "objection": "Tom Lane objected that the new GUC would break existing applications and existing pg_dump output files, which set default_tablespace to determine an index's tablespace; falling back when the new GUC is unset does not avoid the breakage when it is set. Alternatives were discussed (a database-level index tablespace option, separate table/index GUCs overridden by default_tablespace, making pg_dump emit TABLESPACE clauses), and the author offered to rework the patch once a viable design was agreed, but no revised patch appears in the visible messages.",
+      "touch_points": [],
+      "matched_queries": [
+        "set tablespace index corruption",
+        "tablespace move indexes relfilenode",
+        "set tablespace move indexes together"
+      ],
+      "from_hint": false,
+      "score": 0.279,
+      "enriched": true,
+      "key_quote": "I'm afraid this idea is a nonstarter, because it will break existing\napplications, and in particular existing pg_dump output files, which\nexpect to be able to determine an index's tablespace by setting\n\"default_tablespace\".",
+      "quote_message_url": "https://www.postgresql.org/message-id/3600.1429139531%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:188",
+      "kind": "cf",
+      "title": "Allow TOAST tables to be moved to a different tablespace",
+      "status": "Returned with feedback",
+      "date": "2015-08-12",
+      "first_date": "2011-10-07",
+      "url": "https://commitfest.postgresql.org/patch/188/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/4E8F1666.2060409@gmail.com"
+      ],
+      "authors": "Julien Tachoires (julmon)",
+      "objectors": "Tom Lane, Simon Riggs",
+      "summary": "The patch let a TOAST table have its own tablespace, separate from its parent table. It added ALTER TABLE ... SET TABLE TABLESPACE and SET TOAST TABLESPACE, plus matching psql \\d output and pg_dump and pg_restore support.",
+      "objection": "Simon Riggs returned it because it would add TOAST as a keyword to support forever, while column stores or vertical partitioning would be a more general way to handle the same need. Tom Lane wanted it rejected because the use case had no performance numbers, the separate tablespace opened corner cases such as pg_upgrade, and the pg_dump code was not committable. No one offered to finish the patch, including the reviewer, Andreas Karlsson.",
+      "touch_points": [],
+      "matched_queries": [
+        "alter table set tablespace rollback",
+        "tablespace move indexes relfilenode",
+        "set tablespace move indexes together"
+      ],
+      "from_hint": false,
+      "score": 0.272,
+      "enriched": true,
+      "key_quote": "The deciding factor is that it brings TOAST as a keyword for us to support forever.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CANP8%2BjJ4xL7URGz-8YDSD%2BJF1%2BV0fQYcz6jSW7KXp%2BT%2B1ikjKA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:4436",
+      "kind": "cf",
+      "title": "Skip collecting decoded changes of already-aborted transactions",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2023-06-09",
+      "url": "https://commitfest.postgresql.org/patch/4436/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAD21AoDht9Pz_DFv_R2LqBTBbO4eGrpa9Vojmt5z5sEx3XwD7A@mail.gmail.com"
+      ],
+      "authors": "Masahiko Sawada (masahikosawada)",
+      "objectors": "vignesh C",
+      "summary": "Logical decoding checks CLOG when it first decodes a transaction and stops collecting decoded changes for transactions already known to be aborted, so large aborted transactions are not decoded again after a restart or lag. After Andres Freund's review, the revised patch checks transaction status only for large transactions at eviction time.",
+      "objection": "The revised patch did not compile because `logical_replication_mode` was undeclared in `ReorderBufferCheckTXNAbort`. The author posted no new version after this report, so the CF manager returned the entry with feedback. Andres Freund's earlier concerns, misuse of TransactionIdDidAbort() and slow CLOG lookups, were addressed in the design but not decisive.",
+      "touch_points": [],
+      "matched_queries": [
+        "index heap inconsistency after abort",
+        "relfilenode rewrite subtransaction abort"
+      ],
+      "from_hint": false,
+      "score": 0.246,
+      "enriched": true,
+      "key_quote": "With no update to the thread and the compilation still failing I'm\nmarking this as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALDaNm00kAVenyr7sMCkgFo1dhfj-rGrg4EVXHZfoie5T%3DgZPg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:3067",
+      "kind": "cf",
+      "title": "Move tablespace path re-creation from the makefiles to pg_regress (test for mkdir function in the backend)",
+      "status": "Withdrawn",
+      "date": "2021-04-16",
+      "first_date": "2021-03-10",
+      "url": "https://commitfest.postgresql.org/patch/3067/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/E1lJroH-0006Oz-Gb@gemulon.postgresql.org"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Noah Misch",
+      "summary": "The patch adds a mkdir() SQL function to regress.c, so the backend creates the test tablespace directory instead of pg_regress. It aims to restore installcheck runs where the server user differs from the pg_regress user, which commit 6c788d9 broke.",
+      "objection": "The author withdrew it because nobody showed a need to act: Christoph Berg had a workaround for the Debian suite, and it was unclear whether a server user different from the pg_regress user should be supported at all. Noah Misch also reported that the patch fails when make check is followed by make installcheck against a server running as another user, because rmtree() cannot remove the server-created directory.",
+      "touch_points": [],
+      "matched_queries": [
+        "tablespace move indexes relfilenode",
+        "set tablespace move indexes together"
+      ],
+      "from_hint": false,
+      "score": 0.211,
+      "enriched": true,
+      "key_quote": "At the\nsame time, Christoph has a workaround for the Debian suite, so it does\nnot seem like there is anything to do now, anyway.",
+      "quote_message_url": "https://www.postgresql.org/message-id/YHVHtjRNUGy13VpO%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:3525",
+      "kind": "cf",
+      "title": "Allow pg_upgrade to copy segments of the same relfilenode in parallel",
+      "status": "Returned with feedback",
+      "date": "2022-08-02",
+      "first_date": "2022-02-02",
+      "url": "https://commitfest.postgresql.org/patch/3525/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/Yfny%2FGbI7no+hdTs@ahch-to"
+      ],
+      "authors": "Jaime Casanova (jcasanov)",
+      "objectors": "Andres Freund",
+      "summary": "Add a pg_upgrade option (-J num, --jobs-per-disk=num) that starts up to num processes per tablespace so the segments of a single relfilenode can be copied in parallel in copy mode. The aim was to speed up upgrades of databases with many multi-gigabyte tables spread across tablespaces on different disks.",
+      "objection": "The patch was incomplete: it had no documentation, lacked the Windows implementation (causing cfbot warnings), and had received no review, so it was moved out of the PostgreSQL 15 cycle. It then stayed waiting on author input past the commitfest threshold, and Jacob Champion marked it Returned with Feedback.",
+      "touch_points": [
+        "on-disk format / pg_upgrade"
+      ],
+      "matched_queries": [
+        "tablespace move indexes relfilenode",
+        "relfilenode rewrite subtransaction abort"
+      ],
+      "from_hint": false,
+      "score": 0.204,
+      "enriched": true,
+      "key_quote": "As it's a new patch submitted to the last CF, hasn't gotten any review yet and\nmisses some platform support, it seems like there's no chance it can make it\ninto 15?",
+      "quote_message_url": "https://www.postgresql.org/message-id/20220322003431.tk7ec5hm336kkbsc%40alap3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:3020",
+      "kind": "cf",
+      "title": "alter table set TABLE ACCESS METHOD",
+      "status": "Withdrawn",
+      "date": "2021-06-08",
+      "first_date": "2021-02-28",
+      "url": "https://commitfest.postgresql.org/patch/3020/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210228222530.GD20769@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "",
+      "summary": "Add an ALTER TABLE ... SET TABLE ACCESS METHOD command that rewrites a table into a different table access method, so data can be migrated between AMs without manually recreating the table. The patch also detoasted tuples in ATRewriteTable during the rewrite so that the new AM would not receive data compressed or toasted by the old one.",
+      "objection": "The visible messages do not show why. The last messages show reviewers agreeing that the detoasting step in ATRewriteTable could be removed because detoasting is the table AM's responsibility, and discussing whether a dummy table AM test module would be useful; none of them gives a reason for withdrawing the entry.",
+      "touch_points": [],
+      "matched_queries": [
+        "alter table set tablespace rollback",
+        "AlterTableUtilityContext isTopLevel"
+      ],
+      "from_hint": false,
+      "score": 0.203,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:3711",
+      "kind": "cf",
+      "title": "making relfilenodes 56 bit",
+      "status": "Withdrawn",
+      "date": "2023-01-06",
+      "first_date": "2021-03-04",
+      "url": "https://commitfest.postgresql.org/patch/3711/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKG+fTEcYQvc18aEbrJjPri99A09JZcEXzXjT5h57S+Agkw@mail.gmail.com"
+      ],
+      "authors": "Dilip Kumar (dilip.kumar)",
+      "objectors": "",
+      "summary": "making relfilenodes 56 bit\nThreads: Make relfile tombstone files conditional on WAL level",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "tablespace move indexes relfilenode",
+        "relfilenode rewrite subtransaction abort"
+      ],
+      "from_hint": false,
+      "score": 0.192,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "revert:de9396326edcbe5cafc06a72016f9d715c350e0e",
+      "kind": "revert",
+      "title": "Revert \"Skip WAL for new relfilenodes, under wal_level=minimal.\"",
+      "status": "Reverted",
+      "date": "2020-03-22",
+      "first_date": "2020-03-21",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=de9396326edcbe5cafc06a72016f9d715c350e0e",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200321224920.GB1763544@rfd.leadboat.com",
+        "https://www.postgresql.org/message-id/flat/20150702220524.GA9392@svana.org"
+      ],
+      "authors": "Noah Misch",
+      "objectors": "",
+      "summary": "Revert \"Skip WAL for new relfilenodes, under wal_level=minimal.\"\nReverted commit(s): Skip WAL for new relfilenodes, under wal_level=minimal.",
+      "objection": "This reverts commit cb2fd7eac285b1b0a24eeb2b8ed4456b66c5a09f.  Per\nnumerous buildfarm members, it was incompatible with parallel query, and\na test case assumed LP64.  Back-patch to 9.5 (all supported versions).",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "tablespace move indexes relfilenode",
+        "relfilenode rewrite subtransaction abort"
+      ],
+      "from_hint": false,
+      "score": 0.167,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:6571",
+      "kind": "cf",
+      "title": "Inconsistency in owner assignment between INDEX and STATISTICS",
+      "status": "Withdrawn",
+      "date": "2026-03-11",
+      "first_date": "2026-02-14",
+      "url": "https://commitfest.postgresql.org/patch/6571/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CACSdjfMWcR7aJUDf6XNt_yaDi+riz3Ku4EQ-x3xA=Xx1209n2g@mail.gmail.com"
+      ],
+      "authors": "JoongHyuk Shin (shin)",
+      "objectors": "",
+      "summary": "Inconsistency in owner assignment between INDEX and STATISTICS\nThreads: Inconsistency in owner assignment between INDEX and STATISTICS",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "index heap inconsistency after abort"
+      ],
+      "from_hint": false,
+      "score": 0.148,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:3444",
+      "kind": "cf",
+      "title": "Show subtransaction overflow status",
+      "status": "Rejected",
+      "date": "2022-03-22",
+      "first_date": "2021-12-07",
+      "url": "https://commitfest.postgresql.org/patch/3444/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFiTN-uvYAofNRaGF4R+u6_OrABdkqNRoX7V6+PP3H_0HuYMwg@mail.gmail.com"
+      ],
+      "authors": "Dilip Kumar (dilip.kumar)",
+      "objectors": "",
+      "summary": "Show subtransaction overflow status\nThreads: Add sub-transaction overflow status in pg_stat_activity",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "relfilenode rewrite subtransaction abort"
+      ],
+      "from_hint": false,
+      "score": 0.135,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "revert:810f64a01567610af7b92b0de930f16f3e20064e",
+      "kind": "revert",
+      "title": "Revert indexed and enlargable binary heap implementation.",
+      "status": "Reverted",
+      "date": "2024-04-11",
+      "first_date": "2024-04-03",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=810f64a01567610af7b92b0de930f16f3e20064e",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/12747c15811d94efcc5cda72d6b35c80d7bf3443.camel@j-davis.com",
+        "https://www.postgresql.org/message-id/flat/CAD21AoDffo37RC-eUuyHJKVEr017V2YYDLyn1xF_00ofptWbkg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAD21AoAfKTgrBrLq96GcTv9d6k97zaQcDM-rxfKEt4GSe0qnaQ@mail.gmail.com"
+      ],
+      "authors": "Masahiko Sawada",
+      "objectors": "",
+      "summary": "Revert indexed and enlargable binary heap implementation.\nReverted commit(s): Add functions to binaryheap for efficient key removal and update.; Make binaryheap enlargeable.; Improve eviction algorithm in ReorderBuffer using max-heap for many subtransactions.; Replace binaryheap + index with pairingheap in reorderbuffer.c",
+      "objection": "This reverts commit b840508644 and bcb14f4abc. These commits were made\nfor commit 5bec1d6bc5 (Improve eviction algorithm in ReorderBuffer\nusing max-heap for many subtransactions). However, per discussion,\ncommit efb8acc0d0 replaced binary heap + index with pairing heap, and\nmade these commits unnecessary.",
+      "touch_points": [],
+      "matched_queries": [
+        "index heap inconsistency after abort"
+      ],
+      "from_hint": false,
+      "score": 0.129,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "wiki:Tablespaces:1",
+      "kind": "do_not_want",
+      "title": "Allow per-tablespace quotas",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Tablespaces",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Allow per-tablespace quotas\nSection: Administration / Tablespaces",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "alter table set tablespace rollback",
+        "set tablespace index corruption"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:3088",
+      "kind": "cf",
+      "title": "Reduce lock level for ALTER TABLE ... ADD CHECK",
+      "status": "Withdrawn",
+      "date": "2021-11-21",
+      "first_date": "2021-04-22",
+      "url": "https://commitfest.postgresql.org/patch/3088/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANbhV-EUvRNs1zMdkXFeBg=Bqn8v0bm_qn3orrBwAJa3gZq6kA@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon)",
+      "objectors": "",
+      "summary": "Reduce lock level for ALTER TABLE ... ADD CHECK\nThreads: Reduce lock level for ALTER TABLE ... ADD CHECK .. NOT VALID",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "AlterTableUtilityContext isTopLevel"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:427",
+      "kind": "cf",
+      "title": "CONTEXT of ALTER TABLE behind-the-scenes effects",
+      "status": "Returned with feedback",
+      "date": "2016-03-15",
+      "first_date": "2015-10-04",
+      "url": "https://commitfest.postgresql.org/patch/427/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/5611A371.2030704@joh.to"
+      ],
+      "authors": "Marko Tiikkaja (johto)",
+      "objectors": "",
+      "summary": "CONTEXT of ALTER TABLE behind-the-scenes effects\nThreads: ALTER TABLE behind-the-scenes effects' CONTEXT",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "AlterTableUtilityContext isTopLevel"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "revert:e3fcca0d0d2414f3a50d6fd40eddf48b7df81475",
+      "kind": "revert",
+      "title": "Revert changes in HOT handling of BRIN indexes",
+      "status": "Reverted",
+      "date": "2022-06-16",
+      "first_date": "2021-11-30",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e3fcca0d0d2414f3a50d6fd40eddf48b7df81475",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/05ebcb44-f383-86e3-4f31-0a97a55634cf@enterprisedb.com",
+        "https://www.postgresql.org/message-id/flat/CAFp7QwpMRGcDAQumN7onN9HjrJ3u4X3ZRXdGFT0K5G2JWvnbWg@mail.gmail.com"
+      ],
+      "authors": "Tomas Vondra",
+      "objectors": "",
+      "summary": "Revert changes in HOT handling of BRIN indexes\nReverted commit(s): Ignore BRIN indexes when checking for HOT udpates; Move test for BRIN HOT behavior to stats.sql",
+      "objection": "This reverts commits 5753d4ee32 and fe60b67250 that modified HOT to\nignore BRIN indexes. The commit message for 5753d4ee32 claims that:\n\n    When determining whether an index update may be skipped by using\n    HOT, we can ignore attributes indexed only by BRIN indexes. There\n    are no index pointers to individual tuples in BRIN, and the page\n    range summary will be updated anyway as it relies on visibility\n    info.\n\nThis is partially incorrect - it's true BRIN indexes don't point to\nindividual tuples, so HOT chains are not an issue, but the visibitlity\ninfo is not sufficient to keep the index up to date. This can easily\nresult in corrupted indexes, as demonstrated in the hackers thread.\n\nThis does not mean relaxing the HOT restrictions for BRIN is a lost\ncause, but it needs to handle the two aspects (allowing HOT chains and\nupdating the page range summaries) as separate. But that requires a\nmajor changes, and it's too late for that in the current dev cycle.",
+      "touch_points": [],
+      "matched_queries": [
+        "set tablespace index corruption"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:5282",
+      "kind": "cf",
+      "title": "Enhance file_fdw to report processed and skipped tuples in COPY progress",
+      "status": "Withdrawn",
+      "date": "2025-03-09",
+      "first_date": "2024-10-03",
+      "url": "https://commitfest.postgresql.org/patch/5282/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2ffa9bfa-41f6-4180-a32a-2c693ec1eeed@oss.nttdata.com"
+      ],
+      "authors": "Fujii Masao (masaofujii)",
+      "objectors": "",
+      "summary": "Enhance file_fdw to report processed and skipped tuples in COPY progress\nThreads: Enhance file_fdw to report processed and skipped tuples in COPY\nprogress",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "defer file copy until commit"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:2857",
+      "kind": "cf",
+      "title": "ALTER TABLE SET LOGGED/UNLOGGED on a partitioned table does nothing silently",
+      "status": "Withdrawn",
+      "date": "2021-04-07",
+      "first_date": "2020-12-02",
+      "url": "https://commitfest.postgresql.org/patch/2857/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/TYAPR01MB299022B3CFFE7B838AC62E40FEF30@TYAPR01MB2990.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "Takayuki Tsunakawa (maumau)",
+      "objectors": "",
+      "summary": "ALTER TABLE SET LOGGED/UNLOGGED on a partitioned table does nothing silently\nThreads: [bug fix] ALTER TABLE SET LOGGED/UNLOGGED on a partitioned table does\nnothing silently",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "alter table set tablespace rollback"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "revert:f480e294498533820f3ef3e6de4dcb8ff5401140",
+      "kind": "revert",
+      "title": "Reset vacuum_defer_cleanup_age to PGC_SIGHUP. Revert commit 84725aa5efe11688633b553e58113efce4181f2e",
+      "status": "Partially reverted",
+      "date": "2013-02-04",
+      "first_date": "2013-02-02",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f480e294498533820f3ef3e6de4dcb8ff5401140",
+      "thread_urls": [],
+      "authors": "Simon Riggs",
+      "objectors": "",
+      "summary": "Reset vacuum_defer_cleanup_age to PGC_SIGHUP. Revert commit 84725aa5efe11688633b553e58113efce4181f2e\nReverted commit(s): Mark vacuum_defer_cleanup_age as PGC_POSTMASTER.",
+      "objection": "Reset vacuum_defer_cleanup_age to PGC_SIGHUP.\nRevert commit 84725aa5efe11688633b553e58113efce4181f2e",
+      "touch_points": [],
+      "matched_queries": [
+        "defer file copy until commit"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:5674",
+      "kind": "cf",
+      "title": "Add \"\\gi file\" to psql to allow COPY with variable expansion",
+      "status": "Returned with feedback",
+      "date": "2025-06-17",
+      "first_date": "2025-03-31",
+      "url": "https://commitfest.postgresql.org/patch/5674/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/PR0P264MB43008330C5069ED01C89DBE7ABAD2@PR0P264MB4300.FRAP264.PROD.OUTLOOK.COM"
+      ],
+      "authors": "Fabien Coelho (calvin)",
+      "objectors": "",
+      "summary": "Add \"\\gi file\" to psql to allow COPY with variable expansion\nThreads: Add partial :-variable expansion to psql \\copy",
+      "objection": "",
+      "touch_points": [
+        "psql"
+      ],
+      "matched_queries": [
+        "defer file copy until commit"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:383",
+      "kind": "cf",
+      "title": "COPY result file's umask",
+      "status": "Rejected",
+      "date": "2015-11-17",
+      "first_date": "2015-07-23",
+      "url": "https://commitfest.postgresql.org/patch/383/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALnrH7rov=h0F=FBhOR3a-Gs6_cX5Leyp25gGF9+tc7-d3QC4Q@mail.gmail.com"
+      ],
+      "authors": "Dinesh Kumar (dineshkumar)",
+      "objectors": "",
+      "summary": "COPY result file's umask\nThreads: Proposing COPY .. WITH PERMISSIVE",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "defer file copy until commit"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "revert:9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "kind": "revert",
+      "title": "Fix index-only scan plans, take 2.",
+      "status": "Partially reverted",
+      "date": "2022-01-03",
+      "first_date": "2022-01-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3179992.1641150853@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/17350-b5bdcf476e5badbb@postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Fix index-only scan plans, take 2.\nReverted commit(s): Fix index-only scan plans when not all index columns can be returned.",
+      "objection": "Commit 4ace45677 failed to fix the problem fully, because the\nsame issue of attempting to fetch a non-returnable index column\ncan occur when rechecking the indexqual after using a lossy index\noperator.  Moreover, it broke EXPLAIN for such indexquals (which\nindicates a gap in our test cases :-().\n\nRevert the code changes of 4ace45677 in favor of adding a new field\nto struct IndexOnlyScan, containing a version of the indexqual that\ncan be executed against the index-returned tuple without using any\nnon-returnable columns.  (The restrictions imposed by check_index_only\nguarantee this is possible, although we may have to recompute indexed\nexpressions.)  Support construction of that during setrefs.c\nprocessing by marking IndexOnlyScan.indextlist entries as resjunk\nif they can't be returned, rather than removing them entirely.\n(We could alternatively require setrefs.c to look up the IndexOptInfo\nagain, but abusing resjunk this way seems like a reasonably safe way\nto avoid needing to do that.)\n\nThis solution isn't great from an API-stability standpoint: if there\nare any extensions out there that build IndexOnlyScan structs directly,\nthey'll be broken in the next minor releases.  However, only a very\ninvasive extension would be likely to do such a thing.  There's no\nchange in the Path representation, so typical planner extensions\nshouldn't have a problem.\n\nAs before, back-patch to all supported branches.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "set tablespace index corruption"
+      ],
+      "from_hint": false,
+      "score": 0.103,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 6,
+    "new_calls": 2,
+    "failed": 0,
+    "quotes_verified": 2,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 2
+  },
+  "precedent_cutoff": "2026-09-16",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No listed precedent matches: [P24] and [P11] share keywords but died for reasons that do not apply here. Inside the thread, the deferred copy was dropped after messages #7, #9 and #22; v7 follows the eager-copy consensus of messages #9, #10, #21 and #23, and message #33 reopens the deferred copy only as a possible v8, not as the current proposal."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 1,
+      "note": "The main design, an eager index copy, has committer backing (messages #9, #10, #21, #23). The objection above covers only how the shortcut behaves for users."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 2,
+      "note": "The nbtree VACUUM invariant does not apply: v7 does not touch nbtree, and the v1 nbtree change was dropped. The author reports standby, crash and wal_level=minimal checks as clean."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "No security objection. The index copy goes into the index's existing tablespace, where REINDEX and ordinary inserts already write without a new CREATE check, and the only owner-reachable case that bypassed the shortcut (CHECK on an inheritance child, message #26) was closed in v6. Not checked without code: whether any non-plain ALTER path still reaches the shortcut."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "No hot-path cost for non-users is visible. The nbtree VACUUM invariant does not apply, since the nbtree patch (v1-0001) was dropped in message #4."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "This proposal fixes data corruption, and no existing feature, setting or extension prevents it. Running SET TABLESPACE outside a transaction block avoids the bug in practice, but core does not enforce that, so it is only a workaround. The shortcut reuses the existing isTopLevel and transaction-block checks, which the thread discussed and settled in messages #21 to #30."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "The proposal fixes a reported data-corruption bug (BUG #19686), so the user problem is real and reproducible: message #1 shows wrong query results, and messages #16 and #24 show stale index entries on master. Tom Lane, Andres Freund and Michael Paquier agree the bug must be fixed and support eager index copy (messages #7, #9, #10, #23). The shortcuts that add complexity were requested by Andres and backed by Tom, so they are not unrequested features. The one open demand-type question is whether a deferred copy for 19 is worth another look (message #33). That is only an offer, not part of v7, so it is not an objection here."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 6,
+      "new_survived": 2,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [
+    "invariants/nbtree.md"
+  ],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 77,
+    "hits_found": 7,
+    "sentences_rewritten": 7,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 14,
+    "wall_ms": 136332,
+    "cost_usd": 2.7688556,
+    "dry_run": false
+  }
+}

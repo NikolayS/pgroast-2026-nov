@@ -1,0 +1,1352 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:42:09.522Z",
+  "input": {
+    "arg": "7340",
+    "cf": {
+      "id": 7340,
+      "url": "https://commitfest.postgresql.org/patch/7340/",
+      "title": "Speed up lpad() and rpad()",
+      "status": "Needs review",
+      "authors": "Sehrope Sarkuni (sehrope)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAH7T-apj%2BpFg9bRkXVGfGejS2Uu4WzdMd7KoLKTW11mdsrt1Ew%40mail.gmail.com",
+    "subject": "Speed up lpad() and rpad() for one-byte padding strings",
+    "thread_start": "2026-09-23T14:10:09Z",
+    "messages_read": 12,
+    "messages_total": 12,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v5-0001-Factor-the-padding-loop-out-of-lpad-and-rpad.patch",
+      "v5-0003-Use-repeat_bytes-in-repeat.patch",
+      "v5-0002-Copy-whole-repetitions-of-the-pad-string-at-once-.patch",
+      "0001-Use-memset-for-one-byte-padding-in-lpad-and-rpad.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection is fatal, and no level fails. A committer co-wrote the series and Heikki asked for the shared design. Three fixable points are open: demand-2 and maintenance-fit-2 rest on the regressions measured in message #12, which have no reply, and demand-1 on the lack of a production workload with large N. The committer who signs must weigh these.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Faster lpad(), rpad() and repeat() with doubling block copies",
+    "problem": "lpad() and rpad() call pg_mblen_range() and memcpy() once per padding character, so large pads are slow; repeat() copies once per repetition. The author points to large N in test data, benchmarks and reproducers, such as join_hash.sql using rpad('', 320000, 'x'). John Naylor says real uses rarely exceed N of 100, where no difference is measured.",
+    "proposed_design": "v5 moves the padding loop of lpad() and rpad() into a shared helper, append_padding(), which counts the pad characters once, writes whole repetitions with a new repeat_bytes() and copies the partial tail as bytes. repeat_bytes() copies the source once, doubles the copied region to at least 16 kB, then copies that block repeatedly with CHECK_FOR_INTERRUPTS() between copies. repeat() also uses repeat_bytes(). The first one-byte memset() fast path was dropped.",
+    "user_visible_surface": [
+      "Long lpad() and rpad() calls become cancellable; on master they ignore statement_timeout until the call ends."
+    ],
+    "author_claims": [
+      "rpad and lpad with a 1M result drop from about 4.8 ms to about 0.11 ms, for any pad length.",
+      "repeat() is about 4 times faster for 1-byte sources at large N and at parity for sources of 100 bytes or more.",
+      "Output and pad validation are unchanged from master, including errors for invalid pad strings.",
+      "A 16 kB block performs the same as blocks up to 4 MB on the author's machine; 16 MB is slower.",
+      "The doubling idea for repeat() comes from a separate thread whose memset()-only v2 is Ready for Committer."
+    ],
+    "thread_state": "Nathan Bossart co-wrote the series and is committer; Heikki asked that repeat(), lpad() and rpad() share one implementation, which v5 does. Manu (Zen 5) and shihao zhong (M2 Max) report gains but also regressions: short lpad up to three pad characters, and repeat() with 1000-byte source at 10M is 24% slower on M2 Max.",
+    "unclear": [
+      "No reply from the author on the M2 Max regressions for short lpad() and large-source repeat().",
+      "The material does not say how this series and the Ready for Committer repeat() patch will be merged or ordered.",
+      "The 16 kB block size rests on two x86 machines and one ARM machine; the repeat() thread found a different best size on Intel.",
+      "No benchmark covers typical small N with multibyte pads beyond instruction counts on one machine.",
+      "John Naylor's objection about real-world demand has no further reply after message #8."
+    ],
+    "search_queries": [
+      "lpad rpad performance",
+      "speed up repeat function",
+      "string padding memcpy doubling",
+      "repeat memset optimization",
+      "oracle_compat padding loop",
+      "text function SIMD copy",
+      "CHECK_FOR_INTERRUPTS lpad cancel",
+      "string function micro-optimization"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P4",
+      "source_id": "cf:4238",
+      "title": "optimize several list functions with SIMD intrinsics",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/4238/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20230308002502.GA3378449@nathanxps13"
+      ],
+      "date": "2023-07-10",
+      "first_date": "2023-03-08",
+      "who_objected": "John Naylor, Heikki Linnakangas",
+      "quote": "Grepping for \"tlist_member\" and \"list_delete_ptr\", I don't see any callers in hot codepaths where this could make a noticeable difference.",
+      "quote_url": "https://www.postgresql.org/message-id/1184a66b-efa4-6fc8-ba8c-72db6f3b1352%40iki.fi",
+      "enriched": true,
+      "reason": "No workload was shown where these List functions matter, and the author agreed that a profile showing them should come first. Heikki Linnakangas checked callers such as tlist_member and list_delete_ptr, found none in hot code paths where the change would make a noticeable difference, and returned the patch with feedback.",
+      "relation": "related_only",
+      "what_is_different": "P4 changed List searches and showed no hot callers. This proposal shows large measured gains, but only at N far above what message #7 calls typical, so the question of a real workload is shared."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Short-pad callers pay so that large-pad callers gain",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "desirability",
+      "touch_points": [
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A reporting query formats millions of rows with lpad(code, 7, '0') on ARM. Each call now runs more instructions than on master, so the common formatting case gets slower, and nobody notices until a release-to-release comparison.",
+      "argument": "Message #12 measures lpad(s, 7, '0') at 772 instructions per call against 694 on master, and reports that padding of up to three characters costs more. That size is the usual case John Naylor describes in message #7. Message #12 also finds repeat() with a 1000-byte source 24% slower at 10M. The thread has no reply to these numbers, so the trade between common small calls and rare large calls has not been weighed.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        7,
+        12
+      ],
+      "author_must_show": "Can the patch keep short pads, up to about 16 characters, at master's cost on both x86 and ARM, with timings for a typical row-formatting workload?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "John Naylor",
+          "date": "2026-09-24T05:21:27Z",
+          "url": "https://www.postgresql.org/message-id/CANWCAZaB8NsQJrKc-pxRTj_%3DC8CBOTDEWkPW0Eur%3DymUSbUwZQ%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "shihao zhong",
+          "date": "2026-10-03T05:27:34Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQ%2BFM6OMnZo%3Da-p2xqXSGGwC6VD4C7hmsJEASiyFBecrQ%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #12 reports more instructions for pads of up to three characters, and the thread has no reply. The x86 timings in message #4 show no difference at N = 10, so the size of the cost is open, but the trade has not been weighed.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Speedup targets large N, which the thread shows mainly in test data",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer pushes the shared doubling helper for lpad(), rpad() and repeat(). Typical callers, such as lpad(id, 7, '0'), see no change, so Postgres takes on a new copy strategy and a tuned 16 kB block for a gain few production queries see.",
+      "argument": "In message #7, John Naylor says real N rarely exceeds 100, and the tables in message #1 show no difference up to N = 100. Message #8 answers with join_hash.sql, benchmarks and reproducers, all of which build test data once and do not run in production loops. No field report, -general thread or user workload is cited, and message #8 got no reply. The cancellation gain from message #11 is real, but adding CHECK_FOR_INTERRUPTS() to the existing loop would also give it.",
+      "precedent_ids": [
+        "P4"
+      ],
+      "thread_message_refs": [
+        1,
+        7,
+        8,
+        11
+      ],
+      "author_must_show": "Which production workloads call lpad(), rpad() or repeat() with results large enough to matter, and how much time do they spend there today?",
+      "precedents": [
+        {
+          "id": "P4",
+          "title": "optimize several list functions with SIMD intrinsics",
+          "url": "https://commitfest.postgresql.org/patch/4238/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/20230308002502.GA3378449@nathanxps13"
+          ],
+          "date": "2023-07-10",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Sehrope Sarkuni",
+          "date": "2026-09-23T14:10:09Z",
+          "url": "https://www.postgresql.org/message-id/CAH7T-apj%2BpFg9bRkXVGfGejS2Uu4WzdMd7KoLKTW11mdsrt1Ew%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "John Naylor",
+          "date": "2026-09-24T05:21:27Z",
+          "url": "https://www.postgresql.org/message-id/CANWCAZaB8NsQJrKc-pxRTj_%3DC8CBOTDEWkPW0Eur%3DymUSbUwZQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Sehrope Sarkuni",
+          "date": "2026-09-24T11:03:04Z",
+          "url": "https://www.postgresql.org/message-id/CAH7T-aoGV1tTdYy0OrDxkgkue%3Du7wTRxztTLPxUs0OZ%3DL2hF%3Dg%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Manu",
+          "date": "2026-09-25T01:24:54Z",
+          "url": "https://www.postgresql.org/message-id/179029949414.497877.6537870082909473028%40gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #8 grants that formatting uses have small N and names only test data, benchmarks and reproducers. An engaged committer co-wrote the series, which lowers confidence, but the thread shows no production workload.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Fixed 16 kB block makes some repeat() calls slower",
+      "level": "2",
+      "rubric_item": 15,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user on Apple Silicon builds 10M test values with repeat() from a 1000-byte source and gets results 24% slower after upgrading. Later reports from other CPUs or glibc versions ask for a different block size. The project then has to tune a constant that depends on memcpy() behaviour it does not control.",
+      "argument": "On master, repeat() with a large source was already at memcpy() speed, and message #12 shows v5 is 24% slower there, which message #12 attributes to memory cost and says block size does not fix. The 16 kB value rests on one machine (message #10) plus Zen 5 (message #11). The repeat() thread found a different best size on Intel, tied to glibc's non-temporal threshold. Nothing in the tree would detect a later regression on another platform.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        10,
+        11,
+        12
+      ],
+      "author_must_show": "Can repeat_bytes() keep master's per-copy loop when the source is already large, so that no measured platform regresses, and what policy decides the block size on future hardware?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 10,
+          "from": "Sehrope Sarkuni",
+          "date": "2026-09-24T23:54:21Z",
+          "url": "https://www.postgresql.org/message-id/CAH7T-aq%2BahEAKamY1JU2jN6X_N3OLD63kJ7jfn9YyRVNd1GkBA%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Manu",
+          "date": "2026-09-25T01:24:54Z",
+          "url": "https://www.postgresql.org/message-id/179029949414.497877.6537870082909473028%40gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "shihao zhong",
+          "date": "2026-10-03T05:27:34Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQ%2BFM6OMnZo%3Da-p2xqXSGGwC6VD4C7hmsJEASiyFBecrQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #12 measures repeat() with a 1000-byte source at 10M as 24% slower on M2 Max, and the thread has no reply. Message #11 shows 16 kB costs nothing on Zen 5, but no Intel machine ran v5.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Common short-pad calls pay so that rare large pads gain",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "demand",
+      "touch_points": [
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A reporting query calls lpad(id::text, 7, '0') millions of times. With v5 each call runs about 11% more instructions on an M2 Max. The gain lands only on test-data generators that pad to 100k bytes or more.",
+      "argument": "In message #7, John Naylor reported that real N rarely exceeds 100, and the thread shows no gain there. Message #8 answers with test data, benchmarks and reproducers, which is the narrow use [P4] was returned for lacking. Message #12 measures short lpad() at 772 against 694 instructions, breaking even only at four pad characters, and the thread has no reply to that. Cancellable lpad() is a real gain, but a CHECK_FOR_INTERRUPTS() in the existing loop would also give it.",
+      "precedent_ids": [
+        "P4"
+      ],
+      "thread_message_refs": [
+        7,
+        8,
+        12
+      ],
+      "author_must_show": "Can v5 keep the master path for pads of a few characters, so that common small-N lpad() calls show no regression on any measured machine?",
+      "precedents": [
+        {
+          "id": "P4",
+          "title": "optimize several list functions with SIMD intrinsics",
+          "url": "https://commitfest.postgresql.org/patch/4238/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/20230308002502.GA3378449@nathanxps13"
+          ],
+          "date": "2023-07-10",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "John Naylor",
+          "date": "2026-09-24T05:21:27Z",
+          "url": "https://www.postgresql.org/message-id/CANWCAZaB8NsQJrKc-pxRTj_%3DC8CBOTDEWkPW0Eur%3DymUSbUwZQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Sehrope Sarkuni",
+          "date": "2026-09-24T11:03:04Z",
+          "url": "https://www.postgresql.org/message-id/CAH7T-aoGV1tTdYy0OrDxkgkue%3Du7wTRxztTLPxUs0OZ%3DL2hF%3Dg%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "shihao zhong",
+          "date": "2026-10-03T05:27:34Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQ%2BFM6OMnZo%3Da-p2xqXSGGwC6VD4C7hmsJEASiyFBecrQ%40mail.gmail.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of demand-2, which states the same short-pad regression from message #12 without relying on [P4]. [P4] concerned List searches with no hot callers, so it does not support a claim of a measured regression.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Short lpad() and rpad() calls pay for a large-N speedup",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An application formats ids with lpad(s, 7, '0') in every row of a report. With v5, each call runs about 11% more instructions (772 against 694 on M2 Max). The gain goes to scripts that build multi-megabyte test strings, and the formatting workload sees only the cost.",
+      "argument": "Message #12 measures the regression for pads of up to three characters, which matches the formatting use that message #7 calls typical (N well under 100). Message #8 grants that point and argues from test data and reproducers, which are not latency-sensitive production paths. The thread has no reply on the short-pad regression and no fast path for small N. In [P4], a micro-optimization was returned because no workload where the code matters was shown.",
+      "precedent_ids": [
+        "P4"
+      ],
+      "thread_message_refs": [
+        7,
+        8,
+        12
+      ],
+      "author_must_show": "Can v5 keep the master loop, or something equally cheap, for pads of a few characters, so that the common small-N calls are not slower on any measured machine?",
+      "precedents": [
+        {
+          "id": "P4",
+          "title": "optimize several list functions with SIMD intrinsics",
+          "url": "https://commitfest.postgresql.org/patch/4238/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/20230308002502.GA3378449@nathanxps13"
+          ],
+          "date": "2023-07-10",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "John Naylor",
+          "date": "2026-09-24T05:21:27Z",
+          "url": "https://www.postgresql.org/message-id/CANWCAZaB8NsQJrKc-pxRTj_%3DC8CBOTDEWkPW0Eur%3DymUSbUwZQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Sehrope Sarkuni",
+          "date": "2026-09-24T11:03:04Z",
+          "url": "https://www.postgresql.org/message-id/CAH7T-aoGV1tTdYy0OrDxkgkue%3Du7wTRxztTLPxUs0OZ%3DL2hF%3Dg%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "shihao zhong",
+          "date": "2026-10-03T05:27:34Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQ%2BFM6OMnZo%3Da-p2xqXSGGwC6VD4C7hmsJEASiyFBecrQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of demand-2. Both rest on the 772 against 694 instruction count in message #12 and ask for the same small-N path.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "For bulk test data, repeat() already covers the large-N rpad() case",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "does_not_fit",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer pushes the lpad()/rpad() rewrite, which carries a counting pass, a partial-tail path and new encoding tests, for a speedup seen only at N far above 100. The only large-N users named are test-data scripts. Those scripts could call repeat(), which the Ready for Committer patch already speeds up for one-byte sources.",
+      "argument": "Message #8 names test data, benchmarks and reproducers as the large-N users. The example given, rpad('', 320000, 'x'), returns the same string as repeat('x', 320000). Message #10 says the Ready for Committer repeat() patch adds a single-byte memset(), and message #11 measures it at par with v5 for one-byte sources. Message #7 reports no measured gain at the N values formatting uses, so the lpad()/rpad() part mainly adds a second fast path for a job repeat() can do.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        7,
+        8,
+        10,
+        11
+      ],
+      "author_must_show": "Which real large-N lpad() or rpad() uses cannot just as easily be written with repeat() once the Ready for Committer repeat() patch is in?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "John Naylor",
+          "date": "2026-09-24T05:21:27Z",
+          "url": "https://www.postgresql.org/message-id/CANWCAZaB8NsQJrKc-pxRTj_%3DC8CBOTDEWkPW0Eur%3DymUSbUwZQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Sehrope Sarkuni",
+          "date": "2026-09-24T11:03:04Z",
+          "url": "https://www.postgresql.org/message-id/CAH7T-aoGV1tTdYy0OrDxkgkue%3Du7wTRxztTLPxUs0OZ%3DL2hF%3Dg%40mail.gmail.com"
+        },
+        {
+          "index": 10,
+          "from": "Sehrope Sarkuni",
+          "date": "2026-09-24T23:54:21Z",
+          "url": "https://www.postgresql.org/message-id/CAH7T-aq%2BahEAKamY1JU2jN6X_N3OLD63kJ7jfn9YyRVNd1GkBA%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Manu",
+          "date": "2026-09-25T01:24:54Z",
+          "url": "https://www.postgresql.org/message-id/179029949414.497877.6537870082909473028%40gmail.com"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of demand-1, which asks the same question about who needs large N. In message #9 a committer asked that repeat(), lpad() and rpad() share one implementation, so the proposal does not add a separate second fast path.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "repeat_bytes() carries a fixed 16 kB block size tuned on three machines."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "The series rewrites the copy loops of lpad(), rpad() and repeat(), which run once per row in formatting queries."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "see objection demand-1: Speedup targets large N, which the thread shows mainly in test data"
+    }
+  ],
+  "questions": [
+    "Can v5 keep pads of a few characters at master's cost on both x86 and ARM, shown with timings for a row-formatting query such as lpad(s, 7, '0')?",
+    "Which production workloads call lpad(), rpad() or repeat() with results large enough to matter, and how much time do they spend there today?",
+    "Can repeat_bytes() keep master's per-copy loop for large sources, so that repeat() with a 1000-byte source at 10M is not slower on M2 Max?",
+    "How does v5 with the 16 kB block perform on an Intel machine, where the repeat() thread found a different best size?",
+    "How will this series be ordered or merged with the Ready for Committer repeat() patch from the other thread?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Nathan Bossart co-wrote the series and is listed as committer on the CommitFest entry.",
+    "liability": "The owner signs for the 16 kB block size and for any later platform report of slower short pads or large-source repeat() calls. Nothing in the tree detects such a regression.",
+    "author_follow_up": "The author revised the series up to v5 in message #10 after review. Message #12, the last message, has no reply yet."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "low",
+    "review_cost": "low",
+    "recommended_action": "proceed",
+    "reason": "The series is three small patches in oracle_compat.c with a committer engaged, and it makes long lpad() and rpad() calls cancellable. The speed gain reaches only large N, and the regressions from message #12 need an answer before commit."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, this review could not check how cheaply append_padding() and repeat_bytes() could add a small-N or large-source path. It also could not check pad validation for the partial tail.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:6546",
+      "kind": "cf",
+      "title": "Fix slotsync worker busy loop causing repeated log messages",
+      "status": "Withdrawn",
+      "date": "2026-05-01",
+      "first_date": "2026-02-27",
+      "url": "https://commitfest.postgresql.org/patch/6546/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHGQGwF6zG9Z8ws1yb3hY1VqV-WT7hR0qyXCn2HdbjvZQKufDw@mail.gmail.com"
+      ],
+      "authors": "Fujii Masao (masaofujii)",
+      "objectors": "",
+      "summary": "The patch fixes a slotsync worker loop that logs four logical decoding messages every 200 ms when confirmed_flush_lsn matches the primary but restart_lsn does not. update_local_synced_slot() would report \"no update\" in that case so the worker uses the normal sleep interval, and a second patch lowered the logical decoding messages from LOG to DEBUG1.",
+      "objection": "The visible messages do not show why. Amit Kapila questioned how 0001 detected an update and opposed the log-level change in 0002. The thread then settled on a simpler patch by Zhijie Hou that compares the slot's old and new LSN/xmin, and Hou posted it for HEAD and back branches.",
+      "touch_points": [],
+      "matched_queries": [
+        "speed up repeat function",
+        "repeat memset optimization"
+      ],
+      "from_hint": false,
+      "score": 0.273,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:6377",
+      "kind": "cf",
+      "title": "Precompute string lengths in PerformRadiusTransaction",
+      "status": "Withdrawn",
+      "date": "2026-03-25",
+      "first_date": "2026-01-05",
+      "url": "https://commitfest.postgresql.org/patch/6377/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/tencent_6B29EC4570E6F0C659B4EAA7@qq.com"
+      ],
+      "authors": "Man Zeng (zengman)",
+      "objectors": "John Naylor",
+      "summary": "The patch computes the lengths of the 'passwd' and 'secret' strings once at the start of PerformRadiusTransaction. This removes repeated strlen() calls inside its loops.",
+      "objection": "The author withdrew the patch after John Naylor pointed out that the project had decided to remove RADIUS authentication entirely. Andreas Karlsson had reviewed the original patch favorably, so no objection to the change itself was raised.",
+      "touch_points": [],
+      "matched_queries": [
+        "lpad rpad performance",
+        "string padding memcpy doubling"
+      ],
+      "from_hint": false,
+      "score": 0.23,
+      "enriched": true,
+      "key_quote": "Shortly after you posted this, it was decided that we're going to\nremove this method entirely:",
+      "quote_message_url": "https://www.postgresql.org/message-id/CANWCAZahqjM9_XVRXpV%3DM9Y7fDiywUFrXUYpBebvxQxdYj%2BNSA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "revert:5495796ad12aae971137d184ff25add8f6b03968",
+      "kind": "revert",
+      "title": "Revert \"Add missing padding from MemoryChunk struct\"",
+      "status": "Reverted",
+      "date": "2022-08-30",
+      "first_date": "2022-08-29",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=5495796ad12aae971137d184ff25add8f6b03968",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3209100.1661787561@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CAA4eK1+1JyW5TiL=yV-3Uq1CrfnTyn0Xrk5uArt31Z=8rgPhXQ@mail.gmail.com"
+      ],
+      "authors": "David Rowley",
+      "objectors": "",
+      "summary": "Revert \"Add missing padding from MemoryChunk struct\"\nReverted commit(s): Add missing padding from MemoryChunk struct; Use MAXALIGN() in calculations using sizeof(SlabBlock)",
+      "objection": "This reverts commit df0f4feef.  It turns out the problem which was causing\nthe 32-bit ARM and PPC animals to fail was due to a MAXALIGN problem in\nslab.c.  This was fixed by d5ee4db0e.  The padding that was added in\ndf0f4feef would only do anything on machines where uint64 was not aligned\nto 8 bytes.  The 32-bit machines which were failing are not in that\ncategory, so revert this commit.",
+      "touch_points": [],
+      "matched_queries": [
+        "string padding memcpy doubling",
+        "oracle_compat padding loop"
+      ],
+      "from_hint": false,
+      "score": 0.219,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:4238",
+      "kind": "cf",
+      "title": "optimize several list functions with SIMD intrinsics",
+      "status": "Returned with feedback",
+      "date": "2023-07-10",
+      "first_date": "2023-03-08",
+      "url": "https://commitfest.postgresql.org/patch/4238/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20230308002502.GA3378449@nathanxps13"
+      ],
+      "authors": "Nathan Bossart (bossartn)",
+      "objectors": "John Naylor, Heikki Linnakangas",
+      "summary": "The patch uses SIMD intrinsics to speed up the linear searches in several List functions, such as list_member_int, list_member_ptr and list_delete_int, on x86 and Arm. It follows the approach used earlier for XidInMVCCSnapshot and shows about 2 times faster searches in a microbenchmark.",
+      "objection": "No workload was shown where these List functions matter, and the author agreed that a profile showing them should come first. Heikki Linnakangas checked callers such as tlist_member and list_delete_ptr, found none in hot code paths where the change would make a noticeable difference, and returned the patch with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "text function SIMD copy",
+        "string function micro-optimization"
+      ],
+      "from_hint": false,
+      "score": 0.209,
+      "enriched": true,
+      "key_quote": "Grepping for \"tlist_member\" and \"list_delete_ptr\", I don't see any\ncallers in hot codepaths where this could make a noticeable difference.",
+      "quote_message_url": "https://www.postgresql.org/message-id/1184a66b-efa4-6fc8-ba8c-72db6f3b1352%40iki.fi",
+      "relevant": true
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:dca369320f6023b55feb49f281d394181fc57903",
+      "kind": "revert",
+      "title": "Revert \"isolationtester: don't repeat the is-it-waiting query when retrying a step.\"",
+      "status": "Reverted",
+      "date": "2016-02-12",
+      "first_date": "2016-02-12",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=dca369320f6023b55feb49f281d394181fc57903",
+      "thread_urls": [],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"isolationtester: don't repeat the is-it-waiting query when retrying a step.\"\nReverted commit(s): isolationtester: don't repeat the is-it-waiting query when retrying a step.",
+      "objection": "This mostly reverts commit 9c9782f066e0ce5424b8706df2cce147cb78170f.\nI left in the parts that rearranged removal of completed waiting steps;\nbut the idea of not rechecking a step's blocked-ness isn't working.",
+      "touch_points": [],
+      "matched_queries": [
+        "speed up repeat function",
+        "repeat memset optimization"
+      ],
+      "from_hint": false,
+      "score": 0.192,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "revert:8b06e6aba8773df8040b357a1cb058879ed2d94f",
+      "kind": "revert",
+      "title": "Revert idea of zer-padding padding session id in log_line_prefix",
+      "status": "Reverted",
+      "date": "2013-05-06",
+      "first_date": "2013-05-06",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=8b06e6aba8773df8040b357a1cb058879ed2d94f",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert idea of zer-padding padding session id in log_line_prefix",
+      "objection": "Removal of doc adjustment and release note mention as well.",
+      "touch_points": [],
+      "matched_queries": [
+        "string padding memcpy doubling",
+        "oracle_compat padding loop"
+      ],
+      "from_hint": false,
+      "score": 0.184,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:6441",
+      "kind": "cf",
+      "title": "Decoupling our alignment assumptions about int64 and double",
+      "status": "Withdrawn",
+      "date": "2026-02-03",
+      "first_date": "2026-01-29",
+      "url": "https://commitfest.postgresql.org/patch/6441/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1127261.1769649624@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane (tgl)",
+      "objectors": "Tom Lane",
+      "summary": "Split TYPALIGN_DOUBLE into three alignment codes: TYPALIGN_DOUBLE for float8 only, TYPALIGN_INT64 ('l') for 64-bit integer types and pointers, and TYPALIGN_MAX for composite types. This would end the assumption that ALIGNOF_DOUBLE is the maximum alignment, which breaks on AIX, where alignof(int64) = 8 but alignof(double) = 4.",
+      "objection": "The author withdrew it. The change alters user-table row layout on platforms where int64 and double alignment differ, so it breaks pg_upgrade there, and binary-compatible casts declared with \"like int8\" failed dump and reload. The deciding problem was extensions: an existing type's typalign cannot be changed without table rewrites, and a type created with \"LIKE int8\" would get 'l' or 'd' depending on whether it was pg_upgraded or installed fresh, so the two codes would end up assigned at random. Only the att_align_nominal() refactoring from the series was committed.",
+      "touch_points": [],
+      "matched_queries": [
+        "string padding memcpy doubling"
+      ],
+      "from_hint": false,
+      "score": 0.148,
+      "enriched": true,
+      "key_quote": "Perhaps we could have got away with such a change in the pre-pg_upgrade era, but I think we cannot now.",
+      "quote_message_url": "https://www.postgresql.org/message-id/1345814.1770157786%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:5273",
+      "kind": "cf",
+      "title": "micro-optimize nbtcompare.c routines",
+      "status": "Withdrawn",
+      "date": "2024-09-27",
+      "first_date": "2024-09-26",
+      "url": "https://commitfest.postgresql.org/patch/5273/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ZvXBP3Rbfmris0yf@nathan"
+      ],
+      "authors": "Nathan Bossart (bossartn)",
+      "objectors": "David Rowley",
+      "summary": "The patch changed several comparison routines in nbtcompare.c and related files to use the branchless integer comparison functions added in commit 6b80394. The goal was to save a few cycles per comparison, while keeping the STRESS_SORT_INT_MIN test behaviour.",
+      "objection": "The author found no measurable benefit in testing. David Rowley's generated-code comparison showed no instruction-level gain, and with clang the patched code was slightly worse. After the author checked again with -O2, the versions looked about the same, and he withdrew the patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "string function micro-optimization"
+      ],
+      "from_hint": false,
+      "score": 0.143,
+      "enriched": true,
+      "key_quote": "Looking at your version, it doesn't look like there's any sort of improvement in terms of the instructions. Certainly, for clang, it's worse as it adds a shift left instruction and an additional compare.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAApHDvrAi259611bx%3DEiWBjYhmRyxzUMssVW8E31%2BvHH2Vachw%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P9",
+      "source_id": "revert:1aa8324b81fa4979ffdc6ccf81d560eac9446948",
+      "kind": "revert",
+      "title": "Revert \"Refactor CopyAttributeOut{CSV,Text}() to use a callback in COPY TO\"",
+      "status": "Reverted",
+      "date": "2024-02-06",
+      "first_date": "2024-02-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1aa8324b81fa4979ffdc6ccf81d560eac9446948",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20240206014125.qofww7ew3dx3v3uk@awork3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/20231204.153548.2126325458835528809.kou@clear-code.com"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Refactor CopyAttributeOut{CSV,Text}() to use a callback in COPY TO\"\nReverted commit(s): Refactor CopyAttributeOut{CSV,Text}() to use a callback in COPY TO",
+      "objection": "This reverts commit 2889fd23be56, following a discussion with Andres\nFreund as this callback, being called once per attribute when sending a\nrelation's row, can involve a lot of indirect function calls (more\nattributes to deal with means more impact).  The effects of a dispatch\nat this level would become more visible when improving the per-row code\nexecution of COPY TO, impacting future potential performance\nimprovements.",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "text function SIMD copy"
+      ],
+      "from_hint": false,
+      "score": 0.141,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:3645",
+      "kind": "cf",
+      "title": "Refactoring MemSet/memset api usage",
+      "status": "Returned with feedback",
+      "date": "2022-09-30",
+      "first_date": "2022-05-14",
+      "url": "https://commitfest.postgresql.org/patch/3645/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEudQApCeq4JjW1BdnwU=m=-DvG5WyUik0Yfn3p6UNphiHjj+w@mail.gmail.com"
+      ],
+      "authors": "Ranier Vilela (raniervilela)",
+      "objectors": "Tom Lane, Robert Haas, Alvaro Herrera, Michael Paquier",
+      "summary": "The patch started as a fix for one MemSet() call in relcache.c and grew into replacing MemSet() and memset() calls with struct initialization such as {0} across the tree. Part of this was committed separately, including the original fix and Peter Eisentraut's own conversion of about 200 MemSet() calls.",
+      "objection": "Reviewers saw no benefit in replacing the remaining memset() calls with struct initialization, because struct initialization does not set padding bits. The new code may assume a struct has no padding bits, which is fragile and hard to verify. Álvaro Herrera added that the change creates back-patching conflicts for zero benefit, and Michael Paquier agreed to leave the code as it is.",
+      "touch_points": [],
+      "matched_queries": [
+        "repeat memset optimization"
+      ],
+      "from_hint": false,
+      "score": 0.137,
+      "enriched": true,
+      "key_quote": "Moreover, the new set of assumptions may include \"there are no padding bits in here\", which is mighty fragile and hard to verify.",
+      "quote_message_url": "https://www.postgresql.org/message-id/1141325.1661367610%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:3792",
+      "kind": "cf",
+      "title": "Subtrans performance smoothing",
+      "status": "Withdrawn",
+      "date": "2022-09-06",
+      "first_date": "2022-08-01",
+      "url": "https://commitfest.postgresql.org/patch/3792/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANbhV-Fdnr5F0YyPAG88qhq9KhUtGMJ7ZGVKp1SD+YY12jVdPA@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon)",
+      "objectors": "",
+      "summary": "The patch reduces pg_subtrans lookups after a snapshot overflows its subxid cache, so a few overflowed backends do not slow down XidInMVCCSnapshot() for every session. It checks the snapshot before subtrans, keeps full subxid data in snapshots, uses binary search on standby snapshots, and makes GetTopmostTransaction check xmin as it walks.",
+      "objection": "The author withdrew the patch from the commitfest in favour of his other patch, \"Minimizing calls to SubTransSetParent()\". Andres Freund had argued that subtrans needs a redesign, such as an in-memory hashtable in place of the SLRU, and that patches that only improve things at the margins are not a good use of time. Robert Haas and the author disputed that redesign, and the withdrawal message does not cite the objection as the reason.",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "lpad rpad performance"
+      ],
+      "from_hint": false,
+      "score": 0.137,
+      "enriched": true,
+      "key_quote": "To avoid confusion, I will withdraw this patch from the CF, in favour\nof my other patch on a similar topic,\nMinimizing calls to SubTransSetParent()\nhttps://commitfest.postgresql.org/39/3806/.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CANbhV-HFs1947%3D2x-RKgYGpuosGXoy%2BOMTQEQmcAV_ykKG%3Depw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:6586",
+      "kind": "cf",
+      "title": "Avoid multiple calls to memcpy (src/backend/access/index/genam.c)",
+      "status": "Withdrawn",
+      "date": "2026-03-25",
+      "first_date": "2026-03-09",
+      "url": "https://commitfest.postgresql.org/patch/6586/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEudQApbWon+3Eb9x4WW_D-JkSt2mvfx99dXu9VZ4AeCuTh=fw@mail.gmail.com"
+      ],
+      "authors": "Ranier Vilela (raniervilela)",
+      "objectors": "David Rowley, lakshmi",
+      "summary": "The patch changes systable_beginscan and systable_beginscan_ordered in genam.c to copy the idxkey scan key array with one memcpy before the loop. The current code calls memcpy once per key inside the loop.",
+      "objection": "pgbench runs by lakshmi on debug and optimized builds showed no improvement, and the patched build was sometimes slightly slower. David Rowley argued that the current per-key memcpy has a fixed size that the compiler inlines, and that most calls use 1-2 scan keys. He added that the micro-benchmarks used the wrong ScanKeyData size and that catalog scans are mostly served by caches. The author then agreed the change was not worth it and withdrew it.",
+      "touch_points": [],
+      "matched_queries": [
+        "string padding memcpy doubling"
+      ],
+      "from_hint": false,
+      "score": 0.135,
+      "enriched": true,
+      "key_quote": "For me, I think the unmodified code is better as the memcpy is a fixed size and can be inlined by the compiler.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAApHDvoGXxWrit8X6_W4NFVQ%3DS0%3DSiKs3YTmVNw0fqpwXacheg%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:5161",
+      "kind": "cf",
+      "title": "Restart pg_usleep when interrupted",
+      "status": "Withdrawn",
+      "date": "2024-09-04",
+      "first_date": "2024-06-28",
+      "url": "https://commitfest.postgresql.org/patch/5161/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/01000190606e3d2a-116ead16-84d2-4449-8d18-5053da66b1f4-000000@email.amazonses.com"
+      ],
+      "authors": "Sami Imseih (simseih)",
+      "objectors": "",
+      "summary": "Restart pg_usleep when interrupted\nThreads: Restart pg_usleep when interrupted",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "CHECK_FOR_INTERRUPTS lpad cancel"
+      ],
+      "from_hint": false,
+      "score": 0.13,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:2211",
+      "kind": "cf",
+      "title": "Resume vacuum and autovacuum from interruption and cancellation",
+      "status": "Returned with feedback",
+      "date": "2020-04-08",
+      "first_date": "2019-07-16",
+      "url": "https://commitfest.postgresql.org/patch/2211/",
+      "thread_urls": [],
+      "authors": "Masahiko Sawada (masahikosawada)",
+      "objectors": "",
+      "summary": "Resume vacuum and autovacuum from interruption and cancellation",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "CHECK_FOR_INTERRUPTS lpad cancel"
+      ],
+      "from_hint": false,
+      "score": 0.128,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:3271",
+      "kind": "cf",
+      "title": "KnownAssignedXidsGetAndSetXmin performance",
+      "status": "Returned with feedback",
+      "date": "2022-11-15",
+      "first_date": "2021-05-20",
+      "url": "https://commitfest.postgresql.org/patch/3271/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALdSSPgahNUD_=pB_j=1zSnDBaiOtqVfzo8Ejt5J_k7qZiU1Tw@mail.gmail.com"
+      ],
+      "authors": "Michail Nikolaev (nkey), Mihail Nikalayeu (mihailnikalayeu)",
+      "objectors": "",
+      "summary": "KnownAssignedXidsGetAndSetXmin performance\nThreads: Slow standby snapshot",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "lpad rpad performance"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:3640",
+      "kind": "cf",
+      "title": "Fixes wrong memset api usage",
+      "status": "Rejected",
+      "date": "2022-05-18",
+      "first_date": "2022-05-14",
+      "url": "https://commitfest.postgresql.org/patch/3640/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEudQApCeq4JjW1BdnwU=m=-DvG5WyUik0Yfn3p6UNphiHjj+w@mail.gmail.com"
+      ],
+      "authors": "Ranier Vilela (raniervilela)",
+      "objectors": "",
+      "summary": "Fixes wrong memset api usage\nThreads: Avoid unecessary MemSet call (src/backend/utils/cache/relcache.c)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "repeat memset optimization"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:5504",
+      "kind": "cf",
+      "title": "Don't ignore recovery conflict interrupt on blocked writing",
+      "status": "Withdrawn",
+      "date": "2025-03-07",
+      "first_date": "2025-01-13",
+      "url": "https://commitfest.postgresql.org/patch/5504/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAO6_XqoZb2czT=i=VBQjwBwwo3d21cnMm-EpfYfx0m-O+abFrQ@mail.gmail.com"
+      ],
+      "authors": "Anthonin Bonnefoy (bonnefoa)",
+      "objectors": "",
+      "summary": "Don't ignore recovery conflict interrupt on blocked writing\nThreads: Accept recovery conflict interrupt on blocked writing",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "CHECK_FOR_INTERRUPTS lpad cancel"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "revert:4f3b56eea23554e1756a26080db273156f23f4f2",
+      "kind": "revert",
+      "title": "Revert \"Optimize various aggregate deserialization functions\"",
+      "status": "Reverted",
+      "date": "2023-10-10",
+      "first_date": "2023-10-09",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=4f3b56eea23554e1756a26080db273156f23f4f2",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAApHDvorfO3iBZ=xpiZvp3uHtJVLyFaPBSvcAhAq2HPLnaNSwQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAApHDvr=e-YOigriSHHm324a40HPqcUhSp6pWWgjz5WwegR=cQ@mail.gmail.com"
+      ],
+      "authors": "David Rowley",
+      "objectors": "",
+      "summary": "Revert \"Optimize various aggregate deserialization functions\"\nReverted commit(s): Optimize various aggregate deserialization functions",
+      "objection": "This reverts commit 608fd198def5390c3490bfe903730207dfd8eeb4.\n\nOn 2nd thoughts, the StringInfo API requires that strings are NUL\nterminated and pointing directly to the data in a bytea Datum isn't NUL\nterminated.",
+      "touch_points": [],
+      "matched_queries": [
+        "string function micro-optimization"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:3220",
+      "kind": "cf",
+      "title": "Speed up LockReleaseAll",
+      "status": "Returned with feedback",
+      "date": "2021-12-03",
+      "first_date": "2021-06-30",
+      "url": "https://commitfest.postgresql.org/patch/3220/",
+      "thread_urls": [],
+      "authors": "David Rowley (davidrowley)",
+      "objectors": "",
+      "summary": "Speed up LockReleaseAll",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "speed up repeat function"
+      ],
+      "from_hint": false,
+      "score": 0.112,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:3501",
+      "kind": "cf",
+      "title": "Speed up releasing of locks",
+      "status": "Withdrawn",
+      "date": "2024-05-08",
+      "first_date": "2022-01-01",
+      "url": "https://commitfest.postgresql.org/patch/3501/",
+      "thread_urls": [],
+      "authors": "Andres Freund (andresfreund), David Rowley (davidrowley)",
+      "objectors": "",
+      "summary": "Speed up releasing of locks",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "speed up repeat function"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:2504",
+      "kind": "cf",
+      "title": "Allow COPY \"text\" to output a header and add header matching mode to COPY FROM",
+      "status": "Returned with feedback",
+      "date": "2020-09-29",
+      "first_date": "2018-05-13",
+      "url": "https://commitfest.postgresql.org/patch/2504/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAF1-J-0PtCWMeLtswwGV2M70U26n4g33gpe1rcKQqe6wVQDrFA@mail.gmail.com"
+      ],
+      "authors": "Rémi Lapeyre (remilapeyre)",
+      "objectors": "",
+      "summary": "Allow COPY \"text\" to output a header and add header matching mode to COPY FROM\nThreads: Allow COPY's 'text' format to output a header",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "text function SIMD copy"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:6653",
+      "kind": "cf",
+      "title": "SLOPE - Planner optimizations on monotonic expressions.",
+      "status": "Withdrawn",
+      "date": "2026-07-20",
+      "first_date": "2026-02-11",
+      "url": "https://commitfest.postgresql.org/patch/6653/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAE8JnxN8kLUMygXb33LC-UPGyTC0cTcCyeWUdfEoz=OBo3aT5g@mail.gmail.com"
+      ],
+      "authors": "Alexandre Felipe (afelipe)",
+      "objectors": "",
+      "summary": "SLOPE - Planner optimizations on monotonic expressions.\nThreads: SLOPE - Planner optimizations on monotonic expressions.",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "repeat memset optimization"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:5606",
+      "kind": "cf",
+      "title": "Remove extra Sort node above a btree-compatible Index Scan",
+      "status": "Returned with feedback",
+      "date": "2025-09-01",
+      "first_date": "2025-02-28",
+      "url": "https://commitfest.postgresql.org/patch/5606/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAK98qZ0MVVdV1tQKhHq=2qVkKN1rWff-YW6BGOOLoO509krv4Q@mail.gmail.com"
+      ],
+      "authors": "Alexandra Wang (alexandrawang)",
+      "objectors": "",
+      "summary": "Remove extra Sort node above a btree-compatible Index Scan\nThreads: Remove extra Sort node above a btree-compatible Index Scan",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "oracle_compat padding loop"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:4399",
+      "kind": "cf",
+      "title": "pgbench: allow to cancel queries during benchmark",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-06-26",
+      "url": "https://commitfest.postgresql.org/patch/4399/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20230626224628.61f372f25cde3747f164a4c6@sraoss.co.jp"
+      ],
+      "authors": "Yugo Nagata (yugo.nagata)",
+      "objectors": "",
+      "summary": "pgbench: allow to cancel queries during benchmark\nThreads: pgbnech: allow to cancel queries during benchmark",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "CHECK_FOR_INTERRUPTS lpad cancel"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 4,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 3
+  },
+  "precedent_cutoff": "2026-09-23",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "The only earlier discussion named in the thread is the repeat() thread (message #9), which is still open and not a rejection. P12 and P8 died on unmeasurable gains, which does not apply to this proposal."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 0,
+      "note": "The series adds no syntax, GUC, catalog object or dump state, and Manu's comparison across three encodings in message #11 shows identical output and errors. The only visible change is that long lpad() and rpad() calls become cancellable, which matches what repeat() already does on master. Invalid pad strings were not in that comparison; the encoding.sql tests cover them."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The patch has no persistent or cross-node state. It changes in-memory copy loops in lpad(), rpad() and repeat() in oracle_compat.c, with no WAL, catalog, on-disk, protocol or exported-ABI change. Manu checked output, md5 of every result and error messages against master in UTF8, EUC_JP and SQL_ASCII databases (message #11), so stored results, indexes and replicas see identical values."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal changes no privilege, catalog or exposure. The commit message for 0002 says pad validation is unchanged, and message #11 reports identical output and errors across UTF8, EUC_JP and SQL_ASCII. The new cancellation check reduces the existing denial-of-service exposure from long lpad() and rpad() calls."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "The change is contained in oracle_compat.c, a committer co-wrote it, and it adds cancellation to lpad() and rpad(). The objections are about regressions in cases that are not the target, not about fit in core."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "One objection only. The cancellation gain for long lpad()/rpad() calls in message #11 has no existing alternative, so it is not raised here."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "Demand is the weak point, but not fatal. A committer co-wrote the series, Heikki asked for the shared design, and the cancellation fix has its own value, so this reads as 'show demand and fix the short-pad regression', not a rejection."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 10,
+      "new_objections": 6,
+      "new_survived": 3,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "synthesis said NEEDS-COMMITTER-EYES but listed a level 1b objection (demand-2); changed to NEEDS-DESIGN-DISCUSSION"
+  ],
+  "tone_lint": {
+    "fields_checked": 76,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 17,
+    "wall_ms": 147835,
+    "cost_usd": 2.2312428,
+    "dry_run": false
+  }
+}

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "tool": "pgroast/0.1",
-  "generated_at": "2026-11-12T02:33:58.678Z",
+  "generated_at": "2026-11-12T03:47:12.850Z",
   "input": {
     "arg": "5621",
     "cf": {
@@ -35,7 +35,7 @@
   },
   "verdict": "NEEDS-DESIGN-DISCUSSION",
   "confidence": "medium",
-  "verdict_reasoning": "No surviving objection is fatal, and none stops review at level 1 or 2. The goal extends the existing wal_compression setting, and the open points are fixable: the default and opt-out (standards-compat-1), the codec needed to read block references (replication-ondisk-1), and workload evidence (demand-1). The WAL record format change and the WIP streams rule (replication-ondisk-2) need a committer who knows xlogreader and recovery to sign.",
+  "verdict_reasoning": "No surviving objection is fatal, and less WAL is a lasting need. The remaining points are fixable. standards-compat-2 and demand-1 ask for OLTP cost and benefit numbers behind the default-on 512-byte threshold. replication-ondisk-1 asks for a confirmed XLOG_PAGE_MAGIC bump. maintenance-fit-1 and standards-compat-1 concern the two record lengths and the changed meaning of wal_fpi_bytes. A committer who knows the WAL insert and reader paths has to sign the record format.",
   "failing_level": null,
   "levels": [
     {
@@ -56,125 +56,63 @@
   ],
   "brief": {
     "title": "Compress whole WAL records above a size threshold",
-    "problem": "Today wal_compression compresses each full-page image on its own, so it cannot use redundancy shared by several images in one record, or between records. Large non-FPI records, such as 2PC records, are not compressed at all. The target is any cluster where WAL volume matters, with B-tree index builds as the main example.",
-    "proposed_design": "A record larger than wal_compression_threshold is compressed as one unit with lz4 or zstd, alongside per-FPI compression, and is marked by a spare xl_info bit plus a small header. If whole-record compression does not save space, the record falls back to per-FPI compression. A WIP patch keeps zstd history across records in a pool of streams that reset at fixed 4MB boundaries, so readers can start mid-WAL.",
+    "problem": "Each full-page image is compressed on its own today, so redundancy between images in one record, or between records, goes unused. B-tree index builds and other large-record workloads write more WAL than they need to. Small records, which carry about half of pgbench WAL, do not compress on their own.",
+    "proposed_design": "Context reuse for zstd is already committed. The remaining 0001 compresses a record larger than wal_compression_threshold as one unit with lz4 or zstd, flags it with XLR_COMPRESSED and a codec and length header, and falls back to per-FPI compression when that does not save space. WIP 0003 keeps zstd history across records in leased streams that restart at fixed 4MB boundaries so readers can start mid-WAL.",
     "user_visible_surface": [
-      "New GUC wal_compression_threshold, default 512 bytes, which sets the record size above which the whole record is compressed.",
-      "New GUC wal_compression_streams (WIP patch), a pool of compression streams that keep history across records.",
-      "WAL record format change: the XLR_COMPRESSED bit in xl_info and a compression header with method and decompressed length.",
+      "New GUC wal_compression_threshold, default 512 bytes; only lz4 and zstd use it.",
+      "New GUC wal_compression_streams in WIP 0003, a pool of cross-record compression streams.",
+      "WAL record format: XLR_COMPRESSED bit in xl_info plus a compression header with codec and decompressed length.",
       "pg_waldump and pg_walinspect report physical record sizes separately from decoded sizes.",
-      "pg_stat_wal wal_fpi_bytes counts image bytes before whole-record compression, so it can exceed wal_bytes."
+      "pg_stat_wal.wal_fpi_bytes counts image bytes before whole-record compression and can exceed wal_bytes."
     ],
     "author_claims": [
-      "CREATE INDEX over 10M random doubles writes 19% less WAL with zstd and 15% less with lz4.",
-      "Records below the threshold are unchanged, and each record still decodes on its own without streams.",
-      "Setting the threshold above the largest possible record restores today's behaviour.",
-      "Streams cut pgbench WAL per transaction by 17% to 37%, with a throughput cost between none and 12%.",
-      "A backend with whole-record compression enabled holds about twice the old compression buffer memory."
+      "CREATE INDEX over 10M random doubles writes about 19% less WAL with zstd and 15% less with lz4.",
+      "Records below the threshold are untouched, and a threshold above the largest record restores current behaviour.",
+      "In 0001 every record still decodes on its own, so WAL readers need no new logic.",
+      "Streams in 0003 cut pgbench WAL per transaction by 17% to 37%, at 0% to 12% throughput cost.",
+      "A backend with whole-record compression holds about twice the old compression buffer memory, about 268 KiB extra."
     ],
-    "thread_state": "The zstd context reuse split out of this series was committed in two parts by Michael Paquier in October 2026. v13 of whole-record compression, the pg_walinspect change and WIP streams answers Zsolt Parragi's review and has no reply, and the buffer allocation question asked of Michael Paquier is still open.",
+    "thread_state": "Michael Paquier committed the zstd context-reuse parts for replay and insertion in October 2026 but gave no opinion on whole-record or stream compression. Zsolt Parragi is reviewing v13; the author asked for advice on buffer allocation in critical sections and got no answer.",
     "unclear": [
-      "The material gives no basis for the 512-byte default threshold beyond the author's intuition.",
-      "The material does not say whether the wal_compression_buffer GUC from v6 still exists in v13.",
-      "The material does not say how a standby or tool from an older release reacts to compressed records, or whether WAL page magic changes.",
-      "Surya Poondla's concern about page LSN and hint-only records got no visible answer, and may concern a different patch.",
-      "Parts of messages 16 and 17 are truncated, including the stream lock cost discussion."
+      "The proposal does not say how 512 was chosen; the author said it was not based on testing.",
+      "The material does not say whether XLOG_PAGE_MAGIC or WAL_FILE_MAGIC is bumped for the new record format.",
+      "Surya Poondla's message about page LSN and hint-only records got no reply, and it is not clear which design it addresses.",
+      "The proposal does not say whether the wal_compression_buffer GUC from v6 still exists.",
+      "No benchmark shows the CPU or latency cost of 0001 on OLTP workloads; only WAL size is reported."
     ],
     "search_queries": [
-      "compress whole WAL records",
-      "WAL record compression threshold",
-      "wal_compression full page images",
-      "zstd WAL compression context",
-      "WAL compression dictionary streams",
-      "streaming compression of WAL",
-      "lz4 zstd wal_compression",
-      "reduce WAL volume compression"
+      "whole WAL record compression",
+      "compress big WAL records",
+      "wal_compression_threshold",
+      "full page image compression",
+      "WAL compression dictionary context",
+      "streaming WAL compression zstd",
+      "reduce WAL volume compression",
+      "xlog record compression"
     ]
   },
   "prior_attempts": [],
   "objections": [
     {
-      "title": "Gain for whole-record compression is shown on one synthetic workload only",
-      "level": "1b",
-      "rubric_item": 3,
-      "category": "demand",
-      "touch_points": [
-        "wal_replication",
-        "new_guc",
-        "maintenance_burden"
-      ],
-      "severity": "fixable",
-      "failure_scenario": "A user turns on zstd with the default 512-byte threshold on an OLTP cluster and expects lower WAL volume. In that workload few records exceed the threshold, so the change in WAL volume is small. Meanwhile the record format change, the second compression buffer and the extra reader path are permanent for every release and every WAL tool.",
-      "argument": "The only measured benefit of 0002 is CREATE INDEX over 10M random doubles: 19% less WAL with zstd and 15% with lz4 (messages #4, #17). The 2PC case from message #1 has no numbers. No field report, -general thread or production WAL sample shows how much real WAL sits in large multi-FPI records. Michael Paquier committed the context-reuse parts but had no opinion on 0002 and 0003 (message #25), and the other interested reviewers (messages #6, #21) state liking the idea without giving a workload.",
-      "precedent_ids": [],
-      "thread_message_refs": [
-        1,
-        4,
-        17,
-        25
-      ],
-      "author_must_show": "On which production or realistic workloads, other than a B-tree build on random data, does 0002 reduce WAL volume, and by how much at the default threshold?",
-      "precedents": [],
-      "thread_refs": [
-        {
-          "index": 1,
-          "from": "\"Andrey M(dot) Borodin\"",
-          "date": "2025-01-12T12:43:25Z",
-          "url": "https://www.postgresql.org/message-id/4DC38068-976E-4A84-8EE6-4EFACBBD927A%40yandex-team.ru"
-        },
-        {
-          "index": 4,
-          "from": "\"Andrey M(dot) Borodin\"",
-          "date": "2025-01-21T18:24:12Z",
-          "url": "https://www.postgresql.org/message-id/73E8D8A0-F5C3-45E8-8DFC-60AA86F8B890%40yandex-team.ru"
-        },
-        {
-          "index": 17,
-          "from": "Andrey Borodin",
-          "date": "2026-08-07T13:15:53Z",
-          "url": "https://www.postgresql.org/message-id/A2BB6471-C150-423C-B6F5-BFEC46BE544B%40yandex-team.ru"
-        },
-        {
-          "index": 25,
-          "from": "Michael Paquier",
-          "date": "2026-10-06T03:34:18Z",
-          "url": "https://www.postgresql.org/message-id/asRsOl73nf8GeBFd%40paquier.xyz"
-        }
-      ],
-      "id": "demand-1",
-      "angle": "demand",
-      "round": 0,
-      "revised_in_round": null,
-      "status": "survived",
-      "withdrawal": null,
-      "critic": {
-        "refutation_kind": "none",
-        "reasoning": "Message #16 shows records over 512 bytes hold 47.5% of pgbench WAL bytes, which weakens the \"few records\" scenario. But the only measured gain over per-FPI compression is the CREATE INDEX case, and no field report is shown.",
-        "original_severity": null
-      },
-      "not_ranked_reason": null
-    },
-    {
-      "title": "Default threshold turns on whole-record compression for every existing wal_compression user",
+      "title": "Existing wal_compression users get whole-record compression by default",
       "level": "2",
-      "rubric_item": 12,
+      "rubric_item": 10,
       "category": "new_guc",
       "touch_points": [
         "new_guc",
-        "sql_standard_syntax"
+        "hot_path_performance"
       ],
       "severity": "fixable",
-      "failure_scenario": "A site runs wal_compression = on and upgrades. With the 512-byte default, large records are now compressed whole and need a second buffer per backend, and WAL size and CPU change. To get the old behaviour back, the DBA has to find a second GUC and set it to about 1GB.",
-      "argument": "In message #11 Fujii Masao asked to keep FPI-only compression as a real choice, and message #12 agreed to complement it. But the opt-out in message #13 is a magic threshold value, with no explicit setting. The 512 default has no measured basis (message #7), and message #16 shows a low threshold can make WAL larger. wal_compression already selects the method, so a committer would likely ask why the scope is not chosen there.",
+      "failure_scenario": "A site runs with wal_compression = on, which now means zstd first, and upgrades. Every record over 512 bytes is compressed whole, and each backend holds about 268 KiB more. If OLTP latency rises, the site cannot tell why, because nothing in its configuration changed.",
+      "argument": "wal_compression has been documented as compression of full-page writes. With a 512-byte default threshold, the patch widens what it does for every current user of lz4 or zstd. Message #7 says 512 was not tested. The brief notes that no CPU or latency numbers for 0001 on OLTP are shown, only WAL size. Message #13 shows a low threshold can make WAL larger, so the default is a real choice that needs data behind it.",
       "precedent_ids": [],
       "thread_message_refs": [
         7,
-        11,
-        12,
         13,
-        16
+        16,
+        25
       ],
-      "author_must_show": "Why is whole-record compression on by default for existing wal_compression users, and why is the opt-out a large threshold value with no explicit off setting?",
+      "author_must_show": "What OLTP CPU and latency measurements support enabling whole-record compression at 512 bytes by default, rather than leaving it off until a user sets a threshold?",
       "precedents": [],
       "thread_refs": [
         {
@@ -182,18 +120,6 @@
           "from": "Andrey Borodin",
           "date": "2025-01-30T13:26:29Z",
           "url": "https://www.postgresql.org/message-id/87E092DC-0E61-426A-8F73-B61A19BCC00D%40yandex-team.ru"
-        },
-        {
-          "index": 11,
-          "from": "Fujii Masao",
-          "date": "2026-01-16T15:44:33Z",
-          "url": "https://www.postgresql.org/message-id/CAHGQGwG7krZ%2Bpktg9c2e8xk-6TK-sK0kMSWriSQtz%3DJvJ_E6Pg%40mail.gmail.com"
-        },
-        {
-          "index": 12,
-          "from": "Andrey Borodin",
-          "date": "2026-01-16T16:17:21Z",
-          "url": "https://www.postgresql.org/message-id/19C9772F-9377-4ABA-88CF-F5B7C35C5A4C%40yandex-team.ru"
         },
         {
           "index": 13,
@@ -206,125 +132,12 @@
           "from": "Andrey Borodin",
           "date": "2026-07-26T16:09:53Z",
           "url": "https://www.postgresql.org/message-id/33EDA443-E905-4E15-A7B0-F734C369A19B%40yandex-team.ru"
-        }
-      ],
-      "id": "standards-compat-1",
-      "angle": "standards-compat",
-      "round": 0,
-      "revised_in_round": null,
-      "status": "survived",
-      "withdrawal": null,
-      "critic": {
-        "refutation_kind": "none",
-        "reasoning": "Message #13 gives a 1GB threshold as the only way back to FPI-only compression, and message #7 gives no measured basis for 512. Message #35 spares FPI-only settings the new buffers, but lz4 and zstd users still get the new path by default.",
-        "original_severity": null
-      },
-      "not_ranked_reason": null
-    },
-    {
-      "title": "Whole-record compression hides block references behind the codec",
-      "level": "2",
-      "rubric_item": 7,
-      "category": "wal_replication",
-      "touch_points": [
-        "wal_replication",
-        "abi_extension_api",
-        "maintenance_burden"
-      ],
-      "severity": "fixable",
-      "failure_scenario": "A cluster runs with wal_compression = on, which now picks zstd first, so every record over 512 bytes is compressed as one unit. A pg_rewind binary, or an out-of-tree WAL reader built without zstd, can no longer parse the block headers of those records. It fails during a failover rewind or an incremental backup scan, not when the setting is changed.",
-      "argument": "Today a reader without lz4 or zstd can still decode record headers and block references and fails only on restoring an image. With 0002 the block headers sit inside the compressed payload (message #1), so codec support decides whether the record can be read at all. The default threshold turns this on for every existing wal_compression = lz4, zstd or on user, with no opt-in (messages #7, #20). The material also does not say whether XLOG_PAGE_MAGIC is bumped, so older tools may misread records instead of rejecting them (message #3).",
-      "precedent_ids": [],
-      "thread_message_refs": [
-        1,
-        3,
-        7,
-        20
-      ],
-      "author_must_show": "Why should whole-record compression be on by default for existing wal_compression users, and how does a reader without the codec report the problem instead of misparsing?",
-      "precedents": [],
-      "thread_refs": [
-        {
-          "index": 1,
-          "from": "\"Andrey M(dot) Borodin\"",
-          "date": "2025-01-12T12:43:25Z",
-          "url": "https://www.postgresql.org/message-id/4DC38068-976E-4A84-8EE6-4EFACBBD927A%40yandex-team.ru"
         },
         {
-          "index": 3,
-          "from": "Andrey Borodin",
-          "date": "2025-01-13T05:14:24Z",
-          "url": "https://www.postgresql.org/message-id/ECCAD8F2-032D-42FE-B60D-0D6EB0423FF2%40yandex-team.ru"
-        },
-        {
-          "index": 7,
-          "from": "Andrey Borodin",
-          "date": "2025-01-30T13:26:29Z",
-          "url": "https://www.postgresql.org/message-id/87E092DC-0E61-426A-8F73-B61A19BCC00D%40yandex-team.ru"
-        },
-        {
-          "index": 20,
-          "from": "Andrey Borodin",
-          "date": "2026-08-14T17:30:03Z",
-          "url": "https://www.postgresql.org/message-id/04119E77-9C0F-415A-A9E0-65E6E4A57940%40yandex-team.ru"
-        }
-      ],
-      "id": "replication-ondisk-1",
-      "angle": "replication-ondisk",
-      "round": 0,
-      "revised_in_round": null,
-      "status": "survived",
-      "withdrawal": null,
-      "critic": {
-        "refutation_kind": "none",
-        "reasoning": "Message #18 quotes a \"not supported by build\" error, so a reader without the codec reports the problem and does not misparse. The narrower point stands: tools that need only block references now need the codec, by default.",
-        "original_severity": null
-      },
-      "not_ranked_reason": null
-    },
-    {
-      "title": "wal_fpi_bytes exceeding wal_bytes changes the meaning of a pg_stat_wal column",
-      "level": "2",
-      "rubric_item": 12,
-      "category": "design",
-      "touch_points": [
-        "maintenance_burden"
-      ],
-      "severity": "fixable",
-      "failure_scenario": "A monitoring dashboard plots wal_fpi_bytes / wal_bytes as the full-page-image share of WAL. After upgrade the ratio goes above 1, as in message #33 (90 MB against 10 MB), and alerts or capacity plans built on it give wrong answers. Users learn of the change only from a release-notes line or the documentation.",
-      "argument": "Today wal_fpi_bytes is a subset of wal_bytes, and external tools depend on that. Message #35 keeps the pre-compression count, documents that it can exceed wal_bytes, and says the jointly compressed bytes cannot be split. That reason holds, but the result is one view whose two byte columns count in different units. A committer would likely ask for a separate column, or for wal_fpi_bytes to stay physical.",
-      "precedent_ids": [
-        "P2"
-      ],
-      "thread_message_refs": [
-        33,
-        35
-      ],
-      "author_must_show": "Can pg_stat_wal keep wal_fpi_bytes no larger than wal_bytes, for example by reporting pre-compression image bytes in a new column instead?",
-      "precedents": [
-        {
-          "id": "P2",
-          "title": "Tracking the compression effect",
-          "url": "https://commitfest.postgresql.org/patch/3851/",
-          "thread_urls": [
-            "https://www.postgresql.org/message-id/flat/0489c74a83dbd54ed33feb6690d7ca4f@oss.nttdata.com"
-          ],
-          "date": "2022-10-31",
-          "status": "Withdrawn"
-        }
-      ],
-      "thread_refs": [
-        {
-          "index": 33,
-          "from": "Zsolt Parragi",
-          "date": "2026-10-12T21:46:40Z",
-          "url": "https://www.postgresql.org/message-id/CAN4CZFOgbHQFvmBD%3DTo7Hjv1fJ2QMJn0pM-2HcPvH4dqkehxcQ%40mail.gmail.com"
-        },
-        {
-          "index": 35,
-          "from": "Andrey Borodin",
-          "date": "2026-10-24T17:09:03Z",
-          "url": "https://www.postgresql.org/message-id/D815DE2E-6EEB-4EF4-8B5F-3374F552D55C%40yandex-team.ru"
+          "index": 25,
+          "from": "Michael Paquier",
+          "date": "2026-10-06T03:34:18Z",
+          "url": "https://www.postgresql.org/message-id/asRsOl73nf8GeBFd%40paquier.xyz"
         }
       ],
       "id": "standards-compat-2",
@@ -335,13 +148,133 @@
       "withdrawal": null,
       "critic": {
         "refutation_kind": "none",
-        "reasoning": "Message #35 documents the change but does not keep the ratio that monitoring tools compute today. P2 must not be used as support, because its recorded reason argues against adding counters to pg_stat_wal.",
+        "reasoning": "The thread shows only WAL size for 0001, and message #7 confirms 512 was not tested. The low-threshold figure is in message #16, not #13, but the missing OLTP CPU and latency numbers for a default-on path remain.",
         "original_severity": null
       },
       "not_ranked_reason": null
     },
     {
-      "title": "Two record lengths that every future xlogreader change must choose between",
+      "title": "Gain from whole-record compression is shown on one synthetic workload",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer takes on a new WAL record format, a new GUC and a changed reader path, and the 15-19% saving appears only on random-data B-tree builds. On typical OLTP WAL, whose records are mostly under 512 bytes, 0001 does nothing. The cost stays even if few users see the gain.",
+      "argument": "The only measurement for 0001 is CREATE INDEX over 10M random doubles (messages #4 and #17). Message #16 says the records over 512 bytes are 0.8% of pgbench records, and the author points to 0003, which is WIP, for the rest. No field report, -general thread or user in the thread describes WAL volume from large records as their problem. Message #6 liked the idea, but did not report a need.",
+      "precedent_ids": [
+        "P8"
+      ],
+      "thread_message_refs": [
+        4,
+        6,
+        16,
+        17
+      ],
+      "author_must_show": "Which real workloads besides random-data index builds produce records above the threshold, and how much WAL does 0001 save on them?",
+      "precedents": [
+        {
+          "id": "P8",
+          "title": "XLog size reductions: Reduced XLog record header size",
+          "url": "https://commitfest.postgresql.org/patch/4386/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CAEze2WgcW5SkPO_TGTqirRcCS_FN0xEZqUsXDE6pPz2TYzXQBA@mail.gmail.com"
+          ],
+          "date": "2024-04-09",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "\"Andrey M(dot) Borodin\"",
+          "date": "2025-01-21T18:24:12Z",
+          "url": "https://www.postgresql.org/message-id/73E8D8A0-F5C3-45E8-8DFC-60AA86F8B890%40yandex-team.ru"
+        },
+        {
+          "index": 6,
+          "from": "Fujii Masao",
+          "date": "2025-01-28T17:10:18Z",
+          "url": "https://www.postgresql.org/message-id/87d08e95-0e55-4bcf-9f4b-5c9e7b8d91f8%40oss.nttdata.com"
+        },
+        {
+          "index": 16,
+          "from": "Andrey Borodin",
+          "date": "2026-07-26T16:09:53Z",
+          "url": "https://www.postgresql.org/message-id/33EDA443-E905-4E15-A7B0-F734C369A19B%40yandex-team.ru"
+        },
+        {
+          "index": 17,
+          "from": "Andrey Borodin",
+          "date": "2026-08-07T13:15:53Z",
+          "url": "https://www.postgresql.org/message-id/A2BB6471-C150-423C-B6F5-BFEC46BE544B%40yandex-team.ru"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The only 0001 measurement is the random-data index build. \"Does nothing\" on OLTP overstates, since message #16 puts 47.5% of pgbench bytes in records over 512 bytes, but the thread shows no HEAD comparison for that workload.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Compressed records hide block references from WAL parsers outside xlogreader",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication",
+        "abi_extension_api",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An incremental backup tool that parses raw WAL to collect changed blocks meets an XLR_COMPRESSED record. It does not see the block references inside the compressed body and leaves those pages out of the backup. The restored cluster is missing changes, and the user finds this only after a restore.",
+      "argument": "The claim that \"WAL readers need no new logic\" holds only for readers built on the in-core xlogreader. Message #36 shows that in-core code already misread the flag, since replorigin_identity reported records as UNKNOWN. The brief says the material does not show whether XLOG_PAGE_MAGIC is bumped. Message #3 mentions bumping WAL_FILE_MAGIC, and no later message confirms it, so a parser that reads WAL would get no loud signal.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        36
+      ],
+      "author_must_show": "Is XLOG_PAGE_MAGIC bumped so that old raw-WAL parsers reject the new format, and how would an external block-tracking tool find the block references in a compressed record?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Andrey Borodin",
+          "date": "2025-01-13T05:14:24Z",
+          "url": "https://www.postgresql.org/message-id/ECCAD8F2-032D-42FE-B60D-0D6EB0423FF2%40yandex-team.ru"
+        },
+        {
+          "index": 36,
+          "from": "Zsolt Parragi",
+          "date": "2026-10-26T23:39:53Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFOhMg9oyKUSeK4VhdB1B-cOjS6qUgTk9HCDnbMg9pLQHQ%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Any WAL format change breaks parsers that do not use xlogreader, so that part is not specific to this patch. The surviving point is that no message after #3 confirms an XLOG_PAGE_MAGIC bump, which is what makes old parsers fail loudly.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Split between physical and decoded record length burdens every WAL reader",
       "level": "2",
       "rubric_item": 9,
       "category": "maintenance_burden",
@@ -351,16 +284,15 @@
         "abi_extension_api"
       ],
       "severity": "fixable",
-      "failure_scenario": "A later patch adds a sanity check, a statistic or a buffer size based on xl_tot_len in xlogreader or pg_waldump. It is correct for uncompressed records, which is all the default test setup produces. With whole-record compression on, it checks or allocates the wrong side, and this shows up as a decode failure or a wrong report in the field.",
-      "argument": "0002 splits each record into a physical length and a decoded length. Message #20 shows a rebase across 18992dc9d98 that needed a choice of side, and a plain textual rebase compiled against a variable that no longer existed. Message #36 found replorigin_identity reading xl_info without masking XLR_COMPRESSED. v13 clears the flag after decompression, but nothing makes the wrong choice of length fail loudly.",
+      "failure_scenario": "A later patch adds a length check or an xl_info test in xlogreader, an rmgr desc routine or an extension WAL reader, and picks the wrong length or misses the XLR_COMPRESSED bit. Tests pass because wal_compression is off by default, and the bug shows up only on clusters running lz4 or zstd with large records.",
+      "argument": "Message #20 shows a rebase over an unrelated length check (18992dc9d98) that still compiled, but against a variable that no longer existed. Message #36 found replication origin records reported as UNKNOWN because one routine did not mask the new bit. Both bugs were silent and surfaced only in review. v13 clears the flag after decompression, but every record now has two lengths, and nothing makes the compiler or the default tests catch the wrong one.",
       "precedent_ids": [],
       "thread_message_refs": [
         20,
-        33,
-        35,
-        36
+        36,
+        37
       ],
-      "author_must_show": "Which test configuration runs the recovery and tool suites with whole-record compression on, so that a check on the wrong length fails in CI?",
+      "author_must_show": "What makes a future WAL reader or length check that uses the wrong length fail in the default regression run, not only with compression turned on?",
       "precedents": [],
       "thread_refs": [
         {
@@ -369,6 +301,51 @@
           "date": "2026-08-14T17:30:03Z",
           "url": "https://www.postgresql.org/message-id/04119E77-9C0F-415A-A9E0-65E6E4A57940%40yandex-team.ru"
         },
+        {
+          "index": 36,
+          "from": "Zsolt Parragi",
+          "date": "2026-10-26T23:39:53Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFOhMg9oyKUSeK4VhdB1B-cOjS6qUgTk9HCDnbMg9pLQHQ%40mail.gmail.com"
+        },
+        {
+          "index": 37,
+          "from": "Andrey Borodin",
+          "date": "2026-11-08T07:49:50Z",
+          "url": "https://www.postgresql.org/message-id/17A14E6D-9ECA-4E15-AAF7-1EAED2568788%40yandex-team.ru"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "v13 clears XLR_COMPRESSED after decompression, so rmgr desc routines and readers built on xlogreader see ordinary records; that part is answered. The two lengths inside xlogreader.c remain, and message #20 shows a rebase can pick the wrong one silently.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "pg_stat_wal.wal_fpi_bytes can now exceed wal_bytes",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A monitoring dashboard computes the FPI share of WAL as wal_fpi_bytes / wal_bytes. After upgrade, with zstd and the default threshold, it reports shares like 845%, as in message #33. The operator finds out from alerts or wrong capacity planning, with no change on their side.",
+      "argument": "Message #35 keeps wal_fpi_bytes as image bytes before whole-record compression and only documents that it can exceed physical wal_bytes. Today both columns count bytes written, so existing tools read them as parts of one total. The proposal changes what the pair means without a new column or a rename. pg_waldump and pg_walinspect got separate physical and decoded sizes, but pg_stat_wal did not.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        33,
+        35
+      ],
+      "author_must_show": "Why not leave wal_fpi_bytes comparable to wal_bytes and report pre-compression image bytes in a separate column with its own name?",
+      "precedents": [],
+      "thread_refs": [
         {
           "index": 33,
           "from": "Zsolt Parragi",
@@ -380,23 +357,17 @@
           "from": "Andrey Borodin",
           "date": "2026-10-24T17:09:03Z",
           "url": "https://www.postgresql.org/message-id/D815DE2E-6EEB-4EF4-8B5F-3374F552D55C%40yandex-team.ru"
-        },
-        {
-          "index": 36,
-          "from": "Zsolt Parragi",
-          "date": "2026-10-26T23:39:53Z",
-          "url": "https://www.postgresql.org/message-id/CAN4CZFOhMg9oyKUSeK4VhdB1B-cOjS6qUgTk9HCDnbMg9pLQHQ%40mail.gmail.com"
         }
       ],
-      "id": "maintenance-fit-2",
-      "angle": "maintenance-fit",
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
       "round": 0,
       "revised_in_round": null,
       "status": "survived",
       "withdrawal": null,
       "critic": {
         "refutation_kind": "none",
-        "reasoning": "The series has a dedicated test, and message #14 shows v6 set lz4 for the recovery tests. The material does not say v13 keeps that setting, so the question about suite-wide coverage stands.",
+        "reasoning": "Message #35 keeps wal_fpi_bytes as pre-compression image bytes and only documents that it can exceed wal_bytes. Only the author weighed this choice, so the changed meaning of an existing column stands as a UI question.",
         "original_severity": null
       },
       "not_ranked_reason": null
@@ -404,25 +375,23 @@
   ],
   "other_surviving": [
     {
-      "title": "Stream mode depends on an unenforced rule about LSN-addressed reads",
+      "title": "Fixed 4MB stream restart does not fit 1MB or 2MB WAL segments",
       "level": "2",
-      "rubric_item": 9,
+      "rubric_item": 14,
       "category": "wal_replication",
       "touch_points": [
         "wal_replication",
-        "abi_extension_api",
-        "maintenance_burden"
+        "on_disk_pg_upgrade"
       ],
       "severity": "fixable",
-      "failure_scenario": "A later patch or an extension reads a record directly at a stored LSN, the way twophase.c reads PREPARE, without calling XLogBeginReadStreamed(). Its tests pass because wal_compression_streams is off by default. A user who turns streams on gets a record that refuses to decompress, possibly during recovery or commit of a prepared transaction.",
-      "argument": "The rule for 0003 is a property: anything read by LSN without its predecessors must stay out of the streams. It is kept today by excluding checkpoint, PREPARE and XLOG_SWITCH records and by moving in-tree readers to XLogBeginReadStreamed() (messages #16, #17). The proposal does not make a new by-LSN reader or a new rmgr fail loudly when the rule is broken, and the default-off setting hides it from the test suite. A damaged record also makes the rest of its 4MB stream unreadable to salvage tools.",
+      "failure_scenario": "A cluster initialised with --wal-segsize=1 enables streams. A logical slot or pg_rewind starts at an LSN in a 1MB segment, and the reader has to rewind to a 4MB boundary up to three segments back. Those segments were already removed because retention follows the segment of restart_lsn, so the reader cannot start.",
+      "argument": "Message #17 sets the reset distance to 4MB, which divides 16MB and 64MB segments. initdb also accepts 1MB and 2MB segments. WAL removal, slot retention and archive recovery all work per segment and assume that a reader needs nothing before the segment that holds its start LSN. Under 0003 that assumption does not hold for segments smaller than 4MB.",
       "precedent_ids": [],
       "thread_message_refs": [
         16,
-        17,
-        35
+        17
       ],
-      "author_must_show": "What check makes a direct-LSN read of a stream-compressed record fail in the default test runs, rather than only in clusters that enable streams?",
+      "author_must_show": "For segments smaller than 4MB, does the writer also reset at each segment boundary, or which WAL retention rule keeps the segments back to the reset point?",
       "precedents": [],
       "thread_refs": [
         {
@@ -436,12 +405,6 @@
           "from": "Andrey Borodin",
           "date": "2026-08-07T13:15:53Z",
           "url": "https://www.postgresql.org/message-id/A2BB6471-C150-423C-B6F5-BFEC46BE544B%40yandex-team.ru"
-        },
-        {
-          "index": 35,
-          "from": "Andrey Borodin",
-          "date": "2026-10-24T17:09:03Z",
-          "url": "https://www.postgresql.org/message-id/D815DE2E-6EEB-4EF4-8B5F-3374F552D55C%40yandex-team.ru"
         }
       ],
       "id": "replication-ondisk-2",
@@ -452,15 +415,13 @@
       "withdrawal": null,
       "critic": {
         "refutation_kind": "none",
-        "reasoning": "Message #17 says such a record refuses to decompress, so the failure is loud at run time, but only in clusters with streams on. The material shows no check that catches a new by-LSN reader in default test runs.",
+        "reasoning": "Message #17 justifies 4MB only for 16MB and 64MB segments, and initdb accepts 1MB and 2MB. The thread does not say that streams also reset at segment boundaries or that retention keeps the earlier segments.",
         "original_severity": null
       },
       "not_ranked_reason": "not among the strongest objections"
-    }
-  ],
-  "refuted": [
+    },
     {
-      "title": "Shared compression streams may leak other sessions' data through WAL size",
+      "title": "Cross-record zstd streams could act as a compression oracle",
       "level": "2",
       "rubric_item": 7,
       "category": "security_privileges",
@@ -469,15 +430,14 @@
         "wal_replication"
       ],
       "severity": "fixable",
-      "failure_scenario": "A superuser turns on wal_compression_streams. An unprivileged user inserts guessed values, such as token prefixes, and reads pg_current_wal_lsn() or pg_stat_wal before and after each insert. A guess that matches recent records written by another role into the same stream compresses better, so WAL grows less, and the guess is confirmed byte by byte on a quiet cluster.",
-      "argument": "In 0003 a backend leases a stream from a shared pool and compresses each record against earlier records in that stream, including records other backends wrote (messages #16, #17, #35). That is the setup for a compression-ratio side channel: attacker-chosen input mixed with secret input, and the output length visible to the attacker. Per-FPI compression already mixes rows on one page, but streams widen the history to every role's records within a 4 MiB stretch. The thread does not discuss who can observe WAL growth or whether the stream history should be split by role.",
+      "failure_scenario": "An unprivileged role shares a stream with a victim's backend and inserts guessed values. It then reads WAL growth through pg_current_wal_insert_lsn() or pg_stat_wal.wal_bytes. Smaller growth means the guess matched recent victim records, such as rows hidden by RLS or column privileges.",
+      "argument": "0003 compresses each record against history kept in a shared stream that backends lease. Message #16 says a backend taking over a lease restarts the stream for now, and the author intends to remove that restart. Message #35 says a writer resets only when it acquires a different slot. Once history spans backends, WAL size depends on other sessions' data, and any role can observe WAL size. The proposal does not treat this as a security property.",
       "precedent_ids": [],
       "thread_message_refs": [
         16,
-        17,
         35
       ],
-      "author_must_show": "How does 0003 stop an unprivileged role from learning another role's recent data by measuring WAL growth after inserts it controls?",
+      "author_must_show": "Does 0003 guarantee that compressor history never spans records from different backends or roles, and will that rule hold in the planned design where a new lessee does not restart the stream?",
       "precedents": [],
       "thread_refs": [
         {
@@ -485,12 +445,6 @@
           "from": "Andrey Borodin",
           "date": "2026-07-26T16:09:53Z",
           "url": "https://www.postgresql.org/message-id/33EDA443-E905-4E15-A7B0-F734C369A19B%40yandex-team.ru"
-        },
-        {
-          "index": 17,
-          "from": "Andrey Borodin",
-          "date": "2026-08-07T13:15:53Z",
-          "url": "https://www.postgresql.org/message-id/A2BB6471-C150-423C-B6F5-BFEC46BE544B%40yandex-team.ru"
         },
         {
           "index": 35,
@@ -503,35 +457,36 @@
       "angle": "security",
       "round": 0,
       "revised_in_round": null,
-      "status": "refuted",
+      "status": "survived",
       "withdrawal": null,
       "critic": {
-        "refutation_kind": "wrong_facts",
-        "reasoning": "Message #16 says a backend that takes over a lease restarts the stream, because compressor state is backend-local. Message #35 keeps one compressor per writer, so the material does not show a record compressed against another backend's records.",
+        "refutation_kind": "none",
+        "reasoning": "In v12 a writer resets its compressor when it takes a different slot, so history does not span backends and the scenario cannot happen today. Message #16 states the intent to remove that restart, so the question stands for the planned design of WIP 0003.",
         "original_severity": null
       },
-      "not_ranked_reason": null
+      "not_ranked_reason": "not among the strongest objections"
     },
     {
-      "title": "Streams make every future read-by-LSN path depend on an exclusion rule",
+      "title": "Stream compression makes every future WAL reader use a new start API",
       "level": "2",
       "rubric_item": 9,
       "category": "maintenance_burden",
       "touch_points": [
         "maintenance_burden",
         "wal_replication",
-        "abi_extension_api"
+        "abi_extension_api",
+        "new_guc"
       ],
-      "severity": "fatal",
-      "failure_scenario": "A later patch adds a feature that stores an LSN and reads that record directly, the way twophase.c reads a PREPARE record. The tests pass because wal_compression_streams is off by default. A production cluster with streams on then refuses to decompress the record, and the user finds out when that feature runs.",
-      "argument": "Message #16 defines the exclusion rule as a property, not a list: anything read by LSN without replaying what comes before it must stay independent. Message #17 routes pg_waldump, pg_walinspect, logical decoding, walsummarizer and pg_rewind through XLogBeginReadStreamed(). Every new WAL consumer, in core or in an extension, must know this rule and use that call, and with streams off by default the tests do not catch a mistake. In message #25 the only engaged committer gave no opinion on 0003.",
+      "severity": "fixable",
+      "failure_scenario": "A new WAL consumer, in core or in an extension, starts reading at an LSN with the old begin-read call, or a new record type is read by stored LSN the way twophase reads PREPARE. With streams enabled, that record refuses to decompress, and the failure shows up on production clusters using streams, which are off by default in tests.",
+      "argument": "Message #17 lists five readers already switched to XLogBeginReadStreamed() and an exclusion rule defined as a property: records read by LSN without replay must stay standalone. Future rmgr and reader authors must know that rule, and no list or check enforces it. Because streams are off by default, the regression suite does not exercise the case. The 4MB rewind also adds reader cost and memory that message #35 still calls open.",
       "precedent_ids": [],
       "thread_message_refs": [
         16,
         17,
-        25
+        35
       ],
-      "author_must_show": "What makes a new WAL reader, or a new record read by stored LSN, fail in the regression suite when it ignores the stream rules?",
+      "author_must_show": "How would a new record type read by stored LSN, or a new reader using the old start call, be caught before release when streams are off by default?",
       "precedents": [],
       "thread_refs": [
         {
@@ -547,13 +502,201 @@
           "url": "https://www.postgresql.org/message-id/A2BB6471-C150-423C-B6F5-BFEC46BE544B%40yandex-team.ru"
         },
         {
+          "index": 35,
+          "from": "Andrey Borodin",
+          "date": "2026-10-24T17:09:03Z",
+          "url": "https://www.postgresql.org/message-id/D815DE2E-6EEB-4EF4-8B5F-3374F552D55C%40yandex-team.ru"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #17 says a record without a seen stream start refuses to decompress, so the failure is loud, but only at run time with streams on. Nothing in the thread makes a missing exclusion or an old start call fail in the default test run.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Stream exclusion rule for LSN-addressed records has no enforcement",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "wal_replication",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds code that reads a stored record by LSN, as twophase.c does for PREPARE. The author does not add the new record type to the 0003 exclusion list. With streams on, the read fails with a decompression error during recovery or at COMMIT PREPARED time on a production system.",
+      "argument": "Message #16 states the rule as a property: anything read by LSN without replaying what comes before it must stay readable on its own. Today only checkpoint, PREPARE and XLOG_SWITCH are listed. Nothing at insert time checks that a record later fetched by LSN was written without stream history. The failure only appears with wal_compression_streams on, which tests would not exercise by default.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        16,
+        17
+      ],
+      "author_must_show": "What mechanism makes a new reader of LSN-addressed records fail in testing, not in production, when its record type is missing from the exclusion list?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 16,
+          "from": "Andrey Borodin",
+          "date": "2026-07-26T16:09:53Z",
+          "url": "https://www.postgresql.org/message-id/33EDA443-E905-4E15-A7B0-F734C369A19B%40yandex-team.ru"
+        },
+        {
+          "index": 17,
+          "from": "Andrey Borodin",
+          "date": "2026-08-07T13:15:53Z",
+          "url": "https://www.postgresql.org/message-id/A2BB6471-C150-423C-B6F5-BFEC46BE544B%40yandex-team.ru"
+        }
+      ],
+      "id": "replication-ondisk-3",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-3, which covers the same unenforced exclusion rule together with the new start call.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No committer has taken on whole-record or stream compression",
+      "level": "2",
+      "rubric_item": 16,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The record-format change is committed, and a recovery or pg_rewind bug in decompression is reported a year later. No committer knows the new insert and reader paths well enough to judge a fix, so the report waits.",
+      "argument": "Michael Paquier committed only the context-reuse parts and said in message #25 that he had no opinion on whole-record or stream compression. The author asked twice for advice on buffer allocation in critical sections (messages #26 and #30), and the material shows no answer. The remaining reviewers in messages #33 and #36 work at code level, and none of them has weighed in on the format or on reader design.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        25,
+        26,
+        30,
+        33,
+        36
+      ],
+      "author_must_show": "Which committer familiar with xloginsert.c and xlogreader.c has agreed that the record format and the allocation strategy are acceptable?",
+      "precedents": [],
+      "thread_refs": [
+        {
           "index": 25,
           "from": "Michael Paquier",
           "date": "2026-10-06T03:34:18Z",
           "url": "https://www.postgresql.org/message-id/asRsOl73nf8GeBFd%40paquier.xyz"
+        },
+        {
+          "index": 26,
+          "from": "Andrey Borodin",
+          "date": "2026-10-06T13:09:38Z",
+          "url": "https://www.postgresql.org/message-id/B2902A9C-6BFA-493B-8FE9-A3A733DB1CA3%40yandex-team.ru"
+        },
+        {
+          "index": 30,
+          "from": "Andrey Borodin",
+          "date": "2026-10-08T03:53:17Z",
+          "url": "https://www.postgresql.org/message-id/5D6669EE-21FF-476A-9078-FF8BE9482AC5%40yandex-team.ru"
+        },
+        {
+          "index": 33,
+          "from": "Zsolt Parragi",
+          "date": "2026-10-12T21:46:40Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFOgbHQFvmBD%3DTo7Hjv1fJ2QMJn0pM-2HcPvH4dqkehxcQ%40mail.gmail.com"
+        },
+        {
+          "index": 36,
+          "from": "Zsolt Parragi",
+          "date": "2026-10-26T23:39:53Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFOhMg9oyKUSeK4VhdB1B-cOjS6qUgTk9HCDnbMg9pLQHQ%40mail.gmail.com"
         }
       ],
-      "id": "maintenance-fit-1",
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "wrong_facts",
+        "reasoning": "Fujii Masao, a committer and listed CF reviewer, gave design-level review in messages #6 and #11, and the author adopted his suggestion to keep per-FPI compression. Michael Paquier is active in the thread, and weak committability alone is not a design flaw.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Default threshold puts unmeasured CPU cost on every compression user",
+      "level": "1b",
+      "rubric_item": 8,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site with wal_compression = on, which now selects zstd first, upgrades and finds that every record over 512 bytes is flattened and compressed in the insert path. OLTP latency rises, and the operator has no measurement to judge whether the WAL saving is worth it.",
+      "argument": "The default of 512 was not based on testing (message #7). The only 0001 numbers are WAL size for CREATE INDEX (messages #4 and #17), and none show CPU or latency on OLTP. Message #20 notes that \"on\" now reaches zstd first, so the new path is on by default for many sites. A 0003 cost of up to 12% tps (message #17) shows that this cost is real enough to measure.",
+      "precedent_ids": [
+        "P8"
+      ],
+      "thread_message_refs": [
+        4,
+        7,
+        17,
+        20
+      ],
+      "author_must_show": "What CPU and latency cost does 0001 add on pgbench or a similar OLTP workload at the default threshold, and how was 512 chosen?",
+      "precedents": [
+        {
+          "id": "P8",
+          "title": "XLog size reductions: Reduced XLog record header size",
+          "url": "https://commitfest.postgresql.org/patch/4386/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CAEze2WgcW5SkPO_TGTqirRcCS_FN0xEZqUsXDE6pPz2TYzXQBA@mail.gmail.com"
+          ],
+          "date": "2024-04-09",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "\"Andrey M(dot) Borodin\"",
+          "date": "2025-01-21T18:24:12Z",
+          "url": "https://www.postgresql.org/message-id/73E8D8A0-F5C3-45E8-8DFC-60AA86F8B890%40yandex-team.ru"
+        },
+        {
+          "index": 7,
+          "from": "Andrey Borodin",
+          "date": "2025-01-30T13:26:29Z",
+          "url": "https://www.postgresql.org/message-id/87E092DC-0E61-426A-8F73-B61A19BCC00D%40yandex-team.ru"
+        },
+        {
+          "index": 17,
+          "from": "Andrey Borodin",
+          "date": "2026-08-07T13:15:53Z",
+          "url": "https://www.postgresql.org/message-id/A2BB6471-C150-423C-B6F5-BFEC46BE544B%40yandex-team.ru"
+        },
+        {
+          "index": 20,
+          "from": "Andrey Borodin",
+          "date": "2026-08-14T17:30:03Z",
+          "url": "https://www.postgresql.org/message-id/04119E77-9C0F-415A-A9E0-65E6E4A57940%40yandex-team.ru"
+        }
+      ],
+      "id": "maintenance-fit-4",
       "angle": "maintenance-fit",
       "round": 0,
       "revised_in_round": null,
@@ -561,32 +704,32 @@
       "withdrawal": null,
       "critic": {
         "refutation_kind": "not_specific",
-        "reasoning": "Duplicate of replication-ondisk-2, which states the same rule and scenario with the fitting severity. A missing test-time check in a WIP patch is fixable.",
+        "reasoning": "Duplicate of standards-compat-2. The 12% tps figure comes from the 0003 stream lease, a different mechanism, and P8 concerned the size of a gain, so neither supports this point.",
         "original_severity": null
       },
       "not_ranked_reason": null
     },
     {
-      "title": "Existing wal_compression users get new memory and CPU costs by default",
-      "level": "2",
+      "title": "Default threshold puts unmeasured costs on every lz4 and zstd user",
+      "level": "1b",
       "rubric_item": 4,
-      "category": "hot_path_performance",
+      "category": "desirability",
       "touch_points": [
-        "hot_path_performance",
-        "new_guc"
+        "new_guc",
+        "hot_path_performance"
       ],
       "severity": "fixable",
-      "failure_scenario": "A cluster with wal_compression = on, which now prefers zstd, upgrades. Every backend that writes a record over 512 bytes holds a second buffer of about 268 KiB and makes an extra compression attempt per large record. With many connections this adds hundreds of MiB, and the user sees it only as higher memory use and CPU.",
-      "argument": "Message #17 says a backend with compression enabled holds about twice the old buffer memory. Message #16 says a low threshold can make WAL larger. The 512-byte default has no measurement behind it (message #7). Since 931c9701f25 made on mean zstd first (message #20), the new path becomes default for many users without a separate opt-in.",
+      "failure_scenario": "An installation with wal_compression = on now gets zstd, so whole-record compression starts at the default 512-byte threshold. Each backend holds about 268 KiB more memory, and pg_stat_wal shows wal_fpi_bytes above wal_bytes. The operator learns about the CPU or latency cost only after upgrading.",
+      "argument": "Message #20 says \"on\" now picks zstd first, so the default threshold reaches users who never asked for whole-record compression. Messages #16 and #17 report doubled buffer memory. Message #35 changes what wal_fpi_bytes means. The author says 512 was not tested (message #7), and the brief notes there is no CPU or latency benchmark for 0001 on OLTP, so the cost to non-beneficiaries is unknown.",
       "precedent_ids": [],
       "thread_message_refs": [
         7,
         16,
         17,
         20,
-        30
+        35
       ],
-      "author_must_show": "What measurements across workloads, including many-connection OLTP, support enabling whole-record compression at 512 bytes for everyone who sets wal_compression?",
+      "author_must_show": "What CPU, latency and memory cost does the default threshold add on an OLTP workload that gains no WAL saving from 0001?",
       "precedents": [],
       "thread_refs": [
         {
@@ -612,121 +755,6 @@
           "from": "Andrey Borodin",
           "date": "2026-08-14T17:30:03Z",
           "url": "https://www.postgresql.org/message-id/04119E77-9C0F-415A-A9E0-65E6E4A57940%40yandex-team.ru"
-        },
-        {
-          "index": 30,
-          "from": "Andrey Borodin",
-          "date": "2026-10-08T03:53:17Z",
-          "url": "https://www.postgresql.org/message-id/5D6669EE-21FF-476A-9078-FF8BE9482AC5%40yandex-team.ru"
-        }
-      ],
-      "id": "maintenance-fit-3",
-      "angle": "maintenance-fit",
-      "round": 0,
-      "revised_in_round": null,
-      "status": "refuted",
-      "withdrawal": null,
-      "critic": {
-        "refutation_kind": "not_specific",
-        "reasoning": "Duplicate of standards-compat-1, which already covers the default threshold, the second buffer and the CPU cost for existing wal_compression users. The request for many-connection measurements belongs with that objection.",
-        "original_severity": null
-      },
-      "not_ranked_reason": null
-    },
-    {
-      "title": "Archive-side compression already captures cross-record redundancy for stored WAL",
-      "level": "1b",
-      "rubric_item": 3,
-      "category": "desirability",
-      "touch_points": [
-        "does_not_fit",
-        "wal_replication",
-        "maintenance_burden"
-      ],
-      "severity": "fixable",
-      "failure_scenario": "An operator enables whole-record compression or streams to cut WAL storage. They already compress archived segments with an `archive_command` that pipes through gzip or zstd, or with a backup tool. The archive shrinks little further, but every backend now holds the extra buffer and every reader pays to decompress.",
-      "argument": "The Postgres docs already describe compressing segments in `archive_command`, and whole-segment compression sees redundancy across all records, not only within one. That leaves local pg_wal write I/O and streaming replication bandwidth as the cases that archive compression cannot reach. The thread measures `wal_bytes` (messages #4, #17) but never says which of these volumes matters to users, or how much compression of archived segments already saves. For 0003 the overlap is larger, since it rebuilds stream state that segment compression gets at no cost.",
-      "precedent_ids": [],
-      "thread_message_refs": [
-        1,
-        4,
-        16,
-        17
-      ],
-      "author_must_show": "Which cost does this reduce that compressing archived segments cannot: local WAL write I/O, replication bandwidth, or something else, and is there a measurement of it?",
-      "precedents": [],
-      "thread_refs": [
-        {
-          "index": 1,
-          "from": "\"Andrey M(dot) Borodin\"",
-          "date": "2025-01-12T12:43:25Z",
-          "url": "https://www.postgresql.org/message-id/4DC38068-976E-4A84-8EE6-4EFACBBD927A%40yandex-team.ru"
-        },
-        {
-          "index": 4,
-          "from": "\"Andrey M(dot) Borodin\"",
-          "date": "2025-01-21T18:24:12Z",
-          "url": "https://www.postgresql.org/message-id/73E8D8A0-F5C3-45E8-8DFC-60AA86F8B890%40yandex-team.ru"
-        },
-        {
-          "index": 16,
-          "from": "Andrey Borodin",
-          "date": "2026-07-26T16:09:53Z",
-          "url": "https://www.postgresql.org/message-id/33EDA443-E905-4E15-A7B0-F734C369A19B%40yandex-team.ru"
-        },
-        {
-          "index": 17,
-          "from": "Andrey Borodin",
-          "date": "2026-08-07T13:15:53Z",
-          "url": "https://www.postgresql.org/message-id/A2BB6471-C150-423C-B6F5-BFEC46BE544B%40yandex-team.ru"
-        }
-      ],
-      "id": "already-exists-1",
-      "angle": "already-exists",
-      "round": 0,
-      "revised_in_round": null,
-      "status": "refuted",
-      "withdrawal": null,
-      "critic": {
-        "refutation_kind": "no_failure_scenario",
-        "reasoning": "Compressing archived segments cannot reduce WAL written to pg_wal or sent to standbys, which is what the existing wal_compression setting targets. An operator who gains little from a setting they can raise or turn off is not a failure.",
-        "original_severity": null
-      },
-      "not_ranked_reason": null
-    },
-    {
-      "title": "Archive-side compression already captures cross-record redundancy for stored WAL",
-      "level": "1b",
-      "rubric_item": 4,
-      "category": "demand",
-      "touch_points": [
-        "wal_replication",
-        "hot_path_performance",
-        "does_not_fit"
-      ],
-      "severity": "fixable",
-      "failure_scenario": "An operator whose main concern is archive size enables wal_compression_streams. Their archive_command already compresses whole segments, so the archive barely shrinks. They still pay up to 12% throughput at 64 clients, and pg_waldump, pg_rewind and logical decoding must now rewind to a 4MB stream reset point.",
-      "argument": "Message #16 motivates 0003 by cross-record redundancy in small records. Compressing a whole WAL segment after it is written exploits that same redundancy for archive storage at no insert-path cost. What 0003 adds over that is lower local WAL writes and lower replication bandwidth. The material does not show users limited by either, while message #17 reports a throughput cost of up to 12% and a new reader rewind rule.",
-      "precedent_ids": [],
-      "thread_message_refs": [
-        16,
-        17,
-        35
-      ],
-      "author_must_show": "Which users are limited by local WAL write volume or replication bandwidth, in ways that segment compression at archive time does not already solve?",
-      "precedents": [],
-      "thread_refs": [
-        {
-          "index": 16,
-          "from": "Andrey Borodin",
-          "date": "2026-07-26T16:09:53Z",
-          "url": "https://www.postgresql.org/message-id/33EDA443-E905-4E15-A7B0-F734C369A19B%40yandex-team.ru"
-        },
-        {
-          "index": 17,
-          "from": "Andrey Borodin",
-          "date": "2026-08-07T13:15:53Z",
-          "url": "https://www.postgresql.org/message-id/A2BB6471-C150-423C-B6F5-BFEC46BE544B%40yandex-team.ru"
         },
         {
           "index": 35,
@@ -742,8 +770,8 @@
       "status": "refuted",
       "withdrawal": null,
       "critic": {
-        "refutation_kind": "no_failure_scenario",
-        "reasoning": "wal_compression_streams is off by default in a WIP patch, so the throughput cost and the reader rewind fall only on clusters that enable it. Item 4 fails when everyone pays, and the scenario describes an operator who opted in.",
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-2 for the unmeasured default cost and of standards-compat-1 for the wal_fpi_bytes change.",
         "original_severity": null
       },
       "not_ranked_reason": null
@@ -754,14 +782,14 @@
     {
       "id": "on_disk_pg_upgrade",
       "label": "on-disk format / pg_upgrade",
-      "hit": false,
-      "reason": ""
+      "hit": true,
+      "reason": "The WAL record format gains the XLR_COMPRESSED bit and a compression header, and 0003 adds 4MB stream restart points."
     },
     {
       "id": "wal_replication",
       "label": "WAL / replication / standby",
       "hit": true,
-      "reason": "The patch adds the XLR_COMPRESSED bit in xl_info and a compression header to the WAL record format."
+      "reason": "Recovery, logical decoding, pg_rewind and pg_waldump must read compressed records; 0003 changes where a reader may start."
     },
     {
       "id": "wire_protocol",
@@ -779,19 +807,19 @@
       "id": "abi_extension_api",
       "label": "ABI / extension API",
       "hit": true,
-      "reason": "The patch changes xlogrecord.h and xlogreader.h, and the streams patch adds XLogBeginReadStreamed() for WAL readers."
+      "reason": "xlogreader.h and xlogrecord.h change, and 0003 adds XLogBeginReadStreamed() for readers that start mid-WAL."
     },
     {
       "id": "sql_standard_syntax",
       "label": "SQL-standard conflict or non-standard syntax",
-      "hit": true,
-      "reason": "see objection standards-compat-1: Default threshold turns on whole-record compression for every existing wal_compression user"
+      "hit": false,
+      "reason": ""
     },
     {
       "id": "new_guc",
       "label": "new GUC",
       "hit": true,
-      "reason": "The series adds wal_compression_threshold and, in the WIP patch, wal_compression_streams."
+      "reason": "wal_compression_threshold in 0001 and wal_compression_streams in WIP 0003."
     },
     {
       "id": "planner_behaviour",
@@ -814,46 +842,46 @@
     {
       "id": "security_privileges",
       "label": "security / privileges",
-      "hit": false,
-      "reason": ""
+      "hit": true,
+      "reason": "Cross-record stream history in 0003 could make WAL size depend on other sessions' data."
     },
     {
       "id": "backpatchability",
       "label": "backpatchability",
-      "hit": false,
-      "reason": ""
+      "hit": true,
+      "reason": "see objection replication-ondisk-1: Compressed records hide block references from WAL parsers outside xlogreader"
     },
     {
       "id": "maintenance_burden",
       "label": "maintenance burden (\"who maintains this in 10 years\")",
       "hit": true,
-      "reason": "Each record gets a physical and a decoded length, and streams add a rule for every reader that reads by LSN."
+      "reason": "Every record has a physical and a decoded length, and 0003 adds an unenforced rule for records read by LSN."
     },
     {
       "id": "hot_path_performance",
       "label": "performance on the hot path",
       "hit": true,
-      "reason": "The WAL insert path in xloginsert.c gains a compression attempt and a second buffer per backend."
+      "reason": "Records over 512 bytes are compressed whole in the WAL insert path for every lz4 and zstd user."
     },
     {
       "id": "does_not_fit",
       "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
-      "hit": false,
-      "reason": ""
+      "hit": true,
+      "reason": "see objection demand-1: Gain from whole-record compression is shown on one synthetic workload"
     }
   ],
   "questions": [
-    "On which realistic workloads, other than a B-tree build on random data, does whole-record compression reduce WAL volume at the 512-byte default, and by how much?",
-    "Why is whole-record compression on by default for existing lz4 and zstd users, with a large threshold value as the only way back to FPI-only compression?",
-    "Which in-tree tools and known out-of-tree WAL readers need only block references today, and how do they behave on a compressed record when built without the codec?",
-    "Can pg_stat_wal keep wal_fpi_bytes no larger than wal_bytes, for example by reporting image bytes before compression in a new column?",
-    "Which test configuration runs the recovery and tool suites with whole-record compression on, and with streams on, so a wrong length or a direct read by LSN fails in CI?"
+    "What CPU and latency cost does 0001 add on pgbench or a similar OLTP workload at the default 512-byte threshold, and how was 512 chosen?",
+    "Which workloads besides the random-data index build produce records above the threshold, and how much WAL does 0001 save on them compared with HEAD?",
+    "Is XLOG_PAGE_MAGIC bumped so that WAL parsers that predate the new format reject it instead of misreading compressed records?",
+    "Why not keep wal_fpi_bytes comparable to wal_bytes and report image bytes before compression in a separate column?",
+    "For WAL segments smaller than 4MB, does 0003 also restart streams at each segment boundary, or which retention rule keeps the earlier segments?"
   ],
   "committability": {
     "owner": "qualified committer engaged",
-    "owner_note": "Michael Paquier committed the zstd context reuse split out of this series, but in message #25 gave no opinion on whole-record compression or streams. The owner must know xloginsert, xlogreader and recovery.",
-    "liability": "The owner signs for a WAL record format change read by recovery, standbys, pg_rewind, pg_waldump, logical decoding and out-of-tree readers, for every later release. With streams, the owner also signs for the rule on records read by LSN.",
-    "author_follow_up": "The author has posted 13 versions since January 2025, rebased across seven CommitFests and answered the latest review in v13."
+    "owner_note": "Michael Paquier committed the zstd context-reuse parts but gave no opinion on whole-record or stream compression. Fujii Masao reviewed the design early. The owner must know xloginsert.c, xlogreader.c and recovery.",
+    "liability": "The owner signs for a new WAL record format, the decompression path in recovery, logical decoding and pg_rewind, and the default-on behaviour for lz4 and zstd users. The format stays for as long as the feature exists.",
+    "author_follow_up": "The author has carried the patch through 7 CommitFests and 13 versions, rebasing and answering review, which suggests he stays for fixes."
   },
   "not_now": {
     "applies": false,
@@ -864,10 +892,10 @@
     "maintenance_burden": "high",
     "review_cost": "high",
     "recommended_action": "fix design first",
-    "reason": "Users of wal_compression with lz4 or zstd gain, with 15% to 19% less WAL shown on one index build. The patch changes the WAL record format and the insert and reader paths, so the default, the opt-out and the pg_stat_wal meaning should be settled before detailed review."
+    "reason": "The gain reaches users of lz4 or zstd WAL compression with large records, and is shown on one index-build test. The patch changes the WAL record format and the insert and reader paths, so the default threshold, the format signal and the stats meaning should be settled before detailed review."
   },
   "self_advice": [],
-  "provisional_note": "Without the code, I could not check that every reader masks XLR_COMPRESSED and uses the right length, or whether the page magic changes. The truncated messages #16 and #17 hide the stream lock cost.",
+  "provisional_note": "The code was not read. Buffer allocation in critical sections, bounds checks when decompressing, the XLOG_PAGE_MAGIC bump and the GUC contexts could not be checked.",
   "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
   "precedents_retrieved": [
     {
@@ -890,17 +918,15 @@
         "WAL / replication / standby"
       ],
       "matched_queries": [
-        "compress whole WAL records",
-        "WAL record compression threshold",
-        "wal_compression full page images",
-        "zstd WAL compression context",
-        "WAL compression dictionary streams",
-        "streaming compression of WAL",
-        "lz4 zstd wal_compression",
+        "whole WAL record compression",
+        "compress big WAL records",
+        "wal_compression_threshold",
+        "WAL compression dictionary context",
+        "streaming WAL compression zstd",
         "reduce WAL volume compression"
       ],
       "from_hint": false,
-      "score": 0.884,
+      "score": 0.665,
       "enriched": true,
       "key_quote": "Since the feature does not seem like a good fit for the last CF of PG11\nI am marking it Returned with Feedback.",
       "quote_message_url": "https://www.postgresql.org/message-id/f9841962-4aa3-1b67-007f-b6d73500a1d0%40pgmasters.net",
@@ -924,17 +950,15 @@
       "objection": "Reviewers preferred to report compression savings in pg_waldump and pg_walinspect, because WAL records already carry the saved-bytes information. Collecting the counters in pg_stat_wal would add code to every WAL record insert. The author agreed to switch to the pg_waldump and pg_walinspect approach, and the pg_stat_wal entry was withdrawn.",
       "touch_points": [],
       "matched_queries": [
-        "compress whole WAL records",
-        "WAL record compression threshold",
-        "wal_compression full page images",
-        "zstd WAL compression context",
-        "WAL compression dictionary streams",
-        "streaming compression of WAL",
-        "lz4 zstd wal_compression",
+        "whole WAL record compression",
+        "compress big WAL records",
+        "wal_compression_threshold",
+        "WAL compression dictionary context",
+        "streaming WAL compression zstd",
         "reduce WAL volume compression"
       ],
       "from_hint": false,
-      "score": 0.792,
+      "score": 0.63,
       "enriched": true,
       "key_quote": "Collecting them in the server via pg_stat_wal\nwill require some extra effort, for instance, every WAL record insert\nrequires that code to be executed.",
       "quote_message_url": "https://www.postgresql.org/message-id/CALj2ACVpRu1Ld1dejCUJVX4z6RieKn-Sj8AtzgT40GDPOYPrGw%40mail.gmail.com",
@@ -942,34 +966,34 @@
     },
     {
       "id": "P3",
-      "source_id": "cf:3503",
+      "source_id": "cf:3590",
       "kind": "cf",
-      "title": "pg_receivewal fail to streams when the partial file to write is not fully initialized present in the wal receiver directory",
+      "title": "Nonreplayable XLog records by means of overflows and >MaxAllocSize lengths",
       "status": "Returned with feedback",
-      "date": "2024-01-22",
-      "first_date": "2022-01-03",
-      "url": "https://commitfest.postgresql.org/patch/3503/",
+      "date": "2022-12-02",
+      "first_date": "2022-03-11",
+      "url": "https://commitfest.postgresql.org/patch/3590/",
       "thread_urls": [
-        "https://www.postgresql.org/message-id/flat/CAHg+QDcVUss6ocOmbLbV5f4YeGLhOCt+1x2yLNfG2H_eDwU8tw@mail.gmail.com"
+        "https://www.postgresql.org/message-id/flat/CAEze2WgGiw+LZt+vHf8tWqB_6VxeLsMeoAuod0N=ij1q17n5pw@mail.gmail.com"
       ],
-      "authors": "Bharath Rupireddy (bharathrupireddy), SATYANARAYANA NARLAPURAM (satyanarayanan)",
-      "objectors": "Peter Smith",
-      "summary": "pg_receivewal fails to start when a leftover .partial segment is not fully zero-padded, for example after ENOSPC or a VM crash, so the user must delete the file by hand. The patch writes and pads a new segment under a temporary name, then renames it to the .partial name, and removes any leftover temporary file on the next call.",
-      "objection": "The entry stalled. After v9 in October 2022 no reviewer responded for more than 15 months, so Peter Smith returned it with feedback, citing low interest. Earlier, Michael Paquier said the fix does nothing for gzip or lz4 segments and that the real need is to reserve disk space for a full segment. He also asked why a temporary file is needed when the .partial file already serves that role. The visible messages do not show whether v9 answered these points.",
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "",
+      "summary": "The patch adds checks in xloginsert.c so that the WAL insertion API cannot assemble a record larger than xlogreader can read (MaxAllocSize, later a fixed 1020 MiB limit), and cannot overflow xl_tot_len through repeated XLogRegisterData() calls. It also documents the record size limit in the XLogRecord spec.",
+      "objection": "Michael Paquier committed part of the patch, the API changes and the uint16 block data checks. He then asked for a rebase of the rest, and the author did not reply for two commitfests, so the entry was returned with feedback. After it was closed, Andres Freund noted that the new record-too-large ERROR usually happens inside a critical section and so becomes a PANIC. He suggested building large records such as the commit record before the critical section.",
       "touch_points": [
         "WAL / replication / standby"
       ],
       "matched_queries": [
-        "wal_compression full page images",
-        "WAL compression dictionary streams",
-        "streaming compression of WAL"
+        "whole WAL record compression",
+        "compress big WAL records",
+        "xlog record compression"
       ],
       "from_hint": false,
-      "score": 0.348,
+      "score": 0.331,
       "enriched": true,
-      "key_quote": "Since there seems not much interest, I have changed the status to \"Returned with Feedback\" [1].",
-      "quote_message_url": "https://www.postgresql.org/message-id/CAHut%2BPv_oSdPp09ef2HwMCH-dA8mzAtCro%2BQ9NBn2j3WHCMdzA%40mail.gmail.com",
-      "relevant": false
+      "key_quote": "No replies after 4 weeks, so I have marked this entry as returned\nwith feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/Y4mLrwaDrUEp47Ms%40paquier.xyz",
+      "relevant": true
     },
     {
       "id": "P4",
@@ -987,46 +1011,44 @@
       "objection": "",
       "touch_points": [],
       "matched_queries": [
-        "WAL compression dictionary streams",
-        "lz4 zstd wal_compression",
+        "wal_compression_threshold",
+        "WAL compression dictionary context",
         "reduce WAL volume compression"
       ],
       "from_hint": false,
-      "score": 0.331,
+      "score": 0.325,
       "enriched": false,
       "key_quote": null,
       "quote_message_url": null,
-      "relevant": true
+      "relevant": false
     },
     {
       "id": "P5",
-      "source_id": "cf:3668",
+      "source_id": "cf:3882",
       "kind": "cf",
-      "title": "pg_receivewal fail to streams when the partial file to write is not fully initialized present in the wal receiver directory",
-      "status": "Withdrawn",
-      "date": "2022-07-20",
-      "first_date": "2022-01-03",
-      "url": "https://commitfest.postgresql.org/patch/3668/",
+      "title": "Adding CommandID to heap xlog records",
+      "status": "Returned with feedback",
+      "date": "2023-01-31",
+      "first_date": "2022-09-08",
+      "url": "https://commitfest.postgresql.org/patch/3882/",
       "thread_urls": [
-        "https://www.postgresql.org/message-id/flat/CAHg+QDcVUss6ocOmbLbV5f4YeGLhOCt+1x2yLNfG2H_eDwU8tw@mail.gmail.com"
+        "https://www.postgresql.org/message-id/flat/CAEze2WhmU8WciEgaVPZm71vxFBOpp8ncDc=SdEHHsW6HS+k9zw@mail.gmail.com"
       ],
-      "authors": "Bharath Rupireddy (bharathrupireddy), SATYANARAYANA NARLAPURAM (satyanarayanan)",
-      "objectors": "Michael Paquier, Kyotaro Horiguchi",
-      "summary": "Make the zero-padding of a new WAL segment in pg_receivewal atomic by padding a XXXX.partial.tmp file and then renaming it to XXXX.partial, durably when sync is on. A crash or ENOSPC during padding would then not leave a short .partial file that blocks restart until someone removes it by hand.",
-      "objection": "Michael Paquier said the temporary file only covers uncompressed segments, so gzip and lz4 segments can still fail midway, and that the real need is to reserve enough disk space before starting a segment. He also asked why a temporary file is needed when the .partial file already serves that role. Kyotaro Horiguchi preferred to error out with a hint to remove the bad file. The thread stops with these points open, and the visible messages do not show why the entry was withdrawn.",
-      "touch_points": [
-        "WAL / replication / standby"
-      ],
+      "authors": "Anastasia Lubennikova (lubennikovaav), Matthias van de Meent (mmeent)",
+      "objectors": "Tom Lane",
+      "summary": "The patch adds the CommandId of the modifying command to heap insert, multi-insert, update and delete WAL records, so that systems that rebuild pages from WAL (such as Neon) or replicas that run part of a primary's transaction can see per-command visibility. A later version made the CommandId optional under a new wal_level = remote and moved the rmgr-specific xl_info bits into a separate field in the WAL record header.",
+      "objection": "Tom Lane objected that the change adds a significant cost for very few users and asked for evidence otherwise. The author replied with a reworked patch set and pgbench numbers, but Bruce Momjian noted the patch had grown much larger. The patch then stopped applying, the author did not post a new version after two reminders, and the entry was returned with feedback for lack of updates.",
+      "touch_points": [],
       "matched_queries": [
-        "wal_compression full page images",
-        "WAL compression dictionary streams",
-        "streaming compression of WAL"
+        "whole WAL record compression",
+        "compress big WAL records",
+        "xlog record compression"
       ],
       "from_hint": false,
-      "score": 0.311,
+      "score": 0.31,
       "enriched": true,
-      "key_quote": "So the important part is not the pre-padding, it is to make sure that there is enough space reserved for the handling of a full segment before beginning the work on it.",
-      "quote_message_url": "https://www.postgresql.org/message-id/Yl5EtSXDO4paYgLF%40paquier.xyz",
+      "key_quote": "This seems like a very significant cost increment with returns\nto only a minuscule number of users.",
+      "quote_message_url": "https://www.postgresql.org/message-id/4145759.1662672297%40sss.pgh.pa.us",
       "relevant": false
     },
     {
@@ -1049,8 +1071,8 @@
         "WAL / replication / standby"
       ],
       "matched_queries": [
-        "compress whole WAL records",
-        "WAL record compression threshold"
+        "whole WAL record compression",
+        "compress big WAL records"
       ],
       "from_hint": false,
       "score": 0.283,
@@ -1061,152 +1083,6 @@
     },
     {
       "id": "P7",
-      "source_id": "cf:4698",
-      "kind": "cf",
-      "title": "Move walreceiver state assignment (to WALRCV_STREAMING) in WalReceiverMain()",
-      "status": "Withdrawn",
-      "date": "2024-01-22",
-      "first_date": "2023-12-12",
-      "url": "https://commitfest.postgresql.org/patch/4698/",
-      "thread_urls": [
-        "https://www.postgresql.org/message-id/flat/11ff040c-2eca-421a-b74a-0e99937c2d93@gmail.com"
-      ],
-      "authors": "Bertrand Drouvot (bertranddrouvot.pg)",
-      "objectors": "Michael Paquier",
-      "summary": "The patch moves the assignment of walrcv->walRcvState to WALRCV_STREAMING from the start of WalReceiverMain() to the point after walrcv_startstreaming() returns true. The author said the current placement causes no known issue but is less accurate, since connecting to the primary can still fail after it.",
-      "objection": "Euler Taveira was concerned that keeping the state at WALRCV_STARTING longer could let WalRcvStreaming() hit the hardcoded WALRCV_STARTUP_TIMEOUT and stop a walreceiver that is slow to connect. Michael Paquier agreed and noted that v1 skipped the restart case. The author fixed the restart case in v2, but CFbot then reported test failures, and he withdrew the patch because the current code causes no issues.",
-      "touch_points": [
-        "WAL / replication / standby"
-      ],
-      "matched_queries": [
-        "WAL compression dictionary streams",
-        "streaming compression of WAL"
-      ],
-      "from_hint": false,
-      "score": 0.28,
-      "enriched": true,
-      "key_quote": "Couldn't it give up before starting if you apply your patch? My main concern is\ndue to a slow system, the walrcv_connect() took to long in WalReceiverMain()\nand the code above kills the walreceiver while in the process to start it.",
-      "quote_message_url": "https://www.postgresql.org/message-id/3abb8c54-11de-4220-ad65-c2785df01124%40app.fastmail.com",
-      "relevant": false
-    },
-    {
-      "id": "P8",
-      "source_id": "cf:3835",
-      "kind": "cf",
-      "title": "pg_basebackup: add test about zstd compress option",
-      "status": "Rejected",
-      "date": "2022-12-06",
-      "first_date": "2022-08-23",
-      "url": "https://commitfest.postgresql.org/patch/3835/",
-      "thread_urls": [
-        "https://www.postgresql.org/message-id/flat/CAAcByaKm9tNP8Ua4nQNz4feev0ZmiQYdp2BUdLG=6ccEgCEgyw@mail.gmail.com"
-      ],
-      "authors": "DongWook Lee (dongwooklee)",
-      "objectors": "Robert Haas",
-      "summary": "Add a test to pg_basebackup's TAP tests that exercises the zstd compression option, later extended to verify the generated files with the zstd binary. A follow-up version refactored the test to cover multiple compression methods (gzip, lz4, zstd) and check output with each respective decompression program.",
-      "objection": "Robert Haas pointed out that existing tests in src/bin/pg_verifybackup (008_untar.pl and 009_extract.pl) already cover compressed base backups, and that the only additional scenario the new test could catch was not worth the extra CPU cycles. Ian Lawrence Barwick and the author agreed the test did not add anything, and the entry was closed.",
-      "touch_points": [],
-      "matched_queries": [
-        "zstd WAL compression context",
-        "lz4 zstd wal_compression"
-      ],
-      "from_hint": false,
-      "score": 0.273,
-      "enriched": true,
-      "key_quote": "I would be inclined to dismiss that particular scenario as not important\nenough to be worth the additional CPU cycles.",
-      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoZgSqV0FkvHchZpajX1N1n%3DE92doV3kQST-miEzJNuDNA%40mail.gmail.com",
-      "relevant": false
-    },
-    {
-      "id": "P9",
-      "source_id": "cf:2676",
-      "kind": "cf",
-      "title": "Start WAL streaming as early as possible, without waiting for startup process to finish replaying existing WAL. This helps synchronous replication to resume quickly when significant replay lag has been built up.",
-      "status": "Returned with feedback",
-      "date": "2020-12-01",
-      "first_date": "2020-01-17",
-      "url": "https://commitfest.postgresql.org/patch/2676/",
-      "thread_urls": [
-        "https://www.postgresql.org/message-id/flat/CANXE4Tc3FNvZ_xAimempJWv_RH9pCvsZH7Yq93o1VuNLjUT-mQ@mail.gmail.com"
-      ],
-      "authors": "Asim Rama Praveen (apraveen), Hao Wu (hwu)",
-      "objectors": "Michael Paquier",
-      "summary": "The patch starts the WAL receiver on a standby before the startup process finishes replaying WAL already in pg_wal, so synchronous commits on the primary are not held up by replay lag. A GUC, wal_receiver_start_condition, picks when the receiver starts, and the start LSN is the beginning of the most recently flushed segment, found by reading the first page of each segment in pg_wal.",
-      "objection": "Michael Paquier objected that the start LSN is roughly the consistency point, so streaming begins too early when many local segments, often copied by hand, are still left to replay. He also rejected the WAL page checks as hard to maintain, noted that the patch requests streaming when PrimaryConnInfo is not set, and suggested a WAL reader scan from the redo point to find the real end of local WAL. The entry stayed \"Waiting on Author\" after this review and was returned with feedback.",
-      "touch_points": [
-        "WAL / replication / standby"
-      ],
-      "matched_queries": [
-        "WAL compression dictionary streams",
-        "streaming compression of WAL"
-      ],
-      "from_hint": false,
-      "score": 0.237,
-      "enriched": true,
-      "key_quote": "Your patch would cause streaming to begin too early, and a manual copy of segments is not a rare thing as in some environments a bulk copy of segments can make the catchup of a standby faster than streaming.",
-      "quote_message_url": "https://www.postgresql.org/message-id/20201120082106.GG8506%40paquier.xyz",
-      "relevant": false
-    },
-    {
-      "id": "P10",
-      "source_id": "cf:4111",
-      "kind": "cf",
-      "title": "basebackup: support zstd long distance matching",
-      "status": "Withdrawn",
-      "date": "2023-04-04",
-      "first_date": "2023-01-08",
-      "url": "https://commitfest.postgresql.org/patch/4111/",
-      "thread_urls": [
-        "https://www.postgresql.org/message-id/flat/20230108202737.GB27637@telsasoft.com"
-      ],
-      "authors": "Justin Pryzby (justinpryzby)",
-      "objectors": "",
-      "summary": "basebackup: support zstd long distance matching\nThreads: [PATCH] basebackup: support zstd long distance matching",
-      "objection": "",
-      "touch_points": [],
-      "matched_queries": [
-        "zstd WAL compression context",
-        "lz4 zstd wal_compression"
-      ],
-      "from_hint": false,
-      "score": 0.231,
-      "enriched": false,
-      "key_quote": null,
-      "quote_message_url": null,
-      "relevant": true
-    },
-    {
-      "id": "P11",
-      "source_id": "cf:3590",
-      "kind": "cf",
-      "title": "Nonreplayable XLog records by means of overflows and >MaxAllocSize lengths",
-      "status": "Returned with feedback",
-      "date": "2022-12-02",
-      "first_date": "2022-03-11",
-      "url": "https://commitfest.postgresql.org/patch/3590/",
-      "thread_urls": [
-        "https://www.postgresql.org/message-id/flat/CAEze2WgGiw+LZt+vHf8tWqB_6VxeLsMeoAuod0N=ij1q17n5pw@mail.gmail.com"
-      ],
-      "authors": "Matthias van de Meent (mmeent)",
-      "objectors": "",
-      "summary": "Nonreplayable XLog records by means of overflows and >MaxAllocSize lengths\nThreads: Non-replayable WAL records through overflows and >MaxAllocSize lengths",
-      "objection": "",
-      "touch_points": [
-        "WAL / replication / standby"
-      ],
-      "matched_queries": [
-        "compress whole WAL records",
-        "WAL record compression threshold"
-      ],
-      "from_hint": false,
-      "score": 0.229,
-      "enriched": false,
-      "key_quote": null,
-      "quote_message_url": null,
-      "relevant": false
-    },
-    {
-      "id": "P12",
       "source_id": "cf:2773",
       "kind": "cf",
       "title": "libpq compression",
@@ -1219,110 +1095,52 @@
       ],
       "authors": "Konstantin Knizhnik (knizhnik), Daniil Zakhlystov (usernamedt)",
       "objectors": "",
-      "summary": "libpq compression\nThreads: libpq compression",
-      "objection": "",
+      "summary": "The patch adds optional compression of libpq protocol traffic between client and server, using zlib or zstd, requested by the client with a connection-string option. Later versions negotiate algorithms through _pq_.compression in the startup packet, wrap compressed data in CompressedData messages, and let a libpq_compression server setting restrict the allowed algorithms and levels.",
+      "objection": "Michael Paquier marked the entry Returned with feedback because it had been waiting on author for two months. The last author message, in October 2021, promised lz4 support, but no new version followed after Daniel Gustafsson's rebase with a Windows build fix. Earlier review asked for a cleaned-up patch set, a fix for make check-world hangs with zlib, and code cleanup in the shared compression API.",
       "touch_points": [
         "wire protocol / libpq"
       ],
       "matched_queries": [
-        "lz4 zstd wal_compression",
+        "wal_compression_threshold",
+        "full page image compression",
         "reduce WAL volume compression"
       ],
       "from_hint": false,
-      "score": 0.187,
-      "enriched": false,
-      "key_quote": null,
-      "quote_message_url": null,
+      "score": 0.262,
+      "enriched": true,
+      "key_quote": "This patch has been waiting on author for two months now, so I have\nmarked it as RwF in the CF app.",
+      "quote_message_url": "https://www.postgresql.org/message-id/YanH2NuKhZmm2D6w%40paquier.xyz",
       "relevant": false
     },
     {
-      "id": "P13",
-      "source_id": "cf:3882",
+      "id": "P8",
+      "source_id": "cf:4386",
       "kind": "cf",
-      "title": "Adding CommandID to heap xlog records",
+      "title": "XLog size reductions: Reduced XLog record header size",
       "status": "Returned with feedback",
-      "date": "2023-01-31",
-      "first_date": "2022-09-08",
-      "url": "https://commitfest.postgresql.org/patch/3882/",
+      "date": "2024-04-09",
+      "first_date": "2023-06-20",
+      "url": "https://commitfest.postgresql.org/patch/4386/",
       "thread_urls": [
-        "https://www.postgresql.org/message-id/flat/CAEze2WhmU8WciEgaVPZm71vxFBOpp8ncDc=SdEHHsW6HS+k9zw@mail.gmail.com"
+        "https://www.postgresql.org/message-id/flat/CAEze2WgcW5SkPO_TGTqirRcCS_FN0xEZqUsXDE6pPz2TYzXQBA@mail.gmail.com"
       ],
-      "authors": "Anastasia Lubennikova (lubennikovaav), Matthias van de Meent (mmeent)",
-      "objectors": "",
-      "summary": "Adding CommandID to heap xlog records\nThreads: Adding CommandID to heap xlog records",
-      "objection": "",
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "Michael Paquier, Pavel Borisov",
+      "summary": "The patchset makes the WAL record header variable-length, which shrinks it to 14-21 bytes, with about 4-5% less WAL estimated for pgbench. It varlength-encodes the record length, gives rmgrs their own info byte, includes the XID only when the record asks for it with XLOG_INCLUDE_XID, and adds an invalid rmgr ID 0 used to detect the end of WAL.",
+      "objection": "The author stopped responding after review. Michael Paquier objected to the opt-in XLOG_INCLUDE_XID interface and questioned the use of rmgr ID 0 as an end-of-WAL marker. Pavel Borisov then asked for benchmarks showing the gain was large enough, the benchmarking was still a todo, and a reminder from Andrey M. Borodin in April 2024 got no visible reply before the entry was returned.",
       "touch_points": [],
       "matched_queries": [
-        "compress whole WAL records",
-        "WAL record compression threshold"
+        "xlog record compression"
       ],
       "from_hint": false,
-      "score": 0.174,
-      "enriched": false,
-      "key_quote": null,
-      "quote_message_url": null,
-      "relevant": false
+      "score": 0.147,
+      "enriched": true,
+      "key_quote": "But at the second round, some doubt arises on whether this long\npatchset indeed introduces enough performance gain?",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALT9ZEFx4jJ47t-Vmz-jAVRrG%2B9TSP9uThDssbDHmWdsSjz5Fw%40mail.gmail.com",
+      "relevant": true
     },
     {
-      "id": "P14",
-      "source_id": "cf:3443",
-      "kind": "cf",
-      "title": "Add WAL recovery info such as current WAL file and WAL source to server logs",
-      "status": "Withdrawn",
-      "date": "2022-10-26",
-      "first_date": "2021-11-10",
-      "url": "https://commitfest.postgresql.org/patch/3443/",
-      "thread_urls": [
-        "https://www.postgresql.org/message-id/flat/CALj2ACUfMU=ahxivfy+ZmpVZccd5PASG-_10mLpM55_Y_h4-VA@mail.gmail.com"
-      ],
-      "authors": "Bharath Rupireddy (bharathrupireddy)",
-      "objectors": "",
-      "summary": "Add WAL recovery info such as current WAL file and WAL source to server logs\nThreads: add recovery, backup, archive, streaming etc. activity messages to\nserver logs along with ps display",
-      "objection": "",
-      "touch_points": [
-        "WAL / replication / standby"
-      ],
-      "matched_queries": [
-        "WAL compression dictionary streams",
-        "streaming compression of WAL"
-      ],
-      "from_hint": false,
-      "score": 0.173,
-      "enriched": false,
-      "key_quote": null,
-      "quote_message_url": null,
-      "relevant": false
-    },
-    {
-      "id": "P15",
-      "source_id": "revert:b8b69d89905e04b910bcd65efce1791477b45d35",
-      "kind": "revert",
-      "title": "Revert \"Reduce checkpoints and WAL traffic on low activity database server\"",
-      "status": "Reverted",
-      "date": "2012-06-13",
-      "first_date": "2011-11-02",
-      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=b8b69d89905e04b910bcd65efce1791477b45d35",
-      "thread_urls": [],
-      "authors": "Simon Riggs",
-      "objectors": "",
-      "summary": "Revert \"Reduce checkpoints and WAL traffic on low activity database server\"\nReverted commit(s): Reduce checkpoints and WAL traffic on low activity database server Previously, we skipped a checkpoint if no WAL had been written since last checkpoint, though this does not appear in user documentation. As of now, we skip a checkpoint until we have written at least one enough WAL to switch the next WAL file. This greatly reduces the level of activity and number of WAL messages generated by a very low activity server. This is safe because the purpose of a checkpoint is to act as a starting place for a recovery, in case of crash. This patch maintains minimal WAL volume for replay in case of crash, thus maintaining very low crash recovery time.",
-      "objection": "This reverts commit 18fb9d8d21a28caddb72c7ffbdd7b96d52ff9724.  Per\ndiscussion, it does not seem like a good idea to allow committed changes to\ngo un-checkpointed indefinitely, as could happen in a low-traffic server;\nthat makes us entirely reliant on the WAL stream with no redundancy that\nmight aid data recovery in case of disk failure.\n\nThis re-introduces the original problem of hot-standby setups generating a\nsmall continuing stream of WAL traffic even when idle, but there are other\nways to address that without compromising crash recovery, so we'll revisit\nthat issue in a future release cycle.",
-      "touch_points": [
-        "WAL / replication / standby"
-      ],
-      "matched_queries": [
-        "streaming compression of WAL",
-        "reduce WAL volume compression"
-      ],
-      "from_hint": false,
-      "score": 0.172,
-      "enriched": false,
-      "key_quote": null,
-      "quote_message_url": null,
-      "relevant": false
-    },
-    {
-      "id": "P16",
+      "id": "P9",
       "source_id": "cf:3783",
       "kind": "cf",
       "title": "Page compression for OLTP",
@@ -1335,21 +1153,103 @@
       ],
       "authors": "Chen huajun (chenhuajun)",
       "objectors": "",
-      "summary": "Page compression for OLTP\nThreads: [Proposal] Page Compression for OLTP",
-      "objection": "",
+      "summary": "The patch adds transparent page compression for heap tables and indexes inside the storage manager layer (md.c, fd.c), storing each compressed page in fixed-size chunks of a data file (_pcd) with a per-segment address file (_pca) mapping blocks to chunks. Compression is set per relation with storage parameters such as compresstype, compresslevel, compress_chunk_size and compress_prealloc_chunks, and the design avoids background garbage collection.",
+      "objection": "The thread ended in silence after cfbot reported in November 2022 that the patch no longer applied, and the author sent no rebase. vignesh C marked it Returned with Feedback because there had been no updates for some time. The visible messages show no review of the design that rejected it. In 2021 the author asked whether the patch could be accepted, and the replies only told him to register it in the commitfest.",
       "touch_points": [],
       "matched_queries": [
-        "wal_compression full page images"
+        "full page image compression"
       ],
       "from_hint": false,
-      "score": 0.13,
+      "score": 0.144,
+      "enriched": true,
+      "key_quote": "There has been no updates on this thread for some time, so this has\nbeen switched as Returned with Feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALDaNm04RD4EJiS32VXQEyf4sHzgfzopmgykpSm4hOBQisCWMQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "revert:96112ee7c60557bb192a9aa07b514db2400fd45e",
+      "kind": "revert",
+      "title": "Revert \"Add some temporary code to record stack usage at server process exit.\"",
+      "status": "Reverted",
+      "date": "2016-07-10",
+      "first_date": "2016-07-08",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=96112ee7c60557bb192a9aa07b514db2400fd45e",
+      "thread_urls": [],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Add some temporary code to record stack usage at server process exit.\"\nReverted commit(s): Add some temporary code to record stack usage at server process exit.; Add more temporary code to record stack usage at server process exit.; Improve recording of IA64 stack data.",
+      "objection": "This reverts commit 88cf37d2a86d5b66380003d7c3384530e3f91e40 as well\nas follow-on commits ea9c4a16d5ad88a1d28d43ef458e3209b53eb106 and\nc57562725d219c4249b82f4a4fb5aaeee3ae0d53.  We've learned about as much\nas we can from the buildfarm.",
+      "touch_points": [],
+      "matched_queries": [
+        "whole WAL record compression",
+        "compress big WAL records"
+      ],
+      "from_hint": false,
+      "score": 0.143,
       "enriched": false,
       "key_quote": null,
       "quote_message_url": null,
       "relevant": false
     },
     {
-      "id": "P17",
+      "id": "P11",
+      "source_id": "cf:3835",
+      "kind": "cf",
+      "title": "pg_basebackup: add test about zstd compress option",
+      "status": "Rejected",
+      "date": "2022-12-06",
+      "first_date": "2022-08-23",
+      "url": "https://commitfest.postgresql.org/patch/3835/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAcByaKm9tNP8Ua4nQNz4feev0ZmiQYdp2BUdLG=6ccEgCEgyw@mail.gmail.com"
+      ],
+      "authors": "DongWook Lee (dongwooklee)",
+      "objectors": "",
+      "summary": "pg_basebackup: add test about zstd compress option\nThreads: pg_basebackup: add test about zstd compress option",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "streaming WAL compression zstd"
+      ],
+      "from_hint": false,
+      "score": 0.143,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:4698",
+      "kind": "cf",
+      "title": "Move walreceiver state assignment (to WALRCV_STREAMING) in WalReceiverMain()",
+      "status": "Withdrawn",
+      "date": "2024-01-22",
+      "first_date": "2023-12-12",
+      "url": "https://commitfest.postgresql.org/patch/4698/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/11ff040c-2eca-421a-b74a-0e99937c2d93@gmail.com"
+      ],
+      "authors": "Bertrand Drouvot (bertranddrouvot.pg)",
+      "objectors": "",
+      "summary": "Move walreceiver state assignment (to WALRCV_STREAMING) in WalReceiverMain()\nThreads: Move walreceiver state assignment (to WALRCV_STREAMING) in\nWalReceiverMain()",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "streaming WAL compression zstd"
+      ],
+      "from_hint": false,
+      "score": 0.133,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
       "source_id": "cf:1916",
       "kind": "cf",
       "title": "Making WAL receiver startup rely on GUC context for primary_conninfo and primary_slot_name",
@@ -1369,7 +1269,7 @@
         "WAL / replication / standby"
       ],
       "matched_queries": [
-        "zstd WAL compression context"
+        "WAL compression dictionary context"
       ],
       "from_hint": false,
       "score": 0.118,
@@ -1379,7 +1279,7 @@
       "relevant": false
     },
     {
-      "id": "P18",
+      "id": "P14",
       "source_id": "cf:3664",
       "kind": "cf",
       "title": "Deletion of the recycled future WAL files to free-up disk space if max_wal_size is reduced or wal_recycle is set to off",
@@ -1408,7 +1308,7 @@
       "relevant": false
     },
     {
-      "id": "P19",
+      "id": "P15",
       "source_id": "revert:ec62cb0aac5ba31a82339606009ddbd7eb00e2ac",
       "kind": "revert",
       "title": "Revert applying column aliases to the output of whole-row Vars.",
@@ -1425,7 +1325,7 @@
       "objection": "In commit bf7ca1587, I had the bright idea that we could make the\nresult of a whole-row Var (that is, foo.*) track any column aliases\nthat had been applied to the FROM entry the Var refers to.  However,\nthat's not terribly logically consistent, because now the output of\nthe Var is no longer of the named composite type that the Var claims\nto emit.  bf7ca1587 tried to handle that by changing the output\ntuple values to be labeled with a blessed RECORD type, but that's\nreally pretty disastrous: we can wind up storing such tuples onto\ndisk, whereupon they're not readable by other sessions.\n\nThe only practical fix I can see is to give up on what bf7ca1587\ntried to do, and say that the column names of tuples produced by\na whole-row Var are always those of the underlying named composite\ntype, query aliases or no.  While this introduces some inconsistencies,\nit removes others, so it's not that awful in the abstract.  What *is*\nkind of awful is to make such a behavioral change in a back-patched\nbug fix.  But corrupt data is worse, so back-patched it will be.\n\n(A workaround available to anyone who's unhappy about this is to\nintroduce an extra level of sub-SELECT, so that the whole-row Var is\nreferring to the sub-SELECT's output and not to a named table type.\nThen the Var is of type RECORD to begin with and there's no issue.)\n\nPer report from Miles Delahunty.  The faulty commit dates to 9.5,\nso back-patch to all supported branches.",
       "touch_points": [],
       "matched_queries": [
-        "compress whole WAL records"
+        "whole WAL record compression"
       ],
       "from_hint": false,
       "score": 0.117,
@@ -1435,7 +1335,142 @@
       "relevant": false
     },
     {
+      "id": "P16",
+      "source_id": "cf:2676",
+      "kind": "cf",
+      "title": "Start WAL streaming as early as possible, without waiting for startup process to finish replaying existing WAL. This helps synchronous replication to resume quickly when significant replay lag has been built up.",
+      "status": "Returned with feedback",
+      "date": "2020-12-01",
+      "first_date": "2020-01-17",
+      "url": "https://commitfest.postgresql.org/patch/2676/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANXE4Tc3FNvZ_xAimempJWv_RH9pCvsZH7Yq93o1VuNLjUT-mQ@mail.gmail.com"
+      ],
+      "authors": "Asim Rama Praveen (apraveen), Hao Wu (hwu)",
+      "objectors": "",
+      "summary": "Start WAL streaming as early as possible, without waiting for startup process to finish replaying existing WAL. This helps synchronous replication to resume quickly when significant replay lag has been built up.\nThreads: Unnecessary delay in streaming replication due to replay lag",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "streaming WAL compression zstd"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:3503",
+      "kind": "cf",
+      "title": "pg_receivewal fail to streams when the partial file to write is not fully initialized present in the wal receiver directory",
+      "status": "Returned with feedback",
+      "date": "2024-01-22",
+      "first_date": "2022-01-03",
+      "url": "https://commitfest.postgresql.org/patch/3503/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHg+QDcVUss6ocOmbLbV5f4YeGLhOCt+1x2yLNfG2H_eDwU8tw@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy), SATYANARAYANA NARLAPURAM (satyanarayanan)",
+      "objectors": "",
+      "summary": "pg_receivewal fail to streams when the partial file to write is not fully initialized present in the wal receiver directory\nThreads: pg_receivewal fail to streams when the partial file to write is not\nfully initialized present in the wal receiver directory",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "streaming WAL compression zstd"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:3802",
+      "kind": "cf",
+      "title": "Making autovacuum logs indicate if insert-based threshold was the triggering condition",
+      "status": "Withdrawn",
+      "date": "2022-11-27",
+      "first_date": "2022-08-06",
+      "url": "https://commitfest.postgresql.org/patch/3802/",
+      "thread_urls": [],
+      "authors": "Peter Geoghegan (pgeoghegan)",
+      "objectors": "",
+      "summary": "Making autovacuum logs indicate if insert-based threshold was the triggering condition",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "wal_compression_threshold"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "revert:b8b69d89905e04b910bcd65efce1791477b45d35",
+      "kind": "revert",
+      "title": "Revert \"Reduce checkpoints and WAL traffic on low activity database server\"",
+      "status": "Reverted",
+      "date": "2012-06-13",
+      "first_date": "2011-11-02",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=b8b69d89905e04b910bcd65efce1791477b45d35",
+      "thread_urls": [],
+      "authors": "Simon Riggs",
+      "objectors": "",
+      "summary": "Revert \"Reduce checkpoints and WAL traffic on low activity database server\"\nReverted commit(s): Reduce checkpoints and WAL traffic on low activity database server Previously, we skipped a checkpoint if no WAL had been written since last checkpoint, though this does not appear in user documentation. As of now, we skip a checkpoint until we have written at least one enough WAL to switch the next WAL file. This greatly reduces the level of activity and number of WAL messages generated by a very low activity server. This is safe because the purpose of a checkpoint is to act as a starting place for a recovery, in case of crash. This patch maintains minimal WAL volume for replay in case of crash, thus maintaining very low crash recovery time.",
+      "objection": "This reverts commit 18fb9d8d21a28caddb72c7ffbdd7b96d52ff9724.  Per\ndiscussion, it does not seem like a good idea to allow committed changes to\ngo un-checkpointed indefinitely, as could happen in a low-traffic server;\nthat makes us entirely reliant on the WAL stream with no redundancy that\nmight aid data recovery in case of disk failure.\n\nThis re-introduces the original problem of hot-standby setups generating a\nsmall continuing stream of WAL traffic even when idle, but there are other\nways to address that without compromising crash recovery, so we'll revisit\nthat issue in a future release cycle.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "reduce WAL volume compression"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
       "id": "P20",
+      "source_id": "cf:283",
+      "kind": "cf",
+      "title": "Compensate for full_page_writes when spreading checkpoint I/O",
+      "status": "Returned with feedback",
+      "date": "2015-08-25",
+      "first_date": "2015-06-26",
+      "url": "https://commitfest.postgresql.org/patch/283/",
+      "thread_urls": [],
+      "authors": "Heikki Linnakangas (heikki)",
+      "objectors": "",
+      "summary": "Compensate for full_page_writes when spreading checkpoint I/O",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "full page image compression"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
       "source_id": "cf:4029",
       "kind": "cf",
       "title": "Reduce wakeup on idle for bgwriter & walwriter for >5s",
@@ -1462,54 +1497,29 @@
       "relevant": false
     },
     {
-      "id": "P21",
-      "source_id": "cf:283",
-      "kind": "cf",
-      "title": "Compensate for full_page_writes when spreading checkpoint I/O",
-      "status": "Returned with feedback",
-      "date": "2015-08-25",
-      "first_date": "2015-06-26",
-      "url": "https://commitfest.postgresql.org/patch/283/",
-      "thread_urls": [],
-      "authors": "Heikki Linnakangas (heikki)",
-      "objectors": "",
-      "summary": "Compensate for full_page_writes when spreading checkpoint I/O",
-      "objection": "",
-      "touch_points": [],
-      "matched_queries": [
-        "wal_compression full page images"
-      ],
-      "from_hint": false,
-      "score": 0.099,
-      "enriched": false,
-      "key_quote": null,
-      "quote_message_url": null,
-      "relevant": false
-    },
-    {
       "id": "P22",
-      "source_id": "cf:1455",
+      "source_id": "cf:3668",
       "kind": "cf",
-      "title": "Changing WAL Header to reduce contention during ReserveXLogInsertLocation()",
-      "status": "Returned with feedback",
-      "date": "2018-07-09",
-      "first_date": "2017-12-30",
-      "url": "https://commitfest.postgresql.org/patch/1455/",
+      "title": "pg_receivewal fail to streams when the partial file to write is not fully initialized present in the wal receiver directory",
+      "status": "Withdrawn",
+      "date": "2022-07-20",
+      "first_date": "2022-01-03",
+      "url": "https://commitfest.postgresql.org/patch/3668/",
       "thread_urls": [
-        "https://www.postgresql.org/message-id/flat/CANP8+jKZidkCLHg_6nUi4tLQTN=d6w+qd7H5DYqzYa3eU-6Hzw@mail.gmail.com"
+        "https://www.postgresql.org/message-id/flat/CAHg+QDcVUss6ocOmbLbV5f4YeGLhOCt+1x2yLNfG2H_eDwU8tw@mail.gmail.com"
       ],
-      "authors": "Simon Riggs (simon), Pavan Deolasee (pavan)",
+      "authors": "Bharath Rupireddy (bharathrupireddy), SATYANARAYANA NARLAPURAM (satyanarayanan)",
       "objectors": "",
-      "summary": "Changing WAL Header to reduce contention during ReserveXLogInsertLocation()\nThreads: Changing WAL Header to reduce contention during ReserveXLogInsertLocation()",
+      "summary": "pg_receivewal fail to streams when the partial file to write is not fully initialized present in the wal receiver directory\nThreads: pg_receivewal fail to streams when the partial file to write is not\nfully initialized present in the wal receiver directory",
       "objection": "",
       "touch_points": [
         "WAL / replication / standby"
       ],
       "matched_queries": [
-        "reduce WAL volume compression"
+        "streaming WAL compression zstd"
       ],
       "from_hint": false,
-      "score": 0.099,
+      "score": 0.101,
       "enriched": false,
       "key_quote": null,
       "quote_message_url": null,
@@ -1517,53 +1527,53 @@
     },
     {
       "id": "P23",
-      "source_id": "cf:4210",
+      "source_id": "cf:4324",
       "kind": "cf",
-      "title": "Track Oldest Initialized WAL Buffer Page",
+      "title": "XLog size reductions: smaller XLogRecordBlockHeader",
       "status": "Returned with feedback",
-      "date": "2023-08-03",
-      "first_date": "2023-02-07",
-      "url": "https://commitfest.postgresql.org/patch/4210/",
+      "date": "2024-10-07",
+      "first_date": "2023-05-18",
+      "url": "https://commitfest.postgresql.org/patch/4324/",
       "thread_urls": [
-        "https://www.postgresql.org/message-id/flat/CALj2ACVgi6LirgLDZh=FdfdvGvKAD==WTOSWcQy=AtNgPDVnKw@mail.gmail.com"
+        "https://www.postgresql.org/message-id/flat/CAEze2WjuJqVeB6EUZ1z75_ittk54H6Lk7WtwRskEeGtZubr4bQ@mail.gmail.com"
       ],
-      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "authors": "Matthias van de Meent (mmeent)",
       "objectors": "",
-      "summary": "Track Oldest Initialized WAL Buffer Page\nThreads: Track Oldest Initialized WAL Buffer Page",
-      "objection": "",
-      "touch_points": [
-        "WAL / replication / standby"
-      ],
-      "matched_queries": [
-        "wal_compression full page images"
-      ],
-      "from_hint": false,
-      "score": 0.097,
-      "enriched": false,
-      "key_quote": null,
-      "quote_message_url": null,
-      "relevant": false
-    },
-    {
-      "id": "P24",
-      "source_id": "cf:3802",
-      "kind": "cf",
-      "title": "Making autovacuum logs indicate if insert-based threshold was the triggering condition",
-      "status": "Withdrawn",
-      "date": "2022-11-27",
-      "first_date": "2022-08-06",
-      "url": "https://commitfest.postgresql.org/patch/3802/",
-      "thread_urls": [],
-      "authors": "Peter Geoghegan (pgeoghegan)",
-      "objectors": "",
-      "summary": "Making autovacuum logs indicate if insert-based threshold was the triggering condition",
+      "summary": "XLog size reductions: smaller XLogRecordBlockHeader\nThreads: XLog size reductions: smaller XLRec block header for PG17",
       "objection": "",
       "touch_points": [],
       "matched_queries": [
-        "WAL record compression threshold"
+        "xlog record compression"
       ],
       "from_hint": false,
-      "score": 0.095,
+      "score": 0.099,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:233",
+      "kind": "cf",
+      "title": "Improving replay of XLOG_BTREE_VACUUM records",
+      "status": "Returned with feedback",
+      "date": "2015-08-25",
+      "first_date": "2015-05-01",
+      "url": "https://commitfest.postgresql.org/patch/233/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/5E0AF339-652B-46B6-90AC-D359D2A80949@simply.name"
+      ],
+      "authors": "Vladimir Borodin (d0uble)",
+      "objectors": "",
+      "summary": "Improving replay of XLOG_BTREE_VACUUM records\nThreads: Improving replay of XLOG_BTREE_VACUUM records",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "xlog record compression"
+      ],
+      "from_hint": false,
+      "score": 0.099,
       "enriched": false,
       "key_quote": null,
       "quote_message_url": null,
@@ -1572,14 +1582,14 @@
   ],
   "enrichment": {
     "candidates": 8,
-    "from_cache": 5,
-    "new_calls": 3,
+    "from_cache": 6,
+    "new_calls": 2,
     "failed": 0,
-    "quotes_verified": 3,
+    "quotes_verified": 2,
     "quotes_dropped": 0,
     "objectors_dropped": 0,
     "relevance_pass": "done",
-    "relevant": 4
+    "relevant": 5
   },
   "precedent_cutoff": "2025-01-12",
   "precedent_backend": "src/corpus/search.ts",
@@ -1587,37 +1597,37 @@
     {
       "angle": "prior-attempts",
       "objections": 0,
-      "note": "No precedent found. [P1] is a delta format for generic WAL and was returned for lack of review time, and [P2] proposed pg_stat_wal counters, which this proposal does not add. [P4] and [P10] record no reason. The thread cites only a related wal_compression default discussion (messages #17 and #28), not an earlier attempt at whole-record compression."
+      "note": "No precedent found for compressing whole WAL records or keeping compression history across records. [P1], [P8], [P23], [P3] and [P2] are in nearby WAL areas, but none was rejected for a reason that still applies to this proposal. The thread points to no earlier discussion of the same idea."
     },
     {
       "angle": "standards-compat",
       "objections": 2,
-      "note": "The WAL format change itself is not objected to: WAL is tied to a major version, and standbys and pg_upgrade do not carry WAL across versions. The WIP streams GUC was not judged."
+      "note": "Two objections only. The record-format change uses a reserved xl_info bit and only needs the usual XLOG_PAGE_MAGIC bump, which the material does not confirm. The WIP streams GUC is not mature enough to judge from this angle."
     },
     {
       "angle": "replication-ondisk",
-      "objections": 2,
-      "note": "0002 keeps each record decodable on its own and leaves pg_upgrade and the catalog unchanged. The page LSN concern in message #21 seems to concern another patch, so it was not used."
+      "objections": 3,
+      "note": "Objections 2 and 3 apply to WIP 0003 only. For 0001 the main open point is the format signal to external WAL parsers. Message #21's page LSN concern was not tied to a specific design, so it is left out."
     },
     {
       "angle": "security",
       "objections": 1,
-      "note": "0002 alone adds little new exposure: records stay independent, and message #20 caps the decompressed length at XLogRecordMaxSize. The GUC contexts for the new settings are not shown, so I could not check who can set them."
+      "note": "0001 adds no new exposure: per-FPI compression already makes WAL size depend on page contents. The threshold and stream GUCs do not give unprivileged users new abilities, assuming they keep superuser or postmaster context. The material does not state the GUC contexts."
     },
     {
       "angle": "maintenance-fit",
-      "objections": 3,
-      "note": "The context-reuse part is committed. These objections apply to 0002 and 0003 only."
+      "objections": 4,
+      "note": "Objections listed above."
     },
     {
       "angle": "already-exists",
-      "objections": 1,
-      "note": "Only one objection from this angle. Per-FPI wal_compression cannot use redundancy across images, and core has no compression of the replication stream, so no existing feature fully replaces the proposal."
+      "objections": 0,
+      "note": "Postgres has no existing way to compress whole records or to use cross-record redundancy in pg_wal or the replication stream. Per-FPI wal_compression is extended here, and compressing archived segments in archive_command shrinks only the archive, so neither covers live WAL I/O or standby traffic."
     },
     {
       "angle": "demand",
       "objections": 2,
-      "note": "Interest in lower WAL volume is broad, and wal_compression already exists. The objections ask for workload evidence, not a rejection."
+      "note": "Less WAL volume is a broad and lasting need, so neither objection is fatal. Both ask for evidence that the 0001 gain reaches beyond index builds and outweighs its default-on cost."
     }
   ],
   "rounds_requested": 0,
@@ -1626,8 +1636,8 @@
       "round": 0,
       "kind": "initial",
       "llm_calls": 8,
-      "new_objections": 11,
-      "new_survived": 6,
+      "new_objections": 12,
+      "new_survived": 8,
       "revised": 0,
       "withdrawn": 0,
       "follow_ups": [],
@@ -1639,7 +1649,7 @@
     "synthesis said NEEDS-COMMITTER-EYES but listed a level 1b objection (demand-1); changed to NEEDS-DESIGN-DISCUSSION"
   ],
   "tone_lint": {
-    "fields_checked": 104,
+    "fields_checked": 111,
     "hits_found": 1,
     "sentences_rewritten": 1,
     "repair_call": "done",
@@ -1652,9 +1662,9 @@
     "quotes_dropped": []
   },
   "stats": {
-    "llm_calls": 15,
-    "wall_ms": 199390,
-    "cost_usd": 3.4826755999999994,
+    "llm_calls": 14,
+    "wall_ms": 236297,
+    "cost_usd": 3.6074518000000007,
     "dry_run": false
   }
 }

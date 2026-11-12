@@ -1,0 +1,1350 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:06:59.386Z",
+  "input": {
+    "arg": "6892",
+    "cf": {
+      "id": 6892,
+      "url": "https://commitfest.postgresql.org/patch/6892/",
+      "title": "Randomize B-Tree page split location to avoid oscillating patterns",
+      "status": "Needs review",
+      "authors": "Dmitry Dolgov (erthalion)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/d6do2mtjcsagn37jf6pjywzhlzyokqja6jlnvcs4ypkvnnuu32%40llwuuyxxomc3",
+    "subject": "Randomize B-Tree page split location to avoid oscillating patterns",
+    "thread_start": "2026-04-27T16:24:13Z",
+    "messages_read": 14,
+    "messages_total": 14,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v3-0001-Add-USDT-for-nbtree-page-splits-and-suffix-trunca.patch",
+      "v3-0002-Add-USDT-for-split-location-benchmarking.patch",
+      "v3-0003-Randomize-nbtree-split-location-to-avoid-oscillat.patch",
+      "v1-0001-Add-a-USDT-for-tracing-nbtree-page-splits.patch",
+      "v1-0002-Randomize-nbtree-split-location-to-avoid-oscillat.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The design has the reviewers' agreement for SPLIT_DEFAULT leaf splits, but the benefit is not yet shown (demand-1). Message #12 sets the bar at lower tail latency with no loss of page occupancy, and v3 in message #14 brings no such result. The cost of the full scan is measured on one single-column index only (demand-2). This is a \"not now, show the numbers\" outcome, not a rejection.",
+  "failing_level": "1b",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "failed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "not_evaluated"
+    }
+  ],
+  "brief": {
+    "title": "Randomize nbtree leaf split location among equally good split points",
+    "problem": "Under some insert workloads nbtree picks the same split location again and again, so many leaf pages fill and split at about the same time. The author says the number of page splits then oscillates over time (the \"waves of misery\" effect), which varies IO and buffer contention. UUID indexes and new data that matches the existing key distribution are named as bad cases.",
+    "proposed_design": "In nbtsplitloc.c, the split finder scans the whole existing split interval and picks at random among the locations with the true minimum split penalty, using reservoir sampling. So suffix truncation keeps its current effect while the split location varies. Per the review, the scope is SPLIT_DEFAULT leaf splits only; SPLIT_MANY_DUPLICATES and internal pages do not change.",
+    "user_visible_surface": [
+      "USDT probe nbtree__page__split with a BlockNumber argument.",
+      "USDT probe nbtree__page__truncate with the number of truncated columns.",
+      "USDT probes nbtree__page__findsplit__start and nbtree__page__findsplit__done, which the author says are for benchmarking only.",
+      "New regression test nbtree_split_randomization in src/test/modules/nbtree."
+    ],
+    "author_claims": [
+      "With randomization, the page split rate stops oscillating in a single-column unique integer index test and a UUID batch-load test.",
+      "pgbench latency stddev improved in the single-column unique index test, run with more throughput than the first tests.",
+      "Reservoir sampling was only slightly faster than keeping an array of candidates, and was chosen because it fits the code better.",
+      "The 20% figure comes from the Glombiewski, Seeger and Graefe paper.",
+      "The author could not show a clear throughput change; tests ran on a RAM disk or unlogged tables."
+    ],
+    "thread_state": "Peter Geoghegan and Andrey Borodin (reviewer) agree with the approach when limited to SPLIT_DEFAULT leaf splits, and v3 follows that. They still want evidence that tail latency drops while average page occupancy does not; Borodin's separate batch extension patch is a side topic.",
+    "unclear": [
+      "The commit message still says the patch searches for 20% of locations, but the review asked for a full scan of the interval; it is not clear which v3 does.",
+      "No v3 results show average page occupancy or index size against master.",
+      "No v3 results show tail latency or the cost of the full scan on multi-column or non-unique indexes.",
+      "The thread does not say whether nbtsort.c (CREATE INDEX) gets any change, which Geoghegan said is needed for full benefit.",
+      "The material does not say which random number source the patch uses, or whether runs are repeatable for tests."
+    ],
+    "search_queries": [
+      "randomize btree page split",
+      "nbtree split location random",
+      "waves of misery index",
+      "btree split point choice",
+      "page split oscillation",
+      "nbtsplitloc split penalty",
+      "btree fillfactor split balance",
+      "USDT probes nbtree"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "No field report shows users hurt by split oscillation",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer pushes the change based on graphs of split counts from RAM-disk and unlogged-table runs. Users on real storage see no change in latency, and some indexes end up slightly larger. Nobody can show that the extra nbtree policy fixed a problem anyone reported.",
+      "argument": "The evidence of demand is one paper and the author's synthetic tests. Message #1 says the effect on performance could not be measured, and message #4 says latency showed nothing beyond noise. Message #2 calls the phenomenon real but is unsure of its importance. Message #12 sets the bar at a statistically significant tail-latency gain with no significant loss of occupancy, and no v3 result in message #14 meets it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        4,
+        7,
+        12,
+        14
+      ],
+      "author_must_show": "On logged tables and real storage, does v3 cut p99 or worse insert latency for a UUID or similar workload, and is average leaf occupancy unchanged against master?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Dmitry Dolgov",
+          "date": "2026-04-27T16:24:13Z",
+          "url": "https://www.postgresql.org/message-id/d6do2mtjcsagn37jf6pjywzhlzyokqja6jlnvcs4ypkvnnuu32%40llwuuyxxomc3"
+        },
+        {
+          "index": 2,
+          "from": "Peter Geoghegan",
+          "date": "2026-04-27T18:07:14Z",
+          "url": "https://www.postgresql.org/message-id/CAH2-Wz%3DSy7%3DkAHrtNrDSoo%2Bvj_QYAmNc8_GEYPh6r%2B0r-BbQ5w%40mail.gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "Dmitry Dolgov",
+          "date": "2026-05-06T17:10:18Z",
+          "url": "https://www.postgresql.org/message-id/uqcsdatuokodytg7dcan75hbutv4erwdmzqaxjwhakmvfhy7vf%40fxlpamb3opzr"
+        },
+        {
+          "index": 7,
+          "from": "Dmitry Dolgov",
+          "date": "2026-06-16T10:13:47Z",
+          "url": "https://www.postgresql.org/message-id/jotfal6422zpqvux4add7xcyftaujjiksscfcc5uuibaldw4sv%40pzriktpx4gyl"
+        },
+        {
+          "index": 12,
+          "from": "Andrey Borodin",
+          "date": "2026-08-29T17:37:51Z",
+          "url": "https://www.postgresql.org/message-id/0025135A-F56E-44FF-95C8-945A6BB5FDB4%40yandex-team.ru"
+        },
+        {
+          "index": 14,
+          "from": "Dmitry Dolgov",
+          "date": "2026-10-15T09:00:35Z",
+          "url": "https://www.postgresql.org/message-id/atCTpUNwWNm3k2Lg%40ddolgov-thinkpadt14sgen1.rmtde.csb"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #7 shows a pgbench latency stddev gain and both reviewers call the idea sound, so the objection understates the evidence. But messages #12 and #13 still ask for tail latency and occupancy results, and message #14 gives none.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Every default leaf split pays for a gain few workloads see",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "demand",
+      "touch_points": [
+        "hot_path_performance",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An insert-heavy workload on a unique index never oscillates in practice. After the change, each of its leaf splits scans the whole split interval and draws random numbers, where before the search stopped after one step. The workload pays the cost and gets nothing back.",
+      "argument": "Message #6 notes that unique indexes now finish the search after one iteration, and the full scan from message #8 removes that early exit for all SPLIT_DEFAULT splits. The benefit applies only to workloads whose new keys follow the existing distribution, and message #4 says suffix truncation already spreads splits on wider indexes. Message #12 names the added nbtree complexity as the main cost. The only cost data so far is one single-column test in message #14.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4,
+        6,
+        8,
+        12,
+        14
+      ],
+      "author_must_show": "What does the full-interval scan cost on multi-column and non-unique indexes, and which common workloads gain enough to justify it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "Dmitry Dolgov",
+          "date": "2026-05-06T17:10:18Z",
+          "url": "https://www.postgresql.org/message-id/uqcsdatuokodytg7dcan75hbutv4erwdmzqaxjwhakmvfhy7vf%40fxlpamb3opzr"
+        },
+        {
+          "index": 6,
+          "from": "Dmitry Dolgov",
+          "date": "2026-05-07T18:10:30Z",
+          "url": "https://www.postgresql.org/message-id/noovhlxtwa64do7isbbvl2f6clqukujb7hexw3zi2rn3ssbmrw%403yvb4ghojg4b"
+        },
+        {
+          "index": 8,
+          "from": "Andrey Borodin",
+          "date": "2026-08-24T11:22:46Z",
+          "url": "https://www.postgresql.org/message-id/FB98633D-4D3F-4FB5-9CEA-240ACBDAE4F1%40yandex-team.ru"
+        },
+        {
+          "index": 12,
+          "from": "Andrey Borodin",
+          "date": "2026-08-29T17:37:51Z",
+          "url": "https://www.postgresql.org/message-id/0025135A-F56E-44FF-95C8-945A6BB5FDB4%40yandex-team.ru"
+        },
+        {
+          "index": 14,
+          "from": "Dmitry Dolgov",
+          "date": "2026-10-15T09:00:35Z",
+          "url": "https://www.postgresql.org/message-id/atCTpUNwWNm3k2Lg%40ddolgov-thinkpadt14sgen1.rmtde.csb"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #12 and #13 weigh the CPU cost as minor, and message #7 shows the split search takes tens of nanoseconds on a single-column index. Message #8 asked for the full-scan cost to be measured, and no multi-column or non-unique result exists yet.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "Split choice may not be repeatable for tests and investigations",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A developer loads the same data twice to bisect an index size regression, or a regression test prints relpages or pageinspect output for an index with several leaf pages. Each run now picks different split points, so the outputs differ between runs. The test fails intermittently on the buildfarm, or the bisection shows noise instead of a cause.",
+      "argument": "Today a given insert sequence always produces the same nbtree layout. Message #13 notes that perfectly deterministic results made iterating on nbtsplitloc.c easy. The material does not say which random source v3 uses, whether it can be seeded, or whether it can be turned off for tests. The new test in message #14 checks a histogram of free space, so its own stability also depends on that randomness.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        13,
+        14
+      ],
+      "author_must_show": "Which random source does v3 use, and how can a developer or a regression test get a repeatable leaf layout from the same input?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 13,
+          "from": "Peter Geoghegan",
+          "date": "2026-08-29T17:57:04Z",
+          "url": "https://www.postgresql.org/message-id/CAH2-Wz%3DV%3Db_5tq-x9U44tJo-w2PJTaGogFnQSKGxifLjxBmxUg%40mail.gmail.com"
+        },
+        {
+          "index": 14,
+          "from": "Dmitry Dolgov",
+          "date": "2026-10-15T09:00:35Z",
+          "url": "https://www.postgresql.org/message-id/atCTpUNwWNm3k2Lg%40ddolgov-thinkpadt14sgen1.rmtde.csb"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The thread names xoroshiro128** only as a guess in message #12, and no message says how a test gets a repeatable layout. The new test in message #14 counts histogram buckets, so its stability depends on that answer.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Benchmark-only USDT probes would become a permanent tracing interface",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator writes bpftrace scripts against nbtree__page__findsplit__start and nbtree__page__findsplit__done, which are listed in probes.d. A later release restructures _bt_findsplitloc and drops or moves the probes. The scripts break silently after an upgrade, with nothing in the docs warning that the probes were internal.",
+      "argument": "Message #7 says the 0002 probes are \"purely for benchmarking\", yet v3-0002 adds them to probes.d next to the documented probes. The touched-file lists show no documentation hunk for any of the new probes. A committer would likely ask that 0002 stay out of the commit, and that 0001 be documented in the built-in probe table and justified apart from this feature.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        7,
+        14
+      ],
+      "author_must_show": "Is 0002 intended for commit, and if 0001 is, where are the new probes documented and why are they needed apart from this change?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "Dmitry Dolgov",
+          "date": "2026-06-16T10:13:47Z",
+          "url": "https://www.postgresql.org/message-id/jotfal6422zpqvux4add7xcyftaujjiksscfcc5uuibaldw4sv%40pzriktpx4gyl"
+        },
+        {
+          "index": 14,
+          "from": "Dmitry Dolgov",
+          "date": "2026-10-15T09:00:35Z",
+          "url": "https://www.postgresql.org/message-id/atCTpUNwWNm3k2Lg%40ddolgov-thinkpadt14sgen1.rmtde.csb"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "Message #7 says 0001 \"makes sense to have in general\" and 0002 is \"purely for benchmarking\", so the author presents 0002 as a measurement aid for the review. The missing documentation for the 0001 probes is a level 4 matter, out of scope here.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Benchmarking-only USDT probes would become permanent core surface",
+      "level": "2",
+      "rubric_item": 5,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "v3-0002 adds nbtree__page__findsplit__start and nbtree__page__findsplit__done to probes.d for timing _bt_findsplitloc. Once released, tracing scripts depend on the probe names and placement. A later rewrite of nbtsplitloc.c must keep these probes or break those scripts, and no test catches a moved or dropped probe.",
+      "argument": "Message #7 calls 0002 \"purely for benchmarking\" and still sends it as part of the series. If every nbtree tuning patch shipped its own timing probes, probes.d would collect points nobody committed to keep stable, which fails the accumulation test. 0001 has a general use and could be judged on its own. 0002 looks like a development aid that can stay out of the tree.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        7,
+        14
+      ],
+      "author_must_show": "Which users, other than this benchmark, need the findsplit probes in a release, and could 0002 stay out of the committed series?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "Dmitry Dolgov",
+          "date": "2026-06-16T10:13:47Z",
+          "url": "https://www.postgresql.org/message-id/jotfal6422zpqvux4add7xcyftaujjiksscfcc5uuibaldw4sv%40pzriktpx4gyl"
+        },
+        {
+          "index": 14,
+          "from": "Dmitry Dolgov",
+          "date": "2026-10-15T09:00:35Z",
+          "url": "https://www.postgresql.org/message-id/atCTpUNwWNm3k2Lg%40ddolgov-thinkpadt14sgen1.rmtde.csb"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "The failure scenario needs 0002 to be committed, and message #7 labels 0002 \"purely for benchmarking\", apart from 0001. Randomization in 0003 does not depend on it, so a committer can leave 0002 out without any change to the proposal.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Random split choice makes nbtree layout non-reproducible",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user reports bloat or a bad split pattern on an index. A developer replays the same inserts on the same version and gets a different page layout, because the split point came from a random draw, and cannot reproduce the report. A regression test that counts free-space histogram buckets may also pass or fail from run to run on the buildfarm.",
+      "argument": "In message #13 Geoghegan says the deterministic results of nbtsplitloc.c made it easy to iterate on its policies, and this patch removes that property for SPLIT_DEFAULT leaf splits. The material does not name the random source, whether it is seeded per backend, or whether a developer can make it deterministic. Message #14 says the new test checks the bucket count of a free-space histogram, which depends on random outcomes.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        13,
+        14
+      ],
+      "author_must_show": "Which random source does v3 use, and how can a developer or the regression test get a repeatable split choice when needed?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 13,
+          "from": "Peter Geoghegan",
+          "date": "2026-08-29T17:57:04Z",
+          "url": "https://www.postgresql.org/message-id/CAH2-Wz%3DV%3Db_5tq-x9U44tJo-w2PJTaGogFnQSKGxifLjxBmxUg%40mail.gmail.com"
+        },
+        {
+          "index": 14,
+          "from": "Dmitry Dolgov",
+          "date": "2026-10-15T09:00:35Z",
+          "url": "https://www.postgresql.org/message-id/atCTpUNwWNm3k2Lg%40ddolgov-thinkpadt14sgen1.rmtde.csb"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1, which states the same random-source and test-stability question with a more concrete scenario.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Benchmark-only findsplit probes duplicate what uprobes already give",
+      "level": "1b",
+      "rubric_item": 5,
+      "category": "desirability",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "v3-0002 adds permanent nbtree__page__findsplit__start/done probes that only time _bt_findsplitloc. A later refactor of nbtsplitloc.c must keep both probes and their placement correct. Nothing fails if a probe drifts, and few users ever run them.",
+      "argument": "Message #7 calls 0002 \"purely for benchmarking\". _bt_findsplitloc is an external function, so a bpftrace uprobe and uretprobe on it already give the timing histograms shown in message #7. A committer would likely ask why core should ship probes for one patch's benchmarking. The split-randomization change in 0003 does not depend on them.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        7,
+        14
+      ],
+      "author_must_show": "What do the findsplit start/done probes measure that a uprobe on _bt_findsplitloc cannot, and who would use them after this patch?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "Dmitry Dolgov",
+          "date": "2026-06-16T10:13:47Z",
+          "url": "https://www.postgresql.org/message-id/jotfal6422zpqvux4add7xcyftaujjiksscfcc5uuibaldw4sv%40pzriktpx4gyl"
+        },
+        {
+          "index": 14,
+          "from": "Dmitry Dolgov",
+          "date": "2026-10-15T09:00:35Z",
+          "url": "https://www.postgresql.org/message-id/atCTpUNwWNm3k2Lg%40ddolgov-thinkpadt14sgen1.rmtde.csb"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "Message #7 already presents 0002 as a benchmarking aid, separate from 0001, so the thread does not ask core to keep these probes. The uprobe point is correct but argues against something the author did not propose for release.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The CommitFest entry gives target version \"stable\", but the patch changes split behaviour and is not a bug fix."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "The patch adds a random split policy to nbtsplitloc.c, four USDT probes in probes.d, and a test that depends on random outcomes."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Every SPLIT_DEFAULT leaf split scans the whole split interval, where a unique index stopped after one step before."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "see objection demand-1: No field report shows users hurt by split oscillation"
+    }
+  ],
+  "questions": [
+    "On logged tables and real storage, does v3 lower p99 or worst-case insert latency against master for a UUID index workload?",
+    "Is average leaf page occupancy, or final index size, the same with v3 as on master for the same workloads?",
+    "What does the full scan of the split interval cost per split on multi-column and non-unique indexes?",
+    "Which random number source does v3 use, and how does a regression test or a developer get a repeatable leaf layout from the same input?",
+    "Does v3 scan the whole split interval, as the review asked, or search 20% of the locations, as the commit message of 0003 says?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Peter Geoghegan, who knows the nbtree split location code, reviews the patch in the thread and agrees with the approach for SPLIT_DEFAULT leaf splits.",
+    "liability": "The owner signs for the split policy of every default leaf split in all nbtree indexes, with no time limit. This includes any later report of larger indexes and any layout that no longer reproduces from the same inserts.",
+    "author_follow_up": "The author posted three versions that follow the review and moved the entry through three CommitFests."
+  },
+  "not_now": {
+    "applies": true,
+    "evidence_that_would_change_it": "A statistically significant drop in tail insert latency on logged tables and real storage, with average leaf occupancy unchanged against master. Also the cost of the full scan on multi-column and non-unique indexes."
+  },
+  "priority": {
+    "audience": "unclear",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "proceed",
+    "reason": "The patch is small and limited to nbtsplitloc.c, and a committer who knows the area is engaged. The thread has no measurement that shows which users feel the oscillation, so the next step is the benchmark the reviewers asked for."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, we could not check whether v3 scans the whole split interval, which random source it uses, or whether the new test is stable. The repeatability objection (standards-compat-1) is at level 2 and was not evaluated here.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:3173",
+      "kind": "cf",
+      "title": "Split xlog.c",
+      "status": "Returned with feedback",
+      "date": "2021-11-15",
+      "first_date": "2021-06-16",
+      "url": "https://commitfest.postgresql.org/patch/3173/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/b3b71061-4919-e882-4857-27e370ab134a@iki.fi"
+      ],
+      "authors": "Heikki Linnakangas (heikki)",
+      "objectors": "Daniel Gustafsson, Robert Haas, Kyotaro Horiguchi",
+      "summary": "Heikki Linnakangas proposed moving WAL replay, standby mode, archive fetching and recovery-target logic out of xlog.c into a new source file xlogrecovery.c, with StartupXLOG() calling new functions such as InitWalRecovery(), PerformWalRecovery() and EndWalRecovery(). The patch set also included smaller commits that reorder some steps in StartupXLOG() and a follow-up that moves applying one WAL record into its own function.",
+      "objection": "The patch stopped applying to the main branch and no rebased version followed, made worse by concurrent ThisTimeLineID changes in xlog.c. Review comments from Kyotaro Horiguchi and Robert Haas were not yet addressed. Those reviews raised behavioral changes hidden in the code movement, and Robert Haas questioned the safety of reordering in StartupXLOG(), such as updating control file state in memory well before writing it to disk. The CF manager marked it Returned with Feedback and invited a new entry once a rebase addressed those reviews.",
+      "touch_points": [],
+      "matched_queries": [
+        "randomize btree page split",
+        "btree split point choice",
+        "page split oscillation",
+        "nbtsplitloc split penalty",
+        "btree fillfactor split balance"
+      ],
+      "from_hint": false,
+      "score": 0.557,
+      "enriched": true,
+      "key_quote": "This patch still doesn't apply, exacerbated by the recent ThisTimelineID\nchanges in xlog.c.  I'm marking this Returned with Feedback, please feel free\nto open a new entry when you have a rebase addressing Kyotaro's and Robert's\nreviews.",
+      "quote_message_url": "https://www.postgresql.org/message-id/5872E5C0-80EF-46A0-A7A3-F374F714D684%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:2370",
+      "kind": "cf",
+      "title": "Split StdRdOptions into HeapOptions and ToastOptions",
+      "status": "Returned with feedback",
+      "date": "2021-10-04",
+      "first_date": "2019-12-06",
+      "url": "https://commitfest.postgresql.org/patch/2370/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/5578311.AeZzQnSgRP@x200m"
+      ],
+      "authors": "Nikolay Shaplov (nataraj)",
+      "objectors": "Michael Paquier, Georgios Kokolatos, Jeff Davis",
+      "summary": "Replace the single StdRdOptions structure used to store relation options with separate HeapOptions and ToastOptions structures, with matching per-relkind option-fetching macros and asserts. This was presented as the last step of a larger effort to split reloptions per relkind and access method before moving option definitions into AM code.",
+      "objection": "Reviewers considered the patch a step in the right direction but not far enough: they wanted table-AM-specific reloption handling (heap options defined in the heap AM handler, as is done for index AMs), and Jeff Davis asked for a plan showing how this would lead there. The patch then stopped applying to HEAD; the author's last message says the rebase needed careful work and would come after his vacation, and no newer version appears in the visible messages before the entry was returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "btree split point choice",
+        "page split oscillation",
+        "nbtsplitloc split penalty",
+        "btree fillfactor split balance"
+      ],
+      "from_hint": false,
+      "score": 0.437,
+      "enriched": true,
+      "key_quote": "However, I think that this\npatch is not ambitious enough in the work which is done and that\nthings could move into a more generic direction.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20191209031117.GC4016%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:3984",
+      "kind": "cf",
+      "title": "Split index and table statistics into different types of stats",
+      "status": "Returned with feedback",
+      "date": "2023-07-10",
+      "first_date": "2022-10-31",
+      "url": "https://commitfest.postgresql.org/patch/3984/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/f572abe7-a1bb-e13b-48c7-2ca150546822@gmail.com"
+      ],
+      "authors": "Bertrand Drouvot (bertranddrouvot.pg)",
+      "objectors": "",
+      "summary": "The patch splits the cumulative statistics kind PGSTAT_KIND_RELATION into PGSTAT_KIND_TABLE and a new PGSTAT_KIND_INDEX, with index-specific counting macros and SQL-callable functions. The goal is sensible field names for index stats and lower memory use, since index entries currently carry unused table counters.",
+      "objection": "The patch stalled. Review comments from Andres Freund and Melanie Plageman were still open, and the author put the work on hold until the related \"Generate pg_stat_get_xact*() functions with Macros\" patch was done. After that patch was committed, no new version came; the CFM returned the entry because it no longer applied and tests failed.",
+      "touch_points": [],
+      "matched_queries": [
+        "btree split point choice",
+        "page split oscillation",
+        "nbtsplitloc split penalty"
+      ],
+      "from_hint": false,
+      "score": 0.343,
+      "enriched": true,
+      "key_quote": "This patch no longer applies (with tests failing when it did), and the thread\nhas stalled.",
+      "quote_message_url": "https://www.postgresql.org/message-id/B5A5B7E4-A8F7-4FD3-B863-BFD1EEB8EC87%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:4792",
+      "kind": "cf",
+      "title": "Split index and table statistics into different types of stats",
+      "status": "Returned with feedback",
+      "date": "2024-10-02",
+      "first_date": "2022-10-31",
+      "url": "https://commitfest.postgresql.org/patch/4792/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/f572abe7-a1bb-e13b-48c7-2ca150546822@gmail.com"
+      ],
+      "authors": "Bertrand Drouvot (bertranddrouvot.pg)",
+      "objectors": "Andres Freund",
+      "summary": "The patch splits the cumulative statistics for indexes and tables into two kinds, PGSTAT_KIND_TABLE and a new PGSTAT_KIND_INDEX, with index-specific counting macros and SQL functions. The goal is sensible field names and lower memory use, since index stats today reuse the table format and leave many fields unused.",
+      "objection": "Andres Freund objected that the patch makes bufmgr.c aware of the relation kind, and suggested first moving relkind-agnostic counters such as blocks_hit and blocks_fetched into per-relfilenode stats. The author agreed to do the relfilenode stats work first and set the entry to Waiting on Author. Michael Paquier later returned the entry because there was no update since January 2024 and the relfilenode work had been posted separately.",
+      "touch_points": [],
+      "matched_queries": [
+        "btree split point choice",
+        "page split oscillation",
+        "nbtsplitloc split penalty"
+      ],
+      "from_hint": false,
+      "score": 0.326,
+      "enriched": true,
+      "key_quote": "It's not nice from a layering POV that we need this level of awareness in\nbufmgr.c.  I wonder if this is an argument for first splitting out stats like\nblocks_hit, blocks_fetched into something like \"relfilenode stats\" - they're\nagnostic of the relkind.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20231113204439.r4lmys73tessqmak%40awork3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:2782",
+      "kind": "cf",
+      "title": "function pg_setting_value_split() to parse shared_preload_libraries etc.",
+      "status": "Withdrawn",
+      "date": "2020-11-29",
+      "first_date": "2020-10-23",
+      "url": "https://commitfest.postgresql.org/patch/2782/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB8KJ=gi67GQcEur2HebEbZxTr-EZLUaKOekUnk30v08GaCNVQ@mail.gmail.com"
+      ],
+      "authors": "Ian Barwick (barwick)",
+      "objectors": "Ian Lawrence Barwick",
+      "summary": "Add a SQL function pg_setting_value_split() that splits a comma-separated GUC list value (such as shared_preload_libraries) into its elements using the server's internal SplitDirectoriesString() parser, returning them as a set of text. This would let users reliably check list settings that may contain quoted elements with commas or spaces.",
+      "objection": "The author noted soon after submitting that the patch handled only the GUCs parsed by SplitDirectoriesString() and not the other GUC_LIST_INPUT settings parsed by SplitIdentifierString(), and said he would submit an updated version. No updated version appears in the visible messages; the entry stayed \"Waiting on author\" and the commitfest manager marked it Withdrawn because the patch needed more work before review.",
+      "touch_points": [],
+      "matched_queries": [
+        "btree split point choice",
+        "page split oscillation",
+        "nbtsplitloc split penalty"
+      ],
+      "from_hint": false,
+      "score": 0.277,
+      "enriched": true,
+      "key_quote": "but the patch does not consider the other GUC_LIST_INPUT settings, which\ncall \"SplitIdentifierString()\", so as is, it might produce unexpected\nresults for those.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB8KJ%3DiuC_rz-kkjf7g__oRmVu%3DJsdUMZVFyqB5sqBcXXJuB%2BQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:5881",
+      "kind": "cf",
+      "title": "array_random",
+      "status": "Withdrawn",
+      "date": "2026-01-06",
+      "first_date": "2025-06-30",
+      "url": "https://commitfest.postgresql.org/patch/5881/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CACJufxF8_VzCFRHRt4OHHF74QtB8tj5Z=djsy7Y31OHKG5s1-w@mail.gmail.com"
+      ],
+      "authors": "Jian He (stayreal)",
+      "objectors": "Dean Rasheed, Aleksander Alekseev, Tom Lane",
+      "summary": "Add a core function array_random(min, max, dims [, lbounds]) for int4, int8 and numeric that returns an array of the given dimensions filled with random values in [min, max]. The author argued that it does more than array_fill and is faster and easier than building a multi-dimensional array in PL/pgSQL.",
+      "objection": "Reviewers saw no field demand to justify the added C code, since filling a 1-D array with random values is easy in SQL or plpgsql. Aleksander Alekseev objected that the function both generates values and shapes the array, and suggested a separate reshape function. Tom Lane and Dean Rasheed agreed that a reshape function would be more useful but questioned whether anyone needs it; the entry was then withdrawn.",
+      "touch_points": [],
+      "matched_queries": [
+        "randomize btree page split",
+        "nbtree split location random"
+      ],
+      "from_hint": false,
+      "score": 0.229,
+      "enriched": true,
+      "key_quote": "There's an infinite amount of stuff that would be faster if coded\nin C than if written in SQL or plpgsql.  We can't support it all,\nso we need some fairly high bar to accepting what functionality\nwe'll support.",
+      "quote_message_url": "https://www.postgresql.org/message-id/346143.1753069752%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:2308",
+      "kind": "cf",
+      "title": "Fix base backup checksum verification for random or zero page headers",
+      "status": "Returned with feedback",
+      "date": "2020-07-30",
+      "first_date": "2019-10-18",
+      "url": "https://commitfest.postgresql.org/patch/2308/",
+      "thread_urls": [],
+      "authors": "Michael Banck (mbanck)",
+      "objectors": "",
+      "summary": "Fix base backup checksum verification for random or zero page headers",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "randomize btree page split",
+        "nbtree split location random"
+      ],
+      "from_hint": false,
+      "score": 0.213,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:1382",
+      "kind": "cf",
+      "title": "Review of arc4random for strong randomness",
+      "status": "Rejected",
+      "date": "2018-01-12",
+      "first_date": "2017-11-21",
+      "url": "https://commitfest.postgresql.org/patch/1382/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+XhMqy1JvK6UW__aJGx5Y94OqFG4Sr170UB1sZ6GJso9N7OQw@mail.gmail.com"
+      ],
+      "authors": "David CARLIER (dcarlier)",
+      "objectors": "Tom Lane, Andres Freund",
+      "summary": "The patch makes pg_strong_random use arc4random on OpenBSD, NetBSD and Darwin, leaving FreeBSD out because its version still used RC4. The author cited calls that never fail and need no file descriptor, and ChaCha20-based implementations that are fast enough.",
+      "objection": "Reviewers saw no benefit for Postgres over /dev/urandom. Postgres cannot run without a filesystem anyway, so not needing a file descriptor gains nothing. Tom Lane added that arc4random brings portability risks from weak implementations and puts a PRNG layer between Postgres and /dev/urandom, which reduces what Postgres can assume about pg_strong_random output.",
+      "touch_points": [],
+      "matched_queries": [
+        "randomize btree page split",
+        "nbtree split location random"
+      ],
+      "from_hint": false,
+      "score": 0.175,
+      "enriched": true,
+      "key_quote": "So it seems like having this optionally in place\njust reduces what we can assume about the randomness properties of\npg_strong_random output, which doesn't seem like a good idea.",
+      "quote_message_url": "https://www.postgresql.org/message-id/25920.1511372076%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:3078",
+      "kind": "cf",
+      "title": "Iterating on IndexTuple attributes and nbtree page-level dynamic prefix truncation",
+      "status": "Returned with feedback",
+      "date": "2022-02-07",
+      "first_date": "2021-04-15",
+      "url": "https://commitfest.postgresql.org/patch/3078/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2Whwvr8aYcBf0BeBuPy8mJGtwxGvQYA9OGR5eLFh6Q_ZvA@mail.gmail.com"
+      ],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "",
+      "summary": "Patch 0001 adds an API to iterate over index tuple attributes and reuse the offset of the last extracted attribute, so extracting all attributes costs O(n) instead of O(n*n) when attcacheoff cannot be used. Patch 0002 uses this to truncate attribute prefixes dynamically during nbtree binary search within a page, as a first step toward prefix truncation in nbtree.",
+      "objection": "The author's own June 2021 benchmarks showed regressions in multi-column indexes that can use attcacheoff: about 2% for insert and 15% for reindex with both patches. The author said this had to be fixed before commit, but no fixed version appears in the thread. In December 2021 Daniel Gustafsson moved the entry forward and noted that the patch no longer applied and needed a rebase. The visible messages do not show a rebased version or the final decision.",
+      "touch_points": [],
+      "matched_queries": [
+        "page split oscillation",
+        "USDT probes nbtree"
+      ],
+      "from_hint": false,
+      "score": 0.17,
+      "enriched": true,
+      "key_quote": "Evidently, this needs improvements in the (likely common) attcacheoff-enabled multi-column case; as I don't think we can reasonably commit a 10+% regression.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAEze2WhyBT2bKZRdj_U0KS2Sbewa1XoO_BzgpzLC09sa5LUROg%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:1206",
+      "kind": "cf",
+      "title": "pgbench - add random_zipfian function",
+      "status": "Returned with feedback",
+      "date": "2018-06-26",
+      "first_date": "2017-07-07",
+      "url": "https://commitfest.postgresql.org/patch/1206/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/BF3B6F54-68C3-417A-BFAB-FB4D66F2B410@postgrespro.ru"
+      ],
+      "authors": "Alik Khilazhev (alikhil)",
+      "objectors": "",
+      "summary": "pgbench - add random_zipfian function\nThreads: [WIP] Zipfian distribution in pgbench",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "randomize btree page split",
+        "nbtree split location random"
+      ],
+      "from_hint": false,
+      "score": 0.165,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "revert:faae1c918e8aaae034eaf3ea103fcb6ba9adc5ab",
+      "kind": "revert",
+      "title": "Revert \"Replace PostmasterRandom() with a stronger way of generating randomness.\"",
+      "status": "Reverted",
+      "date": "2016-10-18",
+      "first_date": "2016-10-17",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=faae1c918e8aaae034eaf3ea103fcb6ba9adc5ab",
+      "thread_urls": [],
+      "authors": "Heikki Linnakangas",
+      "objectors": "",
+      "summary": "Revert \"Replace PostmasterRandom() with a stronger way of generating randomness.\"\nReverted commit(s): Replace PostmasterRandom() with a stronger way of generating randomness.",
+      "objection": "This reverts commit 9e083fd4683294f41544e6d0d72f6e258ff3a77c. That was a\nfew bricks shy of a load:\n\n* Query cancel stopped working\n* Buildfarm member pademelon stopped working, because the box doesn't have\n  /dev/urandom nor /dev/random.\n\nThis clearly needs some more discussion, and a quite different patch, so\nrevert for now.",
+      "touch_points": [],
+      "matched_queries": [
+        "randomize btree page split",
+        "nbtree split location random"
+      ],
+      "from_hint": false,
+      "score": 0.143,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "revert:91998539b227dfc6dd091714da7d106f2c95a321",
+      "kind": "revert",
+      "title": "Revert \"Temporarily add some probes of tenk1's relallvisible in create_index.sql.\"",
+      "status": "Reverted",
+      "date": "2022-04-15",
+      "first_date": "2022-04-14",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=91998539b227dfc6dd091714da7d106f2c95a321",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1346227.1649887693@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Temporarily add some probes of tenk1's relallvisible in create_index.sql.\"\nReverted commit(s): Temporarily add some probes of tenk1's relallvisible in create_index.sql.",
+      "objection": "This reverts commit 5bb2b6abc8d6cf120a814317816e4384bcbb9c1e.\nNot needed anymore.",
+      "touch_points": [],
+      "matched_queries": [
+        "USDT probes nbtree"
+      ],
+      "from_hint": false,
+      "score": 0.137,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "kind": "revert",
+      "title": "Fix index-only scan plans, take 2.",
+      "status": "Partially reverted",
+      "date": "2022-01-03",
+      "first_date": "2022-01-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3179992.1641150853@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/17350-b5bdcf476e5badbb@postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Fix index-only scan plans, take 2.\nReverted commit(s): Fix index-only scan plans when not all index columns can be returned.",
+      "objection": "Commit 4ace45677 failed to fix the problem fully, because the\nsame issue of attempting to fetch a non-returnable index column\ncan occur when rechecking the indexqual after using a lossy index\noperator.  Moreover, it broke EXPLAIN for such indexquals (which\nindicates a gap in our test cases :-().\n\nRevert the code changes of 4ace45677 in favor of adding a new field\nto struct IndexOnlyScan, containing a version of the indexqual that\ncan be executed against the index-returned tuple without using any\nnon-returnable columns.  (The restrictions imposed by check_index_only\nguarantee this is possible, although we may have to recompute indexed\nexpressions.)  Support construction of that during setrefs.c\nprocessing by marking IndexOnlyScan.indextlist entries as resjunk\nif they can't be returned, rather than removing them entirely.\n(We could alternatively require setrefs.c to look up the IndexOptInfo\nagain, but abusing resjunk this way seems like a reasonably safe way\nto avoid needing to do that.)\n\nThis solution isn't great from an API-stability standpoint: if there\nare any extensions out there that build IndexOnlyScan structs directly,\nthey'll be broken in the next minor releases.  However, only a very\ninvasive extension would be likely to do such a thing.  There's no\nchange in the Path representation, so typical planner extensions\nshouldn't have a problem.\n\nAs before, back-patch to all supported branches.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "waves of misery index"
+      ],
+      "from_hint": false,
+      "score": 0.136,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:2805",
+      "kind": "cf",
+      "title": "DROP INDEX CONCURRENTLY on partitioned index",
+      "status": "Withdrawn",
+      "date": "2021-07-24",
+      "first_date": "2020-10-28",
+      "url": "https://commitfest.postgresql.org/patch/2805/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20201028004432.GA17079@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "",
+      "summary": "DROP INDEX CONCURRENTLY on partitioned index\nThreads: DROP INDEX CONCURRENTLY on partitioned index",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "waves of misery index"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:4419",
+      "kind": "cf",
+      "title": "Use ReadRecentBuffer() for btree root page",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-06-27",
+      "url": "https://commitfest.postgresql.org/patch/4419/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20230627020546.t6z4tntmj7wmjrfh@awork3.anarazel.de"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Use ReadRecentBuffer() for btree root page\nThreads: ReadRecentBuffer() doesn't scale well",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "randomize btree page split"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:782",
+      "kind": "cf",
+      "title": "Cube extension GiST penalty function improvement",
+      "status": "Returned with feedback",
+      "date": "2016-10-03",
+      "first_date": "2016-08-29",
+      "url": "https://commitfest.postgresql.org/patch/782/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJEAwVFMo-FXaJ6Lkj8Wtb1br0MtBY48EGMVEJBOodROEGykKg@mail.gmail.com"
+      ],
+      "authors": "Andrey Borodin (x4m), Mikhail Bakhterev (mbakhterev)",
+      "objectors": "",
+      "summary": "Cube extension GiST penalty function improvement\nThreads: GiST penalty functions [PoC]",
+      "objection": "",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "nbtsplitloc split penalty"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:4203",
+      "kind": "cf",
+      "title": "Allow meson to find ICU in non-standard location",
+      "status": "Withdrawn",
+      "date": "2023-03-08",
+      "first_date": "2023-02-22",
+      "url": "https://commitfest.postgresql.org/patch/4203/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/10930b0dd06d7fbba2b67c07d39bc7ace08d5e42.camel@j-davis.com"
+      ],
+      "authors": "Jeff Davis (jdavis)",
+      "objectors": "",
+      "summary": "Allow meson to find ICU in non-standard location\nThreads: allow meson to find ICU in non-standard localtion",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "nbtree split location random"
+      ],
+      "from_hint": false,
+      "score": 0.116,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:170",
+      "kind": "cf",
+      "title": "Configurable location for extension .control files",
+      "status": "Returned with feedback",
+      "date": "2015-07-30",
+      "first_date": "2013-06-04",
+      "url": "https://commitfest.postgresql.org/patch/170/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/51AE0845.8010600@ocharles.org.uk"
+      ],
+      "authors": "Oskari Saarenmaa (os)",
+      "objectors": "",
+      "summary": "Configurable location for extension .control files\nThreads: Configurable location for extension .control files",
+      "objection": "",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "nbtree split location random"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:157",
+      "kind": "cf",
+      "title": "GIN fillfactor",
+      "status": "Rejected",
+      "date": "2015-07-21",
+      "first_date": "2014-11-21",
+      "url": "https://commitfest.postgresql.org/patch/157/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB7nPqR36boo_qNnkGzq53vLwET5_E9bXJsusojGqN2TopXx9w@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun), Alexander Korotkov (smagen)",
+      "objectors": "",
+      "summary": "GIN fillfactor\nThreads: Fillfactor for GIN indexes",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "btree fillfactor split balance"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "revert:dd2ce3792754e0705884aed15d1fd2ae43cc1500",
+      "kind": "revert",
+      "title": "Revert \"nbtree: Remove useless row compare arg.\"",
+      "status": "Reverted",
+      "date": "2025-06-11",
+      "first_date": "2025-05-07",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=dd2ce3792754e0705884aed15d1fd2ae43cc1500",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAH2-Wzm3bKcz3TbHGem3_+SinEyG=VZVPbApQghp7YiZj+MM3g@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAH2-WzmodSE+gpTd1CRGU9ez8ytyyDS+Kns2r9NzgUp1s56kpw@mail.gmail.com"
+      ],
+      "authors": "Peter Geoghegan",
+      "objectors": "",
+      "summary": "Revert \"nbtree: Remove useless row compare arg.\"\nReverted commit(s): nbtree: Remove useless row compare arg.; Prevent premature nbtree array advancement.",
+      "objection": "This reverts commit 54c6ea8c81db718508eeea50991d3c1c5dff54a5.\n\nFurther analysis has shown that the forcenonrequired row compare\nbehavior is in fact necessary, despite the new restrictions on\nRowCompares imposed by _bt_set_startikey following commit 5f4d98d4.",
+      "touch_points": [],
+      "matched_queries": [
+        "USDT probes nbtree"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:3191",
+      "kind": "cf",
+      "title": "Using indexUnchanged with nbtree",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-06-21",
+      "url": "https://commitfest.postgresql.org/patch/3191/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANbhV-EVCfUsDRP42LU_0B75ZR+jnsorap+T_JKBr4WaAQPsgA@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon)",
+      "objectors": "",
+      "summary": "Using indexUnchanged with nbtree\nThreads: Using indexUnchanged with nbtree",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "USDT probes nbtree"
+      ],
+      "from_hint": false,
+      "score": 0.112,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:2412",
+      "kind": "cf",
+      "title": "[doc] vacuum full, fillfactor, and \"extra space\"",
+      "status": "Returned with feedback",
+      "date": "2020-08-02",
+      "first_date": "2019-12-27",
+      "url": "https://commitfest.postgresql.org/patch/2412/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20191227023134.GC12890@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "",
+      "summary": "[doc] vacuum full, fillfactor, and \"extra space\"\nThreads: doc: vacuum full, fillfactor, and \"extra space\"",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "btree fillfactor split balance"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:5274",
+      "kind": "cf",
+      "title": "Introduce the ability to enable/disable indexes using ALTER INDEX",
+      "status": "Withdrawn",
+      "date": "2025-09-08",
+      "first_date": "2024-09-09",
+      "url": "https://commitfest.postgresql.org/patch/5274/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANqtF-oXKe0M=0QOih6H+sZRjE2BWAbkW_1+9nMEAMLxUJg5jA@mail.gmail.com"
+      ],
+      "authors": "Shayon Mukherjee (shayonj)",
+      "objectors": "",
+      "summary": "Introduce the ability to enable/disable indexes using ALTER INDEX\nThreads: Proposal to Enable/Disable Index using ALTER INDEX",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "waves of misery index"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:13",
+      "kind": "cf",
+      "title": "Fillfactor for GIN indexes",
+      "status": "Rejected",
+      "date": "2015-01-16",
+      "first_date": "2014-11-21",
+      "url": "https://commitfest.postgresql.org/patch/13/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB7nPqR36boo_qNnkGzq53vLwET5_E9bXJsusojGqN2TopXx9w@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Fillfactor for GIN indexes\nThreads: Fillfactor for GIN indexes",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "btree fillfactor split balance"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 5,
+    "new_calls": 3,
+    "failed": 0,
+    "quotes_verified": 3,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2026-04-27",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found. [P9] is about dynamic prefix truncation during nbtree binary search, a different idea, and its regression reason does not carry over to split location choice. The thread does not mention any earlier attempt to randomize split location, so no prior rejection reason applies."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "No SQL syntax, GUC, catalog, pg_dump or wire change is proposed. Physical standbys replay the primary's split choices through WAL, so they keep the same layout."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The proposal changes only which split point the primary picks among points nbtree already allows, so the on-disk page format, pg_upgrade and replication are unaffected. The split WAL record already carries the chosen split point and replay does not recompute it, so the random choice cannot make a standby diverge. The patch adds no catalog changes, no protocol changes and no extension API changes. The USDT probes add no persistent state. The nbtree VACUUM bookkeeping invariant does not apply, because nothing runs at VACUUM time. The batch-extension prototype in message #10 has standby and FSM questions, but it is a separate patch."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal has no privilege or exposure aspect. It changes which equal-penalty leaf split point nbtree picks, inside a bounded interval, and adds USDT probes that only OS-level tracing tools with host access can attach to; no SQL surface, privilege, view, log output or user-controlled code path is added. Today's split choice is deterministic, so an unprivileged user cannot shape split behaviour any better under the proposal."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "The main design has the support of the nbtree committer in message #13 and is limited to SPLIT_DEFAULT leaf splits, so I raise no fit or ownership objection. The VACUUM bookkeeping invariant does not apply, because the patch does not change VACUUM."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "The core change has no existing alternative. Message #1 says fillfactor only shifts the waves, and no hook or extension can change the nbtree split location, so the only point from this angle is the benchmark-only probe patch."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "Two engaged reviewers, one of them the nbtsplitloc.c author, support the idea in principle, so these are 'not now, show demand' points and not a rejection."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 9,
+      "new_objections": 7,
+      "new_survived": 3,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [
+    "invariants/nbtree.md"
+  ],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 83,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 15,
+    "wall_ms": 172738,
+    "cost_usd": 2.3295888,
+    "dry_run": false
+  }
+}

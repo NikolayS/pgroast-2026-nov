@@ -1,0 +1,1555 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:09:18.433Z",
+  "input": {
+    "arg": "6921",
+    "cf": {
+      "id": 6921,
+      "url": "https://commitfest.postgresql.org/patch/6921/",
+      "title": "Continuous re-validation of session credentials",
+      "status": "Needs review",
+      "authors": "ajitpostgres awekar (ajit.awekar)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAER375PeMJkejmRueUoWjpMwg%2BmsX4HahP6_%3DUFxJyge_boD4Q%40mail.gmail.com",
+    "subject": "Continuous re-validation of session credentials",
+    "thread_start": "2026-06-16T12:14:27Z",
+    "messages_read": 8,
+    "messages_total": 8,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v3-0001-Add-continuous-credential-validation-framework.patch",
+      "v3-0002-Add-TLS-client-certificate-expiry-and-revocation-che.patch",
+      "0002-Add-TLS-client-certificate-expiry-to-credential-vali.patch",
+      "0003-Add-OAuth-token-expiry-to-credential-validation.patch",
+      "0001-Add-continuous-credential-validation-framework.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The problem statement is clear and no objection is fatal, but several level 2 points decide what the feature guarantees. standards-compat-1 shows the baseline check gives rolvaliduntil a new meaning for sessions that never used a password. security-1 shows PGC_SU_BACKEND keeps an opt-out that the v3 docs say must not exist. security-3 and security-2 show that NOLOGIN, long statements and unreachable sources are not covered. The list should agree on these semantics before code review.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Periodic re-validation of credentials for established sessions",
+    "problem": "Postgres checks credentials only at connection time, so a session keeps running after its role is dropped or passes VALID UNTIL, or after its OAuth token or client certificate expires. Revoking access has no effect on sessions that are already open. The author targets sites that use short-lived credentials such as OAuth tokens, short-lived certificates and time-boxed accounts.",
+    "proposed_design": "A per-backend timer fires every credential_validation_interval seconds; the check runs at command boundaries and at the idle-wait point, and the backend exits with FATAL when credentials are no longer valid. A baseline check covers role existence and rolvaliduntil for every session, and validators registered through RegisterCredentialValidator() add checks per method: certificate expiry and CRL, OAuth expiry, GSS context lifetime, and an LDAP re-search.",
+    "user_visible_surface": [
+      "GUC credential_validation_enabled (bool, default off), PGC_SU_BACKEND in v3, so it cannot be changed within a session.",
+      "GUC credential_validation_interval (5 to 3600 s, default 60), PGC_SU_BACKEND in v3.",
+      "FATAL \"session credentials have expired\" with a reconnect HINT, and errdetail_log() naming the validator and the user.",
+      "OAuth validator ABI: optional expire_cb in OAuthValidatorCallbacks, with versioned magic PG_OAUTH_VALIDATOR_MAGIC_V1 and V2.",
+      "C API RegisterCredentialValidator() and the CredentialValidationType enum for new auth methods."
+    ],
+    "author_claims": [
+      "Method validators for certificates and GSS check locally, with no round trip to the network or the KDC.",
+      "New auth methods can be added in three small steps, without changes to core.",
+      "The OAuth change stays ABI-compatible because the server accepts both V1 and V2 validator modules.",
+      "Test runtime fell from about 57 s and 23 s to about 22 to 30 s, with no shorter timeouts.",
+      "v3 fixes all issues from the first review: error resets of the timer, superuser SET, logical walsenders, idle sessions and clientcert=verify-full."
+    ],
+    "thread_state": "Jakub Wartak reviewed 0001 and 0002; v3 posted only those two patches, which fail to build when applied one at a time and fail the Windows cfbot. Daniel Gustafsson agreed that the TLS test should use the fixtures in src/test/ssl/conf and sslfiles.mk; nobody has reviewed 0003 to 0005.",
+    "unclear": [
+      "v3 attaches only 0001 and 0002, so the state of the OAuth, GSS and LDAP patches is not given.",
+      "The material does not give the cost of the LDAP check, which binds and searches against the directory once per backend per interval.",
+      "The proposal does not say what happens when the LDAP server or the CRL file cannot be reached, apart from the CRL lookup failing open.",
+      "Message 5 is cut off, so reviewer items after item 8, including the CRL point the author answers as item 9, are not visible.",
+      "The proposal does not say why the settings are PGC_SU_BACKEND, settable per connection, instead of PGC_SIGHUP, which the reviewer also offered."
+    ],
+    "search_queries": [
+      "session credential revalidation",
+      "terminate session role valid until expired",
+      "drop role existing sessions disconnect",
+      "client certificate expiry established connection",
+      "OAuth token expiry session",
+      "periodic authentication check timeout",
+      "kill sessions revoked login",
+      "LDAP account deleted session terminate"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Baseline check applies rolvaliduntil to sessions that never used a password",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "catalog"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site moves roles to cert or OAuth login and lets their old passwords expire through VALID UNTIL, which is the documented way to block password login. After the DBA turns on credential_validation_enabled, every cert or OAuth session of those roles gets FATAL at its first check. The DBA finds out from users who keep being disconnected.",
+      "argument": "Postgres documents VALID UNTIL as the password expiry time, and only password authentication uses rolvaliduntil. The proposal applies it 'to every authenticated session' (message #1, v3-0001 doc hunk), whatever the method. So the feature changes what an existing catalog column means once it is enabled. A committer would likely ask for the baseline check to follow the existing contract, or for the docs to state the new meaning.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        6
+      ],
+      "author_must_show": "Why should a past rolvaliduntil end a cert, GSS or OAuth session when the same role can still open a new session with that method today?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Ajit Awekar",
+          "date": "2026-06-16T12:14:27Z",
+          "url": "https://www.postgresql.org/message-id/CAER375PeMJkejmRueUoWjpMwg%2BmsX4HahP6_%3DUFxJyge_boD4Q%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Ajit Awekar",
+          "date": "2026-09-29T12:12:11Z",
+          "url": "https://www.postgresql.org/message-id/CAER375Nw65h70WW8YyGQemxnOwCDMxJUWZaimZ%3Dzyk54U%3DGQ6g%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Postgres documents VALID UNTIL as password expiry and checks it only in password authentication. The v3 doc hunk applies it to every session, and the thread does not discuss this change of meaning.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "PGC_SU_BACKEND lets roles and connections opt out of validation",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A superuser runs `alter role all set credential_validation_enabled = off`, or connects with `options='-c credential_validation_enabled=off'`. Validation stops for those sessions even though postgresql.conf says on, and nothing records it. The admin who revoked a role finds out after the old session keeps running.",
+      "argument": "Message #5 offered PGC_SIGHUP so that only the server config controls the check. Message #6 chose PGC_SU_BACKEND and gave no reason for it. The v3 docs say a session must not be able to disable the check on itself, but PGC_SU_BACKEND still accepts the setting from the startup packet and from per-role or per-database settings. Any role granted SET on the parameter also keeps that opt-out.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        5,
+        6
+      ],
+      "author_must_show": "Why should a session-start or per-role override exist for a revocation control, rather than PGC_SIGHUP set only in the server configuration?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Jakub Wartak",
+          "date": "2026-09-24T11:02:35Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmy9240VWFZV-nth048S86fbk%3DyOvgKJX%2BnLfqNtCGijgQ%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Ajit Awekar",
+          "date": "2026-09-29T12:12:11Z",
+          "url": "https://www.postgresql.org/message-id/CAER375Nw65h70WW8YyGQemxnOwCDMxJUWZaimZ%3Dzyk54U%3DGQ6g%40mail.gmail.com"
+        }
+      ],
+      "id": "security-1",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "PGC_SU_BACKEND accepts values from the startup packet and from per-role or per-database settings, so the opt-out exists. Message #6 does not say why PGC_SIGHUP, which the reviewer offered, was not chosen.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Common revocation steps and long statements are not covered",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An admin runs `alter role x nologin` to cut off a user, enables the feature and expects the session to end. The baseline check looks only at role existence and rolvaliduntil, so the session stays open. A user whose role expired can also keep a single long `copy ... to stdout` running for hours.",
+      "argument": "The baseline in the v3-0001 commit message checks role existence and rolvaliduntil only. NOLOGIN is how many sites revoke access, and the proposal does not mention it. The docs promise that a running statement is never interrupted, so the time to cut off access is limited by statement length, not by credential_validation_interval. The feature is sold as revocation, so admins will rely on guarantees it does not give.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        6
+      ],
+      "author_must_show": "Will the baseline check rolcanlogin, and how does the proposal bound how long a revoked session can keep reading data inside one statement?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Ajit Awekar",
+          "date": "2026-06-16T12:14:27Z",
+          "url": "https://www.postgresql.org/message-id/CAER375PeMJkejmRueUoWjpMwg%2BmsX4HahP6_%3DUFxJyge_boD4Q%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Ajit Awekar",
+          "date": "2026-09-29T12:12:11Z",
+          "url": "https://www.postgresql.org/message-id/CAER375Nw65h70WW8YyGQemxnOwCDMxJUWZaimZ%3Dzyk54U%3DGQ6g%40mail.gmail.com"
+        }
+      ],
+      "id": "security-3",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The baseline in v3-0001 checks only role existence and rolvaliduntil, yet a NOLOGIN role is rejected on a fresh connection. The statement-length limit is documented, but the proposal gives no bound for it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Behaviour on unreachable LDAP or CRL is undefined or fails open",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The directory server is down for a few minutes. Every LDAP session on the cluster then either gets a FATAL error or keeps running unchecked, and the proposal does not say which. With hundreds of backends each binding once per interval, the directory may also throttle or lock out the bind account.",
+      "argument": "Message #3 has each backend re-bind with ldapbindpasswd and re-run the search on every cycle. The v3-0002 commit message says any CRL lookup failure fails open. So a revocation that depends on an unreadable file or an unreachable server has no effect, and the log may not show it. Message #3 also counts zero search results as \"deleted or disabled\", but many directories keep disabled accounts visible to the same filter.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        6
+      ],
+      "author_must_show": "For each validator, what happens when its source cannot be reached, how is that logged, and what directory load does one bind per backend per interval produce?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Ajit Awekar",
+          "date": "2026-07-01T12:15:20Z",
+          "url": "https://www.postgresql.org/message-id/CAER375O4pGq8xmhsQG9SoVeh6htAiJHGW-MA_2u5C8tN1Z24%3Dg%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Ajit Awekar",
+          "date": "2026-09-29T12:12:11Z",
+          "url": "https://www.postgresql.org/message-id/CAER375Nw65h70WW8YyGQemxnOwCDMxJUWZaimZ%3Dzyk54U%3DGQ6g%40mail.gmail.com"
+        }
+      ],
+      "id": "security-2",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The v3-0002 commit message confirms the CRL lookup fails open. Message #3 gives no rule for an unreachable directory and no cost for one bind per backend per interval.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Coverage gaps per auth method stay silent, nothing fails loudly",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "security_privileges"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An administrator enables credential_validation_enabled and believes a revoked certificate or deleted account ends the session. A later auth option or new HBA mode lacks a validator, so only the baseline role check runs. Nobody learns this until a revoked user's session is still open.",
+      "argument": "Each per-method path depends on a registered validator, and a missing one gives no error. The review in message #5 already found three silent gaps: clientcert=verify-full, logical walsenders and the error path that reset the timer. Message #6 leaves PAM and ssl_crl_dir out, and v3-0002 documents revoked intermediate CAs as not covered. Each later auth change must remember this registry, and a reviewer can easily miss it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        5,
+        6
+      ],
+      "author_must_show": "How does a session, an administrator or a regression test find out that a session's auth method has no method-specific validator?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Jakub Wartak",
+          "date": "2026-09-24T11:02:35Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmy9240VWFZV-nth048S86fbk%3DyOvgKJX%2BnLfqNtCGijgQ%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Ajit Awekar",
+          "date": "2026-09-29T12:12:11Z",
+          "url": "https://www.postgresql.org/message-id/CAER375Nw65h70WW8YyGQemxnOwCDMxJUWZaimZ%3Dzyk54U%3DGQ6g%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The review in message #5 found several silent gaps, and message #6 leaves PAM and ssl_crl_dir uncovered. The proposal has no way to tell an administrator that a session's method has no validator.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "Versioned OAuth validator magic commits the ABI for one callback",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After 0003, each later optional OAuth callback adds a new magic version that the server must accept forever. A module built for V1 gets no expiry check and no warning, so its sessions are never ended when the token expires.",
+      "argument": "0003 adds PG_OAUTH_VALIDATOR_MAGIC_V1 and V2 so that expire_cb is optional, and treats a missing callback as a token that stays valid. This sets a versioning pattern for an interface that is still young. Nobody has reviewed 0003 to 0005, and v3 does not include them (message #6). A committer would likely want this ABI choice discussed on its own before the framework depends on it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        6
+      ],
+      "author_must_show": "Why is a versioned magic better than an extensible callbacks struct here, and how should an administrator find out that a loaded V1 module skips the expiry check?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Ajit Awekar",
+          "date": "2026-06-16T12:14:27Z",
+          "url": "https://www.postgresql.org/message-id/CAER375PeMJkejmRueUoWjpMwg%2BmsX4HahP6_%3DUFxJyge_boD4Q%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Ajit Awekar",
+          "date": "2026-09-29T12:12:11Z",
+          "url": "https://www.postgresql.org/message-id/CAER375Nw65h70WW8YyGQemxnOwCDMxJUWZaimZ%3Dzyk54U%3DGQ6g%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The 0003 docs confirm that a module without expire_cb is treated as always valid, with no warning. \"Accept forever\" is overstated, because modules are rebuilt for each major version, but that also raises doubt about the need for two magics.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "No users outside the thread have asked for mid-session revalidation",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer takes on five validators, a registry API and an OAuth ABI bump. Later it turns out few sites turn on credential_validation_enabled. The project then maintains the per-method checks through every auth change with almost no users to report bugs.",
+      "argument": "The only statement of need is the author's in message #1: environments with short-lived credentials have a gap. No field report, -general or -bugs thread, compliance requirement or production story is given. Jakub's review in messages #5 and #7 tests correctness and does not say anyone needs the feature. Two reviewers engaging with tests is not evidence of a user group.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        5,
+        7,
+        8
+      ],
+      "author_must_show": "Which deployments or compliance rules need open sessions cut off when credentials lapse, and what do those users do today?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Ajit Awekar",
+          "date": "2026-06-16T12:14:27Z",
+          "url": "https://www.postgresql.org/message-id/CAER375PeMJkejmRueUoWjpMwg%2BmsX4HahP6_%3DUFxJyge_boD4Q%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Jakub Wartak",
+          "date": "2026-09-24T11:02:35Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmy9240VWFZV-nth048S86fbk%3DyOvgKJX%2BnLfqNtCGijgQ%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Jakub Wartak",
+          "date": "2026-10-14T11:28:30Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmzn4DgE03cAoMCMqhz%2BxKtM4ZxbhdHTg1GM2sZEDa4fwA%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Daniel Gustafsson",
+          "date": "2026-10-22T09:52:06Z",
+          "url": "https://www.postgresql.org/message-id/7F55E630-289B-46DA-A196-B488CD1ECACD%40yesql.se"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The only statement of need is the author's in message #1, and the reviews test correctness only. The feature is off by default, which limits the cost, so this is a request to show demand.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "PGC_SU_BACKEND still lets a superuser turn off the check",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "new_guc",
+      "touch_points": [
+        "new_guc",
+        "security_privileges"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A superuser who expects their LDAP account to be removed connects with PGOPTIONS='-c credential_validation_enabled=off', or runs ALTER ROLE self SET credential_validation_enabled = off once. After the account is removed, those sessions keep running. The DBA learns this only when checking pg_stat_activity or pg_db_role_setting.",
+      "argument": "Message #6 moved the GUCs from PGC_SUSET to PGC_SU_BACKEND so that a session cannot 'evade that revocation' (v3-0001 doc hunk). PGC_SU_BACKEND settings can still come from the startup packet and from per-role or per-database settings, and users granted SET on the parameter can use them too. In message #5 the reviewer also offered PGC_SIGHUP, and the thread does not say why it was not chosen.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        5,
+        6
+      ],
+      "author_must_show": "Which deployment needs this setting to differ per connection or per role, and why is that worth leaving open the bypass that PGC_SIGHUP would close?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Jakub Wartak",
+          "date": "2026-09-24T11:02:35Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmy9240VWFZV-nth048S86fbk%3DyOvgKJX%2BnLfqNtCGijgQ%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Ajit Awekar",
+          "date": "2026-09-29T12:12:11Z",
+          "url": "https://www.postgresql.org/message-id/CAER375Nw65h70WW8YyGQemxnOwCDMxJUWZaimZ%3Dzyk54U%3DGQ6g%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of security-1, which makes the same PGC_SU_BACKEND point with the same startup-packet and per-role examples.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Revocation on the primary reaches standby sessions only after WAL replay",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An admin runs drop role or alter role ... valid until on the primary to cut off a user. That user's session on a hot standby with recovery_min_apply_delay set, or with replay paused, keeps running until replay applies the change. The admin checks pg_stat_activity on the primary, sees the session gone, and assumes access is revoked.",
+      "argument": "Message #4 turns on validation for standby sessions, but the baseline check reads pg_authid as the standby sees it. A delayed or paused standby therefore shows the old role state for as long as replay lags. The documentation hunks say nothing about this case, so a site using delayed standbys would believe revocation is cluster-wide and immediate up to the interval.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4
+      ],
+      "author_must_show": "How should a role revoked on the primary be handled on a standby whose replay is delayed or paused, and will the documentation state that limit?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "Ajit Awekar",
+          "date": "2026-09-17T12:01:41Z",
+          "url": "https://www.postgresql.org/message-id/CAER375N35XAWLhAiokyVs65bFQgq_n_%3DLgNs61o%2BZtYdEmPEqw%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "A delayed or paused standby also accepts a fresh login by the dropped role until replay applies the change. The session therefore holds credentials the standby still accepts, which matches the proposal's stated rule; what remains is a documentation note.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "LDAP and CRL checks add external I/O per backend per interval",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site with 2000 LDAP-authenticated backends and the default 60 s interval sends about 33 bind+search requests per second to the directory, and every backend also re-reads ssl_crl_file. When the LDAP server is slow, each backend blocks at a command boundary. When it is down, sessions are either all terminated at once or silently not checked.",
+      "argument": "Message #3 says the LDAP validator binds with ldapbinddn and re-runs the search on each cycle, inside the backend. The v3-0002 commit message says ssl_crl_file is re-read on demand per backend, and that lookup failures fail open. The proposal gives no cost figure and no rule for an unreachable directory. A committer would likely ask whether directory and file load that grows with backend count belongs inside every backend instead of in one central place.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        6
+      ],
+      "author_must_show": "What does the LDAP check cost with thousands of backends, and what happens to sessions when the directory cannot be reached or answers slowly?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Ajit Awekar",
+          "date": "2026-07-01T12:15:20Z",
+          "url": "https://www.postgresql.org/message-id/CAER375O4pGq8xmhsQG9SoVeh6htAiJHGW-MA_2u5C8tN1Z24%3Dg%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Ajit Awekar",
+          "date": "2026-09-29T12:12:11Z",
+          "url": "https://www.postgresql.org/message-id/CAER375Nw65h70WW8YyGQemxnOwCDMxJUWZaimZ%3Dzyk54U%3DGQ6g%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of security-2, which already asks about directory load and unreachable sources. The load falls only on sites that enable the feature with LDAP, so rubric item 8 (cost for non-users) does not apply.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Baseline role check repeats what a scheduled pg_terminate_backend() query does",
+      "level": "1b",
+      "rubric_item": 12,
+      "category": "desirability",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site that needs only the 0001 check (dropped roles, passed VALID UNTIL for password or scram users) can run a scheduled query that ends those sessions today. Core would then carry a per-backend timer, two GUCs and a validator registry for that case, beside an idiom that already works for idle sessions too.",
+      "argument": "Message #1 presents 0001 as \"useful on its own for password/md5/scram sessions\". The same result comes from a query run every minute by cron: call pg_terminate_backend() on pg_stat_activity rows whose usesysid is missing from pg_roles or whose rolvaliduntil < now(). For these methods that is a less convenient way, not an impossible one. Only the certificate, OAuth and GSS checks need backend-local state such as the Port, the token or the GSS context, which an outside job cannot read.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        6
+      ],
+      "author_must_show": "Which sites need the baseline role check in core, when a scheduled pg_terminate_backend() query already ends those sessions?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Ajit Awekar",
+          "date": "2026-06-16T12:14:27Z",
+          "url": "https://www.postgresql.org/message-id/CAER375PeMJkejmRueUoWjpMwg%2BmsX4HahP6_%3DUFxJyge_boD4Q%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Ajit Awekar",
+          "date": "2026-09-29T12:12:11Z",
+          "url": "https://www.postgresql.org/message-id/CAER375Nw65h70WW8YyGQemxnOwCDMxJUWZaimZ%3Dzyk54U%3DGQ6g%40mail.gmail.com"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "The timer, GUCs and registry exist for the certificate, OAuth and GSS checks, which the objection agrees an outside job cannot do. The baseline check is a small addition to that framework, and 0001 is the infrastructure-first step of the series.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "The baseline role check has a working external workaround",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "does_not_fit",
+      "touch_points": [
+        "does_not_fit",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA who drops a role or sets VALID UNTIL can already run pg_terminate_backend() from a scheduled job against pg_stat_activity joined to pg_roles. Core gains two GUCs and a timer on every backend for a case one query covers, and the more complex cases are not shown to have users.",
+      "argument": "Patch 0001 is offered as \"useful on its own\" in message #1, but its checks of role existence and rolvaliduntil can be done from outside the server today. Combined with idle_session_timeout, a cron query covers most of it with a delay similar to the 60 s default. The proposal does not explain why this is not enough for the sites it targets. Certificate and OAuth expiry are harder to check from outside, so the demand case has to rest on those, and they are the parts that are least reviewed.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        6
+      ],
+      "author_must_show": "Why is a scheduled pg_terminate_backend() job not enough for dropped or expired roles, and which users have found it inadequate?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Ajit Awekar",
+          "date": "2026-06-16T12:14:27Z",
+          "url": "https://www.postgresql.org/message-id/CAER375PeMJkejmRueUoWjpMwg%2BmsX4HahP6_%3DUFxJyge_boD4Q%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Ajit Awekar",
+          "date": "2026-09-29T12:12:11Z",
+          "url": "https://www.postgresql.org/message-id/CAER375Nw65h70WW8YyGQemxnOwCDMxJUWZaimZ%3Dzyk54U%3DGQ6g%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "Same point as already-exists-1, and it fails for the same reason: the cron query cannot see certificate, token or GSS state. Its remaining question about demand is covered by demand-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "v3-0001 touches walsender.c so that logical walsenders are validated, and the check also runs in standby sessions."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "No catalog change, but the baseline check applies pg_authid.rolvaliduntil to sessions of every auth method."
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "0003 adds expire_cb to OAuthValidatorCallbacks with V1 and V2 magic; 0001 adds RegisterCredentialValidator()."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": true,
+      "reason": "Adds credential_validation_enabled and credential_validation_interval, both PGC_SU_BACKEND in v3."
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "The feature ends sessions with FATAL when role, certificate, token, GSS context or LDAP account is no longer valid."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Five per-method validators and a registry that every later auth change must keep in step."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "A per-backend timer and a check at command boundaries in postgres.c; the LDAP validator binds and searches once per backend per interval."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Why should a past rolvaliduntil end a cert, GSS or OAuth session when the same role can still open a new session with that method?",
+    "Why are the two settings PGC_SU_BACKEND, which allows startup-packet and per-role overrides, instead of PGC_SIGHUP as the reviewer offered in message #5?",
+    "Will the baseline check also cover rolcanlogin, and what bounds the time a revoked session can keep running inside one long statement?",
+    "For each validator, what happens when the CRL file or the LDAP server cannot be reached, and how does the server log it?",
+    "Which deployments or compliance rules need open sessions ended when credentials lapse, and what do those sites do today?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "It needs a committer who knows the authentication code, including TLS, OAuth validators, GSS and LDAP. Daniel Gustafsson commented on the TLS test fixtures only; nobody has taken on the design in the visible thread.",
+    "liability": "The owner signs for a security guarantee across five auth methods, an OAuth validator ABI change and a registry that later auth work must keep updated. That lasts as long as the feature exists.",
+    "author_follow_up": "The author posted v2 and v3 within weeks of feedback and moved the entry to the next CommitFest. v3 carries only 0001 and 0002."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "unclear",
+    "maintenance_burden": "high",
+    "review_cost": "high",
+    "recommended_action": "fix design first",
+    "reason": "Message #1 names short-lived-credential sites but shows no field report, so the audience is not established. The series spans postgres.c, walsender, TLS, OAuth, GSS and LDAP, and its guarantees are not yet settled."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read, so timer handling at the idle-wait point, the catalog lookup inside an open transaction and the per-backend CRL re-read are unjudged. The v3 state of 0003 to 0005 is not given.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:1318",
+      "kind": "cf",
+      "title": "Session Start/End hooks",
+      "status": "Returned with feedback",
+      "date": "2017-11-28",
+      "first_date": "2017-07-20",
+      "url": "https://commitfest.postgresql.org/patch/1318/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20170720204733.40f2b7eb.nagata@sraoss.co.jp",
+        "https://www.postgresql.org/message-id/flat/E1eEzZG-0001kP-KI@gemulon.postgresql.org"
+      ],
+      "authors": "Fabrízio Mello (fabriziomello), Yugo Nagata (yugo.nagata)",
+      "objectors": "Andrew Dunstan, Tom Lane, Michael Paquier",
+      "summary": "The patch adds two C hooks, one called once at session start after authentication with database access, and one called at session end, plus a test module that logs session activity to a table. The session start hook lets extensions act on a session for a given database or user.",
+      "objection": "The patch reached ready for committer, but Andrew Dunstan found the ad-hoc IsClientBackend() test fragile and said it belonged somewhere more central, and Tom Lane agreed. The discussion moved to a common process-type API that would generalize AuxProcType to classify all server processes. Michael Paquier returned the patch because this needed broader changes than first thought, and the author planned to resume later.",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "session credential revalidation",
+        "OAuth token expiry session",
+        "kill sessions revoked login"
+      ],
+      "from_hint": false,
+      "score": 0.269,
+      "enriched": true,
+      "key_quote": "Okay, this has proved to require broader changes than thought first. I\nam marking the patch as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB7nPqQW2jgvPMH%2Bh%3D3b0ATa-Nn7w_Er0QRTp6%3DKsg2vxnTOuQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:1447",
+      "kind": "cf",
+      "title": "TRUNCATE behavior when session_replication_role = replica",
+      "status": "Rejected",
+      "date": "2018-04-07",
+      "first_date": "2017-12-29",
+      "url": "https://commitfest.postgresql.org/patch/1447/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ff835f71-3c6c-335e-4c7b-b9e1646cf3d7@2ndquadrant.it"
+      ],
+      "authors": "Marco Nenciarini (mnencia)",
+      "objectors": "Peter Eisentraut",
+      "summary": "The patch makes TRUNCATE skip foreign key checks when session_replication_role = replica, the same way DELETE, INSERT and UPDATE already do. Peter Eisentraut proposed the opposite instead: create constraint triggers as TRIGGER_FIRES_ALWAYS so foreign keys are always enforced on replicas.",
+      "objection": "Peter Eisentraut argued that the current DELETE behaviour, which lets replicas hold data that violates foreign keys, is bad and should not be extended to TRUNCATE. He also saw no case for the change being needed. He closed the entry because the updated implementation of logical decoding of TRUNCATE no longer needed it.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "terminate session role valid until expired",
+        "drop role existing sessions disconnect"
+      ],
+      "from_hint": false,
+      "score": 0.245,
+      "enriched": true,
+      "key_quote": "This part of the patch didn't end up being necessary, since the updated\nimplementation of logical decoding of TRUNCATE could do without it.",
+      "quote_message_url": "https://www.postgresql.org/message-id/151e60cf-22de-8b0d-7b80-ad7160d9c485%402ndquadrant.com",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:6407",
+      "kind": "cf",
+      "title": "Missing dependency on oauth_validator test",
+      "status": "Withdrawn",
+      "date": "2026-01-19",
+      "first_date": "2026-01-17",
+      "url": "https://commitfest.postgresql.org/patch/6407/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6e8f4f7c23faf77c4b6564c4b7dc5d3de64aa491.camel@gmail.com"
+      ],
+      "authors": "Jonathan Gonzalez V. (sxd)",
+      "objectors": "",
+      "summary": "The patch adds the `oauth_hook_client` binary as a test dependency in the oauth_validator meson.build file, so the binary is built before the test runs. Without it, `meson test --suite oauth_validator` failed when the build did not enable the OAuth test through `PG_EXTRA_TEST`.",
+      "objection": "The visible messages do not show why. The only message is the author's proposal, and there are no replies.",
+      "touch_points": [],
+      "matched_queries": [
+        "terminate session role valid until expired",
+        "OAuth token expiry session"
+      ],
+      "from_hint": false,
+      "score": 0.242,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:873",
+      "kind": "cf",
+      "title": "background sessions",
+      "status": "Returned with feedback",
+      "date": "2017-04-06",
+      "first_date": "2016-11-01",
+      "url": "https://commitfest.postgresql.org/patch/873/",
+      "thread_urls": [],
+      "authors": "Peter Eisentraut (petere)",
+      "objectors": "",
+      "summary": "background sessions",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "session credential revalidation",
+        "kill sessions revoked login"
+      ],
+      "from_hint": false,
+      "score": 0.191,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:3748",
+      "kind": "cf",
+      "title": "Support multiple password-based authentication tokens concurrently",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-03-02",
+      "url": "https://commitfest.postgresql.org/patch/3748/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGB+Vh5SQQorNDEKP+0G=smxHRhbhs+VkmQWD5Vh98fmn8X4dg@mail.gmail.com"
+      ],
+      "authors": "Joshua Brindle (joshuab)",
+      "objectors": "",
+      "summary": "Move role passwords into a new catalog (pg_auth_password) so that a role can have several named passwords valid at the same time, each with its own expiration. Expirations are set per password through new SQL grammar or a default validity-period GUC, so that passwords can be rotated without downtime.",
+      "objection": "The visible messages do not show why. The original author said he might not be able to continue the work, and Stephen Frost posted an updated version for the July commitfest while Gurjeet Singh said he planned to pick it up. No review objections or later activity appear before the entry was returned with feedback in October.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "OAuth token expiry session",
+        "periodic authentication check timeout"
+      ],
+      "from_hint": false,
+      "score": 0.184,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:1148",
+      "kind": "cf",
+      "title": "Support target_session_attrs=read-only and eliminate the added round-trip to detect session status.",
+      "status": "Returned with feedback",
+      "date": "2017-11-28",
+      "first_date": "2017-03-17",
+      "url": "https://commitfest.postgresql.org/patch/1148/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1700970.cRWpxnom9y@hammer.magicstack.net"
+      ],
+      "authors": "Takayuki Tsunakawa (maumau)",
+      "objectors": "Daniel Gustafsson, Michael Paquier",
+      "summary": "The patch adds a GUC that the server reports to clients through ParameterStatus, so clients learn without polling whether the session is on a hot standby and when the standby is promoted. Later versions report a session_read_only parameter and let libpq use it for target_session_attrs, including a new read-only value, without an extra round-trip.",
+      "objection": "Daniel Gustafsson returned the patch in October 2017 because questions raised in the thread were not answered. Open points in the visible messages include a failing recovery TAP test, inverted read-write/read-only checks in libpq, and the author's own concern that a read-only primary cannot be told apart from a standby. In November Michael Paquier closed it again because the patch no longer applied and there were no updates or replies.",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "session credential revalidation",
+        "kill sessions revoked login"
+      ],
+      "from_hint": false,
+      "score": 0.174,
+      "enriched": true,
+      "key_quote": "Based on the unaddressed questions raised in this thread, I’m marking this\npatch Returned with Feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/5C470924-91C3-49DB-852A-95924B60B6F5%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:1568",
+      "kind": "cf",
+      "title": "Support target_session_attrs=read-only and eliminate the added round-trip to detect session status.",
+      "status": "Returned with feedback",
+      "date": "2018-03-01",
+      "first_date": "2017-03-17",
+      "url": "https://commitfest.postgresql.org/patch/1568/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1700970.cRWpxnom9y@hammer.magicstack.net"
+      ],
+      "authors": "Takayuki Tsunakawa (maumau)",
+      "objectors": "Daniel Gustafsson, Michael Paquier, Andres Freund",
+      "summary": "The patch has the server report the session's hot-standby or read-only state to clients through a ParameterStatus message, so clients learn it at connect time and when the server leaves hot standby. libpq would use this to support target_session_attrs=read-only without an extra round-trip to check the session state.",
+      "objection": "Questions raised in review went unanswered, and later versions stopped applying to master. Thomas Munro reported that the recovery test 001_stream_rep.pl failed with the patch. Melanie Plageman found that target_session_attrs=read-write rejected a primary server. The entry was moved to later commitfests without a new version, so Michael Paquier and Andres Freund marked it returned with feedback for lack of progress.",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "session credential revalidation",
+        "kill sessions revoked login"
+      ],
+      "from_hint": false,
+      "score": 0.164,
+      "enriched": true,
+      "key_quote": "Given that\nthere's been no progress for multiple commitfests, and this is the last\nCF, this doesn't seem appropriate.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20180301092516.stbae2yn2depli22%40alap3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "wiki:Administration:3",
+      "kind": "do_not_want",
+      "title": "Implement the SQL-standard mechanism whereby REVOKE ROLE revokes only the privilege granted by the invoking role, and not those granted by other roles",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Administration",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Implement the SQL-standard mechanism whereby REVOKE ROLE revokes only the privilege granted by the invoking role, and not those granted by other roles\nSection: Administration\nLinked: Re: Grantor name gets lost when grantor role dropped",
+      "objection": "",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "drop role existing sessions disconnect",
+        "kill sessions revoked login"
+      ],
+      "from_hint": false,
+      "score": 0.163,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:1693",
+      "kind": "cf",
+      "title": "Log query parameters for terminated execute",
+      "status": "Rejected",
+      "date": "2018-07-30",
+      "first_date": "2018-06-23",
+      "url": "https://commitfest.postgresql.org/patch/1693/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/4686111529783659@web43o.yandex.ru"
+      ],
+      "authors": "Sergei Kornilov (melkij)",
+      "objectors": "Tom Lane",
+      "summary": "The patch adds errdetail_params to the error reports for statement_timeout, lock_timeout and pg_terminate_backend, so that log_min_duration_statement setups also log bind parameters of a cancelled or terminated execute. A later version extends this to the BIND message and changes errdetail to errdetail_log.",
+      "objection": "Tom Lane objected that printing parameters at these points can call user-defined I/O functions outside a transaction, in an already-failed transaction, or with no ActiveSnapshot. He also said the switch from errdetail to errdetail_log degrades existing functionality. The author asked for a safer design but got no answer, and the reviewer then changed the entry's status based on Tom Lane's message.",
+      "touch_points": [],
+      "matched_queries": [
+        "terminate session role valid until expired",
+        "LDAP account deleted session terminate"
+      ],
+      "from_hint": false,
+      "score": 0.155,
+      "enriched": true,
+      "key_quote": "This patch scares me to death.  It risks calling user-defined I/O\nfunctions in all sorts of weird places, particularly outside transactions,\nor in already-failed transactions, or with no ActiveSnapshot.",
+      "quote_message_url": "https://www.postgresql.org/message-id/15724.1532354888%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "revert:3d03b24c350ab060bb223623bdff38835bd7afd0",
+      "kind": "revert",
+      "title": "Revert \"Add support for Kerberos credential delegation\"",
+      "status": "Reverted",
+      "date": "2023-04-08",
+      "first_date": "2023-04-08",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=3d03b24c350ab060bb223623bdff38835bd7afd0",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3286097.1680922218@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CO1PR05MB8023CC2CB575E0FAAD7DF4F8A8E29@CO1PR05MB8023.namprd05.prod.outlook.com"
+      ],
+      "authors": "Stephen Frost",
+      "objectors": "",
+      "summary": "Revert \"Add support for Kerberos credential delegation\"\nReverted commit(s): Add support for Kerberos credential delegation",
+      "objection": "This reverts commit 3d4fa227bce4294ce1cc214b4a9d3b7caa3f0454.\n\nPer discussion and buildfarm, this depends on APIs that seem to not\nbe available on at least one platform (NetBSD).  Should be certainly\npossible to rework to be optional on that platform if necessary but bit\nlate for that at this point.",
+      "touch_points": [],
+      "matched_queries": [
+        "session credential revalidation"
+      ],
+      "from_hint": false,
+      "score": 0.139,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:5635",
+      "kind": "cf",
+      "title": "OAuth Followup Patches",
+      "status": "Withdrawn",
+      "date": "2025-06-26",
+      "first_date": "2021-06-08",
+      "url": "https://commitfest.postgresql.org/patch/5635/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/d1b467a78e0e36ed85a09adf979d04cf124a9d4b.camel@vmware.com"
+      ],
+      "authors": "Jacob Champion (jchampion)",
+      "objectors": "",
+      "summary": "Follow-up patches to the OAUTHBEARER SASL authentication support in libpq and the server, which uses the OAuth Device Authorization flow through libcurl. The visible work moves the libcurl-based flow into a separate libpq-oauth module loaded by dlopen() and fixes build and packaging problems on several platforms.",
+      "objection": "The visible messages do not show why. The libpq-oauth module split and its build fixes were committed in May 2025, and the author said he would move a remaining libcurl file-descriptor bug on BSD to its own thread.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "OAuth token expiry session"
+      ],
+      "from_hint": false,
+      "score": 0.133,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:2244",
+      "kind": "cf",
+      "title": "Allow cluster owner to bypass authentication",
+      "status": "Returned with feedback",
+      "date": "2020-04-06",
+      "first_date": "2019-08-15",
+      "url": "https://commitfest.postgresql.org/patch/2244/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/900e9708-3db1-1fd8-4877-ccd53ce3b87f@2ndquadrant.com"
+      ],
+      "authors": "Peter Eisentraut (petere)",
+      "objectors": "",
+      "summary": "Allow cluster owner to bypass authentication\nThreads: Allow cluster owner to bypass authentication",
+      "objection": "",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "periodic authentication check timeout"
+      ],
+      "from_hint": false,
+      "score": 0.129,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:4432",
+      "kind": "cf",
+      "title": "Multiple passwords, interval expirations",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2022-03-02",
+      "url": "https://commitfest.postgresql.org/patch/4432/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGB+Vh5SQQorNDEKP+0G=smxHRhbhs+VkmQWD5Vh98fmn8X4dg@mail.gmail.com"
+      ],
+      "authors": "Gurjeet Singh (gurjeet), Joshua Brindle (joshuab)",
+      "objectors": "",
+      "summary": "Multiple passwords, interval expirations\nThreads: [PoC/RFC] Multiple passwords, interval expirations",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "terminate session role valid until expired"
+      ],
+      "from_hint": false,
+      "score": 0.129,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:2117",
+      "kind": "cf",
+      "title": "ldapbindpasswdfile",
+      "status": "Withdrawn",
+      "date": "2019-07-08",
+      "first_date": "2019-05-14",
+      "url": "https://commitfest.postgresql.org/patch/2117/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGJ44ssWhcKP1KYK2Dm9_XXk1_b629_qSDUhH1fWfuAvXg@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "ldapbindpasswdfile\nThreads: ldapbindpasswdfile",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "LDAP account deleted session terminate"
+      ],
+      "from_hint": false,
+      "score": 0.127,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:3314",
+      "kind": "cf",
+      "title": "Support pg_ident mapping for LDAP",
+      "status": "Withdrawn",
+      "date": "2022-08-17",
+      "first_date": "2021-08-31",
+      "url": "https://commitfest.postgresql.org/patch/3314/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1a61806047c536e7528b943d0cfe12608118ca31.camel@vmware.com"
+      ],
+      "authors": "Jacob Champion (jchampion)",
+      "objectors": "",
+      "summary": "Support pg_ident mapping for LDAP\nThreads: [PATCH] Support pg_ident mapping for LDAP",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "LDAP account deleted session terminate"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:1673",
+      "kind": "cf",
+      "title": "Client Connection redirection support for PostgreSQL",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2017-11-02",
+      "url": "https://commitfest.postgresql.org/patch/1673/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CY1PR21MB00246DE1F9E9C58455A78A37915C0@CY1PR21MB0024.namprd21.prod.outlook.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "Client Connection redirection support for PostgreSQL\nThreads: Client Connection redirection support for PostgreSQL",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "client certificate expiry established connection"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:6536",
+      "kind": "cf",
+      "title": "Improve OAuth discovery logging [accidental duplicate]",
+      "status": "Withdrawn",
+      "date": "2026-02-26",
+      "first_date": "2026-02-11",
+      "url": "https://commitfest.postgresql.org/patch/6536/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAN4CZFPim7hUiyb7daNKQPSZ8CvQRBGkVhbvED7yZi8VktSn4Q@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "Improve OAuth discovery logging [accidental duplicate]\nThreads: Improve OAuth discovery logging",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "OAuth token expiry session"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:3370",
+      "kind": "cf",
+      "title": "CREATE ROLE IF NOT EXISTS",
+      "status": "Returned with feedback",
+      "date": "2022-02-07",
+      "first_date": "2021-10-19",
+      "url": "https://commitfest.postgresql.org/patch/3370/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOxo6XJy5_fUT4uDo2251Z_9whzu0JJGbtDgZKqZtOT9KhOKiQ@mail.gmail.com"
+      ],
+      "authors": "David Christensen (davidchristensen)",
+      "objectors": "",
+      "summary": "CREATE ROLE IF NOT EXISTS\nThreads: CREATE ROLE IF NOT EXISTS",
+      "objection": "",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "drop role existing sessions disconnect"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "revert:8abbbbae610cd62faad4f9ec18e7cfa908593796",
+      "kind": "revert",
+      "title": "Revert \"Avoid race condition between \"GRANT role\" and \"DROP ROLE\"\".",
+      "status": "Reverted",
+      "date": "2025-09-16",
+      "first_date": "2025-02-21",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=8abbbbae610cd62faad4f9ec18e7cfa908593796",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABgZEgczOFicCJoqtrH9gbYMe_BV3Hq8zzCBRcMgmU6LRsihUA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAM6Zo8woa62ZFHtMKox6a4jb8qQ=w87R2L0K8347iE-juQL2EA@mail.gmail.com"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Avoid race condition between \"GRANT role\" and \"DROP ROLE\"\".\nReverted commit(s): Avoid race condition between \"GRANT role\" and \"DROP ROLE\".",
+      "objection": "This reverts commit 98fc31d6499163a0a781aa6f13582a07f09cd7c6.\nThat change allowed DROP OWNED BY to drop grants of the target\nrole to other roles, arguing that nobody would need those\nprivileges anymore.  But that's not so: if you're not superuser,\nyou still need admin privilege on the target role so you can\ndrop it.\n\nIt's not clear whether or how the dependency-based approach\nto solving the original problem can be adapted to keep these\ngrants.  Since v18 release is fast approaching, the sanest\nthing to do seems to be to revert this patch for now.  The\nrace-condition problem is low severity and not worth taking\nrisks for.\n\nI didn't force a catversion bump in 98fc31d64, so I won't do\nso here either.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "drop role existing sessions disconnect"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "revert:e68570e388f08c2e36ce7d2a9564941b89db6549",
+      "kind": "revert",
+      "title": "Revert b2a459edf \"Fix GRANTED BY support in REVOKE ROLE statements\"",
+      "status": "Reverted",
+      "date": "2021-12-30",
+      "first_date": "2021-01-30",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e68570e388f08c2e36ce7d2a9564941b89db6549",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/17346-f72b28bd1a341060@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/B7F6699A-A984-4943-B9BF-CEB84C003527@yesql.se",
+        "https://www.postgresql.org/message-id/flat/f2feac44-b4c5-f38f-3699-2851d6a76dc9@2ndquadrant.com"
+      ],
+      "authors": "Daniel Gustafsson, Peter Eisentraut",
+      "objectors": "",
+      "summary": "Revert b2a459edf \"Fix GRANTED BY support in REVOKE ROLE statements\"\nReverted commit(s): Fix GRANTED BY support in REVOKE ROLE statements; Allow GRANTED BY clause in normal GRANT and REVOKE statements",
+      "objection": "The reverted commit attempted to fix SQL specification compliance for\nthe cases which 6aaaa76bb left.  This however broke existing behavior\nwhich takes precedence over spec compliance so revert. The introduced\ntests are left after the revert since the codepath isn't well covered.\nPer bug report 17346. Backpatch down to 14 where it was introduced.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "kill sessions revoked login"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:3095",
+      "kind": "cf",
+      "title": "Addition of authenticated ID to pg_stat_activity",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-04-26",
+      "url": "https://commitfest.postgresql.org/patch/3095/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/YIYmqIERKlgqmkZ6@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Addition of authenticated ID to pg_stat_activity\nThreads: Addition of authenticated ID to pg_stat_activity",
+      "objection": "",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "periodic authentication check timeout"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:1882",
+      "kind": "cf",
+      "title": "Add client connection check during the execution of the query",
+      "status": "Returned with feedback",
+      "date": "2019-08-01",
+      "first_date": "2018-11-19",
+      "url": "https://commitfest.postgresql.org/patch/1882/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/77def86b27e41f0efcba411460e929ae@postgrespro.ru"
+      ],
+      "authors": "Sergey Cherkashin (cherkashins)",
+      "objectors": "",
+      "summary": "Add client connection check during the execution of the query\nThreads: Add client connection check during the execution of the query",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "client certificate expiry established connection"
+      ],
+      "from_hint": false,
+      "score": 0.116,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:3546",
+      "kind": "cf",
+      "title": "Support custom authentication methods using hooks",
+      "status": "Returned with feedback",
+      "date": "2022-08-02",
+      "first_date": "2022-02-17",
+      "url": "https://commitfest.postgresql.org/patch/3546/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJxrbyxTRn5P8J-p+wHLwFahK5y56PhK28VOb55jqMO05Y-DJw@mail.gmail.com"
+      ],
+      "authors": "Samay Sharma (samaysharma)",
+      "objectors": "",
+      "summary": "Support custom authentication methods using hooks\nThreads: Proposal: Support custom authentication methods using hooks",
+      "objection": "",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "periodic authentication check timeout"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "revert:ebaaf386adb133010c2024256521b993c5e53e98",
+      "kind": "revert",
+      "title": "Revert \"oauth: Add unit tests for multiplexer handling\"",
+      "status": "Reverted",
+      "date": "2025-08-08",
+      "first_date": "2025-08-08",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ebaaf386adb133010c2024256521b993c5e53e98",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOYmi+nCkoh3zB+GkZad44=FNskwUg6F1kmuxqQZzng7Zgj5tw@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAOYmi+nDZxJHaWj9_jRSyf8uMToCADAmOfJEggsKW-kY7aUwHA@mail.gmail.com"
+      ],
+      "authors": "Jacob Champion",
+      "objectors": "",
+      "summary": "Revert \"oauth: Add unit tests for multiplexer handling\"\nReverted commit(s): oauth: Add unit tests for multiplexer handling",
+      "objection": "Commit 1443b6c0e introduced buildfarm breakage for Autoconf animals,\nwhich expect to be able to run `make installcheck` on the libpq-oauth\ndirectory even if libcurl support is disabled. Some other Meson animals\ncomplained of a missing -lm link as well.\n\nSince this is the day before a freeze, revert for now and come back\nlater.",
+      "touch_points": [
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "OAuth token expiry session"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 4,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2026-06-16",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found. The only listed row, [P22], checks whether the client socket is still alive during a query, which is a different idea, and it has no recorded reason. No message in the thread points to an earlier discussion of session credential re-validation, so this angle gives no grounds to object."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "Two objections. The OAuth magic versioning in 0003 follows the existing practice of versioned module magic, and FATAL at the idle-wait point matches idle_session_timeout, so I raise neither."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "The series adds no on-disk format, WAL record or catalog change. The OAuth V1/V2 magic keeps existing validator modules loadable. Physical walsender exemption was accepted in message #5."
+    },
+    {
+      "angle": "security",
+      "objections": 3,
+      "note": "Three fixable objections. The feature is security-positive. The weak points are the opt-out path, fail-open behaviour, and gaps in what counts as revocation."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "The baseline check in 0001 has a small per-backend cost and is useful on its own. These objections are about the method-specific layers."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "The certificate, OAuth and GSS checks need state that only the backend has, and I know of no existing feature or extension that provides them. So the angle raises an objection only against 0001 standing alone."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "The problem is real and the statement is clear. The feature is off by default, so its cost falls mostly on its users. The objections ask for evidence of demand rather than rejection."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 12,
+      "new_survived": 7,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 110,
+    "hits_found": 2,
+    "sentences_rewritten": 2,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 16,
+    "wall_ms": 192883,
+    "cost_usd": 2.7055633999999995,
+    "dry_run": false
+  }
+}

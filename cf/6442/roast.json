@@ -1,0 +1,1431 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:51:32.153Z",
+  "input": {
+    "arg": "6442",
+    "cf": {
+      "id": 6442,
+      "url": "https://commitfest.postgresql.org/patch/6442/",
+      "title": "tablecmds: fix Deadlock caused by Attach Partition",
+      "status": "Needs review",
+      "authors": "Chao Li (chaol)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CFACA0EB-7E6F-4FAA-9ACE-1FC2226D7482%40gmail.com",
+    "subject": "tablecmds: Deadlock caused by Attach Partition",
+    "thread_start": "2026-01-30T03:15:51Z",
+    "messages_read": 16,
+    "messages_total": 16,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v5-0001-Prevent-deadlock-between-ALTER-TABLE-recursion-an.patch",
+      "v5-0002-Prevent-deadlocks-during-partitioned-index-attach.patch",
+      "v5-0003-Add-isolation-tests-for-ATTACH-PARTITION-lock-ord.patch",
+      "v1-0001-Prevent-deadlock-between-ALTER-TABLE-recursion-an.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The goal is sound and 0001 adds only AccessShareLock on ancestors, which master already takes with a cold cache. The design of 0002 is open: standards-compat-1 and replication-ondisk-1 show it takes AccessExclusiveLock on ancestor tables and indexes for every multi-level index ATTACH, and no committer has accepted that cost. maintenance-fit-2 shows other bottom-up paths remain, and the author now holds the patch for a general fix.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Pre-lock partition ancestors in ATTACH PARTITION to avoid deadlocks",
+    "problem": "A recursive ALTER TABLE on a partitioned table, such as ALTER COLUMN SET DEFAULT, locks the tree top-down. ATTACH PARTITION on a mid-level table locks the target and then its ancestors bottom-up in generate_partition_qual(). Run concurrently, the two deadlock, and the author reproduces this on master with deep partition chains.",
+    "proposed_design": "RangeVarCallbackForAttachPartition() locks all ancestor tables from root to parent before the target is locked, follows pending-detach links, and tracks the locks across lookup retries. A second patch extends this to ALTER INDEX ... ATTACH PARTITION and takes AccessExclusiveLock on ancestor indexes and their tables. A third patch adds isolation tests.",
+    "user_visible_surface": [
+      "ALTER TABLE ... ATTACH PARTITION always takes AccessShareLock on every ancestor table, even when the partition constraint is cached.",
+      "ALTER INDEX ... ATTACH PARTITION always takes AccessExclusiveLock on ancestor indexes and their tables, even when no validation follows.",
+      "New isolation tests partition-attach-lock-order and partition-index-attach-lock-order."
+    ],
+    "author_claims": [
+      "The deadlock is reliably reproducible on master with deep partition chains.",
+      "Lock order now follows the partition hierarchy and does not depend on relative OIDs.",
+      "DML directly on a partition has a known deadlock of the same kind and is out of scope.",
+      "The author later says many more bottom-up locking paths exist, such as DROP NOT NULL and pg_get_partition_constraintdef().",
+      "The author says these deadlocks are rare, retry usually works, and the patch is not urgent."
+    ],
+    "thread_state": "Surya Poondla reviewed v1 to v5 and asked Álvaro Herrera to decide whether the extra AccessExclusiveLock in the index fix is acceptable; the CF status went back to Needs review. The author then said he would hold the patch and look for a general fix, which he has not yet designed.",
+    "unclear": [
+      "The thread does not say whether the author will continue this patch or withdraw it for a general redesign.",
+      "No committer has answered whether index ATTACH may take AccessExclusiveLock on the root table and indexes.",
+      "The patch does not cover pg_get_partition_constraintdef(), which psql \\d+ uses and which has the same deadlock.",
+      "No one has measured how much more blocking the new ancestor locks cause on busy partition trees.",
+      "The ancestors are computed before the target is locked, so a reparented target can still deadlock; the patch only comments on this."
+    ],
+    "search_queries": [
+      "attach partition deadlock",
+      "partition lock order ancestors",
+      "generate_partition_qual locking",
+      "deadlock partitioned table parent child",
+      "lock partition ancestors before partition",
+      "alter index attach partition lock",
+      "partition constraint lock inversion",
+      "recursive alter table deadlock"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Index ATTACH now takes AccessExclusiveLock on the root table every time",
+      "level": "2",
+      "rubric_item": 4,
+      "category": "design",
+      "touch_points": [
+        "hot_path_performance",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA attaches leaf indexes one by one on a busy multi-level tree, and most of these attaches validate nothing. With 0002, each attach takes AccessExclusiveLock on the root table and the ancestor indexes. Every query on the root then waits until the attach commits, and the DBA sees this only as an outage in production.",
+      "argument": "Message #14 measured this. Master locks no ancestors when the parent index stays invalid, and v5 takes AccessExclusiveLock on root, mid1 and their indexes. The same message gives the reason a weaker lock does not work, and asks a committer to accept the trade-off, which no committer has done. The entry is tagged Bugfix, so this lock change could also reach minor releases, and the patch prose touches no documentation of the new lock set.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        14
+      ],
+      "author_must_show": "Can the deadlock be avoided without AccessExclusiveLock on the root when the attach will not validate any ancestor index, and if not, will the documentation state the new lock?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 14,
+          "from": "surya poondla",
+          "date": "2026-10-27T21:52:21Z",
+          "url": "https://www.postgresql.org/message-id/CAOVWO5pmhdGfo7mvjheg1kryjMXNumDOiN9%3Dio2nthO%3DomRRNA%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #14 measured the new AccessExclusiveLock on ancestors of a mid-level index, and no committer answered the trade-off question. The backpatch remark is speculation, since the entry targets version 19, and should not carry weight.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "New AccessExclusiveLock in index ATTACH also blocks hot standby readers",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication",
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA attaches a leaf index in a large partition tree where the parent index stays invalid. The primary WAL-logs the new AccessExclusiveLock on the root table and its index, and the standby replays it. Reporting queries on the root at the standby then wait or are cancelled after max_standby_streaming_delay, although master took no ancestor locks for this ATTACH.",
+      "argument": "Message #14 shows that v5-0002 takes AccessExclusiveLock on root, mid1, root_idx and mid1_idx even when nothing is validated, where master takes none. Postgres WAL-logs AccessExclusiveLock so hot standby can replay it, so this cost reaches every standby. The discussion in message #14 covers only blocking on the primary, and that question is still open. A committer would likely want the standby effect weighed in the same trade-off.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        14
+      ],
+      "author_must_show": "How does the extra AccessExclusiveLock affect queries on hot standbys when no validation follows, and can the non-cascading case avoid it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 14,
+          "from": "surya poondla",
+          "date": "2026-10-27T21:52:21Z",
+          "url": "https://www.postgresql.org/message-id/CAOVWO5pmhdGfo7mvjheg1kryjMXNumDOiN9%3Dio2nthO%3DomRRNA%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Postgres WAL-logs AccessExclusiveLock and standbys replay it, so standby queries on the root can wait or be cancelled. Message #14 weighs only blocking on the primary, so this cost is new to the trade-off.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Point fix leaves the bottom-up locking pattern open for future callers",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds a new caller of generate_partition_qual() or another child-then-parent walk, and does not call lock_partition_ancestors() first. No test or assertion fails. Users see occasional deadlocks against recursive ALTER TABLE in production, and a new thread starts to hunt for the cause.",
+      "argument": "After v5, the thread found the same inversion in pg_get_partition_constraintdef(), which psql \\d+ uses (message #15), and in DROP NOT NULL (message #16). The author now says these should not be fixed one at a time and is holding the patch. Committing 0001 and 0002 as they stand adds a convention that every bottom-up path must follow, with nothing to enforce it, and a later general redesign may have to undo or rework them.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        12,
+        15,
+        16
+      ],
+      "author_must_show": "Which rule, enforced in code or by tests, keeps the next caller that walks a partition up to its ancestors from bringing the deadlock back?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 12,
+          "from": "Álvaro Herrera",
+          "date": "2026-10-25T09:32:45Z",
+          "url": "https://www.postgresql.org/message-id/at3MCB1EIOHMjh6K%40alvherre.pgsql"
+        },
+        {
+          "index": 15,
+          "from": "shihao zhong",
+          "date": "2026-10-28T01:29:02Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTSqk-4ej3_q_frxGKvf-A8CcgCH_bvvEnvPuzaYe5u-w%40mail.gmail.com"
+        },
+        {
+          "index": 16,
+          "from": "Chao Li",
+          "date": "2026-10-29T07:30:07Z",
+          "url": "https://www.postgresql.org/message-id/1CE846D3-C504-436B-8F59-E9296CA22A4A%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #15 and #16 confirm more bottom-up paths, and the author now prefers a general fix. The patch adds no assertion or comment that makes a new caller fail loudly; message #15 only suggests a comment.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Narrow fix leaves the same lock inversion open on other known paths",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "psql_ux"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After this patch a DBA runs psql \\d+ on a mid-level partition, or ALTER COLUMN DROP NOT NULL, while a recursive ALTER TABLE runs on the root. The session still gets \"deadlock detected\". The next caller of generate_partition_qual() that does not pre-lock ancestors brings the bug back, and only a deadlock in the field shows it.",
+      "argument": "Message #4 reports a 2021 discussion that accepted child-first locking for DML on a partition as inherent and rare, so one bottom-up path stays open by design. Message #15 adds pg_get_partition_constraintdef(), and message #16 adds DROP NOT NULL and says there are more such paths. In message #16 the author proposes a general solution in place of path-by-path fixes and holds the patch. A committer would likely ask what rule this patch sets that later patches must follow, and what reports a violation of it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4,
+        15,
+        16
+      ],
+      "author_must_show": "Is this patch a step toward the general fix from message #16, and what stops a new generate_partition_qual() caller from locking ancestors after the partition?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "surya poondla",
+          "date": "2026-10-19T19:06:13Z",
+          "url": "https://www.postgresql.org/message-id/CAOVWO5p7vUqD7Eqi%3DmcfKcEdfiNhUQ_yFHwUeNLia-6mbMC7fQ%40mail.gmail.com"
+        },
+        {
+          "index": 15,
+          "from": "shihao zhong",
+          "date": "2026-10-28T01:29:02Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTSqk-4ej3_q_frxGKvf-A8CcgCH_bvvEnvPuzaYe5u-w%40mail.gmail.com"
+        },
+        {
+          "index": 16,
+          "from": "Chao Li",
+          "date": "2026-10-29T07:30:07Z",
+          "url": "https://www.postgresql.org/message-id/1CE846D3-C504-436B-8F59-E9296CA22A4A%40gmail.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-2. That objection states the same missing rule for future generate_partition_qual() callers, without mixing in deadlocks that exist on master today.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Partial fix changes the lock contract while psql \\d+ still deadlocks",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "psql_ux",
+      "touch_points": [
+        "psql_ux",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user runs psql \\d+ on a mid-level partition while a recursive ALTER TABLE runs on the root, and gets a deadlock error. That happens after an upgrade that already changed the ATTACH lock set. A later general redesign may change the lock set again, so users see two different lock behaviours across releases for one class of bug.",
+      "argument": "Message #15 shows that pg_get_partition_constraintdef(), which psql \\d+ uses, has the same inversion. Message #16 names DROP NOT NULL as another case and says the author wants a common solution instead of one-by-one fixes. A committer would likely ask why the ATTACH lock set should change now if a general design may replace it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        15,
+        16
+      ],
+      "author_must_show": "Will the general fix keep the ancestor lock set this patch puts in place, or should this patch wait for that design?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 15,
+          "from": "shihao zhong",
+          "date": "2026-10-28T01:29:02Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTSqk-4ej3_q_frxGKvf-A8CcgCH_bvvEnvPuzaYe5u-w%40mail.gmail.com"
+        },
+        {
+          "index": 16,
+          "from": "Chao Li",
+          "date": "2026-10-29T07:30:07Z",
+          "url": "https://www.postgresql.org/message-id/1CE846D3-C504-436B-8F59-E9296CA22A4A%40gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The \\d+ deadlock exists on master, so the patch does not cause it. Lock sets are not a stable contract across major releases, and 0001 takes the same AccessShareLock set as master with a cold cache.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Ancestor locks may be taken before ownership checks and by non-owners",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A role that owns only a mid-level partitioned table, or no table at all, runs ALTER INDEX ... ATTACH PARTITION on that index while a long query reads the root. Its queued AccessExclusiveLock request on the root then blocks every later reader and writer of the root. The root owner sees a stall and has no clear cause.",
+      "argument": "RangeVar callbacks exist so that permission checks run before any lock is taken. The v5-0002 commit message says the callback now takes AccessExclusiveLock on all ancestor indexes and their tables, but it does not say whether this happens after the ownership check on the target. Partitions in one tree can have different owners, so even after that check, an owner of a mid-level table can lock a root it does not own. Message #14 shows master takes those locks only when validation cascades, and v5 takes them on every ATTACH.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        14
+      ],
+      "author_must_show": "Does the callback check ownership of the target before locking any ancestor, and should a non-owner of the root be able to queue AccessExclusiveLock on it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 14,
+          "from": "surya poondla",
+          "date": "2026-10-27T21:52:21Z",
+          "url": "https://www.postgresql.org/message-id/CAOVWO5pmhdGfo7mvjheg1kryjMXNumDOiN9%3Dio2nthO%3DomRRNA%40mail.gmail.com"
+        }
+      ],
+      "id": "security-1",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "Master already lets a partition owner lock ancestors it does not own: DROP of a partition locks the parent, and cascading index validation locks ancestors. The claim that locks precede the ownership check has no support in the material.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Index ATTACH would block the root table on every call",
+      "level": "2",
+      "rubric_item": 4,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "maintenance_burden"
+      ],
+      "severity": "fatal",
+      "failure_scenario": "A DBA builds an index on a busy partitioned table with the usual low-lock workflow: CREATE INDEX ON ONLY the parent, CREATE INDEX CONCURRENTLY on each partition, then ALTER INDEX ... ATTACH PARTITION per partition. With 0002, each ATTACH takes AccessExclusiveLock on the root table, even when no validation follows. Every read and write on the root then waits until that ATTACH commits.",
+      "argument": "In message #14 Surya measured that master takes no ancestor locks in the non-validating case, while v5 takes AccessExclusiveLock on the root, mid1 and their indexes. The extra cost falls on everyone who attaches indexes in a tree, which is the common path for that workflow. A rare deadlock that succeeds on retry (message #16) then costs a guaranteed full block of the root. Message #14 also shows that a weaker pre-lock or a callback-time prediction does not work, so the fix needs a different design.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        14,
+        16
+      ],
+      "author_must_show": "How does the low-lock index build on a partitioned table stay usable when each ATTACH takes AccessExclusiveLock on the root table?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 14,
+          "from": "surya poondla",
+          "date": "2026-10-27T21:52:21Z",
+          "url": "https://www.postgresql.org/message-id/CAOVWO5pmhdGfo7mvjheg1kryjMXNumDOiN9%3Dio2nthO%3DomRRNA%40mail.gmail.com"
+        },
+        {
+          "index": 16,
+          "from": "Chao Li",
+          "date": "2026-10-29T07:30:07Z",
+          "url": "https://www.postgresql.org/message-id/1CE846D3-C504-436B-8F59-E9296CA22A4A%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1. This version also overstates the scope: with one partition level the target index has no ancestors, so 0002 adds no lock, and dropping 0002 leaves 0001 usable.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Index ATTACH locks the root table for every user to avoid a rare deadlock",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "desirability",
+      "touch_points": [
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA attaches leaf indexes one by one in a large partition tree while the application writes to the root. With 0002, each ALTER INDEX ... ATTACH PARTITION holds AccessExclusiveLock on the root table and root index until commit, even when no validation follows. Reads and writes on the root stall, and parallel index ATTACHes run one at a time.",
+      "argument": "Message #14 measured this: master takes no ancestor locks when the parent index stays invalid, but v5 takes AccessExclusiveLock on root, mid1 and their indexes. In message #16 the author calls the deadlock rare and says a retry usually works. So every index ATTACH pays a blocking cost to avoid a rare, retryable error. No committer has accepted this trade-off; message #14 asked and the thread has no reply.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        14,
+        16
+      ],
+      "author_must_show": "Which workloads hit the index ATTACH deadlock often enough to justify an AccessExclusiveLock on the root for every index ATTACH, including ATTACHes that validate nothing?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 14,
+          "from": "surya poondla",
+          "date": "2026-10-27T21:52:21Z",
+          "url": "https://www.postgresql.org/message-id/CAOVWO5pmhdGfo7mvjheg1kryjMXNumDOiN9%3Dio2nthO%3DomRRNA%40mail.gmail.com"
+        },
+        {
+          "index": 16,
+          "from": "Chao Li",
+          "date": "2026-10-29T07:30:07Z",
+          "url": "https://www.postgresql.org/message-id/1CE846D3-C504-436B-8F59-E9296CA22A4A%40gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1, which states the same cost against the same rare deadlock and names the multi-level case.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No field reports, and this fixes one of many bottom-up paths",
+      "level": "1b",
+      "rubric_item": 5,
+      "category": "demand",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer pushes the ATTACH fix. Users still hit the same deadlock through psql \\d+ (pg_get_partition_constraintdef()), DROP NOT NULL, and DML on a partition. Each later report needs its own pre-lock patch, and the project carries several one-off lock-order fixes without a general rule.",
+      "argument": "The material has no -general or -bugs reports. The deadlock was found while working on another patch (message #1) and reproduced with a 1000-level chain. In message #16 the author says few people have complained, these paths should not be fixed one by one, and the patch is not urgent. [P6] was withdrawn when a narrow partition fix turned out to need a general policy first, which matches the author's current position.",
+      "precedent_ids": [
+        "P6"
+      ],
+      "thread_message_refs": [
+        1,
+        15,
+        16
+      ],
+      "author_must_show": "Is there a user report of this deadlock on a realistic partition tree, and why should this narrow fix go in before the general fix the author now prefers?",
+      "precedents": [
+        {
+          "id": "P6",
+          "title": "ALTER TABLE SET LOGGED/UNLOGGED on a partitioned table does nothing silently",
+          "url": "https://commitfest.postgresql.org/patch/2857/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/TYAPR01MB299022B3CFFE7B838AC62E40FEF30@TYAPR01MB2990.jpnprd01.prod.outlook.com"
+          ],
+          "date": "2021-04-07",
+          "status": "Withdrawn"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Chao Li",
+          "date": "2026-01-30T03:15:51Z",
+          "url": "https://www.postgresql.org/message-id/CFACA0EB-7E6F-4FAA-9ACE-1FC2226D7482%40gmail.com"
+        },
+        {
+          "index": 15,
+          "from": "shihao zhong",
+          "date": "2026-10-28T01:29:02Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTSqk-4ej3_q_frxGKvf-A8CcgCH_bvvEnvPuzaYe5u-w%40mail.gmail.com"
+        },
+        {
+          "index": 16,
+          "from": "Chao Li",
+          "date": "2026-10-29T07:30:07Z",
+          "url": "https://www.postgresql.org/message-id/1CE846D3-C504-436B-8F59-E9296CA22A4A%40gmail.com"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-2 for the one-of-many-paths point. [P6] concerns recursion policy for SET LOGGED and does not apply, and a three-level isolation test in message #4 reproduces the deadlock without a 1000-level chain.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "0002 adds AccessExclusiveLock on ancestor tables and indexes, which Postgres WAL-logs and hot standbys replay."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "0001 adds an exported function to src/include/catalog/partition.h."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The entry is tagged Bugfix, but it changes the lock set of ATTACH PARTITION, which is a behaviour change for stable branches."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Every path that walks from a partition up to its ancestors must pre-lock them, and nothing enforces this."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Every ATTACH in a multi-level tree takes ancestor locks, and index ATTACH takes AccessExclusiveLock on the root table."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Can ALTER INDEX ... ATTACH PARTITION avoid AccessExclusiveLock on ancestor tables and indexes when the attach validates no ancestor index?",
+    "How does the new AccessExclusiveLock on the root affect queries on hot standbys, where replay can make them wait or cancel them?",
+    "Which assertion, test or code rule makes a new caller of generate_partition_qual() fail loudly if it locks ancestors after the partition?",
+    "Should 0001 go ahead alone now, and will the general fix from message #16 keep the ancestor lock set it puts in place?",
+    "What happens when the target is reparented between the ancestor lookup and the lock on the target, which the patch only comments on?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "It needs a committer who knows partition locking in tablecmds.c and the index validation path. Message #14 asked for a committer decision on the index lock and got no reply.",
+    "liability": "The owner signs for a wider lock set on every multi-level ATTACH, including AccessExclusiveLock on root tables for index ATTACH, and for any blocking or standby cancellation reports that follow. The pre-lock convention also needs care in every later patch that walks up a partition tree.",
+    "author_follow_up": "The author answered reviews through v5, then said in message #16 that he holds the patch to look for a general fix that is not yet designed."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "needs design rethink",
+    "reason": "The deadlock needs a multi-level partition tree and concurrent DDL, and the author calls it rare and retryable. The patches are small, but the index lock trade-off has no committer answer and the author is holding the patch for a general fix."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, this review could not check whether the callback releases ancestor locks correctly across lookup retries, or how it handles a target reparented before it is locked. It also could not check the order of permission checks and ancestor locks.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "revert:b8ca984b2c739e096c08f260f477792495f4dfe4",
+      "kind": "revert",
+      "title": "Revert lowering of lock level for ATTACH PARTITION",
+      "status": "Reverted",
+      "date": "2018-04-12",
+      "first_date": "2018-04-11",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=b8ca984b2c739e096c08f260f477792495f4dfe4",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+TgmobV7Nfmqv+TZXcdSsb9Bjc-OL-Anv6BNmCbfJVZLYPE4Q@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAGPqQf0W+v-Ci_qNV_5R3A=Z9LsK4+jO7LzgddRncpp_rrnJqQ@mail.gmail.com"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert lowering of lock level for ATTACH PARTITION\nReverted commit(s): Fix ALTER TABLE .. ATTACH PARTITION ... DEFAULT",
+      "objection": "I lowered the lock level for partitions being scanned from\nAccessExclusive to ShareLock in the course of 72cf7f310c07, but that was\nbogus, as pointed out by Robert Haas.  Revert that bit.  Doing this is\npossible, but requires more work.",
+      "touch_points": [],
+      "matched_queries": [
+        "attach partition deadlock",
+        "partition lock order ancestors",
+        "generate_partition_qual locking",
+        "lock partition ancestors before partition",
+        "alter index attach partition lock",
+        "partition constraint lock inversion"
+      ],
+      "from_hint": false,
+      "score": 0.627,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "revert:1722d5eb05d8e5d2e064cd1798abcae4f296ca9d",
+      "kind": "revert",
+      "title": "Revert \"Don't lock partitions pruned by initial pruning\"",
+      "status": "Reverted",
+      "date": "2025-05-22",
+      "first_date": "2025-03-19",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1722d5eb05d8e5d2e064cd1798abcae4f296ca9d",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/605328.1747710381@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/18830-1f31ea1dc930d444@postgresql.org"
+      ],
+      "authors": "Amit Langote",
+      "objectors": "",
+      "summary": "Revert \"Don't lock partitions pruned by initial pruning\"\nReverted commit(s): Ensure first ModifyTable rel initialized if all are pruned",
+      "objection": "As pointed out by Tom Lane, the patch introduced fragile and invasive\ndesign around plan invalidation handling when locking of prunable\npartitions was deferred from plancache.c to the executor. In\nparticular, it violated assumptions about CachedPlan immutability and\naltered executor APIs in ways that are difficult to justify given the\nadded complexity and overhead.\n\nThis also removes the firstResultRels field added to PlannedStmt in\ncommit 28317de72, which was intended to support deferred locking of\ncertain ModifyTable result relations.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "partition lock order ancestors",
+        "generate_partition_qual locking",
+        "lock partition ancestors before partition",
+        "alter index attach partition lock",
+        "partition constraint lock inversion"
+      ],
+      "from_hint": false,
+      "score": 0.554,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:1897",
+      "kind": "cf",
+      "title": "Delay locking partitions during query execution",
+      "status": "Withdrawn",
+      "date": "2019-03-05",
+      "first_date": "2018-12-03",
+      "url": "https://commitfest.postgresql.org/patch/1897/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKJS1f_kfRQ3ZpjQyHC7=PK9vrhxiHBQFZ+hc0JCwwnRKkF3hg@mail.gmail.com"
+      ],
+      "authors": "David Rowley (davidrowley)",
+      "objectors": "David Rowley, Robert Haas",
+      "summary": "Skip locking partitions in AcquireExecutorLocks() and lock each one only when the executor first opens it in ExecGetRangeTableRelation(), so that partitions removed by run-time pruning are never locked. The patch adds a delaylock flag to RangeTblEntry, and the main gain is for prepared statements that use generic plans over many partitions.",
+      "objection": "The author withdrew it after he found a cached generic plan that fails with \"could not open relation with OID\" when another session drops an index on a partition that was not locked. Robert Haas had said the patch is dead unless the executor can cope with arbitrary AEL-requiring changes to delay-locked partitions. The only fix the author saw was to take partition locks on the top-level partitioned table, which is a larger, separate change. Tom Lane also objected to storing planner output in RangeTblEntry.",
+      "touch_points": [],
+      "matched_queries": [
+        "partition lock order ancestors",
+        "generate_partition_qual locking",
+        "lock partition ancestors before partition",
+        "partition constraint lock inversion"
+      ],
+      "from_hint": false,
+      "score": 0.456,
+      "enriched": true,
+      "key_quote": "If you can't,\nthen this patch is dead.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoZN-80143F8OhN8Cn5-uDae5miLYVwMapAuc%2B7%2BZ7pyNg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "revert:5472743d9e8583638a897b47558066167cc14583",
+      "kind": "revert",
+      "title": "Revert \"Move PartitionPruneInfo out of plan nodes into PlannedStmt\"",
+      "status": "Reverted",
+      "date": "2023-05-04",
+      "first_date": "2022-12-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=5472743d9e8583638a897b47558066167cc14583",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/4191508.1674157166@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20230502175409.kcoirxczpdha26wt@alvherre.pgsql",
+        "https://www.postgresql.org/message-id/flat/CA+HiwqFGkMSge6TgC9KQzde0ohpAycLQuV7ooitEEpbKB0O_mg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CA+HiwqG6tbc2oadsbyyy24b2AL295XHQgyLRWghmA7u_SL1K8A@mail.gmail.com"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert \"Move PartitionPruneInfo out of plan nodes into PlannedStmt\"\nReverted commit(s): Move PartitioPruneInfo out of plan nodes into PlannedStmt; Fix setrefs.c code for adjusting partPruneInfos",
+      "objection": "This reverts commit ec386948948c and its fixup 589bb816499e.\n\nThis change was intended to support query planning avoiding acquisition\nof locks on partitions that were going to be pruned; however, the\noverall project took a different direction at [1] and this bit is no\nlonger needed.  Put things back the way they were as agreed in [2], to\navoid unnecessary complexity.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "partition lock order ancestors",
+        "generate_partition_qual locking",
+        "lock partition ancestors before partition",
+        "partition constraint lock inversion"
+      ],
+      "from_hint": false,
+      "score": 0.362,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:4561",
+      "kind": "cf",
+      "title": "Tab completion for ATTACH PARTITION",
+      "status": "Returned with feedback",
+      "date": "2024-01-29",
+      "first_date": "2023-09-13",
+      "url": "https://commitfest.postgresql.org/patch/4561/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/d8af7ab4c4a40609f97a9d38e5735927@oss.nttdata.com"
+      ],
+      "authors": "Tung Nguyen (tngngn)",
+      "objectors": "Alvaro Herrera, David Zhang",
+      "summary": "The patch changes psql tab completion after \"ALTER TABLE <table_name> ATTACH PARTITION\" so that it lists foreign tables as well as ordinary tables. Before the patch, foreign tables were missing from the list.",
+      "objection": "Alvaro Herrera asked for a more precise completion query that leaves out relations that cannot be attached: existing partitions, and parents or children in legacy inheritance. David Zhang also asked to filter out tables that are already attached. The author posted no updated patch, so vignesh C marked the entry Returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "attach partition deadlock",
+        "alter index attach partition lock"
+      ],
+      "from_hint": false,
+      "score": 0.274,
+      "enriched": true,
+      "key_quote": "For example, any\nrelation that's already a partition cannot be attached; as can't any\nrelation that is involved in legacy inheritance as either parent or\nchild.",
+      "quote_message_url": "https://www.postgresql.org/message-id/202309130719.b6zqtcf7tucp%40alvherre.pgsql",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:2857",
+      "kind": "cf",
+      "title": "ALTER TABLE SET LOGGED/UNLOGGED on a partitioned table does nothing silently",
+      "status": "Withdrawn",
+      "date": "2021-04-07",
+      "first_date": "2020-12-02",
+      "url": "https://commitfest.postgresql.org/patch/2857/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/TYAPR01MB299022B3CFFE7B838AC62E40FEF30@TYAPR01MB2990.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "Takayuki Tsunakawa (maumau)",
+      "objectors": "",
+      "summary": "Make ALTER TABLE SET LOGGED/UNLOGGED on a partitioned table propagate to its partitions instead of completing silently without changing anything. The discussion widened to how ALTER TABLE/INDEX actions in general should behave on partitioned tables, including whether future partitions should inherit the parent's setting.",
+      "objection": "The author withdrew the entry. Review showed that the fix depended on agreeing a general policy for how many ALTER TABLE/INDEX actions should recurse to partitions and apply to future partitions, and the author said he could not take the time to research and fix those other issues. A stopgap patch from Bharath Rupireddy that emitted a warning and added a documentation note was posted, but the entry was withdrawn instead.",
+      "touch_points": [],
+      "matched_queries": [
+        "deadlock partitioned table parent child",
+        "recursive alter table deadlock"
+      ],
+      "from_hint": false,
+      "score": 0.223,
+      "enriched": true,
+      "key_quote": "However, I think I'll withdraw this CF entry since I'm not sure I can take time for the time being to research and fix other various ALTER TABLE/INDEX issues.",
+      "quote_message_url": "https://www.postgresql.org/message-id/TYAPR01MB2990670C9B8043D6073B4E79FE7A9%40TYAPR01MB2990.jpnprd01.prod.outlook.com",
+      "relevant": true
+    },
+    {
+      "id": "P7",
+      "source_id": "revert:a1ec7402e9a0392f95bc79542af0efcd5c6e7929",
+      "kind": "revert",
+      "title": "Revert \"Make pg_dump emit ATTACH PARTITION instead of PARTITION OF\"",
+      "status": "Reverted",
+      "date": "2019-05-06",
+      "first_date": "2019-04-24",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=a1ec7402e9a0392f95bc79542af0efcd5c6e7929",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGPqQf0iQV=PPOv2Btog9J9AwOQp6HmuVd6SbGTR_v3Zp2XT1w@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAKJS1f_1c260nOt_vBJ067AZ3JXptXVRohDVMLEBmudX1YEx-A@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20190423185007.GA27954@alvherre.pgsql"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert \"Make pg_dump emit ATTACH PARTITION instead of PARTITION OF\"\nReverted commit(s): Make pg_dump emit ATTACH PARTITION instead of PARTITION OF",
+      "objection": "... and fallout (from branches 10, 11 and master).  The change was\nill-considered, and it broke a few normal use cases; since we don't have\ntime to fix it, we'll try again after this week's minor releases.",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "attach partition deadlock",
+        "alter index attach partition lock"
+      ],
+      "from_hint": false,
+      "score": 0.222,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:3188",
+      "kind": "cf",
+      "title": "Autovacuum (analyze) on partitioned tables for ATTACH/DETACH/DROP commands",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-06-21",
+      "url": "https://commitfest.postgresql.org/patch/3188/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKkQ50_H0k_Y9WjU2n=n11YtSfnLJAHMXef2uorQBFTcCJif_A@mail.gmail.com"
+      ],
+      "authors": "Yuzuko Hosoya (yuzu)",
+      "objectors": "",
+      "summary": "The patch proposed counting the live tuples of a partition toward its partitioned ancestors' changes_since_analyze when the partition is attached, detached or dropped, so that autovacuum would trigger an analyze on the partitioned table after these DDL operations. It added three configuration parameters (autovacuum_analyze_attach_partition, autovacuum_analyze_detach_partition, autovacuum_analyze_drop_partition) to enable or disable the behavior, with reporting done via pgstat_report_anl_ancestors().",
+      "objection": "No design objections appear in the visible messages. The patch stopped applying to HEAD, a rebase was requested, and the author did not respond for four weeks, so the entry was marked Returned with Feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "attach partition deadlock",
+        "alter index attach partition lock"
+      ],
+      "from_hint": false,
+      "score": 0.217,
+      "enriched": true,
+      "key_quote": "Four weeks later, nothing has happened.  So I have marked the patch as\nRwF.",
+      "quote_message_url": "https://www.postgresql.org/message-id/YVavss7svu9UT4vE%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:646",
+      "kind": "cf",
+      "title": "Prevent ALTER TABLE DROP NOT NULL on child tables if parent column has it",
+      "status": "Rejected",
+      "date": "2016-06-16",
+      "first_date": "2016-06-15",
+      "url": "https://commitfest.postgresql.org/patch/646/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB7nPqTPXgX9HiyhhtAgpW7jbA1iskMCSoqXPEEB_KYXYy1E1Q@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Tom Lane",
+      "summary": "Prevent ALTER TABLE ... DROP NOT NULL on a child table when the same column in a parent table is marked NOT NULL, so that the constraint can only be dropped from the parent. The patch added a function in pg_inherits.c to list a relation's parents and a new index on pg_inherits.",
+      "objection": "Tom Lane said the approach was wrong because it does not help decide whether to propagate DROP NOT NULL from a parent to its children, and pointed to the earlier plan of storing NOT NULL constraints in pg_constraint with inheritance counts as CHECK constraints do. After Vitaly Burovoy reported that he was writing such a patch, which already forbids dropping inherited NOT NULLs, the author withdrew his proposal in favour of that work.",
+      "touch_points": [],
+      "matched_queries": [
+        "deadlock partitioned table parent child",
+        "recursive alter table deadlock"
+      ],
+      "from_hint": false,
+      "score": 0.197,
+      "enriched": true,
+      "key_quote": "This doesn't sound like the right approach; in particular, it won't really\nhelp for deciding whether to propagate a DROP NOT NULL on a parent rel to\nits children.",
+      "quote_message_url": "https://www.postgresql.org/message-id/16589.1465997664%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:2635",
+      "kind": "cf",
+      "title": "Change a constraint's index - ALTER TABLE ... ALTER CONSTRAINT ... USING INDEX ...",
+      "status": "Returned with feedback",
+      "date": "2020-09-30",
+      "first_date": "2020-07-05",
+      "url": "https://commitfest.postgresql.org/patch/2635/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/e759fb7631645fe75b5ad6c3e8e690e4@postgrespro.ru"
+      ],
+      "authors": "Marina Polyakova (whipping.top1991), Anna Akenteva (a.akenteva)",
+      "objectors": "Tom Lane, Alvaro Herrera, Laurenz Albe",
+      "summary": "The patch adds ALTER TABLE ... ALTER CONSTRAINT ... USING INDEX to replace the index behind an EXCLUDE, UNIQUE, PRIMARY KEY or FOREIGN KEY constraint with a similar index. The main use case is swapping a primary key index for one with INCLUDE columns, or back.",
+      "objection": "Tom Lane wanted the feature rejected because a primary key with a swapped index is no longer an accurate primary key, and information_schema cannot describe it. Alvaro Herrera and Laurenz Albe agreed that primary keys with INCLUDE columns would first need PRIMARY KEY syntax, so that pg_dump works. That leaves this command a narrow use case. The author did not answer the review, and Michael Paquier marked the entry returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "partition constraint lock inversion",
+        "recursive alter table deadlock"
+      ],
+      "from_hint": false,
+      "score": 0.179,
+      "enriched": true,
+      "key_quote": "TBH I think if we really wanted the feature of primary keys with\nincluded columns, we'd have to add it to the PRIMARY KEY syntax rather\nthan having an ad-hoc ALTER TABLE ALTER CONSTRAINT USING INDEX command\nto replace the index underneath.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20200907144229.GA29048%40alvherre.pgsql",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:3088",
+      "kind": "cf",
+      "title": "Reduce lock level for ALTER TABLE ... ADD CHECK",
+      "status": "Withdrawn",
+      "date": "2021-11-21",
+      "first_date": "2021-04-22",
+      "url": "https://commitfest.postgresql.org/patch/3088/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANbhV-EUvRNs1zMdkXFeBg=Bqn8v0bm_qn3orrBwAJa3gZq6kA@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon)",
+      "objectors": "Tom Lane",
+      "summary": "The patch lowers the lock level for ALTER TABLE ... ADD CHECK to ShareRowExclusiveLock, matching what was already done for foreign key constraints. The author argued this is safe because check constraints do not affect running SELECTs until validated; a second patch extended lock reductions to other ALTER TABLE forms.",
+      "objection": "Tom Lane showed that ADD CHECK updates both pg_class.relchecks and pg_constraint, so with the lower lock a concurrent session can read a relchecks count that does not match pg_constraint and fail in CheckConstraintFetch. He demonstrated this with a debugger. Replacing relchecks with a boolean could fix it, but he doubted the gain was worth the compatibility cost, and the author agreed to return the patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "alter index attach partition lock",
+        "recursive alter table deadlock"
+      ],
+      "from_hint": false,
+      "score": 0.171,
+      "enriched": true,
+      "key_quote": "This patch makes it possible for onlookers to\nsee a value of pg_class.relchecks that is inconsistent with what\nthey find in pg_constraint, and then they will blow up.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2791312.1630783700%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:6424",
+      "kind": "cf",
+      "title": "ALTER TABLE: emit NOTICE when ONLY is omitted but no partition recursion occurs",
+      "status": "Withdrawn",
+      "date": "2026-01-22",
+      "first_date": "2026-01-12",
+      "url": "https://commitfest.postgresql.org/patch/6424/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEoWx2=SLga-xH09Cq_PAvsHhQHrBK+V0vF821JKgzS=Bm0haA@mail.gmail.com"
+      ],
+      "authors": "Chao Li (chaol)",
+      "objectors": "",
+      "summary": "The patch makes ALTER TABLE on a partitioned table, run without ONLY, emit a NOTICE when the sub-command does not recurse to partitions. It started with REPLICA IDENTITY and in v4 covered other sub-commands such as SET SCHEMA, OWNER TO, SET TABLESPACE and row level security.",
+      "objection": "The visible messages do not show why. Reviewers changed the message level from WARNING to NOTICE and changed its wording, and Jim Jones called the v4 code fine apart from the hint style. The thread ends with Jim Jones planning more tests, and no message explains the withdrawal.",
+      "touch_points": [],
+      "matched_queries": [
+        "recursive alter table deadlock"
+      ],
+      "from_hint": false,
+      "score": 0.15,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:4198",
+      "kind": "cf",
+      "title": "Allow ordered partition scans in more cases",
+      "status": "Withdrawn",
+      "date": "2023-06-24",
+      "first_date": "2023-02-21",
+      "url": "https://commitfest.postgresql.org/patch/4198/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAApHDvojKdBR3MR59JXmaCYbyHB6Q_5qPRU+dy93En8wm+XiDA@mail.gmail.com"
+      ],
+      "authors": "David Rowley (davidrowley)",
+      "objectors": "",
+      "summary": "Allow ordered partition scans in more cases\nThreads: Allow ordered partition scans in more cases",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "partition lock order ancestors"
+      ],
+      "from_hint": false,
+      "score": 0.141,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3071",
+      "kind": "cf",
+      "title": "Lazy JIT IR code generation to increase JIT speed with partitions",
+      "status": "Withdrawn",
+      "date": "2023-01-27",
+      "first_date": "2020-12-28",
+      "url": "https://commitfest.postgresql.org/patch/3071/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/244ee08c-5e26-45d1-8d10-d7b4d16b08ae@swarm64.com"
+      ],
+      "authors": "David Geier (geidav), Luc Vlaming (luc.vlaming)",
+      "objectors": "",
+      "summary": "Lazy JIT IR code generation to increase JIT speed with partitions\nThreads: Lazy JIT IR code generation to increase JIT speed with partitions",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "generate_partition_qual locking"
+      ],
+      "from_hint": false,
+      "score": 0.14,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:2644",
+      "kind": "cf",
+      "title": "avoid bitmapOR-ing indexes for scan conditions implied by partition constraint",
+      "status": "Returned with feedback",
+      "date": "2021-02-01",
+      "first_date": "2020-07-04",
+      "url": "https://commitfest.postgresql.org/patch/2644/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200704004503.GA23805@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby), Soumyadeep Chakraborty (soumyadeep2007), Soumyadeep Chakraborty (soumyadeepc)",
+      "objectors": "",
+      "summary": "avoid bitmapOR-ing indexes for scan conditions implied by partition constraint\nThreads: avoid bitmapOR-ing indexes with scan condition inconsistent with\npartition constraint",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "partition constraint lock inversion"
+      ],
+      "from_hint": false,
+      "score": 0.133,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "revert:6f8127b7390119c21479f5ce495b7d2168930e82",
+      "kind": "revert",
+      "title": "Revert analyze support for partitioned tables",
+      "status": "Reverted",
+      "date": "2021-08-16",
+      "first_date": "2021-04-08",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6f8127b7390119c21479f5ce495b7d2168930e82",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210722205458.f2bug3z6qzxzpx2s@alap3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/20210423180152.GA17270@telsasoft.com",
+        "https://www.postgresql.org/message-id/flat/1823909.1617862590@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20210408213051.GL6592@telsasoft.com",
+        "https://www.postgresql.org/message-id/flat/CAKkQ508_PwVgwJyBY=0Lmkz90j8CmWNPUxgHvCUwGhMrouz6UA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CALNJ-vS1R3Qoe5t4tbzxrkpBtzRbPq1dDcW4RmA_a+oqweF30w@mail.gmail.com"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert analyze support for partitioned tables\nReverted commit(s): Describe (auto-)analyze behavior for partitioned tables; Set pg_class.reltuples for partitioned tables; Document ANALYZE storage parameters for partitioned tables; autovacuum: handle analyze for partitioned tables; Don't reset relhasindex for partitioned tables on ANALYZE",
+      "objection": "This reverts the following commits:\n1b5617eb844cd2470a334c1d2eec66cf9b39c41a Describe (auto-)analyze behavior for partitioned tables\n0e69f705cc1a3df273b38c9883fb5765991e04fe Set pg_class.reltuples for partitioned tables\n41badeaba8beee7648ebe7923a41c04f1f3cb302 Document ANALYZE storage parameters for partitioned tables\n0827e8af70f4653ba17ed773f123a60eadd9f9c9 autovacuum: handle analyze for partitioned tables\n\nThere are efficiency issues in this code when handling databases with\nlarge numbers of partitions, and it doesn't look like there isn't any\ntrivial way to handle those.  There are some other issues as well.  It's\nnow too late in the cycle for nontrivial fixes, so we'll have to let\nPostgres 14 users continue to manually deal with ANALYZE their\npartitioned tables, and hopefully we can fix the issues for Postgres 15.\n\nI kept [most of] be280cdad298 (\"Don't reset relhasindex for partitioned\ntables on ANALYZE\") because while we added it due to 0827e8af70f4, it is\na good bugfix in its own right, since it affects manual analyze as well\nas autovacuum-induced analyze, and there's no reason to revert it.\n\nI retained the addition of relkind 'p' to tables included by\npg_stat_user_tables, because reverting that would require a catversion\nbump.\nAlso, in pg14 only, I keep a struct member that was added to\nPgStat_TabStatEntry to avoid breaking compatibility with existing stat\nfiles.\n\nBackpatch to 14.",
+      "touch_points": [
+        "catalog changes"
+      ],
+      "matched_queries": [
+        "deadlock partitioned table parent child"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:3020",
+      "kind": "cf",
+      "title": "alter table set TABLE ACCESS METHOD",
+      "status": "Withdrawn",
+      "date": "2021-06-08",
+      "first_date": "2021-02-28",
+      "url": "https://commitfest.postgresql.org/patch/3020/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210228222530.GD20769@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "",
+      "summary": "alter table set TABLE ACCESS METHOD\nThreads: alter table set TABLE ACCESS METHOD",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "recursive alter table deadlock"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:5516",
+      "kind": "cf",
+      "title": "quick and dirty fix: Quadratic planning time for ordered paths over partitioned tables",
+      "status": "Rejected",
+      "date": "2025-02-03",
+      "first_date": "2025-01-22",
+      "url": "https://commitfest.postgresql.org/patch/5516/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALzhyqzmZ6b9Sbp4jCORJV48t4kz2a1EqR3z4DUxX4RfRYR2xA@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "quick and dirty fix: Quadratic planning time for ordered paths over partitioned tables\nThreads: Quadratic planning time for ordered paths over partitioned tables",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "partition lock order ancestors"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:5484",
+      "kind": "cf",
+      "title": "Re: BUG #18741: Detaching a partition referencing a partitioned table fails with a trigger-related error",
+      "status": "Withdrawn",
+      "date": "2025-02-18",
+      "first_date": "2024-12-08",
+      "url": "https://commitfest.postgresql.org/patch/5484/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/18741-e4ef6f7aa8a956cb@postgresql.org"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "Re: BUG #18741: Detaching a partition referencing a partitioned table fails with a trigger-related error\nThreads: BUG #18741: Detaching a partition referencing a partitioned table fails with a trigger-related error",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "deadlock partitioned table parent child"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:1093",
+      "kind": "cf",
+      "title": "Make the optimiser aware of partitions ordering",
+      "status": "Returned with feedback",
+      "date": "2017-11-29",
+      "first_date": "2017-03-20",
+      "url": "https://commitfest.postgresql.org/patch/1093/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2401607.SfZhPQhbS4@ronan_laptop"
+      ],
+      "authors": "Julien Rouhaud (rjuju), Ronan Dunklau (rdunklau)",
+      "objectors": "",
+      "summary": "Make the optimiser aware of partitions ordering\nThreads: [Proposal] Make the optimiser aware of partitions ordering",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "partition lock order ancestors"
+      ],
+      "from_hint": false,
+      "score": 0.112,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "revert:2dd506b859cfacf8afaae81256ddec8cca0c0d6f",
+      "kind": "revert",
+      "title": "Revert \"Teach DSM registry to ERROR if attaching to an uninitialized entry.\"",
+      "status": "Reverted",
+      "date": "2025-11-26",
+      "first_date": "2025-11-12",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=2dd506b859cfacf8afaae81256ddec8cca0c0d6f",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/E1vJHUk-006I7r-37@gemulon.postgresql.org",
+        "https://www.postgresql.org/message-id/flat/dd36d384-55df-4fc2-825c-5bc56c950fa9@gmail.com"
+      ],
+      "authors": "Nathan Bossart",
+      "objectors": "",
+      "summary": "Revert \"Teach DSM registry to ERROR if attaching to an uninitialized entry.\"\nReverted commit(s): Teach DSM registry to ERROR if attaching to an uninitialized entry.",
+      "objection": "This reverts commit 1165a933aa (and the corresponding commits on\nthe back-branches).  In a follow-up commit, we'll teach the\nregistry to retry entry initialization instead of leaving it in a\npermanently failed state.",
+      "touch_points": [],
+      "matched_queries": [
+        "attach partition deadlock"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "revert:6f8bb7c1e9610dd7af20cdaf74c4ff6e6d678d44",
+      "kind": "revert",
+      "title": "Revert structural changes to not-null constraints",
+      "status": "Reverted",
+      "date": "2024-05-13",
+      "first_date": "2023-08-25",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6f8bb7c1e9610dd7af20cdaf74c4ff6e6d678d44",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/202405110940.joxlqcx4dogd@alvherre.pgsql",
+        "https://www.postgresql.org/message-id/flat/CAKOSWNkN6HSyatuys8xZxzRCR-KL1OkHS5-b9qd9bf1Rad3PLA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20230828.161658.1184657435220765047.horikyota.ntt@gmail.com",
+        "https://www.postgresql.org/message-id/flat/d57b4a69-7394-3146-5976-9a1ef27e7972@gmail.com",
+        "https://www.postgresql.org/message-id/flat/202309051744.y4mndw5gwzhh@alvherre.pgsql",
+        "https://www.postgresql.org/message-id/flat/b2ac2392-9727-5f76-e890-721ac80c1615@gmail.com"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert structural changes to not-null constraints\nReverted commit(s): Catalog not-null constraints; Disallow changing NO INHERIT status of a not-null constraint; Fix not-null constraint test; Move privilege check to the right place; Check stack depth in new recursive functions",
+      "objection": "There are some problems with the new way to handle these constraints\nthat were detected at the last minute, and require fixes that appear too\ninvasive to be doing this late in the cycle.  Revert this (again) for\nnow, we'll try again with these problems fixed.\n\nThe following commits are reverted:\n\n    b0e96f311985  Catalog not-null constraints\n    9b581c534186  Disallow changing NO INHERIT status of a not-null constraint\n    d0ec2ddbe088  Fix not-null constraint test\n    ac22a9545ca9  Move privilege check to the right place\n    b0f7dd915bca  Check stack depth in new recursive functions\n    3af721794272  Update information_schema definition for not-null constraints\n    c3709100be73  Fix propagating attnotnull in multiple inheritance\n    d9f686a72ee9  Fix restore of not-null constraints with inheritance\n    d72d32f52d26  Don't try to assign smart names to constraints\n    0cd711271d42  Better handle indirect constraint drops\n    13daa33fa5a6  Disallow NO INHERIT not-null constraints on partitioned tables\n    d45597f72fe5  Disallow direct change of NO INHERIT of not-null constraints\n    21ac38f498b3  Fix inconsistencies in error messages",
+      "touch_points": [
+        "catalog changes",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "partition constraint lock inversion"
+      ],
+      "from_hint": false,
+      "score": 0.103,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:3604",
+      "kind": "cf",
+      "title": "Restructure ALTER TABLE notes to clarify table rewrites and verification scans",
+      "status": "Returned with feedback",
+      "date": "2022-08-02",
+      "first_date": "2022-03-29",
+      "url": "https://commitfest.postgresql.org/patch/3604/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAaqYe9SnwE6j7WL4zuWJ9oR0c7Jgf6CgL12z4G=eMmVjwzbcQ@mail.gmail.com"
+      ],
+      "authors": "James Coleman (jcole1989)",
+      "objectors": "",
+      "summary": "Restructure ALTER TABLE notes to clarify table rewrites and verification scans\nThreads: Restructure ALTER TABLE notes to clarify table rewrites and\nverification scans",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "recursive alter table deadlock"
+      ],
+      "from_hint": false,
+      "score": 0.099,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:3332",
+      "kind": "cf",
+      "title": "extended stats on partitioned tables",
+      "status": "Withdrawn",
+      "date": "2021-10-10",
+      "first_date": "2021-09-23",
+      "url": "https://commitfest.postgresql.org/patch/3332/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210923212624.GI831@telsasoft.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz), Justin Pryzby (justinpryzby)",
+      "objectors": "",
+      "summary": "extended stats on partitioned tables\nThreads: extended stats on partitioned tables",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "deadlock partitioned table parent child"
+      ],
+      "from_hint": false,
+      "score": 0.097,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 3,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2026-01-30",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "No precedent with the same idea was found. Message #4 points to a 2021 discussion of the DML variant, which the thread says was accepted as rare and does not cover ATTACH."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "No new syntax, GUC, catalog object or pg_dump output is proposed, so standard, grammar and dump round-trip concerns do not apply."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "The patches change only the lock order and lock set. They add no catalog, WAL record, on-disk or wire protocol change, and the new partition.h function does not break ABI. The one cross-node effect is replay of the new AccessExclusiveLock on standbys."
+    },
+    {
+      "angle": "security",
+      "objections": 1,
+      "note": "Only the lock-before-permission ordering and the cross-owner lock reach are security concerns. The table ATTACH path takes AccessShareLock, which master already takes on a cold cache."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "0001 alone copies existing practice from RangeVarCallbackForDropRelation() and only adds AccessShareLock on ancestors, so I raise no separate objection to it."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "This is a bug fix for a lock-order deadlock in core DDL, and nothing outside core can fix it. An application can work around it by running `lock table` on each ancestor, root first, in the same transaction before ATTACH, or by retrying after the deadlock error, but that leaves core behaviour unchanged. The design reuses the pattern of RangeVarCallbackForDropRelation(), so it does not add a second mechanism for the same job."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "The table ATTACH fix (0001) costs little: an AccessShareLock on ancestors, the same lock a cold cache already takes. Its demand gap only supports a not-now outcome."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 9,
+      "new_objections": 9,
+      "new_survived": 3,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 91,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 16,
+    "wall_ms": 174005,
+    "cost_usd": 2.5490528,
+    "dry_run": false
+  }
+}

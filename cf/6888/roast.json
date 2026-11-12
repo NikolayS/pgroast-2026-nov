@@ -1,0 +1,1404 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:06:47.697Z",
+  "input": {
+    "arg": "6888",
+    "cf": {
+      "id": 6888,
+      "url": "https://commitfest.postgresql.org/patch/6888/",
+      "title": "Allow wal_log_hints to be changed without restart",
+      "status": "Needs review",
+      "authors": "Bertrand Drouvot (bertranddrouvot.pg)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/ajAAwSFy0WVMroyk%40bdtpg",
+    "subject": "Allow wal_log_hints to be changed without restart",
+    "thread_start": "2026-06-15T13:40:17Z",
+    "messages_read": 2,
+    "messages_total": 2,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v1-0001-Allow-wal_log_hints-to-be-changed-without-restart.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The goal is understood and has reviewer support, but the design fails at level 2. Message #2 reproduces wrong tuple visibility after pg_rewind when wal_log_hints was off after the divergence and then reloaded to on (replication-ondisk-1), and the author has not replied. The proposal also does not define the value on standbys and at promotion (replication-ondisk-2). Demand is thin (demand-1, already-exists-1), but that alone would not stop review of a small patch.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Allow wal_log_hints to be changed with a reload",
+    "problem": "wal_log_hints needs a restart, but data checksums can now be enabled and disabled online since f19c0ecca. Users who run without data checksums and want to measure the extra WAL that checksums would cause must still restart, so the test step is the only part of the flow that needs one.",
+    "proposed_design": "The patch changes wal_log_hints from PGC_POSTMASTER to PGC_SIGHUP. A new shared flag, XLogCtl->walLogHints, is the value all backends read through XLogHintBitIsNeeded(), and only the checkpointer writes it, with the ordering used by UpdateFullPageWrites(). On enable it sets the flag before it WAL-logs the parameter change; on disable it WAL-logs the change first, inside a critical section.",
+    "user_visible_surface": [
+      "GUC wal_log_hints becomes PGC_SIGHUP and can be changed in postgresql.conf or on the command line, then applied with a reload.",
+      "Docs for wal_log_hints in config.sgml change from \"only at server start\" to the standard sighup wording.",
+      "New pg_rewind TAP test 012_wal_log_hints.pl covers a reload of wal_log_hints before pg_rewind."
+    ],
+    "author_claims": [
+      "Online wal_log_hints completes an online flow with online data checksums: test the WAL cost, then enable or disable checksums.",
+      "Procsignal barriers are not needed because the change is not a multi-state transition and backends need not agree at the same moment.",
+      "Both failure directions of the flag and WAL record ordering are harmless, since they only cause extra WAL.",
+      "pg_rewind's existing check on ControlFile->wal_log_hints stays sufficient, because only WAL after the fork point matters."
+    ],
+    "thread_state": "Tatsuya Kawata supports the direction but reports a reproduced pg_rewind corruption: off after divergence, reload to on, then pg_rewind passes and the rewound node shows a row that does not exist on the source. He proposes that pg_rewind fail when its scanned WAL contains an XLOG_PARAMETER_CHANGE with wal_log_hints = off; the author has not replied.",
+    "unclear": [
+      "The proposal does not say whether pg_rewind will detect an off period after the divergence point, as the reviewer asks.",
+      "The proposal does not say how standbys and recovery treat the XLOG_PARAMETER_CHANGE record for wal_log_hints, or whether hot standby checks change.",
+      "The proposal does not say what happens to pg_control's wal_log_hints value between the reload and the checkpointer's update.",
+      "The proposal gives no numbers for the WAL cost it wants users to measure, and no test of a crash during the change.",
+      "The patch does not show how wal_log_hints interacts with data checksums that are being turned on or off at the same time."
+    ],
+    "search_queries": [
+      "wal_log_hints without restart",
+      "wal_log_hints PGC_SIGHUP",
+      "change wal_log_hints reload",
+      "pg_rewind wal_log_hints check",
+      "hint bits WAL logging online",
+      "XLogHintBitIsNeeded shared memory flag",
+      "pg_rewind parameter change record",
+      "postmaster GUC to sighup"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "pg_rewind accepts a target that had wal_log_hints off after divergence",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator turns wal_log_hints off with a reload, a failover happens, and the operator then reloads it back on. pg_rewind passes its pg_control check but misses hint-bit-only page changes made during the off period. The rewound node shows a row that does not exist on the source, and nobody finds out until queries return wrong results.",
+      "argument": "Message #2 reproduced this and noted that the patch's own 012_wal_log_hints.pl runs this exact sequence and reports success. The claim in message #1 that the current pg_control value is enough contradicts the old thread it cites, which asks for the value to be on continuously from the fork point. A restart can already create the gap, but a reload makes it a routine action. The author has not replied, and the patch adds no check on the pg_rewind side.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "How will pg_rewind refuse a target whose WAL after the fork point contains an XLOG_PARAMETER_CHANGE with wal_log_hints off, as message #2 proposes?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Bertrand Drouvot",
+          "date": "2026-06-15T13:40:17Z",
+          "url": "https://www.postgresql.org/message-id/ajAAwSFy0WVMroyk%40bdtpg"
+        },
+        {
+          "index": 2,
+          "from": "Tatsuya Kawata",
+          "date": "2026-07-20T04:24:05Z",
+          "url": "https://www.postgresql.org/message-id/CAHza6qegmyONRMZspxYro7hbRtp_UrFShY%3DhD6x%3DQEwAydumrw%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #2 reproduced wrong visibility with the sequence that the patch's own 012_wal_log_hints.pl runs, and the author has not replied. A restart can create the same gap today, but a reload makes it much easier to hit, and a pg_rewind check on scanned WAL can fix it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Effective value on standbys and after promotion is not defined",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A standby has wal_log_hints = off in its own postgresql.conf and replays a primary that runs with it on. After promotion, the new primary's shared flag and pg_control may hold the local or the replayed value. A later pg_rewind of this node, or of its peer, then trusts a value that never matched the WAL it wrote.",
+      "argument": "The proposal describes only the checkpointer on a running primary. It does not say what replay of XLOG_PARAMETER_CHANGE does to XLogCtl->walLogHints or to pg_control on a standby. It also does not say when the local setting takes effect at promotion, or whether a record is written then. Today the setting is fixed at start, so these cases did not need an answer before this patch.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "What value does a standby hold during replay and at promotion, and which record shows a switch to the local setting in WAL that pg_rewind scans?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Bertrand Drouvot",
+          "date": "2026-06-15T13:40:17Z",
+          "url": "https://www.postgresql.org/message-id/ajAAwSFy0WVMroyk%40bdtpg"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "A standby can already differ from its primary today, and end of recovery logs a parameter change, so part of this exists. But the proposal does not say how XLogCtl->walLogHints is set during recovery, on a standby reload, or at promotion.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Demand rests on one measurement use case, with no field reports",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The patch goes in for the few clusters still running without checksums whose owners want a WAL estimate. Since 04bec894a04 that group shrinks each release. Those owners already estimate today with one planned restart or on a staging clone, so the new code path serves a one-time task.",
+      "argument": "Message #1 gives a single motivation: avoid one restart before an online checksum change. It cites no -general or -bugs report and no user who asked for this. Message #2 adds a +1 but no use case of its own. With checksums on by default, the users left are those who chose otherwise or came through an upgrade, and the material does not size that group.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "Which users today keep checksums off, want to measure hint-bit WAL first, and cannot afford one restart or a test on a clone?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Bertrand Drouvot",
+          "date": "2026-06-15T13:40:17Z",
+          "url": "https://www.postgresql.org/message-id/ajAAwSFy0WVMroyk%40bdtpg"
+        },
+        {
+          "index": 2,
+          "from": "Tatsuya Kawata",
+          "date": "2026-07-20T04:24:05Z",
+          "url": "https://www.postgresql.org/message-id/CAHza6qegmyONRMZspxYro7hbRtp_UrFShY%3DhD6x%3DQEwAydumrw%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #1 gives one use case and no user report, and message #2 adds a +1 without a use case. The patch is small and follows the full_page_writes pattern, which lowers the cost but does not show demand.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Measuring checksum WAL cost already works without a production restart",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "desirability",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator wants the WAL cost of checksums on a cluster that runs without them. Today they can enable data checksums online and watch steady-state WAL, then disable them online if the cost is too high, or restart a clone with wal_log_hints = on. The patch adds a reloadable path, and with it the pg_rewind gap shown in message #2, so that this one test step avoids a restart.",
+      "argument": "Message #1 gives the measurement as the main use, and the online checksum feature from f19c0ecca can already do that without a restart. Enabling checksums online likely costs a full pass that writes every page, so the existing way may be expensive on large clusters. That makes it less convenient, but it still works. A committer would likely ask whether that gap is worth a permanent shared flag plus a new ordering rule in the checkpointer.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "Which users cannot measure checksum WAL cost by enabling checksums online or by testing a restarted copy, and why is that cost too high for them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Bertrand Drouvot",
+          "date": "2026-06-15T13:40:17Z",
+          "url": "https://www.postgresql.org/message-id/ajAAwSFy0WVMroyk%40bdtpg"
+        },
+        {
+          "index": 2,
+          "from": "Tatsuya Kawata",
+          "date": "2026-07-20T04:24:05Z",
+          "url": "https://www.postgresql.org/message-id/CAHza6qegmyONRMZspxYro7hbRtp_UrFShY%3DhD6x%3DQEwAydumrw%40mail.gmail.com"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Enabling checksums online rewrites every page, so it is a poor substitute, but a restarted clone or one planned restart still gives the measurement. The thread does not show why that cost is too high for the affected users.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Earlier discussion's pg_rewind caveat still applies and is unanswered",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "design",
+      "touch_points": [
+        "wal_replication",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator runs with wal_log_hints = off, a standby is promoted, and a hint-bit-only change happens on the old primary. The operator then reloads to on and runs pg_rewind. pg_rewind passes its pg_control check, skips the unlogged page, and the rewound node shows a row that does not exist on the source.",
+      "argument": "Message #1 cites an earlier thread as saying pg_rewind needs wal_log_hints only \"when WAL forked\". Message #2 quotes the same thread as saying the latest pg_control value does not matter, and that the earlier thread suggested tracking the setting on the pg_rewind side, which was never built. Message #2 reports a reproduced wrong-visibility result, and says the patch's own 012_wal_log_hints.pl runs this sequence. A restart can already create this gap, but a reload makes it easy to hit, and the author has not replied.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "How will pg_rewind detect a wal_log_hints = off period after the divergence point, for example by failing on an XLOG_PARAMETER_CHANGE record in the scanned WAL?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Bertrand Drouvot",
+          "date": "2026-06-15T13:40:17Z",
+          "url": "https://www.postgresql.org/message-id/ajAAwSFy0WVMroyk%40bdtpg"
+        },
+        {
+          "index": 2,
+          "from": "Tatsuya Kawata",
+          "date": "2026-07-20T04:24:05Z",
+          "url": "https://www.postgresql.org/message-id/CAHza6qegmyONRMZspxYro7hbRtp_UrFShY%3DhD6x%3DQEwAydumrw%40mail.gmail.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1. Both describe the same off period after divergence and the same pg_rewind check, and replication-ondisk-1 states the required fix more directly.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Reload breaks the meaning of wal_log_hints that pg_rewind users rely on",
+      "level": "2",
+      "rubric_item": 13,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "wal_replication",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator or a failover tool turns wal_log_hints off and later back on with a reload, with the change crossing a divergence. Before running pg_rewind, the tool checks that SHOW wal_log_hints or pg_controldata reports on, and pg_rewind then completes. The rewound node shows rows that do not exist on the source, and nobody learns this until the data is queried.",
+      "argument": "Today a value of on in pg_control implies it was on since the last restart, so tools and the pg_rewind docs treat the current value as enough. Message #2 reproduces wrong visibility after a reload and notes that the patch's own 012_wal_log_hints.pl runs this sequence and passes. The author claims the current value is sufficient (message #1), and message #2 quotes the cited thread saying the opposite. The author has not replied, so the contract change is still open.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "How will pg_rewind and external tools detect an off period after the divergence point, so that a value of on in pg_control still means the rewind is safe?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Bertrand Drouvot",
+          "date": "2026-06-15T13:40:17Z",
+          "url": "https://www.postgresql.org/message-id/ajAAwSFy0WVMroyk%40bdtpg"
+        },
+        {
+          "index": 2,
+          "from": "Tatsuya Kawata",
+          "date": "2026-07-20T04:24:05Z",
+          "url": "https://www.postgresql.org/message-id/CAHza6qegmyONRMZspxYro7hbRtp_UrFShY%3DhD6x%3DQEwAydumrw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1. A failover tool that checks the setting still runs pg_rewind afterwards, so a check inside pg_rewind covers this case too.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "The pg_control wal_log_hints field no longer covers the WAL range tools read",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "wal_replication",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator runs with wal_log_hints off, the standby is promoted, and the operator reloads wal_log_hints to on on the old primary. pg_rewind or a third-party rewind tool then checks pg_control, sees on, and proceeds. The rewound node shows a row that does not exist on the source, and nobody finds out until queries return wrong data.",
+      "argument": "Message #2 reproduces this with the patch's own 012_wal_log_hints.pl sequence. Message #1 says the pg_control check \"remains sufficient\", but that check only holds if the value cannot change between restarts, which a reload makes routine. Every tool that reads this field to decide that hint-bit changes were WAL-logged now needs to scan for XLOG_PARAMETER_CHANGE records, and an old tool that does not will pass its check silently. The author has not replied to message #2.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "How will pg_rewind, and external tools that read pg_control, detect an off period after the divergence point, and what fails loudly if a tool does not check?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Bertrand Drouvot",
+          "date": "2026-06-15T13:40:17Z",
+          "url": "https://www.postgresql.org/message-id/ajAAwSFy0WVMroyk%40bdtpg"
+        },
+        {
+          "index": 2,
+          "from": "Tatsuya Kawata",
+          "date": "2026-07-20T04:24:05Z",
+          "url": "https://www.postgresql.org/message-id/CAHza6qegmyONRMZspxYro7hbRtp_UrFShY%3DhD6x%3DQEwAydumrw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1. The material names no third-party tool that rewinds on the pg_control value alone, so the extra scenario adds nothing concrete.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "A narrow measurement use case pays for a new rewind invariant",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "maintenance_burden",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The project adds a shared flag, checkpointer ordering logic and new pg_rewind checks to support a one-time WAL measurement before enabling checksums. Users who never toggle the setting carry the review and bug-fix cost of the new correctness rule that rewind tools must follow.",
+      "argument": "Message #1 gives one use case: measuring the extra WAL before enabling checksums. It also says checksums are on by default since 04bec894a04, so the affected group is smaller. Online checksums from f19c0ecca let a user enable checksums and watch WAL volume directly, then disable them if the cost is too high. The proposal shows no field reports or user requests for this setting.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "Which users need wal_log_hints without a restart when they can enable online checksums and measure WAL directly, and is there demand beyond message #1?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Bertrand Drouvot",
+          "date": "2026-06-15T13:40:17Z",
+          "url": "https://www.postgresql.org/message-id/ajAAwSFy0WVMroyk%40bdtpg"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of demand-1 for the missing demand and of already-exists-1 for the online checksums alternative. Its cost argument repeats the pg_rewind gap in replication-ondisk-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Measurement convenience for a few, pg_rewind risk for many",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "desirability",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator sets wal_log_hints = off with a reload after a failover, then sets it back on. Later pg_rewind passes its check, and the rewound node shows rows that do not exist on the source. Nobody notices until queries return wrong data.",
+      "argument": "The gain is a one-time WAL estimate for clusters without checksums. Message #2 reproduced the cost, and it falls on pg_rewind users, a much larger group that relies on wal_log_hints staying on. Message #2 notes a restart can already create this gap, but a reload makes it much easier to hit. The author has not yet replied with a pg_rewind check.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "Does the benefit to users measuring checksum WAL justify the new pg_rewind exposure, and will pg_rewind detect an off period after divergence?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Bertrand Drouvot",
+          "date": "2026-06-15T13:40:17Z",
+          "url": "https://www.postgresql.org/message-id/ajAAwSFy0WVMroyk%40bdtpg"
+        },
+        {
+          "index": 2,
+          "from": "Tatsuya Kawata",
+          "date": "2026-07-20T04:24:05Z",
+          "url": "https://www.postgresql.org/message-id/CAHza6qegmyONRMZspxYro7hbRtp_UrFShY%3DhD6x%3DQEwAydumrw%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1. The cost it names is the same pg_rewind gap, and a pg_rewind check on scanned WAL removes the exposure for users who never change the setting.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "The wal_log_hints value in pg_control can now change while the server runs, and pg_rewind reads it."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "The checkpointer writes XLOG_PARAMETER_CHANGE on reload, and pg_rewind correctness depends on the setting's history."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The patch touches xlog.h and changes what XLogHintBitIsNeeded() reads."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": true,
+      "reason": "No new GUC, but wal_log_hints changes context from PGC_POSTMASTER to PGC_SIGHUP."
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "Message #2 says a restart can already create the same pg_rewind gap, so a pg_rewind check may concern released branches."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "A shared flag, an ordering rule in the checkpointer, and a likely new pg_rewind check on scanned WAL."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "XLogHintBitIsNeeded() now reads a shared-memory flag on the hint-bit path."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "One planned restart or a restarted clone already gives the WAL measurement."
+    }
+  ],
+  "questions": [
+    "How will pg_rewind refuse a target whose WAL after the divergence point contains an XLOG_PARAMETER_CHANGE record with wal_log_hints = off, as message #2 proposes?",
+    "What value does XLogCtl->walLogHints hold on a standby during replay, after a standby reload, and at promotion, and which WAL record shows a switch?",
+    "What does pg_control report for wal_log_hints between the reload and the checkpointer's update, and can pg_rewind read a stale value after a crash in that window?",
+    "Which users keep data checksums off, want to measure hint-bit WAL first, and cannot use one planned restart or a restarted clone?",
+    "How does a reload of wal_log_hints behave while data checksums are being enabled or disabled online at the same time?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "Needs a committer who knows xlog.c parameter-change logging, the checkpointer, and pg_rewind's WAL scan; none has spoken in the visible thread.",
+    "liability": "The owner signs for pg_rewind correctness on any cluster that reloads wal_log_hints, and for the flag and WAL record ordering in the checkpointer, with no end date.",
+    "author_follow_up": "The author moved the entry to CF PG20-3 on 2026-10-04 but has not replied to message #2 from 2026-07-20."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "fix design first",
+    "reason": "The patch is small and follows the full_page_writes pattern, but it serves a one-time measurement for clusters without checksums. The reproduced pg_rewind inconsistency in message #2 needs an agreed fix before code review is useful."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, crash safety during the change, the handling of the shared flag in recovery, and the cost of the shared read in XLogHintBitIsNeeded() could not be judged.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:5466",
+      "kind": "cf",
+      "title": "WAL-logging facility for pgstats kinds",
+      "status": "Withdrawn",
+      "date": "2025-02-12",
+      "first_date": "2024-12-27",
+      "url": "https://commitfest.postgresql.org/patch/5466/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/Z24fyb3ipXKR38oS@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Andres Freund",
+      "summary": "The patch adds a new \"PgStat\" resource manager and a pgstat_xlog_data() entry point so that any pgstats kind, including custom ones, can WAL-log its own stats data. Each kind handles replay through a redo callback in PgStat_KindInfo, so it can decide how the data persists on standbys and after crash recovery.",
+      "objection": "Andres Freund objected that stats only make sense on a replica or after a crash when they cover changes that are already WAL-logged, so they should be rebuilt during replay from the WAL records of the underlying objects. For table stats he proposed keying relation stats by relfilenode. He repeated the objection when the entry moved to the next CF, and the author then withdrew the patch and kept it aside.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "wal_log_hints without restart",
+        "wal_log_hints PGC_SIGHUP",
+        "change wal_log_hints reload",
+        "hint bits WAL logging online"
+      ],
+      "from_hint": false,
+      "score": 0.46,
+      "enriched": true,
+      "key_quote": "I can't think of a real case where we would want to WAL log the stats\nthemselves, rather than re-emitting stats during replay based on the WAL\nrecord of the \"underlying object\".",
+      "quote_message_url": "https://www.postgresql.org/message-id/xvetwjsnkhx2gp6np225g2h64f4mfmg6oopkuaiivrpzd2futj%40pflk55su36ho",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:50",
+      "kind": "cf",
+      "title": "If pg_hba.conf has changed since last reload, emit a HINT to the client and server log",
+      "status": "Returned with feedback",
+      "date": "2015-04-30",
+      "first_date": "2014-08-10",
+      "url": "https://commitfest.postgresql.org/patch/50/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/53E75C0D.6050908@2ndquadrant.com"
+      ],
+      "authors": "Alex Shulgin (ash), Craig Ringer (ringerc)",
+      "objectors": "Peter Eisentraut, Andres Freund, Tom Lane",
+      "summary": "When client authentication runs while pg_hba.conf has changed since the last reload, Postgres would emit a hint so that admins notice the reload they forgot. The final patch dropped the client-side HINT and added a new server-only hint field (errhint_log/hint_log) to the error reporting code.",
+      "objection": "Peter Eisentraut objected that the client-side hint leaks privileged information about configuration changes and confuses users who cannot read the server log, so the patch was changed to log only on the server. Andres Freund and Tom Lane then objected that new server-only hint infrastructure was overkill when a plain LOG or WARNING message would do. Peter returned the patch because of that disagreement and an open question about whether to log only on failed authentication attempts.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "wal_log_hints without restart",
+        "wal_log_hints PGC_SIGHUP",
+        "change wal_log_hints reload",
+        "hint bits WAL logging online"
+      ],
+      "from_hint": false,
+      "score": 0.412,
+      "enriched": true,
+      "key_quote": "There were later comments in this thread that disagreed with the extra\nlogging infrastructure, and there were some questions about whether it\nshould only log on failed authentication attempts.",
+      "quote_message_url": "https://www.postgresql.org/message-id/554293E1.8060103%40gmx.net",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:2807",
+      "kind": "cf",
+      "title": "New wal_level to disable WAL logging",
+      "status": "Rejected",
+      "date": "2021-07-05",
+      "first_date": "2020-09-29",
+      "url": "https://commitfest.postgresql.org/patch/2807/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/TYAPR01MB29901EBE5A3ACCE55BA99186FE320@TYAPR01MB2990.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "Takamichi Osumi (tatatappp)",
+      "objectors": "David Steele, Stephen Frost",
+      "summary": "Add a new wal_level value 'none' under which XLogInsert() emits no WAL, so bulk data loading runs faster and uses no WAL storage. After an unclean shutdown the server refuses to start, and archiving, base backups and replication are unavailable until the server is cleanly shut down and wal_level is raised again.",
+      "objection": "David Steele saw the feature as open to misuse, noted that other ways exist to get a similar effect, and pointed out that WAL records still needed with wal_level = none kept turning up during review. Stephen Frost held that a 'none' WAL level is a bad idea and suggested unlogged tables or more optimization of the 'minimal' level. No committer supported the patch, so it was marked Rejected even though it had reached Ready for Committer.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "wal_log_hints without restart",
+        "wal_log_hints PGC_SIGHUP",
+        "change wal_log_hints reload",
+        "hint bits WAL logging online"
+      ],
+      "from_hint": false,
+      "score": 0.391,
+      "enriched": true,
+      "key_quote": "The feature seems ripe for abuse and misunderstanding, and as has been noted in the thread, there are a variety of alternatives that can provide a similar effect.",
+      "quote_message_url": "https://www.postgresql.org/message-id/c3b64bb9-5108-796b-93db-96d2cee0c3a2%40pgmasters.net",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:3443",
+      "kind": "cf",
+      "title": "Add WAL recovery info such as current WAL file and WAL source to server logs",
+      "status": "Withdrawn",
+      "date": "2022-10-26",
+      "first_date": "2021-11-10",
+      "url": "https://commitfest.postgresql.org/patch/3443/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACUfMU=ahxivfy+ZmpVZccd5PASG-_10mLpM55_Y_h4-VA@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "Robert Haas, Nathan Bossart, Michael Paquier",
+      "summary": "The patch logs which WAL segment recovery is processing and where it came from (archive, stream), so cloud users who cannot see the ps display can follow recovery in the server log. Later versions add a log_wal_traffic GUC (none, medium, high) to control how often these messages appear.",
+      "objection": "Early reviewers objected that per-segment LOG messages make the logs too noisy on busy systems. Robert Haas then said the log_wal_traffic design overlaps with log_startup_progress_interval, which reports by elapsed time and so also shows when replay is stalled, and asked that the existing facility be extended instead. The author reworked the patch on that basis as v10, but the visible messages do not show why the entry was then withdrawn.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "wal_log_hints without restart",
+        "wal_log_hints PGC_SIGHUP",
+        "change wal_log_hints reload",
+        "hint bits WAL logging online"
+      ],
+      "from_hint": false,
+      "score": 0.376,
+      "enriched": true,
+      "key_quote": "This seems like it has enormous overlap with the existing functionality that we have from log_startup_progress_interval.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoaoAO2P33ZVnER6CcaWwr76j4Xn8tBYxDYJw4LQde5RCA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:3394",
+      "kind": "cf",
+      "title": "Logical insert/update/delete WAL records for custom table AMs",
+      "status": "Withdrawn",
+      "date": "2022-07-20",
+      "first_date": "2021-10-31",
+      "url": "https://commitfest.postgresql.org/patch/3394/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20ee0b0ae6958804a88fe9580157587720faf664.camel@j-davis.com"
+      ],
+      "authors": "Jeff Davis (jdavis)",
+      "objectors": "",
+      "summary": "Add new WAL records representing a logical insert, update, delete (and later truncate) that do nothing at REDO time and are only processed during logical decoding, so that custom table AMs such as a columnar extension can support logical decoding/replication without extensible WAL. Later versions added SQL functions pg_logical_emit_insert/update/delete/truncate and tests using test_decoding.",
+      "objection": "The author withdrew the patch, saying that with custom WAL resource managers (his parallel extensible rmgr work) it had become less important to him. Earlier, Amit Kapila questioned whether a common heap-tuple-based format could work for all table AMs, and the patch had stopped applying, but the visible messages show no deciding objection from a reviewer.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "wal_log_hints without restart",
+        "wal_log_hints PGC_SIGHUP",
+        "change wal_log_hints reload",
+        "hint bits WAL logging online"
+      ],
+      "from_hint": false,
+      "score": 0.345,
+      "enriched": true,
+      "key_quote": "Withdrawn for now. With custom WAL resource managers this is less\nimportant to me.",
+      "quote_message_url": "https://www.postgresql.org/message-id/ca1662f2297dd90312aa7dd393aa3dfc683ff532.camel%40j-davis.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:6811",
+      "kind": "cf",
+      "title": "pg_rewind does not rewind diverging timelines",
+      "status": "Withdrawn",
+      "date": "2026-05-29",
+      "first_date": "2026-04-30",
+      "url": "https://commitfest.postgresql.org/patch/6811/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAN305gBeJr8m7ZRW9mH0zakEFR4hDUPDo8fJRKJOHWMORG5_Bg@mail.gmail.com"
+      ],
+      "authors": "Mats Kindahl (matski)",
+      "objectors": "",
+      "summary": "The patch stores a UUID for each timeline in the timeline history file, so pg_rewind can tell apart two servers that were promoted to the same TLI on their own. When the TLIs match but the UUIDs differ, pg_rewind goes back to the last timeline where both the TLI and the UUID match and rewinds from there.",
+      "objection": "The visible messages do not show why. The reviewers asked only for small fixes, and the author made them. The last message reports that the new 005_same_timeline test fails on Windows CI because the restore_command path is mangled, and no reply follows before the entry was withdrawn.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_rewind wal_log_hints check",
+        "pg_rewind parameter change record"
+      ],
+      "from_hint": false,
+      "score": 0.265,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:4085",
+      "kind": "cf",
+      "title": "Exit walsender before confirming remote flush in logical replication",
+      "status": "Returned with feedback",
+      "date": "2023-03-17",
+      "first_date": "2022-12-22",
+      "url": "https://commitfest.postgresql.org/patch/4085/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/TYAPR01MB586668E50FC2447AD7F92491F5E89@TYAPR01MB5866.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "Hayato Kuroda (ha-kun)",
+      "objectors": "",
+      "summary": "The patch lets a logical replication walsender exit at shutdown without waiting for the subscriber to confirm flush of all sent WAL, so that a publisher with a large time-delayed apply can still stop. Later versions add an optional SHUTDOWN_MODE clause ('wait_flush' or 'immediate') to START_REPLICATION for logical replication.",
+      "objection": "The visible messages do not show why. The last shown messages, about a month before the decision, still discuss whether the option should be a boolean or a mode with an explicit default, and they contain minor review comments on v7-0002.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "wal_log_hints without restart",
+        "change wal_log_hints reload",
+        "hint bits WAL logging online"
+      ],
+      "from_hint": false,
+      "score": 0.262,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:1302",
+      "kind": "cf",
+      "title": "Make pg_rewind not copy useless WALs",
+      "status": "Returned with feedback",
+      "date": "2018-01-31",
+      "first_date": "2017-09-16",
+      "url": "https://commitfest.postgresql.org/patch/1302/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/7c50423.5ad0.15e8b308b2f.Coremail.chjischj@163.com",
+        "https://www.postgresql.org/message-id/flat/4fe58b67.7d.15ed3cc12a7.Coremail.chjischj@163.com"
+      ],
+      "authors": "Chen huajun (chenhuajun)",
+      "objectors": "",
+      "summary": "Change pg_rewind so it skips WAL segments that come before the divergence point, which the target already has. It also skips segments after the source's current WAL insert location, such as recycled future segments.",
+      "objection": "The visible messages do not show why. The last shown message, from Alexander Korotkov, says the code looks good but the patch lacks documentation updates, including the paragraph that says which files pg_rewind copies. No later reply from the author is shown before the entry was returned with feedback.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_rewind wal_log_hints check",
+        "pg_rewind parameter change record"
+      ],
+      "from_hint": false,
+      "score": 0.224,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:1558",
+      "kind": "cf",
+      "title": "Reopen logfile on SIGHUP",
+      "status": "Returned with feedback",
+      "date": "2018-04-10",
+      "first_date": "2018-02-27",
+      "url": "https://commitfest.postgresql.org/patch/1558/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/500a5371-ac19-ca7a-6be4-3eabd086104f@postgrespro.ru"
+      ],
+      "authors": "Anastasia Lubennikova (lubennikovaav)",
+      "objectors": "",
+      "summary": "Reopen logfile on SIGHUP\nThreads: Reopen logfile on SIGHUP",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "wal_log_hints PGC_SIGHUP",
+        "postmaster GUC to sighup"
+      ],
+      "from_hint": false,
+      "score": 0.223,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "revert:f480e294498533820f3ef3e6de4dcb8ff5401140",
+      "kind": "revert",
+      "title": "Reset vacuum_defer_cleanup_age to PGC_SIGHUP. Revert commit 84725aa5efe11688633b553e58113efce4181f2e",
+      "status": "Partially reverted",
+      "date": "2013-02-04",
+      "first_date": "2013-02-02",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f480e294498533820f3ef3e6de4dcb8ff5401140",
+      "thread_urls": [],
+      "authors": "Simon Riggs",
+      "objectors": "",
+      "summary": "Reset vacuum_defer_cleanup_age to PGC_SIGHUP. Revert commit 84725aa5efe11688633b553e58113efce4181f2e\nReverted commit(s): Mark vacuum_defer_cleanup_age as PGC_POSTMASTER.",
+      "objection": "Reset vacuum_defer_cleanup_age to PGC_SIGHUP.\nRevert commit 84725aa5efe11688633b553e58113efce4181f2e",
+      "touch_points": [],
+      "matched_queries": [
+        "wal_log_hints PGC_SIGHUP",
+        "postmaster GUC to sighup"
+      ],
+      "from_hint": false,
+      "score": 0.211,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:1343",
+      "kind": "cf",
+      "title": "Restrict pg_rewind to specified/needed directories",
+      "status": "Returned with feedback",
+      "date": "2018-02-01",
+      "first_date": "2017-10-28",
+      "url": "https://commitfest.postgresql.org/patch/1343/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAN-RpxDPE4baiMMJ6TLd6AiUvrG=YrC05tGxrgp4aUutH9j5TQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAN-RpxD1Mg4KAhPBx8x9sFmeVizdY1aJvv0iE25m6dKUNG_H8g@mail.gmail.com"
+      ],
+      "authors": "Chris Travers (einhverfr)",
+      "objectors": "",
+      "summary": "Restrict pg_rewind to specified/needed directories\nThreads: WIP: Restricting pg_rewind to data/wal dirs; Patch: restrict pg_rewind to whitelisted directories",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_rewind wal_log_hints check",
+        "pg_rewind parameter change record"
+      ],
+      "from_hint": false,
+      "score": 0.198,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:3800",
+      "kind": "cf",
+      "title": "Avoid Copying WAL Segments Before Divergence to Speed Up pg_rewind",
+      "status": "Returned with feedback",
+      "date": "2022-11-30",
+      "first_date": "2022-06-30",
+      "url": "https://commitfest.postgresql.org/patch/3800/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/181b4c6fa9c.b8b725681941212.7547232617810891479@viggy28.dev"
+      ],
+      "authors": "vignesh ravichandran (vigneshravichandran), Justin Kwan (justinpkwan.outlook.com)",
+      "objectors": "",
+      "summary": "Avoid Copying WAL Segments Before Divergence to Speed Up pg_rewind\nThreads: Making pg_rewind faster",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "pg_rewind wal_log_hints check",
+        "pg_rewind parameter change record"
+      ],
+      "from_hint": false,
+      "score": 0.196,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:2063",
+      "kind": "cf",
+      "title": "Data-only mode for pg_rewind",
+      "status": "Returned with feedback",
+      "date": "2019-08-01",
+      "first_date": "2019-03-17",
+      "url": "https://commitfest.postgresql.org/patch/2063/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAN-RpxCT4uH4nfrx4k3h+5TAJHGUDL0hqhaTAXSzmzVtLGfp8w@mail.gmail.com"
+      ],
+      "authors": "Chris Travers (einhverfr)",
+      "objectors": "",
+      "summary": "Data-only mode for pg_rewind\nThreads: Data-only pg_rewind, take 2",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_rewind wal_log_hints check",
+        "pg_rewind parameter change record"
+      ],
+      "from_hint": false,
+      "score": 0.182,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:4559",
+      "kind": "cf",
+      "title": "pg_rewind with cascade standby doesn't work well",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-09-07",
+      "url": "https://commitfest.postgresql.org/patch/4559/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMyC8qqnxBVjAM+a5WgQ+bFSvd2ZoA_wuzEDo-y8_jbLCtHbjQ@mail.gmail.com"
+      ],
+      "authors": "Masaki Kuwamura (mackyson)",
+      "objectors": "",
+      "summary": "pg_rewind with cascade standby doesn't work well\nThreads: pg_rewind with cascade standby doesn't work well",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_rewind wal_log_hints check",
+        "pg_rewind parameter change record"
+      ],
+      "from_hint": false,
+      "score": 0.181,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:2059",
+      "kind": "cf",
+      "title": "Add tablespace tap test to pg_rewind",
+      "status": "Returned with feedback",
+      "date": "2019-05-10",
+      "first_date": "2019-03-08",
+      "url": "https://commitfest.postgresql.org/patch/2059/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGRcZQXA-4hrCQy1xOAJ7WwBpEWEJJvgAU2dsNQr13C+6J8izQ@mail.gmail.com"
+      ],
+      "authors": "Shaoqi Bai (baishaoqi)",
+      "objectors": "",
+      "summary": "Add tablespace tap test to pg_rewind\nThreads: Add tablespace tap test to pg_rewind",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_rewind wal_log_hints check",
+        "pg_rewind parameter change record"
+      ],
+      "from_hint": false,
+      "score": 0.169,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:259",
+      "kind": "cf",
+      "title": "Reload SSL certificates on SIGHUP",
+      "status": "Returned with feedback",
+      "date": "2015-10-03",
+      "first_date": "2015-05-31",
+      "url": "https://commitfest.postgresql.org/patch/259/",
+      "thread_urls": [],
+      "authors": "Andreas Karlsson (kandreas)",
+      "objectors": "",
+      "summary": "Reload SSL certificates on SIGHUP",
+      "objection": "",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "change wal_log_hints reload",
+        "postmaster GUC to sighup"
+      ],
+      "from_hint": false,
+      "score": 0.167,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:2947",
+      "kind": "cf",
+      "title": "Full support for index LP_DEAD hint bits on standby",
+      "status": "Returned with feedback",
+      "date": "2022-04-07",
+      "first_date": "2021-01-18",
+      "url": "https://commitfest.postgresql.org/patch/2947/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANtu0oiP18H31dSaEzn0B0rW6tA_q1G7=9Y92+US_WHGOoQevg@mail.gmail.com"
+      ],
+      "authors": "Michail Nikolaev (nkey), Mihail Nikalayeu (mihailnikalayeu)",
+      "objectors": "",
+      "summary": "Full support for index LP_DEAD hint bits on standby\nThreads: [PATCH] Full support for index LP_DEAD hint bits on standby",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby",
+        "planner"
+      ],
+      "matched_queries": [
+        "hint bits WAL logging online"
+      ],
+      "from_hint": false,
+      "score": 0.136,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:6041",
+      "kind": "cf",
+      "title": "Fix pg_rewind false positives caused by shutdown-only WAL",
+      "status": "Withdrawn",
+      "date": "2026-05-01",
+      "first_date": "2025-09-06",
+      "url": "https://commitfest.postgresql.org/patch/6041/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFC+b6rsM+WUoph-aPk5sz4cPzaQ4XkRDNwCJ5nG5+HsRQ=j8A@mail.gmail.com"
+      ],
+      "authors": "Srinath Reddy (srinath-reddy-sadipiralla)",
+      "objectors": "",
+      "summary": "Fix pg_rewind false positives caused by shutdown-only WAL\nThreads: [PATCH] Fix pg_rewind false positives caused by shutdown-only WAL",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_rewind wal_log_hints check"
+      ],
+      "from_hint": false,
+      "score": 0.136,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:1708",
+      "kind": "cf",
+      "title": "Shared-memory based stats collector",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2018-06-29",
+      "url": "https://commitfest.postgresql.org/patch/1708/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20180629.173418.190173462.horiguchi.kyotaro@lab.ntt.co.jp"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti)",
+      "objectors": "",
+      "summary": "Shared-memory based stats collector\nThreads: shared-memory based stats collector",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "XLogHintBitIsNeeded shared memory flag"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:2166",
+      "kind": "cf",
+      "title": "Shared Memory Context",
+      "status": "Returned with feedback",
+      "date": "2019-09-30",
+      "first_date": "2019-06-24",
+      "url": "https://commitfest.postgresql.org/patch/2166/",
+      "thread_urls": [],
+      "authors": "Takeshi Ideriha (ideriha)",
+      "objectors": "",
+      "summary": "Shared Memory Context",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "XLogHintBitIsNeeded shared memory flag"
+      ],
+      "from_hint": false,
+      "score": 0.116,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:5703",
+      "kind": "cf",
+      "title": "NUMA shared memory interleaving",
+      "status": "Returned with feedback",
+      "date": "2025-07-07",
+      "first_date": "2025-04-16",
+      "url": "https://commitfest.postgresql.org/patch/5703/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKZiRmw6i1W1AwXxa-Asrn8wrVcVH3TO715g_MCoowTS9rkGyw@mail.gmail.com"
+      ],
+      "authors": "Jakub Wartak (jakub.wartak.tomtom)",
+      "objectors": "",
+      "summary": "NUMA shared memory interleaving\nThreads: NUMA shared memory interleaving",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "XLogHintBitIsNeeded shared memory flag"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:2676",
+      "kind": "cf",
+      "title": "Start WAL streaming as early as possible, without waiting for startup process to finish replaying existing WAL. This helps synchronous replication to resume quickly when significant replay lag has been built up.",
+      "status": "Returned with feedback",
+      "date": "2020-12-01",
+      "first_date": "2020-01-17",
+      "url": "https://commitfest.postgresql.org/patch/2676/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANXE4Tc3FNvZ_xAimempJWv_RH9pCvsZH7Yq93o1VuNLjUT-mQ@mail.gmail.com"
+      ],
+      "authors": "Asim Rama Praveen (apraveen), Hao Wu (hwu)",
+      "objectors": "",
+      "summary": "Start WAL streaming as early as possible, without waiting for startup process to finish replaying existing WAL. This helps synchronous replication to resume quickly when significant replay lag has been built up.\nThreads: Unnecessary delay in streaming replication due to replay lag",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "wal_log_hints without restart"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:2618",
+      "kind": "cf",
+      "title": "invalid bit/varbit input causes the log file to be unreadable",
+      "status": "Withdrawn",
+      "date": "2020-06-30",
+      "first_date": "2020-06-26",
+      "url": "https://commitfest.postgresql.org/patch/2618/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/a120087c-4c88-d9d4-1ec5-808d7a7f133d@gmail.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "invalid bit/varbit input causes the log file to be unreadable\nThreads: bugfix: invalid bit/varbit input causes the log file to be unreadable",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "hint bits WAL logging online"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:2325",
+      "kind": "cf",
+      "title": "Shared Memory Context",
+      "status": "Returned with feedback",
+      "date": "2020-02-01",
+      "first_date": "2019-10-30",
+      "url": "https://commitfest.postgresql.org/patch/2325/",
+      "thread_urls": [],
+      "authors": "Takeshi Ideriha (ideriha)",
+      "objectors": "",
+      "summary": "Shared Memory Context",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "XLogHintBitIsNeeded shared memory flag"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 2,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 0
+  },
+  "precedent_cutoff": "2026-06-15",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "No precedent found in the list. The only earlier discussion is the thread cited in messages #1 and #2, and the objection above is based on what message #2 reports about it."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 1,
+      "note": "The GUC context change follows the full_page_writes pattern and needs no new syntax, psql or pg_dump change. The only compatibility issue I see is the pg_rewind contract."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 2,
+      "note": "Two objections are raised. The ordering of the shared flag and the WAL record on the primary looks sound. Crash safety during the change cannot be checked without the code."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "No security objection. As PGC_SIGHUP, wal_log_hints can still be changed only through postgresql.conf, the command line or ALTER SYSTEM, so only superusers or roles granted ALTER SYSTEM on it can change it, as before. The proposal exposes no new data and gives unprivileged users no new path to load the server. The pg_rewind correctness problem in message #2 belongs to the safety angle."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "No hot-path objection is raised: a read of a shared boolean in XLogHintBitIsNeeded() is unlikely to cost much, and that cannot be checked without the code."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "One objection from this angle. No extension or contrib module makes a postmaster GUC reloadable, so the only existing alternatives are online checksums and a restarted test copy."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "Two objections raised at level 1b; the pg_rewind correctness issue itself belongs to the safety angle."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 10,
+      "new_objections": 9,
+      "new_survived": 4,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 90,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 17,
+    "wall_ms": 163119,
+    "cost_usd": 1.6544868,
+    "dry_run": false
+  }
+}

@@ -1,0 +1,1345 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:51:06.521Z",
+  "input": {
+    "arg": "6433",
+    "cf": {
+      "id": 6433,
+      "url": "https://commitfest.postgresql.org/patch/6433/",
+      "title": "pg_stat_io_histogram",
+      "status": "Needs review",
+      "authors": "Jakub Wartak (jakub.wartak.tomtom)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAKZiRmwvE4uJLKTgPXeBA4m%2Bd4tTghayoefcaM9%3Dz3_S7i72GA%40mail.gmail.com",
+    "subject": "pg_stat_io_histogram",
+    "thread_start": "2026-01-26T09:40:52Z",
+    "messages_read": 36,
+    "messages_total": 36,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v15-0001-Add-pg_stat_io_histogram-view-to-provide-more-de.patch",
+      "v15-0002-Lower-pg_stat_io_histogram-private-backend-memor.patch",
+      "v15-0003-Lower-pg_stat_io_histogram-shared-memory-use-by-.patch",
+      "v1-0001-Add-pg_stat_io_histogram-view-to-provide-more-det.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "Nothing that survived questions the goal: several reviewers report demand, and the measured CPU cost is within about 1% of master. Three fixable design points remain: standards-compat-1 (existing backends and the checkpointer record no histograms after a reload), standards-compat-2 (no agreed bucket range or view name) and replication-ondisk-1 (the pgstat file layout depends on the tracked combinations). A committer who knows the pgstat code needs to rule on these and on the v10 to v15 memory design.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Add pg_stat_io_histogram view of I/O latency buckets",
+    "problem": "Users report that Postgres is slow or stuck, often at COMMIT, when the cause lies in the I/O stack. Proving this today means correlating iostat, wait events and other sources by hand, which takes too long. The author wants DBAs and support engineers to spot I/O latency outliers, such as slow fsyncs, directly from Postgres.",
+    "proposed_design": "The patch keeps a latency histogram of power-of-two buckets for each tracked backend type, object, context and I/O operation, filled where pg_stat_io already counts I/O time. Recording happens only with track_io_timing or track_wal_io_timing on, and only in backends started after the setting is on. Later patches cut memory by storing histograms only for valid combinations, using an offset array in backend memory and shared memory sized at startup.",
+    "user_visible_surface": [
+      "New view pg_stat_io_histogram with columns backend_type, object, context, io_type, bucket_latency_us (an int4range) and bucket_count.",
+      "New set-returning function pg_stat_get_io_histogram() behind the view.",
+      "track_io_timing and track_wal_io_timing now also turn on histogram collection, but only for newly started backends.",
+      "Histogram data persists in the pgstat file across restarts; the file format changes, but the PGSTAT_FILE_FORMAT_ID bump is left to the committer."
+    ],
+    "author_claims": [
+      "CPU overhead is negligible; Ants Aasma's pgbench and seq scan runs show results within about 1% of master, and Tomas Vondra reports the same.",
+      "Buckets run from 8us to about 131ms and separate page cache hits from device reads.",
+      "The v10 to v15 design lowers per-backend memory below master's and adds about 50 KiB of shared memory, per the author's measurements in message #28.",
+      "Logging slow I/O through a new log_* GUC is a worse alternative, because of threshold choice and log spam."
+    ],
+    "thread_state": "Andres Freund, Ants Aasma and Tomas Vondra reviewed; Andres asked to store only usable histograms, and the author's v10 to v15 do this with no reply. Since May only the author has posted, with rebases and a self-review, and the patch has moved through four CommitFests.",
+    "unclear": [
+      "No reviewer says whether the offset-array design in v10 to v15 meets Andres Freund's memory objection.",
+      "The bucket range has no agreement: Tomas Vondra suggests starting at 64us, Ants Aasma wants buckets up to tens of seconds, and the author keeps 8us to 131ms.",
+      "Bucket labels show microseconds but buckets are computed in nanoseconds, so the shown edges are approximate.",
+      "The proposal does not say why histograms apply only to new backends after track_io_timing changes, or whether that is acceptable.",
+      "The proposal does not say whether to rename the view to pg_stat_io_lat_histogram to leave room for size histograms."
+    ],
+    "search_queries": [
+      "pg_stat_io histogram",
+      "I/O latency histogram",
+      "latency buckets statistics view",
+      "track_io_timing histogram",
+      "log slow I/O operations",
+      "fsync latency monitoring",
+      "pgstat shared memory size increase",
+      "wait event timing histogram"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Histogram collection ignores track_io_timing changes in running backends",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "new_guc",
+      "touch_points": [
+        "new_guc",
+        "psql_ux"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "During an incident a DBA runs ALTER SYSTEM SET track_io_timing = on and reloads to find slow fsyncs. The checkpointer, walwriter and pooled client connections keep running, so they record no histogram data, but pg_stat_io still shows their I/O time. The DBA sees an empty or partial histogram and wrongly decides fsync is not the problem.",
+      "argument": "Message #24 and message #36 state that histograms are filled only in backends started after the setting is on, and that SET in a session does not enable collection. The same GUC therefore turns on timing in pg_stat_io at once but turns on histograms only after a restart of each process. Slow COMMIT and checkpointer fsync, the cases in message #1, come from long-lived processes, so they are the ones most likely to be missed. The docs note in message #36 describes the gap but does not justify giving one existing GUC two different meanings.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        24,
+        36
+      ],
+      "author_must_show": "How does a DBA get histogram data for the checkpointer and existing connections without a server restart, and why should track_io_timing act differently for pg_stat_io and pg_stat_io_histogram?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Jakub Wartak",
+          "date": "2026-01-26T09:40:52Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmwvE4uJLKTgPXeBA4m%2Bd4tTghayoefcaM9%3Dz3_S7i72GA%40mail.gmail.com"
+        },
+        {
+          "index": 24,
+          "from": "Jakub Wartak",
+          "date": "2026-03-06T14:48:38Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmz-KH2a_qcwGeFwsoajCsQEd8jXyFLx0B0yKgkK%3DLhBLA%40mail.gmail.com"
+        },
+        {
+          "index": 36,
+          "from": "Jakub Wartak",
+          "date": "2026-09-14T10:55:38Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmyuuToHXESA0pCQ1ZT6_auhAOHzV0Eb%2B5r2tRaTOtfrFw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #24 and #36 confirm that only newly started processes collect histograms, and the v15 docs note states the gap without justifying it. The checkpointer and pooled connections are long-lived, so the incident case in message #1 is the one affected.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Bucket edges and view name become a fixed contract before agreement",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "sql_standard_syntax",
+      "touch_points": [
+        "sql_standard_syntax",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Monitoring tools build alerts on rows such as bucket_latency_us = '[131072,)' or on the 8us first bucket. A later release moves the range to 64us through 1s, or to 32s, as reviewers suggested. Those alerts then match nothing or the wrong latency, and users find out only when an outage goes unreported.",
+      "argument": "The view exposes bucket edges as data values, but message #25 proposes starting at 64us, message #9 and message #29 want buckets up to tens of seconds, and the author keeps 8us to 131ms. Message #36 says the labels are approximate because buckets are computed in nanoseconds, so [8,16) really covers 8.192us to 16.384us. Message #26 also floats renaming the view to pg_stat_io_lat_histogram to leave room for size histograms. [P2] was set aside so that the meaning of pg_stat_io would not change between releases, and the same reasoning applies to these edges.",
+      "precedent_ids": [
+        "P2"
+      ],
+      "thread_message_refs": [
+        9,
+        25,
+        26,
+        29,
+        36
+      ],
+      "author_must_show": "Which bucket range, exact edge labels and view name will be kept stable across releases, and how would a later change avoid breaking queries that filter on bucket_latency_us?",
+      "precedents": [
+        {
+          "id": "P2",
+          "title": "Show WAL stats on pg_stat_io",
+          "url": "https://commitfest.postgresql.org/patch/4416/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CAN55FZ3AiQ+ZMxUuXnBpd0Rrh1YhwJ5FudkHg=JU0P+-W8T4Vg@mail.gmail.com"
+          ],
+          "date": "2024-01-18",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 9,
+          "from": "Ants Aasma",
+          "date": "2026-02-11T12:42:36Z",
+          "url": "https://www.postgresql.org/message-id/CANwKhkM1FNS1Wmc56%2BaunXhaP_zjjO2YKzKTJRoVW0RsM4Of3w%40mail.gmail.com"
+        },
+        {
+          "index": 25,
+          "from": "Tomas Vondra",
+          "date": "2026-03-16T22:50:28Z",
+          "url": "https://www.postgresql.org/message-id/4ffe367d-77ac-488a-8826-64efb78d6f78%40vondra.me"
+        },
+        {
+          "index": 26,
+          "from": "Jakub Wartak",
+          "date": "2026-03-17T12:13:59Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmy8qMeFprFqm0cyQQXtBRbP2_3TVNwxYOeedD-Yro-P%3DQ%40mail.gmail.com"
+        },
+        {
+          "index": 29,
+          "from": "Jakub Wartak",
+          "date": "2026-03-19T10:16:05Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmxTEAbrif9zwZ7H7%3DdmC4espPgxQYEbs7F%3DMNk%3D80sAjw%40mail.gmail.com"
+        },
+        {
+          "index": 36,
+          "from": "Jakub Wartak",
+          "date": "2026-09-14T10:55:38Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmyuuToHXESA0pCQ1ZT6_auhAOHzV0Eb%2B5r2tRaTOtfrFw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The thread shows no agreement on the bucket range (messages #9, #25), and the edges are exposed as data values. [P2] concerned op_bytes semantics for WAL and must not be used as support.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Persisted histogram layout depends on pgstat_tracks_io_* logic",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "backpatchability",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later minor release backpatches a fix that makes pgstat_tracks_io_op() accept one more combination. The slot count and offsets change, but nobody bumps PGSTAT_FILE_FORMAT_ID. After the restart, the server loads the old pgstat file and shows fsync counts under the wrong backend type or operation, and no error is raised.",
+      "argument": "Today pg_stat_io stores a fixed [object][context][op] array, so changing which combinations are tracked does not change the file layout. Per v15-0003, the histogram slot count now comes from pgstat_io_get_sum_tracked() at startup, which ties the pgstat file layout to code that looks like pure policy. Message #36 adds safeguards against reading corrupted data but does not say whether a load checks the slot count or the offset map. Message #35 also leaves the format ID bump to the committer, so the coupling is not yet recorded anywhere.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        31,
+        35,
+        36
+      ],
+      "author_must_show": "Does loading the pgstat file reject or discard histograms when the stored slot count or offset map differs from the one the running server computes?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 31,
+          "from": "Jakub Wartak",
+          "date": "2026-05-08T09:57:25Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmx3Z%2BfxunEc4CDGrpZVFwD4MAEDfGVM_v-CW-%3DxTLeF_Q%40mail.gmail.com"
+        },
+        {
+          "index": 35,
+          "from": "Jakub Wartak",
+          "date": "2026-08-25T07:40:39Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmyyUFLiF-jp15Z40VgHeB1SMYs4rc_efZmgW1B0z0fWag%40mail.gmail.com"
+        },
+        {
+          "index": 36,
+          "from": "Jakub Wartak",
+          "date": "2026-09-14T10:55:38Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmyuuToHXESA0pCQ1ZT6_auhAOHzV0Eb%2B5r2tRaTOtfrFw%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "v15-0003 derives the slot count from the pgstat_tracks_io_* functions at startup, so the file layout now depends on them. Message #36 mentions read safeguards but does not say they compare the stored slot count or offset map.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Histograms only start in backends spawned after the timing setting",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "design",
+      "touch_points": [
+        "new_guc",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "During a slow-COMMIT incident a DBA runs alter system set track_io_timing = on and reloads. Pooled connections that already exist never record histograms. pg_stat_io shows timings while pg_stat_io_histogram stays nearly empty, so the DBA wrongly concludes I/O latency is fine.",
+      "argument": "The v7-0003 design allocates PendingIOStats histograms only at backend start, because allocation inside pgstat_count_io_op_time() can run in a critical section (message #24). v15 documents this (message #36). It still gives one GUC two different activation rules. The main use case is turning it on during an incident with long-lived pooled backends, which is where the gap is largest.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        24,
+        36
+      ],
+      "author_must_show": "How does a backend that existed before track_io_timing was turned on start collecting histograms, or why is silent partial data acceptable for incident diagnosis?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 24,
+          "from": "Jakub Wartak",
+          "date": "2026-03-06T14:48:38Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmz-KH2a_qcwGeFwsoajCsQEd8jXyFLx0B0yKgkK%3DLhBLA%40mail.gmail.com"
+        },
+        {
+          "index": 36,
+          "from": "Jakub Wartak",
+          "date": "2026-09-14T10:55:38Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmyuuToHXESA0pCQ1ZT6_auhAOHzV0Eb%2B5r2tRaTOtfrFw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1, which also covers the checkpointer and other long-lived auxiliary processes.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Startup-sized shared memory makes pgstat_io a special case",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds an IOContext or changes pgstat_tracks_io_op(), as message #13 expects. The histogram slot count and the pgstat file layout change, but nothing prompts the developer to bump PGSTAT_FILE_FORMAT_ID. After restart, saved histograms are rejected or attributed to the wrong combinations.",
+      "argument": "v15-0003 derives the slot count at runtime and allocates pgstat_io shared memory at startup, unlike the other fixed-numbered stats kinds. Message #28 calls this making pgstat_io unique. The v15 commit message describes no check that ties the on-disk layout to the tracked combinations. v14 removed the format ID bumps (message #35), so the remaining checks are reader safeguards only. Andres, the reviewer who knows this area best, has not commented on v10 through v15.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        13,
+        28,
+        31,
+        35,
+        36
+      ],
+      "author_must_show": "What fails loudly, in a test or at file load, when a later patch changes the set of tracked I/O combinations without changing the pgstat file format?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 13,
+          "from": "Andres Freund",
+          "date": "2026-02-18T23:12:47Z",
+          "url": "https://www.postgresql.org/message-id/gbb2opcskhpnjrbdedo7jka7xhfpulw43344g62slhuodcp55p%40dv5vtggkf3hy"
+        },
+        {
+          "index": 28,
+          "from": "Jakub Wartak",
+          "date": "2026-03-18T13:29:08Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmyCMMTXT83-veDgPCJigqzeWP-POqNUve150nYgb07F_g%40mail.gmail.com"
+        },
+        {
+          "index": 31,
+          "from": "Jakub Wartak",
+          "date": "2026-05-08T09:57:25Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmx3Z%2BfxunEc4CDGrpZVFwD4MAEDfGVM_v-CW-%3DxTLeF_Q%40mail.gmail.com"
+        },
+        {
+          "index": 35,
+          "from": "Jakub Wartak",
+          "date": "2026-08-25T07:40:39Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmyyUFLiF-jp15Z40VgHeB1SMYs4rc_efZmgW1B0z0fWag%40mail.gmail.com"
+        },
+        {
+          "index": 36,
+          "from": "Jakub Wartak",
+          "date": "2026-09-14T10:55:38Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmyuuToHXESA0pCQ1ZT6_auhAOHzV0Eb%2B5r2tRaTOtfrFw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1 for the file layout risk. The startup-sized allocation follows Andres Freund's request in messages #16 and #27 to store only usable histograms, so the departure has a stated reason.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Bucket edges become user-visible API before the range is settled",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Monitoring tools hardcode the int4range values from 8us to 131ms. A later release widens the range to tens of seconds, or starts at 64us as Tomas suggests, so dashboards and alerts that compare bucket labels break or quietly mix incompatible series.",
+      "argument": "Reviewers disagree on the range. Tomas wants it to start at 64us (message #25), Ants wants buckets up to 20-60s (message #9), and the author keeps 8us to 131ms. The view shows microsecond labels for nanosecond buckets (message #36), so the edges are approximate. [P2] was set aside so that the meaning of pg_stat_io would not change between releases, and the same reason applies here.",
+      "precedent_ids": [
+        "P2"
+      ],
+      "thread_message_refs": [
+        9,
+        25,
+        26,
+        36
+      ],
+      "author_must_show": "Which bucket range will stay fixed across releases, and how would a later change of buckets avoid breaking existing consumers of bucket_latency_us?",
+      "precedents": [
+        {
+          "id": "P2",
+          "title": "Show WAL stats on pg_stat_io",
+          "url": "https://commitfest.postgresql.org/patch/4416/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CAN55FZ3AiQ+ZMxUuXnBpd0Rrh1YhwJ5FudkHg=JU0P+-W8T4Vg@mail.gmail.com"
+          ],
+          "date": "2024-01-18",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 9,
+          "from": "Ants Aasma",
+          "date": "2026-02-11T12:42:36Z",
+          "url": "https://www.postgresql.org/message-id/CANwKhkM1FNS1Wmc56%2BaunXhaP_zjjO2YKzKTJRoVW0RsM4Of3w%40mail.gmail.com"
+        },
+        {
+          "index": 25,
+          "from": "Tomas Vondra",
+          "date": "2026-03-16T22:50:28Z",
+          "url": "https://www.postgresql.org/message-id/4ffe367d-77ac-488a-8826-64efb78d6f78%40vondra.me"
+        },
+        {
+          "index": 26,
+          "from": "Jakub Wartak",
+          "date": "2026-03-17T12:13:59Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmy8qMeFprFqm0cyQQXtBRbP2_3TVNwxYOeedD-Yro-P%3DQ%40mail.gmail.com"
+        },
+        {
+          "index": 36,
+          "from": "Jakub Wartak",
+          "date": "2026-09-14T10:55:38Z",
+          "url": "https://www.postgresql.org/message-id/CAKZiRmyuuToHXESA0pCQ1ZT6_auhAOHzV0Eb%2B5r2tRaTOtfrFw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-2, which states the same bucket range concern with more detail.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "Histograms persist in the pgstat file, so its format changes and a PGSTAT_FILE_FORMAT_ID bump is needed."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "The patch adds the pg_stat_io_histogram view in system_views.sql and pg_stat_get_io_histogram() in pg_proc.dat."
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The patch changes the I/O stats structures in pgstat.h and pgstat_internal.h and adds to pg_bitutils.h."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": true,
+      "reason": "see objection standards-compat-2: Bucket edges and view name become a fixed contract before agreement"
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": true,
+      "reason": "No new GUC, but track_io_timing and track_wal_io_timing gain a second effect that applies only to newly started backends."
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": true,
+      "reason": "see objection standards-compat-1: Histogram collection ignores track_io_timing changes in running backends"
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "A backpatched change to pgstat_tracks_io_op() would change the histogram slot count and so the pgstat file layout."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Bucket edges become user-visible values, and pgstat_io gets shared memory sized at startup, unlike other fixed stats kinds."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Each timed I/O in pgstat_count_io_op_time() also computes a bucket and increments a counter when timing is on."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "How does a DBA get histogram data for the checkpointer and existing connections after turning on track_io_timing with a reload, without a server restart?",
+    "Which bucket range will stay fixed across releases, given the open proposals to start at 64us and to extend to tens of seconds?",
+    "Does loading the pgstat file discard histograms when the stored slot count or offset map differs from what the running server computes?",
+    "Will the view be named pg_stat_io_histogram or pg_stat_io_lat_histogram, given the idea of later size histograms?",
+    "Will bucket_latency_us show exact edges, given that buckets are computed in nanoseconds but labelled in microseconds?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Andres Freund reviewed early versions and asked to store only usable histograms, but has not replied to v10 to v15. The owner must know the cumulative statistics code and the I/O accounting in pgstat_io.c.",
+    "liability": "The owner signs for a new pgstat file layout tied to the tracked I/O combinations, for bucket edges that monitoring tools will depend on, and for extra work on the timed I/O path. All three last as long as the view exists.",
+    "author_follow_up": "The author has rebased through four CommitFests, posted v10 to v15 in answer to review, and posted a self-review with no outside reply since May."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "needs champion",
+    "reason": "Three reviewers support the goal and the cost falls mostly on users of the timing settings, but no reviewer has answered v10 to v15 since May. The three patches total about 70 KiB and are confined to the pgstat code, with a new view and a file format change to carry."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, this review could not check whether the pgstat file load validates the histogram slot count, or whether histograms could be allocated lazily outside critical sections. Only 3 of 36 messages were read directly.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:5309",
+      "kind": "cf",
+      "title": "Syncrep and improving latency due to WAL throttling",
+      "status": "Withdrawn",
+      "date": "2025-11-14",
+      "first_date": "2023-01-25",
+      "url": "https://commitfest.postgresql.org/patch/5309/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKZiRmzN7uwTj8o6qBqHTGhr=gxOgyPU97iAXTyAeP+tbinK8Q@mail.gmail.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz), Jakub Wartak (jakub.wartak.tomtom)",
+      "objectors": "",
+      "summary": "The patch adds a GUC so that a backend which generates a lot of WAL flushes it and waits for the synchronous standby after each set amount, which limits the delay that small OLTP commits see behind bulk writes. Later versions moved the wait to CHECK_FOR_INTERRUPTS, added separate write, local flush and remote flush thresholds, and auto-tuned each backend's threshold.",
+      "objection": "The entry died of inactivity. Tomas Vondra posted a proof-of-concept with test results in December 2023, and a September 2024 review got no visible reply from him. Jakub Wartak then registered the entry in the commitfest only as a record and said he had no plans to work on it, and no later messages are shown before the withdrawal.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "I/O latency histogram",
+        "latency buckets statistics view",
+        "fsync latency monitoring"
+      ],
+      "from_hint": false,
+      "score": 0.414,
+      "enriched": true,
+      "key_quote": "Right now I do not have plans to work on that,but maybe I'll be able to help in future.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAKZiRmxTuVumajnKDY7bcTrKwafJdFwBXuF6ODMDPJJtP%2BB%3D%2BQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:4416",
+      "kind": "cf",
+      "title": "Show WAL stats on pg_stat_io",
+      "status": "Returned with feedback",
+      "date": "2024-01-18",
+      "first_date": "2023-06-28",
+      "url": "https://commitfest.postgresql.org/patch/4416/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAN55FZ3AiQ+ZMxUuXnBpd0Rrh1YhwJ5FudkHg=JU0P+-W8T4Vg@mail.gmail.com"
+      ],
+      "authors": "Nazir Bilal Yavuz (nbyavuz)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch adds WAL I/O (writes, fsyncs, reads during recovery, and WAL segment initialization in a new IOCONTEXT_INIT) to the pg_stat_io view as IOOBJECT_WAL. Timings use track_wal_io_timing, and pg_stat_wal timings would come from pg_stat_io.",
+      "objection": "pg_stat_io ties op_bytes to a fixed block size per object and context, but some WAL reads, such as those by the WAL receiver, have a variable size. Reviewers did not agree whether to set op_bytes to 1, to NULL, or to add per-operation byte columns. Michael Paquier proposed to set the patch aside until WAL reads and writes, async I/O and cached reads are settled, so that the meaning of pg_stat_io does not change between releases. The author agreed, and the patch was marked Returned with feedback.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_stat_io histogram",
+        "track_io_timing histogram",
+        "fsync latency monitoring"
+      ],
+      "from_hint": false,
+      "score": 0.317,
+      "enriched": true,
+      "key_quote": "IMHO, perhaps we'd better put this patch aside until we are absolutely\n*sure* of what we want to achieve when it comes to WAL, and I am\nafraid that this cannot happen until we're happy with the way we\nhandle WAL reads *and* writes, including WAL receiver or anything that\nhas the idea of pulling its own page callback with\nXLogReaderAllocate() in the backend.",
+      "quote_message_url": "https://www.postgresql.org/message-id/ZaTQSOVpwekhOXx-%40paquier.xyz",
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:4928",
+      "kind": "cf",
+      "title": "s/shm_mq_iovec/struct iovec/",
+      "status": "Returned with feedback",
+      "date": "2024-07-15",
+      "first_date": "2024-04-15",
+      "url": "https://commitfest.postgresql.org/patch/4928/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGLMs6O14yJDxv6TF7DPuBdMfDvRj6OQEZZ_CqdJei0+hg@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "Heikki Linnakangas",
+      "summary": "Replace the shm_mq module's own shm_mq_iovec struct with the standard POSIX struct iovec. The motivation was to remove a duplicate definition now that struct iovec can be used everywhere.",
+      "objection": "Heikki Linnakangas argued that the two structs belong to separate APIs and should stay separate. Reusing struct iovec could tie shm_mq to POSIX limits such as IOV_MAX, and it would stop shm_mq from adding its own fields later. The author accepted this and marked the entry returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_io histogram",
+        "track_io_timing histogram"
+      ],
+      "from_hint": false,
+      "score": 0.252,
+      "enriched": true,
+      "key_quote": "They serve a similar purpose,\nbut they belong to completely separate APIs; I think \"incidental\ndeduplication\" is the right term for that.",
+      "quote_message_url": "https://www.postgresql.org/message-id/6bc59788-f1b0-478a-891b-89c5757ec311%40iki.fi",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:3316",
+      "kind": "cf",
+      "title": "Asynchronous and \"direct\" IO support for PostgreSQL",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2021-02-23",
+      "url": "https://commitfest.postgresql.org/patch/3316/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210223100344.llw5an2aklengrmn@alap3.anarazel.de"
+      ],
+      "authors": "Andres Freund (andresfreund), David Rowley (davidrowley), Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Andres Freund proposed an asynchronous IO (AIO) subsystem for Postgres, with several backends (worker processes, io_uring, posix AIO, Windows) and helpers for streaming reads and writes. The same work adds optional direct IO, so data moves between storage and shared buffers without the kernel page cache.",
+      "objection": "The entry died of inactivity. The patch set stopped applying in January 2022 and no rebased version followed. In May 2022 Aleksander Alekseev asked for a rebase and said a set of 39 patches was too large to review, and that it should be split. Michael Paquier marked it Returned with feedback after five months without activity.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_io histogram",
+        "track_io_timing histogram"
+      ],
+      "from_hint": false,
+      "score": 0.223,
+      "enriched": true,
+      "key_quote": "I don't know what's the exact status here, but as there has been no\nactivity for the past five months, I have just marked the entry as RwF\nfor now.",
+      "quote_message_url": "https://www.postgresql.org/message-id/Y0ZUdhaqe1%2BxIttA%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:790",
+      "kind": "cf",
+      "title": "SQL statements statistics counter view (pg_stat_sql)",
+      "status": "Returned with feedback",
+      "date": "2020-09-17",
+      "first_date": "2016-08-20",
+      "url": "https://commitfest.postgresql.org/patch/790/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJrrPGeY4xujjoR=z=KoyRMHEK_pSjjp=7VBhOAHq9rfgpV7QQ@mail.gmail.com"
+      ],
+      "authors": "Haribabu Kommi (haribabu)",
+      "objectors": "Andres Freund",
+      "summary": "The patch adds a pg_stat_sql view that counts SQL statements executed on the instance by command tag, behind a new track_sql GUC, with a reset function. Later versions keep one row per command tag in a hash table, counted in exec_simple_query and exec_execute_message.",
+      "objection": "Michael Paquier returned the entry with feedback after months without activity, after Alvaro Herrera asked who would rebase it onto the new cmdtaglist.h enum tags. Andres Freund's 2017 review had left open questions: an extension might be the better place, tags should be enums in a fixed array, and counting belongs at the executor level. The author promised an array version, but the visible messages do not show one. A competing cmdstats patch by Mark Dilger also waited on benchmarks that Robert Haas requested.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_io histogram",
+        "latency buckets statistics view"
+      ],
+      "from_hint": false,
+      "score": 0.198,
+      "enriched": true,
+      "key_quote": "This patch had no activity for months, so I am marking it as returned\nwith feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20200917050119.GI2873%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:4352",
+      "kind": "cf",
+      "title": "Index-only filters without IOS",
+      "status": "Withdrawn",
+      "date": "2024-06-21",
+      "first_date": "2023-02-15",
+      "url": "https://commitfest.postgresql.org/patch/4352/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/N1xaIrU29uk5YxLyW55MGk5fz9s6V2FNtj54JRaVlFbPixD5z8sJ07Ite5CvbWwik8ZvDG07oSTN-usENLVMq2UAcizVTEd5b-o16ZGDIIU=@yamlcoder.me"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "The patch lets a plain index scan evaluate clauses that are not index quals as \"index filters\" on the index tuple, including INCLUDE columns, before it fetches the heap tuple. Like an index-only scan, it checks the visibility map first and fetches the heap tuple for pages that are not all-visible.",
+      "objection": "The visible messages do not show why. In the last visible messages (December 2023) the author still listed open problems: the costing changes could make a worse plan, such as an index scan instead of a bitmap index scan, look cheaper; promoting clauses to index filters could reorder them against order_qual_clauses() by procost; and the index scan code still needed changes. Peter Geoghegan said he had no objections to moving ahead.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_io histogram",
+        "track_io_timing histogram"
+      ],
+      "from_hint": false,
+      "score": 0.188,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:2003",
+      "kind": "cf",
+      "title": "Fix Deadlock Issue in Single User Mode When IO Failure Occurs",
+      "status": "Returned with feedback",
+      "date": "2020-02-01",
+      "first_date": "2018-11-30",
+      "url": "https://commitfest.postgresql.org/patch/2003/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CY4PR2101MB0804CE9836E582C0702214E8AAD30@CY4PR2101MB0804.namprd21.prod.outlook.com",
+        "https://www.postgresql.org/message-id/flat/CAKPRHzKsj0J0Q51L1SF-G7OmkgkXyifp1Aqe7T--S1gK0W7anQ@mail.gmail.com"
+      ],
+      "authors": "Chengchao Yu (allelujava)",
+      "objectors": "Amit Kapila, Michael Paquier",
+      "summary": "The patch fixes a hang in single-user mode when a relation read or write fails during startup recovery or a checkpoint: AbortBufferIO() at process exit waits on a buffer I/O lwlock that the process still holds. It makes sure all lwlocks are released before AbortBufferIO() runs, first by registering LWLockReleaseAll() as an exit callback and in v3 by calling it in AtProcExit_Buffers().",
+      "objection": "Amit Kapila tested the create table, insert and checkpoint repro and reported that the patch does not fix the problem. The second I/O error, raised during ShutdownXLOG() at exit, now ends in an assertion failure in UnpinBuffer() called from ReleaseAuxProcessResources. Michael Paquier reproduced the same trace and asked the author for an update, but the author did not respond, so the entry was returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_io histogram",
+        "track_io_timing histogram"
+      ],
+      "from_hint": false,
+      "score": 0.187,
+      "enriched": true,
+      "key_quote": "I have tried to look into this patch and I don't think it fixes the\nproblem.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAA4eK1Ju6aghDmuzbaUn75C9BUGzqkd%3DLxkewr52SzfPobSGGw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:4018",
+      "kind": "cf",
+      "title": "Operation log for major operations",
+      "status": "Withdrawn",
+      "date": "2023-03-02",
+      "first_date": "2022-11-21",
+      "url": "https://commitfest.postgresql.org/patch/4018/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/02fe0063-bf77-90d0-3cf5-e9fe7c2a487b@postgrespro.ru"
+      ],
+      "authors": "Dmitry Koval (d.koval)",
+      "objectors": "Justin Pryzby, Tom Lane",
+      "summary": "The patch adds an operation log that records system events such as startup, pg_upgrade, pg_resetwal, pg_rewind and promotion in a 4 kB ring buffer with a CRC, readable through the SQL function pg_operation_log(). The log first lived in global/pg_control after position 4097, then moved to a separate file global/pg_control_log after review.",
+      "objection": "The author withdrew the patch because it had drawn little interest and served mainly vendor technical support. After the withdrawal, Justin Pryzby said only limited information fits in pg_control, not a log that may grow. Tom Lane objected to writing anything more to the control file, because every write risks the whole database. The author answered that this history matters for vendor forks but is not needed for vanilla Postgres.",
+      "touch_points": [],
+      "matched_queries": [
+        "log slow I/O operations"
+      ],
+      "from_hint": false,
+      "score": 0.14,
+      "enriched": true,
+      "key_quote": "Every time we write to that, we risk the entire database on completing\nthe write successfully.  I don't want to do that more often than once\nper checkpoint.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2130093.1677785803%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:2933",
+      "kind": "cf",
+      "title": "WIP: Track relation size in shared memory",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2018-11-06",
+      "url": "https://commitfest.postgresql.org/patch/2933/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEepm=3SSw-Ty1DFcK=1rU-K6GSzYzfdD4d+ZwapdN7dTa6=nQ@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "WIP: Track relation size in shared memory\nThreads: Cache relation sizes?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pgstat shared memory size increase"
+      ],
+      "from_hint": false,
+      "score": 0.136,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:3243",
+      "kind": "cf",
+      "title": "Add statistics refresh materialized view",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-07-08",
+      "url": "https://commitfest.postgresql.org/patch/3243/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6fe02a8ab3b2b0801933b9cabfab62cf@oss.nttdata.com"
+      ],
+      "authors": "Yuki Seino (seinoyu)",
+      "objectors": "",
+      "summary": "Add statistics refresh materialized view\nThreads: Add statistics refresh materialized view",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "latency buckets statistics view"
+      ],
+      "from_hint": false,
+      "score": 0.136,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:4974",
+      "kind": "cf",
+      "title": "pg_stat_activity: make slow/hanging authentication more visible",
+      "status": "Withdrawn",
+      "date": "2025-03-21",
+      "first_date": "2024-05-06",
+      "url": "https://commitfest.postgresql.org/patch/4974/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOYmi+=60deN20WDyCoHCiecgivJxr=98s7s7-C8SkXwrCfHXg@mail.gmail.com"
+      ],
+      "authors": "Jacob Champion (jchampion)",
+      "objectors": "",
+      "summary": "pg_stat_activity: make slow/hanging authentication more visible\nThreads: [PATCH] pg_stat_activity: make slow/hanging authentication more visible",
+      "objection": "",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "log slow I/O operations"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:4679",
+      "kind": "cf",
+      "title": "Extend pgbench partitioning to pgbench_history",
+      "status": "Returned with feedback",
+      "date": "2024-05-14",
+      "first_date": "2023-11-30",
+      "url": "https://commitfest.postgresql.org/patch/4679/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+VUV5q9=N64fduq660bvFGQeFQcfqU2xh+XR_1OaPj87io3sg@mail.gmail.com"
+      ],
+      "authors": "Gabriele Bartolini (gbartolini)",
+      "objectors": "",
+      "summary": "Extend pgbench partitioning to pgbench_history\nThreads: Extend pgbench partitioning to pgbench_history",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "I/O latency histogram"
+      ],
+      "from_hint": false,
+      "score": 0.131,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:1575",
+      "kind": "cf",
+      "title": "Function to track shmem reinit time",
+      "status": "Returned with feedback",
+      "date": "2018-04-10",
+      "first_date": "2018-02-28",
+      "url": "https://commitfest.postgresql.org/patch/1575/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/b3a85c5d-56a8-677b-5578-86d94654eb5c@postgrespro.ru"
+      ],
+      "authors": "Anastasia Lubennikova (lubennikovaav)",
+      "objectors": "",
+      "summary": "Function to track shmem reinit time\nThreads: Function to track shmem reinit time",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "track_io_timing histogram"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:1708",
+      "kind": "cf",
+      "title": "Shared-memory based stats collector",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2018-06-29",
+      "url": "https://commitfest.postgresql.org/patch/1708/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20180629.173418.190173462.horiguchi.kyotaro@lab.ntt.co.jp"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti)",
+      "objectors": "",
+      "summary": "Shared-memory based stats collector\nThreads: shared-memory based stats collector",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pgstat shared memory size increase"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:2332",
+      "kind": "cf",
+      "title": "Add accumulated statistics for wait event",
+      "status": "Returned with feedback",
+      "date": "2020-08-02",
+      "first_date": "2018-07-23",
+      "url": "https://commitfest.postgresql.org/patch/2332/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2022793411.102298.1532329482584.JavaMail.jboss@ep1ml402"
+      ],
+      "authors": "Yoshikazu Imai (yimai)",
+      "objectors": "",
+      "summary": "Add accumulated statistics for wait event\nThreads: [Proposal] Add accumulated statistics for wait event",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "wait event timing histogram"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:904",
+      "kind": "cf",
+      "title": "Fix cleanup of WSA events in WIN32 wait event code",
+      "status": "Rejected",
+      "date": "2016-12-27",
+      "first_date": "2016-12-13",
+      "url": "https://commitfest.postgresql.org/patch/904/",
+      "thread_urls": [],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Fix cleanup of WSA events in WIN32 wait event code",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "wait event timing histogram"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:2496",
+      "kind": "cf",
+      "title": "Function to track shmem reinit time",
+      "status": "Returned with feedback",
+      "date": "2020-04-08",
+      "first_date": "2018-02-28",
+      "url": "https://commitfest.postgresql.org/patch/2496/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/b3a85c5d-56a8-677b-5578-86d94654eb5c@postgrespro.ru"
+      ],
+      "authors": "Anastasia Lubennikova (lubennikovaav)",
+      "objectors": "",
+      "summary": "Function to track shmem reinit time\nThreads: Function to track shmem reinit time",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "track_io_timing histogram"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:3760",
+      "kind": "cf",
+      "title": "pg_stat_activity: avoid showing state=active with wait_event=ClientRead",
+      "status": "Returned with feedback",
+      "date": "2022-11-30",
+      "first_date": "2022-06-30",
+      "url": "https://commitfest.postgresql.org/patch/3760/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ab1c0a7d-e789-5ef5-1180-42708ac6fe2d@postgrespro.ru"
+      ],
+      "authors": "Yura Sokolov (funny_falcon), Mikhail Zhilin (mizhka-at-pgpro)",
+      "objectors": "",
+      "summary": "pg_stat_activity: avoid showing state=active with wait_event=ClientRead\nThreads: [PATCH] fix wait_event of pg_stat_activity in case of high amount of\nconnections",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "wait event timing histogram"
+      ],
+      "from_hint": false,
+      "score": 0.116,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:5462",
+      "kind": "cf",
+      "title": "history of vacuum / checkpoint runs",
+      "status": "Withdrawn",
+      "date": "2025-11-14",
+      "first_date": "2024-12-21",
+      "url": "https://commitfest.postgresql.org/patch/5462/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/b68ab452-c41f-4d04-893f-eaab84f1855b@vondra.me"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "history of vacuum / checkpoint runs\nThreads: PoC: history of recent vacuum/checkpoint runs (using new hooks)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "I/O latency histogram"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:4602",
+      "kind": "cf",
+      "title": "PGDOCS - inconsistent linkends to \"monitoring\" views",
+      "status": "Rejected",
+      "date": "2023-11-30",
+      "first_date": "2023-10-03",
+      "url": "https://commitfest.postgresql.org/patch/4602/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHut+Pv8Uk0BQhEXB_-fj6zMtLohZ3W-jPG8UpXFaV0YW5sKjw@mail.gmail.com"
+      ],
+      "authors": "Peter Smith (smithpb2250)",
+      "objectors": "",
+      "summary": "PGDOCS - inconsistent linkends to \"monitoring\" views\nThreads: [PGDOCS] Inconsistent linkends to \"monitoring\" views.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "fsync latency monitoring"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "revert:81ca8686305c4c62d723ab224ad5c414f350a3a0",
+      "kind": "revert",
+      "title": "Improve management of SLRU statistics collection.",
+      "status": "Partially reverted",
+      "date": "2020-05-13",
+      "first_date": "2015-11-12",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=81ca8686305c4c62d723ab224ad5c414f350a3a0",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3618.1589313035@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20200119143707.gyinppnigokesjok@development"
+      ],
+      "authors": "Robert Haas, Tomas Vondra",
+      "objectors": "",
+      "summary": "Improve management of SLRU statistics collection.\nReverted commit(s): Move each SLRU's lwlocks to a separate tranche.; Collect statistics about SLRU caches",
+      "objection": "Instead of re-identifying which statistics bucket to use for a given\nSLRU on every counter increment, do it once during shmem initialization.\nThis saves a fair number of cycles, and there's no real cost because\nwe could not have a bucket assignment that varies over time or across\nbackends anyway.\n\nAlso, get rid of the ill-considered decision to let pgstat.c pry\ndirectly into SLRU's shared state; it's cleaner just to have slru.c\npass the stats bucket number.\n\nIn consequence of these changes, there's no longer any need to store\nan SLRU's LWLock tranche info in shared memory, so get rid of that,\nmaking this a net reduction in shmem consumption.  (That partly\nreverts fe702a7b3.)\n\nThis is basically code review for 28cac71bd, so I also cleaned up\nsome comments, removed a dangling extern declaration, fixed some\nthings that should be static and/or const, etc.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "latency buckets statistics view"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:297",
+      "kind": "cf",
+      "title": "Waits monitoring",
+      "status": "Returned with feedback",
+      "date": "2015-12-24",
+      "first_date": "2015-07-08",
+      "url": "https://commitfest.postgresql.org/patch/297/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/559D4729.9080704@postgrespro.ru"
+      ],
+      "authors": "Ildus Kurbangaliev (ildus)",
+      "objectors": "",
+      "summary": "Waits monitoring\nThreads: Waits monitoring",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "fsync latency monitoring"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P23",
+      "source_id": "revert:890d2182a2c425aaa80f9bf9f7116d31e0c6538e",
+      "kind": "revert",
+      "title": "Revert \"Display the time when the process started waiting for the lock, in pg_locks.\"",
+      "status": "Reverted",
+      "date": "2021-02-09",
+      "first_date": "2021-02-09",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=890d2182a2c425aaa80f9bf9f7116d31e0c6538e",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/a96013dc51cdc56b2a2b84fa8a16a993@oss.nttdata.com"
+      ],
+      "authors": "Fujii Masao",
+      "objectors": "",
+      "summary": "Revert \"Display the time when the process started waiting for the lock, in pg_locks.\"\nReverted commit(s): Display the time when the process started waiting for the lock, in pg_locks.",
+      "objection": "This reverts commit 3b733fcd04195399db56f73f0616b4f5c6828e18.\n\nPer buildfarm members prion and rorqual.",
+      "touch_points": [],
+      "matched_queries": [
+        "wait event timing histogram"
+      ],
+      "from_hint": false,
+      "score": 0.103,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:3523",
+      "kind": "cf",
+      "title": "Fix Windows network event handling",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2021-12-30",
+      "url": "https://commitfest.postgresql.org/patch/3523/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKG+OeoETZQ=Qw5Ub5h3tmwQhBmDA=nuNO3KG=zWfUypFAw@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Fix Windows network event handling\nThreads: Why is src/test/modules/committs/t/002_standby.pl flaky?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "wait event timing histogram"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 3,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 3
+  },
+  "precedent_cutoff": "2026-01-26",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found. [P15] and [P22] cover wait-event monitoring and record no reason, and the op_bytes dispute in [P2] does not apply to latency buckets. The thread cites no earlier attempt at I/O latency histograms."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "Two objections from the standards and compatibility angle; reset behaviour and pg_dump do not apply or are not described in the material."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "Apart from the pgstat file, the proposal adds no WAL records, no relation or catalog on-disk change beyond a view and a function, and no wire protocol change. Stats are not carried by pg_upgrade, so old clusters are not affected."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "No security objection found. The view aggregates cluster-wide counts by backend type, like pg_stat_io, so it exposes no per-user, per-relation or per-query data, and its memory is sized at startup. v15 uses INT4RANGEOID directly, which removes the search_path lookup of int4range raised in message #36."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "Hot-path CPU cost was measured by several reviewers and appears negligible, so no objection is raised on items 4 or 8."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing feature gives this result. pg_stat_io keeps only total read_time, write_time and fsync_time per backend type, object and context, so a few slow fsyncs vanish into the average. eBPF tools such as bpftrace (used in message #3) need root, which managed services do not grant, and they have no Postgres context. A hook plus a custom cumulative statistics kind could move the feature into an extension, but it would still add a call on the same I/O path. Three reviewers who know the area (messages #2, #9 and #25) supported core placement, so a committer would likely not send this objection."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "The material shows real demand from several independent people. The author reports repeated support cases where Postgres looked slow at COMMIT and the cause was the I/O stack (message #1). Ants Aasma reports multiple diagnosis cases, including 20s to 60s latencies from multipathing faults, where a histogram would have helped (message #9). Andres Freund calls the feature interesting (message #2), and Tomas Vondra gives +1 from his EXPLAIN prefetch work (message #25). The cost falls mostly on users who turn on track_io_timing or track_wal_io_timing, and the later versions cut the remaining memory cost (message #28). The remaining disputes are about memory layout and bucket range, which other angles cover."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 6,
+      "new_survived": 3,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 76,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 15,
+    "wall_ms": 153527,
+    "cost_usd": 5.452454400000001,
+    "dry_run": false
+  }
+}

@@ -6,12 +6,12 @@ Each entry was read from its mailing-list thread and the prose of its latest pat
 
 Made with [pgroast](https://github.com/NikolayS/pgroast). In each folder: `roast.md` (short report), `roast-full.md` (everything, with the models used), `roast.json`, `roast-summary.txt`.
 
-Entries done: 114.
+Entries done: 181.
 
-- NEEDS-DESIGN-DISCUSSION: 53
-- NEEDS-COMMITTER-EYES: 44
-- NO-FUNDAMENTAL-OBJECTION: 16
-- LIKELY-REJECT: 1
+- NEEDS-DESIGN-DISCUSSION: 88
+- NEEDS-COMMITTER-EYES: 63
+- NO-FUNDAMENTAL-OBJECTION: 28
+- LIKELY-REJECT: 2
 
 | Entry | Title | Verdict | Objections | First objection | Prior attempts | Messages read | Date |
 |---|---|---|---:|---|---:|---:|---|
@@ -86,10 +86,77 @@ Entries done: 114.
 | [6366](cf/6366/roast.md) | QoL improvements for pgindent and combining pgindent, pgperltidy, pgperlcritic and pgperlsyncheck into one tool | NEEDS-DESIGN-DISCUSSION | 5 | get_perltidy commits the project to owning a downloader for CPAN code | 0 | 21 | 2026-11-12 |
 | [6384](cf/6384/roast.md) | llvmjit: always add the simplifycfg pass | NEEDS-COMMITTER-EYES | 1 | Compile cost on wide deform functions is not measured | 1 | 10 | 2026-11-12 |
 | [6397](cf/6397/roast.md) | extended statistic (examine_variable) ignored CollateExpr | NEEDS-DESIGN-DISCUSSION | 4 | Fallback match may reuse statistics built under another collation | 0 | 10 | 2026-11-12 |
+| [6401](cf/6401/roast.md) | Resetting snapshots during the first phase of [CREATE \|RE]INDEX CONCURRENTLY | NEEDS-DESIGN-DISCUSSION | 5 | On by default for every concurrent build, with no measurements | 2 | 13 | 2026-11-12 |
+| [6433](cf/6433/roast.md) | pg_stat_io_histogram | NEEDS-COMMITTER-EYES | 3 | Histogram collection ignores track_io_timing changes in running backends | 0 | 36 | 2026-11-12 |
+| [6436](cf/6436/roast.md) | Add `tsmatch` JSONPath operator for granular Full Text Search | NEEDS-DESIGN-DISCUSSION | 5 | Default tsconfig makes immutable jsonpath functions depend on a GUC | 2 | 8 | 2026-11-12 |
 | [6440](cf/6440/roast.md) | tablecmds: fix bug where index rebuild loses replica identity on partitions | NEEDS-DESIGN-DISCUSSION | 4 | Two competing mechanisms for the same rebuild path | 0 | 45 | 2026-11-12 |
+| [6442](cf/6442/roast.md) | tablecmds: fix Deadlock caused by Attach Partition | NEEDS-DESIGN-DISCUSSION | 3 | Index ATTACH now takes AccessExclusiveLock on the root table every time | 0 | 16 | 2026-11-12 |
+| [6444](cf/6444/roast.md) | Set 1s WaitLatch timeout if standby limit has expired in ResolveRecoveryConflictWithBufferPin | NO-FUNDAMENTAL-OBJECTION | 0 |  | 1 | 12 | 2026-11-12 |
+| [6445](cf/6445/roast.md) | Set 1s WaitLatch timeout if standby limit has expired in ResolveRecoveryConflictWithBufferPin | NEEDS-COMMITTER-EYES | 1 | Fix and the pending loop rewrite of the same wait can drift apart | 1 | 12 | 2026-11-12 |
+| [6460](cf/6460/roast.md) | Show expression of virtual columns in error messages | NEEDS-DESIGN-DISCUSSION | 1 | Unconditional write-time computation duplicates what stored columns and checks offer | 0 | 18 | 2026-11-12 |
+| [6479](cf/6479/roast.md) | SLOPE - Planner optimizations on monotonic expressions. | NEEDS-DESIGN-DISCUSSION | 3 | Demand is shown for time-bucket grouping only, but the scope is much wider | 0 | 44 | 2026-11-12 |
+| [6482](cf/6482/roast.md) | Add table COMMENTS in CREATE TABLE LIKE | NEEDS-DESIGN-DISCUSSION | 2 | No field request or workflow shows anyone needs the table comment copied | 2 | 37 | 2026-11-12 |
+| [6524](cf/6524/roast.md) | [PATCH] Add parallel instrumentation hooks for CustomScan providers | NEEDS-COMMITTER-EYES | 3 | Provider-chosen shm_toc keys can collide with core keys in the DSM | 1 | 13 | 2026-11-12 |
+| [6525](cf/6525/roast.md) | Fix XLogFileReadAnyTLI silently applying divergent WAL from wrong timeline | NEEDS-COMMITTER-EYES | 1 | Back-patched stall can leave existing standbys waiting with no visible log message | 0 | 12 | 2026-11-12 |
+| [6526](cf/6526/roast.md) | amcheck: add index-all-keys-match verification for B-Tree | NEEDS-DESIGN-DISCUSSION | 4 | heapallindexed may already report the key mismatches this targets | 1 | 14 | 2026-11-12 |
+| [6557](cf/6557/roast.md) | POC: PLpgSQL FOREACH IN JSON ARRAY | NEEDS-DESIGN-DISCUSSION | 5 | Iterator API in SubscriptRoutines is still shaped for PL/pgSQL | 1 | 28 | 2026-11-12 |
+| [6558](cf/6558/roast.md) | Pgbench: remove synchronous prepare | NO-FUNDAMENTAL-OBJECTION | 0 |  | 0 | 15 | 2026-11-12 |
+| [6564](cf/6564/roast.md) | Reject ADD CONSTRAINT NOT NULL if name mismatches existing domain not-null constraint | NEEDS-DESIGN-DISCUSSION | 2 | New ERROR is proposed for stable branches as a bugfix | 0 | 4 | 2026-11-12 |
+| [6579](cf/6579/roast.md) | Fix the wrong behavior of REFRESH MATERIALIZED VIEW CONCURRENTLY | NEEDS-COMMITTER-EYES | 2 | Fix leaves the documented invariant of refresh_by_match_merge() wrong | 0 | 22 | 2026-11-12 |
+| [6580](cf/6580/roast.md) | Fix performance of REFRESH MATERIALIZED VIEW CONCURRENTLY | NEEDS-DESIGN-DISCUSSION | 3 | The only two designs tried are either incorrect or a no-op | 0 | 22 | 2026-11-12 |
+| [6598](cf/6598/roast.md) | Add ssl_(supported\|shared)_groups to sslinfo | NEEDS-DESIGN-DISCUSSION | 4 | Row-type layout fixed before the wider handshake-info design is settled | 2 | 22 | 2026-11-12 |
+| [6607](cf/6607/roast.md) | New pg_stat_tablespace view for tablespace level metrics | NEEDS-DESIGN-DISCUSSION | 5 | New code in the buffer manager I/O path with no overhead numbers | 0 | 26 | 2026-11-12 |
+| [6617](cf/6617/roast.md) | Fix a file descriptor leak when using io_method=io_uring | NO-FUNDAMENTAL-OBJECTION | 0 |  | 0 | 22 | 2026-11-12 |
+| [6619](cf/6619/roast.md) | pg_stat_xact_user_tables stat not currect during the transaction | NEEDS-DESIGN-DISCUSSION | 5 | Both designs charge every backend for a rarely used view | 0 | 8 | 2026-11-12 |
+| [6627](cf/6627/roast.md) | Convert ALL SubLinks to ANY SubLinks | NEEDS-DESIGN-DISCUSSION | 3 | The main case, <> ALL, already has a hashed path via NOT IN | 3 | 8 | 2026-11-12 |
+| [6635](cf/6635/roast.md) | Add support for INSERT ... SET syntax | NEEDS-DESIGN-DISCUSSION | 3 | Multi-row SET form may diverge from a future SQL standard | 3 | 23 | 2026-11-12 |
+| [6639](cf/6639/roast.md) | Track skipped vacuum and analyze in pg_stat_all_tables | NEEDS-DESIGN-DISCUSSION | 4 | Roles without privileges on a table can bump its lock-skip statistics | 2 | 51 | 2026-11-12 |
+| [6642](cf/6642/roast.md) | Warn when creating or enabling a subscription with max_logical_replication_workers = 0 | NEEDS-COMMITTER-EYES | 1 | Warning condition copied into command sites, so it drifts from launcher.c | 0 | 13 | 2026-11-12 |
+| [6644](cf/6644/roast.md) | Extract numeric filed in JSONB more effectively | NEEDS-COMMITTER-EYES | 3 | Rewritten casts must behave exactly like the casts they replace | 1 | 114 | 2026-11-12 |
+| [6648](cf/6648/roast.md) | Docs: Create table description for constraints markup fix and label tweaks | NO-FUNDAMENTAL-OBJECTION | 0 |  | 0 | 3 | 2026-11-12 |
+| [6652](cf/6652/roast.md) | Resizable shared memory structures | NEEDS-COMMITTER-EYES | 5 | MAP_NORESERVE removes the huge page reservation check at startup | 2 | 93 | 2026-11-12 |
+| [6664](cf/6664/roast.md) | Support EXCEPT for ALL SEQUENCES publications | NEEDS-DESIGN-DISCUSSION | 3 | Use case for excluding sequences is stated but not shown | 1 | 82 | 2026-11-12 |
+| [6667](cf/6667/roast.md) | DISTINCT in plain aggregate window functions | NEEDS-DESIGN-DISCUSSION | 4 | Grow-only hash path ignores work_mem with no plan to bound it | 3 | 4 | 2026-11-12 |
+| [6668](cf/6668/roast.md) | Implement missing join selectivity estimation for range types | NEEDS-DESIGN-DISCUSSION | 2 | No user report shows range or multirange joins being misestimated | 0 | 32 | 2026-11-12 |
+| [6674](cf/6674/roast.md) | Adding a stored generated column without long-lived locks | NEEDS-DESIGN-DISCUSSION | 5 | Clearing attmissingval can turn unrewritten tuples to NULL | 0 | 42 | 2026-11-12 |
+| [6681](cf/6681/roast.md) | docs: Include database collation check on SQL from alter_collation.sgml | NEEDS-COMMITTER-EYES | 3 | v2 stops reporting ICU collation mismatches the current query catches | 1 | 3 | 2026-11-12 |
+| [6689](cf/6689/roast.md) | Extensible sync handler registration | NEEDS-DESIGN-DISCUSSION | 3 | The fsync validation use case is not served by this design | 3 | 3 | 2026-11-12 |
+| [6696](cf/6696/roast.md) | Proposal: Conflict log history table for Logical Replication | NEEDS-COMMITTER-EYES | 5 | Apply worker errors on conflict log table lock contention under two_phase | 1 | 747 | 2026-11-12 |
+| [6712](cf/6712/roast.md) | [Patch]Incorrect usage of PageGetFreeSpace instead of PageGetHeapFreeSpace in heap_xlog_visible | NO-FUNDAMENTAL-OBJECTION | 0 |  | 0 | 1 | 2026-11-12 |
+| [6728](cf/6728/roast.md) | md: measure just FileSync() for pgstat_io without FileClose() | NO-FUNDAMENTAL-OBJECTION | 0 |  | 0 | 2 | 2026-11-12 |
+| [6730](cf/6730/roast.md) | Skip prefetch for block references that follow a FPW or WILL_INIT of the same block | NO-FUNDAMENTAL-OBJECTION | 0 |  | 1 | 17 | 2026-11-12 |
+| [6743](cf/6743/roast.md) | Preserve replication origin OIDs in pg_upgrade | NEEDS-DESIGN-DISCUSSION | 3 | Main benefit depends on a pg_commit_ts migration not yet accepted | 1 | 90 | 2026-11-12 |
+| [6749](cf/6749/roast.md) | Disallow whole-row index references with virtual generated columns? | NEEDS-COMMITTER-EYES | 2 | Adding a virtual generated column later still creates the broken index | 0 | 8 | 2026-11-12 |
+| [6752](cf/6752/roast.md) | Mark the enum comparison functions as leakproof | NEEDS-DESIGN-DISCUSSION | 2 | Demand covers enum equality only, not enum_cmp or ordering operators | 1 | 5 | 2026-11-12 |
+| [6757](cf/6757/roast.md) | Avoid unnecessary StringInfo allocation in tablesync COPY buffer | NO-FUNDAMENTAL-OBJECTION | 0 |  | 1 | 5 | 2026-11-12 |
+| [6761](cf/6761/roast.md) | Remove invalid SS2/SS3 handling from EUC-KR routines | NO-FUNDAMENTAL-OBJECTION | 0 |  | 0 | 10 | 2026-11-12 |
 | [6763](cf/6763/roast.md) | Improve pg_stat_statements scalability | NEEDS-COMMITTER-EYES | 5 | Removing pg_stat_statements could discard all cumulative statistics at restart | 5 | 29 | 2026-11-12 |
 | [6765](cf/6765/roast.md) | teach vacuumlo to handle domains | NEEDS-COMMITTER-EYES | 2 | Domain fix and composite/array expansion are bundled in one patch | 0 | 7 | 2026-11-12 |
+| [6768](cf/6768/roast.md) | pg_rewind does not rewind diverging timelines | NEEDS-DESIGN-DISCUSSION | 4 | Archived WAL segments with the same TLI stay ambiguous to pg_rewind | 1 | 36 | 2026-11-12 |
+| [6770](cf/6770/roast.md) | [BUG] DELETE/UPDATE more than one row in partitioned foreign table | NEEDS-COMMITTER-EYES | 4 | Out-of-range pseudo attribute number adds a silent planner invariant | 0 | 37 | 2026-11-12 |
 | [6781](cf/6781/roast.md) | pgstat: Flush some statistics within running transactions, take 2 | NEEDS-COMMITTER-EYES | 2 | Custom stats callbacks can silently double count after the API change | 1 | 44 | 2026-11-12 |
+| [6788](cf/6788/roast.md) | COPY TO BLACKHOLE / pg_dump -j -Fb | LIKELY-REJECT | 2 | A COPY destination for corruption checks does not belong in COPY | 0 | 6 | 2026-11-12 |
+| [6792](cf/6792/roast.md) | to_date()/to_timestamp() silently accept month=0 and day=0 | NEEDS-DESIGN-DISCUSSION | 2 | A narrow 00 check repeats the margin-fix pattern rejected for year 0 | 2 | 18 | 2026-11-12 |
+| [6804](cf/6804/roast.md) | log_postmaster_stats | NEEDS-DESIGN-DISCUSSION | 5 | CPU-based trigger kept against reviewer advice and cannot be tested | 0 | 9 | 2026-11-12 |
+| [6821](cf/6821/roast.md) | Unify parallel worker handling for index builds | NO-FUNDAMENTAL-OBJECTION | 0 |  | 0 | 7 | 2026-11-12 |
+| [6824](cf/6824/roast.md) | Fix: VACUUM FULL or CREATE INDEX fails with error "missing chunk number 0 for toast value XXX" | NEEDS-COMMITTER-EYES | 2 | Skipping tuples with missing TOAST data hides real corruption from CREATE INDEX | 0 | 7 | 2026-11-12 |
+| [6837](cf/6837/roast.md) | Add pg_get_table_ddl() to reconstruct CREATE TABLE statements | NEEDS-DESIGN-DISCUSSION | 5 | Extends a function family that was reverted pending a redesign | 3 | 73 | 2026-11-12 |
+| [6850](cf/6850/roast.md) | Don't consider FATAL errors "abnormal server termination" | NEEDS-DESIGN-DISCUSSION | 2 | Clients that match the appended string lose reconnect detection | 1 | 7 | 2026-11-12 |
+| [6861](cf/6861/roast.md) | Separate catalog_xmin from xmin in walsender hot standby feedback | NEEDS-DESIGN-DISCUSSION | 3 | wal_receiver_create_temp_slot already gives slotless standbys a separate catalog_xmin | 0 | 4 | 2026-11-12 |
+| [6864](cf/6864/roast.md) | Add explicit warnings about unsafe OAuth trace output for libpq | NO-FUNDAMENTAL-OBJECTION | 0 |  | 0 | 4 | 2026-11-12 |
+| [6870](cf/6870/roast.md) | LLVM JIT: any JIT-compiled query crashes (SIGILL) on a libLLVM 19 + ASAN build | NEEDS-COMMITTER-EYES | 1 | Per-sanitizer source pragmas may not scale to other instrumentation | 0 | 11 | 2026-11-12 |
+| [6888](cf/6888/roast.md) | Allow wal_log_hints to be changed without restart | NEEDS-DESIGN-DISCUSSION | 4 | pg_rewind accepts a target that had wal_log_hints off after divergence | 0 | 2 | 2026-11-12 |
+| [6892](cf/6892/roast.md) | Randomize B-Tree page split location to avoid oscillating patterns | NEEDS-DESIGN-DISCUSSION | 2 | No field report shows users hurt by split oscillation | 0 | 14 | 2026-11-12 |
+| [6897](cf/6897/roast.md) | Require SSL connection to postgres for oauth | NEEDS-DESIGN-DISCUSSION | 4 | 0002 breaks working plaintext OAuth setups, and the only opt-out is a debug flag | 0 | 9 | 2026-11-12 |
+| [6903](cf/6903/roast.md) | Two bugs around ALTER TYPE | NEEDS-COMMITTER-EYES | 3 | New lock changes ALTER TYPE blocking for existing users, mainly if backpatched | 1 | 5 | 2026-11-12 |
+| [6912](cf/6912/roast.md) | SQL/JSON: JSON_TRANSFORM (SQL standard, subclause 6.44) | NEEDS-COMMITTER-EYES | 4 | Claimed portability rests on a subset of T883 nobody checked against the text | 1 | 8 | 2026-11-12 |
+| [6915](cf/6915/roast.md) | pg_dump: skip pg_init_privs entries for non-existent roles | NEEDS-COMMITTER-EYES | 2 | Dropping whole aclitems leaves upgraded extensions with permanent dump drift | 1 | 35 | 2026-11-12 |
+| [6916](cf/6916/roast.md) | PROXY protocol support | NEEDS-DESIGN-DISCUSSION | 5 | Trusting Unix sockets lets any local OS user claim any client IP | 0 | 53 | 2026-11-12 |
+| [6921](cf/6921/roast.md) | Continuous re-validation of session credentials | NEEDS-DESIGN-DISCUSSION | 5 | Baseline check applies rolvaliduntil to sessions that never used a password | 0 | 8 | 2026-11-12 |
+| [6925](cf/6925/roast.md) | Add PRODUCT() aggregate function | NEEDS-COMMITTER-EYES | 1 | product(real) returns double precision while sum(real) returns real | 0 | 29 | 2026-11-12 |
+| [6931](cf/6931/roast.md) | Report unsupported COPY FROM targets before reading input | NO-FUNDAMENTAL-OBJECTION | 0 |  | 0 | 8 | 2026-11-12 |
+| [6932](cf/6932/roast.md) | Improve row estimation with multi-column unique indexes | NEEDS-DESIGN-DISCUSSION | 2 | Paths of one relation get different row counts for the same clauses | 1 | 3 | 2026-11-12 |
+| [6961](cf/6961/roast.md) | REVOKE's CASCADE protection doesn't work with inherited table owners | NEEDS-COMMITTER-EYES | 1 | Back-patched REVOKE behavior change can break existing scripts | 0 | 7 | 2026-11-12 |
 | [7016](cf/7016/roast.md) | Fix LSN of logical decoding message | NO-FUNDAMENTAL-OBJECTION | 0 |  | 0 | 13 | 2026-11-12 |
 | [7573](cf/7573/roast.md) | Fix pg_combinebackup with truncated intermediate incremental backups | NO-FUNDAMENTAL-OBJECTION | 0 |  | 0 | 5 | 2026-11-12 |
 | [7574](cf/7574/roast.md) | psql: Don't offer USING INDEX after REPACK (CONCURRENTLY) or (ANALYZE) | NEEDS-COMMITTER-EYES | 1 | Tab completion copies a server-side semantic rule that can drift | 0 | 1 | 2026-11-12 |

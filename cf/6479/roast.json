@@ -1,0 +1,1524 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:52:45.412Z",
+  "input": {
+    "arg": "6479",
+    "cf": {
+      "id": 6479,
+      "url": "https://commitfest.postgresql.org/patch/6479/",
+      "title": "SLOPE - Planner optimizations on monotonic expressions.",
+      "status": "Needs review",
+      "authors": "Alexandre Felipe (afelipe)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAE8JnxN8kLUMygXb33LC-UPGyTC0cTcCyeWUdfEoz%3DOBo3aT5g%40mail.gmail.com",
+    "subject": "SLOPE - Planner optimizations on monotonic expressions.",
+    "thread_start": "2026-02-11T21:02:53Z",
+    "messages_read": 44,
+    "messages_total": 44,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v16.0-0003-SLOPE-catalog-changes.patch",
+      "v16.0-0001-benchmark.patch",
+      "v16.0-0002-Optimized-reverse-pathkeys.patch",
+      "v16.0-0005-SLOPE-Constant-sort-keys.patch",
+      "v16.0-0004-SLOPE-Planner-support.patch",
+      "v16.0-0007-SLOPE-Timezone.patch",
+      "v16.0-0006-SLOPE-documentation.patch",
+      "v16.0-0008-SLOPE-timezone-errsave.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The goal of grouping by time bucket with one timestamp index is not disputed, but level 1b is not settled. demand-1 shows the only stated use case is group by date_trunc or a date cast, while v16 annotates arithmetic, casts and timezone functions. maintenance-fit-3 and demand-2 show that every query pays planning cost, measured only for v5, and that no execution-time gain is shown. Three level 2 objections survived but are not evaluated here.",
+  "failing_level": "1b",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "failed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "not_evaluated"
+    }
+  ],
+  "brief": {
+    "title": "Planner uses index order for monotonic expressions of the index key",
+    "problem": "The planner does not know that f(x) is ordered when x is ordered, so queries such as group by date_trunc('month', ts) or created_at::date sort or read the whole table instead of using an index on the timestamp column. The author targets reports and dashboards on busy tables that want one timestamp index for several grouping intervals.",
+    "proposed_design": "A new prosupport request lets a function declare, per argument, whether it is increasing, decreasing, constant or neither. At plan creation the planner finds the innermost subexpression that causes all variation of each pathkey expression and caches it as slope_info. build_index_pathkeys then emits extra pathkeys when the index key is that source, using a backward scan for decreasing functions.",
+    "user_visible_surface": [
+      "New GUC enable_slope (boolean, default on).",
+      "New support request SupportRequestMonotonic, using MONOTONICFUNC_INCREASING, _DECREASING, _BOTH and _NONE values, for C extension functions.",
+      "New built-in support functions arg0_asc_slope_support, arg0_desc_slope_support, arg1_asc_slope_support, diff_slope_support, addition_slope_support, multiply_slope_support, divide_slope_support, attached to many pg_proc entries.",
+      "DecodeTimezoneName gains an ErrorSaveContext parameter (C API change).",
+      "btree equalimage functions may now be called at index scan planning time, per btree.sgml."
+    ],
+    "author_claims": [
+      "One timestamp index can serve group by on day, week, month or year, plus ordering, without a sort node.",
+      "Min and max of f(x) can use an index scan with limit 1.",
+      "Planning time overhead in v5 was about 1% to 15% on a table with 24 indexes, worst for casts.",
+      "Computing backward pathkeys by reversing forward ones gives a measurable planner speedup.",
+      "Timezone monotonicity is checked once when a zone loads, so date(timestamptz) stays usable in most zones."
+    ],
+    "thread_state": "Zsolt Parragi reviewed repeatedly and found many wrong-result cases (time wraparound, interval arithmetic, NaN and infinity, domains, casts, DST, custom opclasses, cached plans), each answered by a fix; Corey Huinker and Dean Rasheed commented early. Since v16.0 in September only the author has posted, asking about a Windows-only test_plan_advice failure.",
+    "unclear": [
+      "No reviewer has stated that v16 is free of wrong-result cases after the timezone and plan-cache patches.",
+      "No planning-time numbers are given for v16, only for v5.",
+      "The proposal does not say whether merge joins benefit; the author reported they did not.",
+      "The plan-cache guard covers only plans the author could identify; he says he may not have covered all cases.",
+      "The proposal does not say how user-defined SQL functions can declare monotonicity without writing C."
+    ],
+    "search_queries": [
+      "monotonic function index order",
+      "order by expression use index",
+      "planner monotonicity prosupport",
+      "date_trunc group by index scan",
+      "enable_slope pathkeys",
+      "sort elimination function of index column",
+      "SupportRequestMonotonic",
+      "inferred ordering expression pathkeys"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Demand is shown for time-bucket grouping only, but the scope is much wider",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "demand",
+      "touch_points": [
+        "planner_behaviour",
+        "maintenance_burden",
+        "catalog"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer takes on prosupport entries for multiply, divide, unary minus, atan, sinh, erf, casts and timezone conversions. Users who never group by f(x) pay the extra planning cost. Each later fix for a wrong-result corner case, like the infinity, domain, cast or DST cases, lands on that committer.",
+      "argument": "The only use case anyone stated is group by date_trunc or ts::date (messages #1, #3). In message #12 the author says the ORDER BY case is \"a bit pointless\" because order by x works, and that min(f(x)) can be written as f(min(x)). Most wrong-result reports in messages #7, #11, #23, #26 and #33 came from arithmetic, interval, cast and infinity coverage that no user asked for. The author offered to limit the scope to GROUP BY in message #12, but v16 keeps the full scope.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3,
+        12,
+        23,
+        26,
+        33
+      ],
+      "author_must_show": "Which users need ordering through arithmetic, trigonometric or cast expressions, and why would a version limited to date_trunc and date casts under GROUP BY not serve them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Alexandre Felipe",
+          "date": "2026-02-11T21:02:53Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxN8kLUMygXb33LC-UPGyTC0cTcCyeWUdfEoz%3DOBo3aT5g%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Alexandre Felipe",
+          "date": "2026-03-20T06:53:32Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxN_XzS1DgmEvEizbg7jXPgUwJ853uorciA5X8p%2B%3D9dYvA%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "Alexandre Felipe",
+          "date": "2026-03-26T20:49:57Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxP__hhKjP8uXKqGepg%2BGAjRy%2BJthg%3Df-e24G3PML7ZdbA%40mail.gmail.com"
+        },
+        {
+          "index": 23,
+          "from": "Zsolt Parragi",
+          "date": "2026-05-08T22:18:55Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFP%2BQkhGnt60_Z%2BQoaPj1nVfNtGFQhLtFxp_bTJ6SbMOMQ%40mail.gmail.com"
+        },
+        {
+          "index": 26,
+          "from": "Zsolt Parragi",
+          "date": "2026-07-01T22:00:48Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFPhBcNP6jxA4u%3DV%3Dmie%3DDNyYe4t8cENCzXk49ojkZ%3D5JQ%40mail.gmail.com"
+        },
+        {
+          "index": 33,
+          "from": "Zsolt Parragi",
+          "date": "2026-07-21T22:27:58Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFNDVZm9wj86APOTfrx2aJrd6TEJfqiceEe0XMO%3Da81wEw%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The thread states one use case, grouping by date_trunc or a date cast. In message #8 the author says the other functions are there for completeness, and v16 keeps the full scope despite the offer in message #12 to narrow it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Planning cost on every query for cases the author calls marginal",
+      "level": "1b",
+      "rubric_item": 8,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "planner_behaviour",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An OLTP workload with many indexes and ORDER BY on plain columns or casts pays extra planning time on every query. enable_slope is on by default, so these users pay a cost they never chose. The only numbers are from v5.",
+      "argument": "Message #10 shows about 5% overhead for ORDER BY a and 15% for casts on a table with 24 indexes, and v16 has much more logic than v5. In message #12 the author calls the ORDER BY and min/max cases \"a bit pointless\", because a rewrite gets the same plan, and offers to limit the analysis to GROUP BY. The full scope stayed (message #15), so all queries carry the cost of the broadest version.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        10,
+        12,
+        15
+      ],
+      "author_must_show": "What are the v16 planning-time numbers for queries that gain nothing, and would a GROUP BY-only scope keep most of the benefit for less cost?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 10,
+          "from": "Alexandre Felipe",
+          "date": "2026-03-26T09:51:56Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxOiw8B1FXb-fBGO-03xpVtZuZubCbpoW9LytmfFNB35Lw%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "Alexandre Felipe",
+          "date": "2026-03-26T20:49:57Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxP__hhKjP8uXKqGepg%2BGAjRy%2BJthg%3Df-e24G3PML7ZdbA%40mail.gmail.com"
+        },
+        {
+          "index": 15,
+          "from": "Alexandre Felipe",
+          "date": "2026-04-05T21:28:35Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxP75xOK9K7F0c74C9j4wnGEz9%2BxsuvwehExb3Lth3%2B3-A%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The only planning-time numbers are from v5, and they show 5% to 15% overhead for queries that gain nothing. v6 restructured the analysis to cut per-index work, but no numbers for v16 are shown.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No measured gain for the motivating group by query",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A dashboard runs select date_trunc('month', ts), count(*) over a whole busy table. The planner now chooses a full index-only scan plus GroupAggregate, where today it would use a seq scan plus HashAggregate with a few groups. No run shows which plan is faster.",
+      "argument": "The thread shows EXPLAIN output and planning-time overhead from v5 (message #10), but no execution times before and after. For a full-table aggregate with few groups, today's hash plan may already be cheap, so the benefit likely depends on LIMIT, range filters or many groups. No one in the thread reports a field case or an independent user who hit this problem. Corey's \"That's a good one\" (message #4) is interest, not a report of need.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        4,
+        10
+      ],
+      "author_must_show": "For which query shapes and table sizes does the new plan beat today's seq scan plus HashAggregate, and by how much in execution time?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Alexandre Felipe",
+          "date": "2026-03-20T06:53:32Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxN_XzS1DgmEvEizbg7jXPgUwJ853uorciA5X8p%2B%3D9dYvA%40mail.gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "Corey Huinker",
+          "date": "2026-03-25T05:18:12Z",
+          "url": "https://www.postgresql.org/message-id/CADkLM%3Dc6-UuLNpN_O6e0Cuv7RWg1jS0bOd5WK_AJuPzR7JAD3Q%40mail.gmail.com"
+        },
+        {
+          "index": 10,
+          "from": "Alexandre Felipe",
+          "date": "2026-03-26T09:51:56Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxOiw8B1FXb-fBGO-03xpVtZuZubCbpoW9LytmfFNB35Lw%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The thread has EXPLAIN output and v5 planning times but no execution times and no independent user report. The scenario is weaker than stated, because the planner still costs the hash plan and only gains one more path.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "Cached plans can return wrongly ordered rows after a session setting changes",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "planner_behaviour",
+      "touch_points": [
+        "planner_behaviour",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An application prepares `select t at local ... order by 1` through a driver that uses generic plans. The session or pool later sets TimeZone to 'America/New_York'. The cached plan keeps the index order with no Sort node, rows come back out of order, and nothing reports an error.",
+      "argument": "The timezone patch makes monotonicity depend on session_timezone, which is read at plan time. Message #39 showed a prepared statement returning wrong order after `SET TimeZone`. The 0009 guard in message #40 marks plans as non-cacheable only in the paths the author found, and the author says he is not sure all cases are covered. Since `enable_slope` defaults to on, existing prepared-statement workloads are exposed after upgrade without opting in.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        39,
+        40
+      ],
+      "author_must_show": "Which plan-caching paths (PL/pgSQL, SPI, extended protocol, plan_cache_mode = force_generic_plan) are covered, and what invalidates a cached plan when TimeZone changes?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 39,
+          "from": "Zsolt Parragi",
+          "date": "2026-08-26T22:30:52Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFO8RQi2j4cEYtQAik_wYL1emy8SeMrq7oja0pea2Xu42w%40mail.gmail.com"
+        },
+        {
+          "index": 40,
+          "from": "Alexandre Felipe",
+          "date": "2026-09-01T10:27:22Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxOo0UGSzMf6Cw6bvSFv3E4XwhLvrwbmsJGU1_6d8mpguA%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #39 shows the wrong order from a prepared statement after `SET TimeZone`. Message #40 adds a guard, but the author says he is not sure it covers all cases, and no reviewer has confirmed it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "The SupportRequestMonotonic contract does not name its ordering",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension author declares MONOTONICFUNC_INCREASING for a text or custom-type function, following the xfunc.sgml text. The index uses a non-default collation or opclass, or the function maps NULL, NaN or infinity out of order. Queries using that index return wrongly ordered or wrongly grouped rows.",
+      "argument": "The documented contract is only \"x1 < x2 implies f(x1) <= f(x2)\". It does not say which btree opfamily or collation \"<\" means. It also leaves out rules the thread found necessary: f(NULL) must be NULL (message #8), special float values (messages #23, #25), domains (message #26), and equalimage (message #33). The built-in arg0_asc_slope_support and similar generic support functions can also be attached with ALTER FUNCTION ... SUPPORT to functions they were not written for.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        8,
+        23,
+        25,
+        26,
+        33
+      ],
+      "author_must_show": "Can the documented contract state the opfamily, collation, NULL and special-value rules that a support function must guarantee, so that a third-party implementer can get them right?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 8,
+          "from": "Alexandre Felipe",
+          "date": "2026-03-25T22:22:03Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxPHZMtY-yujHHtDVB_wL7QWhu7epKCnHDqwzZ2JZVYa4g%40mail.gmail.com"
+        },
+        {
+          "index": 23,
+          "from": "Zsolt Parragi",
+          "date": "2026-05-08T22:18:55Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFP%2BQkhGnt60_Z%2BQoaPj1nVfNtGFQhLtFxp_bTJ6SbMOMQ%40mail.gmail.com"
+        },
+        {
+          "index": 25,
+          "from": "Alexandre Felipe",
+          "date": "2026-06-01T13:07:47Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxMxePAVgi2BuM%3D_u1_G%3D6Bt9YoOWuPS%3DMTW2j9VWGV2Gg%40mail.gmail.com"
+        },
+        {
+          "index": 26,
+          "from": "Zsolt Parragi",
+          "date": "2026-07-01T22:00:48Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFPhBcNP6jxA4u%3DV%3Dmie%3DDNyYe4t8cENCzXk49ojkZ%3D5JQ%40mail.gmail.com"
+        },
+        {
+          "index": 33,
+          "from": "Zsolt Parragi",
+          "date": "2026-07-21T22:27:58Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFNDVZm9wj86APOTfrx2aJrd6TEJfqiceEe0XMO%3Da81wEw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The xfunc.sgml hunk states only \"x1 < x2 implies f(x1) <= f(x2)\". It names no opfamily or collation and gives no rule for NULL or special values, although the thread needed a fix for each.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "Correctness rests on hand-kept pg_proc annotations that nothing checks",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "catalog",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later release adds a cast, a datetime function or a new special value, or changes an existing one, and keeps or copies a slope prosupport entry. Queries that use an index on the argument then return rows out of order, with no error. Users find out from wrong reports, perhaps years later.",
+      "argument": "Each monotonicity claim is a correctness promise that no test or catalog check verifies against the function's behaviour. One reviewer found wrong results from time wraparound, interval arithmetic, infinity and NaN, domains, DST casts, oid relabeling, custom opclasses and cached plans (messages #7, #11, #23, #26, #30, #33, #39). A fix for one case was lost in a refactoring and came back only on re-test (message #33). Nothing reminds a later patch author to revisit these annotations.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        7,
+        11,
+        23,
+        26,
+        30,
+        33,
+        39
+      ],
+      "author_must_show": "What mechanism, beyond regression tests for known cases, would catch a wrong or stale monotonicity annotation before it ships?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "Zsolt Parragi",
+          "date": "2026-03-25T20:57:23Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFPFhdh%2Bky-554yMOXo-u8ALgBJKEf_a2vZOtWLuxtKDBw%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Dean Rasheed",
+          "date": "2026-03-26T18:17:11Z",
+          "url": "https://www.postgresql.org/message-id/CAEZATCXHYc_NGLNbvn5Uj8JU2XCXME%3DJTjT_M9amCPwZWGrNvA%40mail.gmail.com"
+        },
+        {
+          "index": 23,
+          "from": "Zsolt Parragi",
+          "date": "2026-05-08T22:18:55Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFP%2BQkhGnt60_Z%2BQoaPj1nVfNtGFQhLtFxp_bTJ6SbMOMQ%40mail.gmail.com"
+        },
+        {
+          "index": 26,
+          "from": "Zsolt Parragi",
+          "date": "2026-07-01T22:00:48Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFPhBcNP6jxA4u%3DV%3Dmie%3DDNyYe4t8cENCzXk49ojkZ%3D5JQ%40mail.gmail.com"
+        },
+        {
+          "index": 30,
+          "from": "Zsolt Parragi",
+          "date": "2026-07-17T21:16:23Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFMJZWaZMYqn01D%2BKVY%2Bfz-rWFOHojwy6c-mXftBOjWEoQ%40mail.gmail.com"
+        },
+        {
+          "index": 33,
+          "from": "Zsolt Parragi",
+          "date": "2026-07-21T22:27:58Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFNDVZm9wj86APOTfrx2aJrd6TEJfqiceEe0XMO%3Da81wEw%40mail.gmail.com"
+        },
+        {
+          "index": 39,
+          "from": "Zsolt Parragi",
+          "date": "2026-08-26T22:30:52Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFO8RQi2j4cEYtQAik_wYL1emy8SeMrq7oja0pea2Xu42w%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "slope_catalog.sql lists which functions carry an annotation but does not check an annotation against the function's behaviour. Message #33 shows a fix lost in refactoring and found only by a manual re-test.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "enable_slope works as a wrong-results escape hatch",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "new_guc",
+      "touch_points": [
+        "new_guc",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After upgrade, a user hits a still-unknown non-monotonic case, such as a cast, a timezone, or a custom opclass. The only workaround is `set enable_slope = off`, which removes the optimization for every query in the session, and the user finds the cause only by comparing results.",
+      "argument": "Other enable_* settings switch off plan types that are always correct, so users can rely on any of them giving right answers. In this thread, every reviewer test case used `enable_slope = off` as the reference for correct results (messages #30, #33, #39). That shows the setting serves as a correctness fallback. No reviewer has said that v16 is free of wrong-result cases.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        30,
+        33,
+        39
+      ],
+      "author_must_show": "Would the patch be acceptable with the risky families, such as casts and timezone-dependent functions, left out, so that enable_slope only tunes performance?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 30,
+          "from": "Zsolt Parragi",
+          "date": "2026-07-17T21:16:23Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFMJZWaZMYqn01D%2BKVY%2Bfz-rWFOHojwy6c-mXftBOjWEoQ%40mail.gmail.com"
+        },
+        {
+          "index": 33,
+          "from": "Zsolt Parragi",
+          "date": "2026-07-21T22:27:58Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFNDVZm9wj86APOTfrx2aJrd6TEJfqiceEe0XMO%3Da81wEw%40mail.gmail.com"
+        },
+        {
+          "index": 39,
+          "from": "Zsolt Parragi",
+          "date": "2026-08-26T22:30:52Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFO8RQi2j4cEYtQAik_wYL1emy8SeMrq7oja0pea2Xu42w%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The scenario assumes a wrong-result case nobody has found yet, which is the concern in maintenance-fit-1. The setting follows the existing enable_* pattern, a reviewer asked for it in message #28, and comparing results with it off is an ordinary test method.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Planner correctness now depends on timezone data and session state",
+      "level": "2",
+      "rubric_item": 15,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "planner_behaviour",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A plan built under one TimeZone setting, or one tzdata version, is used where the offsets differ. A cached or generic plan then skips a needed sort, and date_trunc or date(timestamptz) results come back out of order. The user sees no error.",
+      "argument": "Patch 0007 computes monotonicity per zone when the zone loads, so plan correctness depends on IANA data the project does not control. Patch 0009 marks one-shot plans with CURSOR_OPT_ONESHOT, and the author says he is not sure all cases are covered (message #40). The patches also touch src/timezone, pgtime.h and c.h and change the DecodeTimezoneName C API, so future timezone work inherits this coupling.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        39,
+        40
+      ],
+      "author_must_show": "Which plan-reuse paths were checked, and why is it worth coupling the planner to tzdata instead of supporting timestamp-only functions first?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 39,
+          "from": "Zsolt Parragi",
+          "date": "2026-08-26T22:30:52Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFO8RQi2j4cEYtQAik_wYL1emy8SeMrq7oja0pea2Xu42w%40mail.gmail.com"
+        },
+        {
+          "index": 40,
+          "from": "Alexandre Felipe",
+          "date": "2026-09-01T10:27:22Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxOo0UGSzMf6Cw6bvSFv3E4XwhLvrwbmsJGU1_6d8mpguA%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1 for the cached-plan scenario. The tzdata part has no concrete failure: Postgres already ships and depends on tzdata, and plans do not outlive the session that loaded the zone.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "ORDER BY f(x) and min(f(x)) already have simple rewrites",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "desirability",
+      "touch_points": [
+        "does_not_fit",
+        "planner_behaviour",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user writes `order by created_at::date` instead of `order by created_at`, and the planner now trusts a prosupport annotation in place of a sort. If one annotation is wrong, the query silently returns rows out of order. The user finds out only when a report is wrong, for a case that `order by created_at` already served with the same index.",
+      "argument": "Message #12 states that `order by f(x)` can be written as `order by x`, and `min(f(x))` as `f(min(x))`, with the same plan today. Those parts add convenience but carry the full wrong-result risk, and the thread found many such cases (#7, #11, #23, #26, #30, #33, #39). GROUP BY on several grains is the case with no rewrite, though `create index on t (date_trunc('month', ts))` covers one grain per index. The proposal does not weigh the extra indexes against the wider planner surface.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        12,
+        33,
+        39
+      ],
+      "author_must_show": "Which queries, beyond GROUP BY over several grains that expression indexes cover only one grain at a time, cannot be rewritten today with the index on x?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 12,
+          "from": "Alexandre Felipe",
+          "date": "2026-03-26T20:49:57Z",
+          "url": "https://www.postgresql.org/message-id/CAE8JnxP__hhKjP8uXKqGepg%2BGAjRy%2BJthg%3Df-e24G3PML7ZdbA%40mail.gmail.com"
+        },
+        {
+          "index": 33,
+          "from": "Zsolt Parragi",
+          "date": "2026-07-21T22:27:58Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFNDVZm9wj86APOTfrx2aJrd6TEJfqiceEe0XMO%3Da81wEw%40mail.gmail.com"
+        },
+        {
+          "index": 39,
+          "from": "Zsolt Parragi",
+          "date": "2026-08-26T22:30:52Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFO8RQi2j4cEYtQAik_wYL1emy8SeMrq7oja0pea2Xu42w%40mail.gmail.com"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of demand-1, which makes the scope point with better support. Message #12 also says ORDER BY support comes from the same pathkey mechanism that GROUP BY needs, so it adds no separate wrong-result risk.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "Patches 0003 and 0007 add seven support functions and attach prosupport entries to many pg_proc rows."
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The patch adds SupportRequestMonotonic and changes the DecodeTimezoneName signature."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": true,
+      "reason": "Patch 0004 adds enable_slope, default on."
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": true,
+      "reason": "build_index_pathkeys emits extra pathkeys, so plans for ORDER BY, GROUP BY, DISTINCT and min/max change."
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Each monotonicity annotation is a correctness promise, and the patches couple the planner to src/timezone and session TimeZone."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Slope analysis runs at plan time for every query; v5 numbers show 1% to 15% planning overhead with 24 indexes."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "What are the v16 planning-time numbers for queries that gain nothing from slope analysis, on tables with many indexes?",
+    "For which query shapes and table sizes does the new plan beat today's seq scan plus HashAggregate in execution time, and by how much?",
+    "Which users need ordering through arithmetic, trigonometric or cast expressions, and would a version limited to date_trunc and date casts under GROUP BY serve the stated use case?",
+    "Which plan-caching paths (PL/pgSQL, SPI, extended protocol, force_generic_plan) does the guard cover, and what invalidates a cached plan when TimeZone changes?",
+    "What mechanism, beyond regression tests for known cases, would catch a wrong or stale monotonicity annotation before it ships?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "It needs a committer who knows pathkeys and equivalence classes in the planner, and one who knows the datetime and timezone code. Dean Rasheed commented early and asked to defer; no such committer has reviewed the design since.",
+    "liability": "The owner signs for the correctness of every monotonicity annotation in pg_proc, for the plan-cache guard, and for the planner's dependence on timezone data. A wrong annotation gives wrongly ordered or grouped rows with no error, for as long as the feature exists.",
+    "author_follow_up": "Good sign: the author answered each reported wrong-result case with a fix through 16 versions and was still posting after v16.0 in September."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "high",
+    "review_cost": "high",
+    "recommended_action": "needs design rethink",
+    "reason": "Grouping by time bucket is a common report pattern, but v16 is eight patches across the planner, pg_proc, datetime and src/timezone, and its scope exceeds the stated demand. A narrower version with v16 measurements would be cheaper to review and own; patches 0002 and 0005 look separable and could go first."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read, so the plan-cache guard, the per-zone monotonicity check and the equalimage logic could not be checked. The three surviving level 2 objections (standards-compat-1, standards-compat-2, maintenance-fit-1) are not evaluated because level 1b fails first.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "wiki:Optimizer_.2F_Executor:2",
+      "kind": "do_not_want",
+      "title": "Improve use of expression indexes for ORDER BY",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Optimizer_.2F_Executor",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Improve use of expression indexes for ORDER BY\nSection: Optimizer / Executor\nLinked: Resjunk sort columns, Heikki's index-only quals patch, and bug #5000",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "monotonic function index order",
+        "order by expression use index",
+        "inferred ordering expression pathkeys"
+      ],
+      "from_hint": false,
+      "score": 0.3,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:738",
+      "kind": "cf",
+      "title": "Index Only Scan for index expressions",
+      "status": "Returned with feedback",
+      "date": "2016-09-28",
+      "first_date": "2016-08-15",
+      "url": "https://commitfest.postgresql.org/patch/738/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/57B23C4F.7000304@postgrespro.ru"
+      ],
+      "authors": "Ildar Musin (i.musin)",
+      "objectors": "Vladimir Sitnikov, Robert Haas",
+      "summary": "The patch extends the planner so that index-only scans can be used when a query's target list or restriction clauses contain expressions that exactly match index expression columns, not only plain attribute columns. Matching requires the expression tree (or a subtree) to be identical to the index expression; no normalization of commutative or associative operators is attempted.",
+      "objection": "Testing of the sixth patch version by Vladimir Sitnikov found an error (\"variable not found in subplan target list\") when queries access non-indexed columns alongside an expression index. Robert Haas marked the entry Returned with Feedback because these bugs precluded committing it before the CommitFest ended, while inviting resubmission and saying the effort was good.",
+      "touch_points": [],
+      "matched_queries": [
+        "order by expression use index",
+        "date_trunc group by index scan",
+        "inferred ordering expression pathkeys"
+      ],
+      "from_hint": false,
+      "score": 0.257,
+      "enriched": true,
+      "key_quote": "Based on this report, this patch appears to have bugs that would\npreclude committing it, so I'm marking it \"Returned with Feedback\" for\nthis CommitFest, which is due to end shortly.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoaiYuarPYv2BWrXG-7XZ1EX75guirx2kTXQY0HxtD%3DWuw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "revert:f4c7c410ee4a7baa06f51ebb8d5333c169691dd3",
+      "kind": "revert",
+      "title": "Revert \"Optimize order of GROUP BY keys\".",
+      "status": "Reverted",
+      "date": "2022-10-03",
+      "first_date": "2022-03-30",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f4c7c410ee4a7baa06f51ebb8d5333c169691dd3",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/TYAPR01MB586665EB5FB2C3807E893941F5579@TYAPR01MB5866.jpnprd01.prod.outlook.com",
+        "https://www.postgresql.org/message-id/flat/7c79e6a5-8597-74e8-0671-1c39d124c9d6@sigaev.ru",
+        "https://www.postgresql.org/message-id/flat/CA+q6zcW_4o2NC0zutLkOJPsFt80megSpX_dVRo6GK9PC-Jx_Ag@mail.gmail.com"
+      ],
+      "authors": "Tomas Vondra",
+      "objectors": "",
+      "summary": "Revert \"Optimize order of GROUP BY keys\".\nReverted commit(s): Optimize order of GROUP BY keys",
+      "objection": "This reverts commit db0d67db2401eb6238ccc04c6407a4fd4f985832 and\nseveral follow-on fixes.  The idea of making a cost-based choice\nof the order of the sorting columns is not fundamentally unsound,\nbut it requires cost information and data statistics that we don't\nreally have.  For example, relying on procost to distinguish the\nrelative costs of different sort comparators is pretty pointless\nso long as most such comparator functions are labeled with cost 1.0.\nMoreover, estimating the number of comparisons done by Quicksort\nrequires more than just an estimate of the number of distinct values\nin the input: you also need some idea of the sizes of the larger\ngroups, if you want an estimate that's good to better than a factor of\nthree or so.  That's data that's often unknown or not very reliable.\nWorse, to arrive at estimates of the number of calls made to the\nlower-order-column comparison functions, the code needs to make\nestimates of the numbers of distinct values of multiple columns,\nwhich are necessarily even less trustworthy than per-column stats.\nEven if all the inputs are perfectly reliable, the cost algorithm\nas-implemented cannot offer useful information about how to order\nsorting columns beyond the point at which the average group size\nis estimated to drop to 1.\n\nClose inspection of the code added by db0d67db2 shows that there\nare also multiple small bugs.  These could have been fixed, but\nthere's not much point if we don't trust the estimates to be\naccurate in-principle.\n\nFinally, the changes in cost_sort's behavior made for very large\nchanges (often a factor of 2 or so) in the cost estimates for all\nsorting operations, not only those for multi-column GROUP BY.\nThat naturally changes plan choices in many situations, and there's\nprecious little evidence to show that the changes are for the better.\nGiven the above doubts about whether the new estimates are really\ntrustworthy, it's hard to summon much confidence that these changes\nare better on the average.\n\nSince we're hard up against the release deadline for v15, let's\nrevert these changes for now.  We can always try again later.\n\nNote: in v15, I left T_PathKeyInfo in place in nodes.h even though\nit's unreferenced.  Removing it would be an ABI break, and it seems\na bit late in the release cycle for that.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "monotonic function index order",
+        "inferred ordering expression pathkeys"
+      ],
+      "from_hint": false,
+      "score": 0.208,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:5990",
+      "kind": "cf",
+      "title": "Problem in 'ORDER BY' of a column using a created collation?",
+      "status": "Returned with feedback",
+      "date": "2025-10-21",
+      "first_date": "2025-08-25",
+      "url": "https://commitfest.postgresql.org/patch/5990/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CADrsxdbyWg75xV6sBeVCw76UE38JTW=1GJha4GAWP7jB0AK1ow@mail.gmail.com"
+      ],
+      "authors": "Nishant Sharma (nishant-at-edb)",
+      "objectors": "",
+      "summary": "Nishant Sharma reported a bug report, not a patch: with the ICU collation 'ja-u-kr-latn-digit', the first ORDER BY column sorted letters before digits, but the second column did not. The first column uses abbreviated keys (strxfrm-style sort keys compared with memcmp), and the second calls strncoll_icu_utf8(), so the report asked whether Postgres or ICU was at fault.",
+      "objection": "No Postgres change was needed. A standalone C program showed that ICU's ucol_strcollUTF8() and ucol_nextSortKeyPart() order '1' and 'a' differently, so the bug is in ICU. Daniel Verite pointed to an existing ICU ticket for it, and the author reported it to the ICU support list.",
+      "touch_points": [],
+      "matched_queries": [
+        "order by expression use index",
+        "inferred ordering expression pathkeys"
+      ],
+      "from_hint": false,
+      "score": 0.186,
+      "enriched": true,
+      "key_quote": "Yes, ucol_strcoll() with kr-latn-digit has been flawed for a long time [1] and still is in the development branch of ICU.",
+      "quote_message_url": "https://www.postgresql.org/message-id/3feee389-e1d5-4319-bbb2-680b3df71b10%40manitou-mail.org",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "kind": "revert",
+      "title": "Fix index-only scan plans, take 2.",
+      "status": "Partially reverted",
+      "date": "2022-01-03",
+      "first_date": "2022-01-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3179992.1641150853@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/17350-b5bdcf476e5badbb@postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Fix index-only scan plans, take 2.\nReverted commit(s): Fix index-only scan plans when not all index columns can be returned.",
+      "objection": "Commit 4ace45677 failed to fix the problem fully, because the\nsame issue of attempting to fetch a non-returnable index column\ncan occur when rechecking the indexqual after using a lossy index\noperator.  Moreover, it broke EXPLAIN for such indexquals (which\nindicates a gap in our test cases :-().\n\nRevert the code changes of 4ace45677 in favor of adding a new field\nto struct IndexOnlyScan, containing a version of the indexqual that\ncan be executed against the index-returned tuple without using any\nnon-returnable columns.  (The restrictions imposed by check_index_only\nguarantee this is possible, although we may have to recompute indexed\nexpressions.)  Support construction of that during setrefs.c\nprocessing by marking IndexOnlyScan.indextlist entries as resjunk\nif they can't be returned, rather than removing them entirely.\n(We could alternatively require setrefs.c to look up the IndexOptInfo\nagain, but abusing resjunk this way seems like a reasonably safe way\nto avoid needing to do that.)\n\nThis solution isn't great from an API-stability standpoint: if there\nare any extensions out there that build IndexOnlyScan structs directly,\nthey'll be broken in the next minor releases.  However, only a very\ninvasive extension would be likely to do such a thing.  There's no\nchange in the Path representation, so typical planner extensions\nshouldn't have a problem.\n\nAs before, back-patch to all supported branches.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "order by expression use index",
+        "date_trunc group by index scan"
+      ],
+      "from_hint": false,
+      "score": 0.185,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:4198",
+      "kind": "cf",
+      "title": "Allow ordered partition scans in more cases",
+      "status": "Withdrawn",
+      "date": "2023-06-24",
+      "first_date": "2023-02-21",
+      "url": "https://commitfest.postgresql.org/patch/4198/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAApHDvojKdBR3MR59JXmaCYbyHB6Q_5qPRU+dy93En8wm+XiDA@mail.gmail.com"
+      ],
+      "authors": "David Rowley (davidrowley)",
+      "objectors": "David Rowley",
+      "summary": "The patch lets the planner build an ordered Append path over partitions when no child has an index that matches the query pathkeys, by adding a Sort node on each partition. This replaces one Sort above the Append with one Sort per partition.",
+      "objection": "The author withdrew the patch because one Sort per partition can use up to one work_mem each. tuplesort_end() runs only at executor shutdown, and the planner cannot tell at plan time whether EXEC_FLAG_REWIND is set. He said the idea could return if Postgres gets a better way to manage the number of work_mems a plan uses.",
+      "touch_points": [],
+      "matched_queries": [
+        "order by expression use index",
+        "inferred ordering expression pathkeys"
+      ],
+      "from_hint": false,
+      "score": 0.184,
+      "enriched": true,
+      "key_quote": "As of\nnow, I'm a little too worried that this patch will end up consuming\ntoo many work_mems by adding a Sort node per partition.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAApHDvqWRkTa14yYTRmVYdELwz7XEdg_kqQSqQy4ZxrVbVygKA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:21",
+      "kind": "cf",
+      "title": "logical column ordering (WIP)",
+      "status": "Returned with feedback",
+      "date": "2015-05-03",
+      "first_date": "2014-12-09",
+      "url": "https://commitfest.postgresql.org/patch/21/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20141209174146.GP1768@alvh.no-ip.org"
+      ],
+      "authors": "Álvaro Herrera (alvherre), Tomas Vondra (fuzzycz)",
+      "objectors": "Andres Freund",
+      "summary": "Separate each column's identity (attnum) from its physical storage position (attphysnum) and its logical position (attlognum), so that columns can be reordered logically (e.g. for \"SELECT *\", COPY, VALUES lists) and physically independently of creation order. The WIP patch changed parse analysis, tuple descriptors and heap tuple construction to respect these orderings; it initially had no user-facing command for reordering, only direct updates of pg_attribute.",
+      "objection": "The patch was incomplete: it had known failures (some regression tests failed, and there were coredumps), and the author was still reworking core parts of the design, such as how logical and physical column numbers are represented in RangeTblEntry and parse analysis. Reviewers judged that the implementation was not ready for 9.5 and that a lot of work remained. Andres Freund also argued that without a way to change column order it would be essentially untestable, and suggested a different, less invasive definition of attnum.",
+      "touch_points": [],
+      "matched_queries": [
+        "order by expression use index",
+        "inferred ordering expression pathkeys"
+      ],
+      "from_hint": false,
+      "score": 0.164,
+      "enriched": true,
+      "key_quote": "To me the actual blocker seems to be the implementation. Which doesn't\nlook like it's going to be ready for 9.5; there seems to be loads of\nwork left to do.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20150323173023.GE15229%40alap3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:4825",
+      "kind": "cf",
+      "title": "Optimize planner memory consumption for huge arrays",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-09-04",
+      "url": "https://commitfest.postgresql.org/patch/4825/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/em9939439a-441a-4b27-a977-ebdf5987dc49@7d14f008.com"
+      ],
+      "authors": "Andrei Lepikhov (lepikhov)",
+      "objectors": "Tom Lane",
+      "summary": "The patch reduces planner memory use for large arrays in scalararraysel(), where each array element costs about 250 bytes and the cost multiplies with each partition. The first version freed the per-element Const and argument list after each selectivity call, and the discussion moved to a planner temporary memory context that is reset periodically.",
+      "objection": "Tom Lane rejected the original per-call freeing as ad-hoc and posted a temporary-context patch instead. His measurements showed it barely reduced memory in the regression tests, and resetting after every use cost about 1% on pgbench -S. The thread ends on open design points: when to reset, a possible MemoryContextResetIfBig API, and turning the optimization off in debug builds. The visible messages do not show the final decision.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "planner monotonicity prosupport"
+      ],
+      "from_hint": false,
+      "score": 0.146,
+      "enriched": true,
+      "key_quote": "Even though this seems of only edge-case value, I'd much prefer to do this than the sort of ad-hoc patching initially proposed in this thread.",
+      "quote_message_url": "https://www.postgresql.org/message-id/1367418.1708816059%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:3032",
+      "kind": "cf",
+      "title": "PROXY protocol support",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2021-03-02",
+      "url": "https://commitfest.postgresql.org/patch/3032/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABUevExJ0ifpUEiX4uOREy0s2kHBrBrb=pXLEHhpMTR1vVR1XA@mail.gmail.com"
+      ],
+      "authors": "Magnus Hagander (mha)",
+      "objectors": "",
+      "summary": "The patch adds support for the PROXY protocol on a separate proxy port, so a load balancer such as HAProxy can pass the original client address to the server. A new proxy_servers setting lists the trusted proxy addresses, and pg_hba.conf rules, log messages and pg_stat_activity then use the original client address.",
+      "objection": "No design objection decided it. Reviewers judged the patch close to ready, but in July 2022 it needed a rebase and went to Waiting on Author. The visible messages show no rebase after that, and the entry was returned with feedback in October 2022.",
+      "touch_points": [
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "SupportRequestMonotonic"
+      ],
+      "from_hint": false,
+      "score": 0.139,
+      "enriched": true,
+      "key_quote": "This needs a rebase, but after that I expect it to be RfC.",
+      "quote_message_url": "https://www.postgresql.org/message-id/165903873765.1168.11139166899805820567.pgcf%40coridan.postgresql.org",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:3163",
+      "kind": "cf",
+      "title": "Use tuple-level SIREAD locks for index-only scans",
+      "status": "Returned with feedback",
+      "date": "2021-12-02",
+      "first_date": "2018-05-13",
+      "url": "https://commitfest.postgresql.org/patch/3163/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEepm=2GK3FVdnt5V3d+h9njWipCv_fNL=wjxyUhzsF=0PcbNg@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Index-only scans that skip the heap would take tuple-level SIREAD locks instead of locking the whole heap page, with a fix to the outdated comment in nodeIndexonlyscan.c. A later experimental patch also skipped the btree page lock when the scan uses equality quals on all key columns of a unique index.",
+      "objection": "The patch stopped applying after a collision in the test files, and Daniel Gustafsson asked for a rebased version. No new version appears in the visible messages, so the entry was returned with feedback. Earlier, David Rowley found that deferrable unique constraints broke the btree lock skip, and Thomas Munro fixed that case in v4. Thomas Munro was still unsure the fix covered every case.",
+      "touch_points": [],
+      "matched_queries": [
+        "date_trunc group by index scan"
+      ],
+      "from_hint": false,
+      "score": 0.136,
+      "enriched": true,
+      "key_quote": "This patch now fails to apply, probably due to a mostly trivial collision with fdd88571454e2b00dbe446e8609c6e4294ca89ae in the test files.",
+      "quote_message_url": "https://www.postgresql.org/message-id/09E64F5F-76E9-4AE4-9ACF-7C899F69358C%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:5912",
+      "kind": "cf",
+      "title": "Optimize LISTEN/NOTIFY",
+      "status": "Withdrawn",
+      "date": "2025-08-07",
+      "first_date": "2025-07-12",
+      "url": "https://commitfest.postgresql.org/patch/5912/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6899c044-4a82-49be-8117-e6f669765f7e@app.fastmail.com"
+      ],
+      "authors": "Joel Jacobson (joeljacobson)",
+      "objectors": "",
+      "summary": "The patch adds a shared-memory hash table that maps each channel to its listening backends, so NOTIFY signals only those backends instead of every listener in the database. Later versions replaced this with a per-backend atomic state machine and SetLatch wakeups, so notifiers skip signals to backends that already have one pending.",
+      "objection": "The author withdrew the patches. He said the latest version only removes redundant IPC signals and does not fix the scalability problems, and that this work could be done outside async.c through the ProcSignal or \"Interrupts vs signals\" work. He also named the heavyweight lock in PreCommit_Notify() as a second bottleneck and asked others how to proceed before going on with the per-channel listener tracking.",
+      "touch_points": [],
+      "matched_queries": [
+        "planner monotonicity prosupport"
+      ],
+      "from_hint": false,
+      "score": 0.135,
+      "enriched": true,
+      "key_quote": "I'm withdrawing the latest patches, since they won't fix the scalability\nproblems, but only provide some performance improvements by eliminating\nredundant IPC signalling.",
+      "quote_message_url": "https://www.postgresql.org/message-id/c8e84bb2-d2e5-4a77-b547-3a93c5778e7e%40app.fastmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "revert:d92b1cdbab408d8f1299257125c9ae375f3ca644",
+      "kind": "revert",
+      "title": "Revert \"Add sortsupport for gist_btree opclasses, for faster index builds.\"",
+      "status": "Reverted",
+      "date": "2021-04-07",
+      "first_date": "2021-04-07",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=d92b1cdbab408d8f1299257125c9ae375f3ca644",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2F3F7265-0D22-44DB-AD71-8554C743D943@yandex-team.ru"
+      ],
+      "authors": "Heikki Linnakangas",
+      "objectors": "",
+      "summary": "Revert \"Add sortsupport for gist_btree opclasses, for faster index builds.\"\nReverted commit(s): Add sortsupport for gist_btree opclasses, for faster index builds.",
+      "objection": "This reverts commit 9f984ba6d23dc6eecebf479ab1d3f2e550a4e9be.\n\nIt was making the buildfarm unhappy, apparently setting client_min_messages\nin a regression test produces different output if log_statement='all'.\nAnother issue is that I now suspect the bit sortsupport function was in\nfact not correct to call byteacmp(). Revert to investigate both of those\nissues.",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "sort elimination function of index column"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:4860",
+      "kind": "cf",
+      "title": "create index failed. PARALLEL UNSAFE function does not prevent parallel index build",
+      "status": "Rejected",
+      "date": "2024-03-13",
+      "first_date": "2024-01-29",
+      "url": "https://commitfest.postgresql.org/patch/4860/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/18314-5f44050ce33a5492@postgresql.org"
+      ],
+      "authors": "Tender Wang (tndrwang)",
+      "objectors": "",
+      "summary": "create index failed. PARALLEL UNSAFE function does not prevent parallel index build\nThreads: BUG #18314: PARALLEL UNSAFE function does not prevent parallel index build",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "monotonic function index order"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "revert:099ca50bd41c1a72fe5a086bb095858ea74c88de",
+      "kind": "revert",
+      "title": "Revert \"Fix parallel-safety check of expressions and predicate for index builds\"",
+      "status": "Reverted",
+      "date": "2024-03-06",
+      "first_date": "2024-03-06",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=099ca50bd41c1a72fe5a086bb095858ea74c88de",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/162802.1709746091@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CAHewXN=UaAaNn9ruHDH3Os8kxLVmtWqbssnf=dZN_s9=evHUFA@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Fix parallel-safety check of expressions and predicate for index builds\"\nReverted commit(s): Fix parallel-safety check of expressions and predicate for index builds",
+      "objection": "This reverts commit eae7be600be7, following a discussion with Tom Lane,\ndue to concerns that this impacts the decisions made by the planner for\nthe number of workers spawned based on the inlining and const-folding of\nindex expressions and predicate for cases that would have worked until\nthis commit.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "order by expression use index"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:1277",
+      "kind": "cf",
+      "title": "GnuTLS support",
+      "status": "Returned with feedback",
+      "date": "2018-11-29",
+      "first_date": "2017-08-31",
+      "url": "https://commitfest.postgresql.org/patch/1277/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/7ac0ede4-fbd1-c466-896e-8b8f9cd7740a@proxel.se"
+      ],
+      "authors": "Andreas Karlsson (kandreas), Peter Eisentraut (petere)",
+      "objectors": "",
+      "summary": "GnuTLS support\nThreads: GnuTLS support",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "SupportRequestMonotonic"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:3078",
+      "kind": "cf",
+      "title": "Iterating on IndexTuple attributes and nbtree page-level dynamic prefix truncation",
+      "status": "Returned with feedback",
+      "date": "2022-02-07",
+      "first_date": "2021-04-15",
+      "url": "https://commitfest.postgresql.org/patch/3078/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2Whwvr8aYcBf0BeBuPy8mJGtwxGvQYA9OGR5eLFh6Q_ZvA@mail.gmail.com"
+      ],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "",
+      "summary": "Iterating on IndexTuple attributes and nbtree page-level dynamic prefix truncation\nThreads: Iterating on IndexTuple attributes and nbtree page-level dynamic\nprefix truncation",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "date_trunc group by index scan"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:4751",
+      "kind": "cf",
+      "title": "Remove useless GROUP BY columns considering unique index",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-12-29",
+      "url": "https://commitfest.postgresql.org/patch/4751/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/327990c8-b9b2-4b0c-bffb-462249f82de0@Spark"
+      ],
+      "authors": "Mingli Zhang (zml)",
+      "objectors": "",
+      "summary": "Remove useless GROUP BY columns considering unique index\nThreads: Remove useless GROUP BY columns considering unique index",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "date_trunc group by index scan"
+      ],
+      "from_hint": false,
+      "score": 0.112,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:5267",
+      "kind": "cf",
+      "title": "Introduce the ability to enable/disable indexes",
+      "status": "Withdrawn",
+      "date": "2024-09-26",
+      "first_date": "2024-09-09",
+      "url": "https://commitfest.postgresql.org/patch/5267/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANqtF-oXKe0M=0QOih6H+sZRjE2BWAbkW_1+9nMEAMLxUJg5jA@mail.gmail.com"
+      ],
+      "authors": "Shayon Mukherjee (shayonj)",
+      "objectors": "",
+      "summary": "Introduce the ability to enable/disable indexes\nThreads: Proposal to Enable/Disable Index using ALTER INDEX",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "enable_slope pathkeys"
+      ],
+      "from_hint": false,
+      "score": 0.112,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:3949",
+      "kind": "cf",
+      "title": "BRIN Sort - sorting using BRIN indexes",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2022-10-15",
+      "url": "https://commitfest.postgresql.org/patch/3949/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/e70fa091-e338-1598-9de4-6d0ef6b693e2@enterprisedb.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "BRIN Sort - sorting using BRIN indexes\nThreads: PATCH: Using BRIN indexes for sorted output",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "sort elimination function of index column"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:2263",
+      "kind": "cf",
+      "title": "seccomp-bpf support",
+      "status": "Rejected",
+      "date": "2020-01-07",
+      "first_date": "2019-08-28",
+      "url": "https://commitfest.postgresql.org/patch/2263/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/bc032e95-7e8b-ed00-8d87-ed9db449bdd6@joeconway.com",
+        "https://www.postgresql.org/message-id/flat/4ba3ad54-bb32-98c6-033a-ccca7058fc2f@2ndquadrant.com"
+      ],
+      "authors": "Joe Conway (jconway)",
+      "objectors": "",
+      "summary": "seccomp-bpf support\nThreads: RFC: seccomp-bpf support; Recognizing superuser in pg_hba.conf",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "SupportRequestMonotonic"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:4034",
+      "kind": "cf",
+      "title": "Optimizing Node Files Support",
+      "status": "Rejected",
+      "date": "2023-03-21",
+      "first_date": "2022-12-01",
+      "url": "https://commitfest.postgresql.org/patch/4034/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEudQAoJPmuJcymSN4ogXFY8AHGcLgSGj4xeXWKD1WrzZ9Azvw@mail.gmail.com"
+      ],
+      "authors": "Ranier Vilela (raniervilela)",
+      "objectors": "",
+      "summary": "Optimizing Node Files Support\nThreads: Optimizing Node Files Support",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "planner monotonicity prosupport"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:3528",
+      "kind": "cf",
+      "title": "support for MODULE",
+      "status": "Returned with feedback",
+      "date": "2022-07-18",
+      "first_date": "2022-02-03",
+      "url": "https://commitfest.postgresql.org/patch/3528/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAPXknY6=a7Pn1Ae6u+yYSeG3zNKtR_Lu3s_RQdP=udmAUQAagQ@mail.gmail.com"
+      ],
+      "authors": "Swaha Miller (swaha)",
+      "objectors": "",
+      "summary": "support for MODULE\nThreads: support for CREATE MODULE",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "SupportRequestMonotonic"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:1535",
+      "kind": "cf",
+      "title": "Online enabling of checksums",
+      "status": "Returned with feedback",
+      "date": "2019-01-31",
+      "first_date": "2018-02-21",
+      "url": "https://commitfest.postgresql.org/patch/1535/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABUevExz9hUUOLnJVr2kpw9Cx=o4MCr1SVKwbupzuxP7ckNutA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CABUevEwWT9ZmonBMRFF0owneoN3DAPgOVzwHAN0bUkxaqY3eNQ@mail.gmail.com"
+      ],
+      "authors": "Magnus Hagander (mha), Daniel Gustafsson (d_gustafsson)",
+      "objectors": "",
+      "summary": "Online enabling of checksums\nThreads: Online enabling of checksums; Allow workers to override datallowconn",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "enable_slope pathkeys"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "revert:39d0653d058b87b437be05fd295ceb5bb4e9e05c",
+      "kind": "revert",
+      "title": "Revert 1fbc30f1dca6624c01a9a6a9ff711a7036c68532 because the --enable-shared is about Plyton's configure, not ours.",
+      "status": "Reverted",
+      "date": "2012-08-30",
+      "first_date": "2012-08-30",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=39d0653d058b87b437be05fd295ceb5bb4e9e05c",
+      "thread_urls": [],
+      "authors": "Bruce Momjian",
+      "objectors": "",
+      "summary": "Revert 1fbc30f1dca6624c01a9a6a9ff711a7036c68532 because the --enable-shared is about Plyton's configure, not ours.\nReverted commit(s): Remove doc mention of --enable-shared, per Tom.",
+      "objection": "Revert 1fbc30f1dca6624c01a9a6a9ff711a7036c68532 because the\n--enable-shared is about Plyton's configure, not ours.",
+      "touch_points": [],
+      "matched_queries": [
+        "enable_slope pathkeys"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 4,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2026-02-11",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found. [P1] is about using expression indexes for ORDER BY, which is a different direction from this proposal's use of a plain index on x for ORDER BY or GROUP BY f(x). [P1] also records no reason, so nothing from it can be applied here. No thread message points to an earlier discussion of this idea; message #40 links only a separate date_trunc bug patch."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "There are objections on the standards and compatibility angle. pg_dump round-trip and SQL syntax are not affected, because the patch adds no syntax and changes only built-in pg_proc entries."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The proposal adds pg_proc prosupport entries, a new support request, a planner-only cache and a GUC. It does not change on-disk format, WAL or the wire protocol. pg_upgrade recreates built-in pg_proc rows, and a standby plans with its own tzdata and session settings. Extensions that call DecodeTimezoneName need a recompile, which is normal for a major release. This angle has no replication or on-disk objection."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal changes how the planner uses existing index order and adds no new privilege or data exposure. Only superusers can attach a SUPPORT function or create an operator class, so unprivileged users cannot declare false monotonicity. The planning-time calls to timezone loading and equalimage functions use catalog or constant input, and SQL execution can already reach both. Wrong-result risks are real, but they are correctness issues for the other angles, not escalation or leak paths. Without the code, I could not check that the time-zone scan at zone load has bounded cost."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "Patches 0002 (reverse pathkeys) and 0005 (constant sort keys) look separable and could go in first. No committer who knows this planner area has reviewed the design since Dean Rasheed asked to defer it (message #13)."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "There is one objection. GROUP BY date_trunc on several grains with a single index has no exact equivalent today, so that core use case is not disputed from this angle."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "Two objections raised. Both concern scope and missing evidence of gain, not whether time-bucket grouping is a real pattern."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 9,
+      "new_survived": 6,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "attachment limit (8) reached; v16.0-0009-SLOPE-plan-cache-guards.patch not read",
+    "attachment limit (8) reached; 0002-SLOPE-Builtin-support.patch not read",
+    "attachment limit (8) reached; 0003-SLOPE-Tests.patch not read",
+    "attachment limit (8) reached; 0001-SLOPE-Analysis-Machinery.patch not read"
+  ],
+  "tone_lint": {
+    "fields_checked": 96,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 15,
+    "wall_ms": 175440,
+    "cost_usd": 4.9367583999999995,
+    "dry_run": false
+  }
+}

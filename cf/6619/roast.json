@@ -1,0 +1,1394 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:56:38.663Z",
+  "input": {
+    "arg": "6619",
+    "cf": {
+      "id": 6619,
+      "url": "https://commitfest.postgresql.org/patch/6619/",
+      "title": "pg_stat_xact_user_tables stat not currect during the transaction",
+      "status": "Needs review",
+      "authors": "Xuneng Zhou (dylanzhou)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/19439-8f02018f9fc3a240%40postgresql.org",
+    "subject": "BUG #19439: pg_stat_xact_user_tables stat not currect during the transaction",
+    "thread_start": "2026-03-25T14:06:37Z",
+    "messages_read": 8,
+    "messages_total": 8,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v1-0001-Fix-pg_stat_xact_-views-leaking-stats-across-tran.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The goal fits the view names and a fair reading of the documentation, but neither design is ready for code review. maintenance-fit-1 is decisive: v2 costs 44% TPS at 5000 tables for backends that never read the views, and v1 adds an unmeasured branch to the counter macros. The author has not chosen between them. standards-compat-1 and standards-compat-2 show that the reporting contract and the target branches are also undecided, and demand-1 asks whether a documentation change would be enough.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Scope pg_stat_xact_* views to the current transaction only",
+    "problem": "The pg_stat_xact_* views show counters that carry over from earlier transactions of the same backend. The case is deterministic when several top-level transactions run in one simple-query message, because no ReadyForQuery boundary lets pending stats flush. The reporter and the author read the documentation as promising per-transaction numbers.",
+    "proposed_design": "Each backend-local pending stats entry keeps a transaction baseline, and the view accessors subtract it so they report only the current transaction's delta. v1 takes the baseline lazily at each counter-increment site, keyed by MyProc->vxid.lxid. v2 instead sweeps all pending entries at commit, abort and PREPARE TRANSACTION.",
+    "user_visible_surface": [
+      "pg_stat_xact_all_tables, pg_stat_xact_sys_tables and pg_stat_xact_user_tables report only the current transaction's counts.",
+      "pg_stat_xact_user_functions reports only the current transaction's function calls.",
+      "C API: the patch adds the PgStat_FunctionPending struct, which wraps PgStat_FunctionCounts in pending function stats entries."
+    ],
+    "author_claims": [
+      "The author reproduced the behaviour on HEAD and on v13, so it predates the stats rewrite in commit 5891c7a8.",
+      "With v1, the hot-path check costs a single integer comparison after the first touch per entry per transaction.",
+      "v2 costs grow linearly with the number of pending entries per backend, about 0.03-0.04 us per entry per transaction in a cassert build.",
+      "v2 loses 44% TPS with 5000 tables and 1 row per table, 7% with 1000 tables, and about nothing with 100 tables.",
+      "Regular pg_regress files cannot show the bug, so the test is a psql TAP test that uses psql -c."
+    ],
+    "thread_state": "Only the author and the reporter took part. A reviewer signed up in the CommitFest and later removed himself, the patch needed a rebase in May, and the author has not chosen between the lazy-baseline design and the eager design.",
+    "unclear": [
+      "The author does not say which design he proposes for commit, after v2 benchmarks show its worst case.",
+      "The thread does not say whether this would be back-patched or treated as a behaviour change for master only.",
+      "The material does not show any v2 commit message or documentation change that defines what the views should report.",
+      "The thread does not say how subtransactions and rollback to savepoint interact with the baseline.",
+      "The author mentioned further issues in message #7 and did not list them.",
+      "The author does not show the v1 hot-path overhead on a non-debug build."
+    ],
+    "search_queries": [
+      "pg_stat_xact_user_tables wrong counts",
+      "pg_stat_xact views transaction boundary",
+      "pending stats per transaction baseline",
+      "pgstat pending entries flush ReadyForQuery",
+      "pg_stat_xact_user_functions cumulative",
+      "transaction-local statistics views",
+      "pgstat_report_stat multiple transactions query string",
+      "AtEOXact_PgStat pending entries"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Both designs charge every backend for a rarely used view",
+      "level": "2",
+      "rubric_item": 4,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A pooled application keeps long-lived sessions that touch thousands of relations and then run short transactions. It never queries pg_stat_xact_*. With v2, its throughput drops by up to 44% after an upgrade, and the operator sees this only as higher commit latency.",
+      "argument": "Message #8 shows the v2 sweep costs O(pending entries) at every top-level commit, abort and PREPARE, with -44% TPS at 5000 tables and -7% at 1000. v1 moves the cost into the counter macros on scan and buffer-read paths, and message #5 names this as a drawback. In both designs every backend pays, and only sessions that query the xact views gain. The v1 overhead is not measured on an optimized build.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        5,
+        8
+      ],
+      "author_must_show": "Can the baseline cost fall only on sessions that query pg_stat_xact_* views, with no measurable cost on an optimized build for backends that never query them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Xuneng Zhou",
+          "date": "2026-03-30T03:14:19Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7XO101mBvA9u01nHkvt1gaQ3i60hypYOvNp6DdOFnY0jQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Xuneng Zhou",
+          "date": "2026-05-13T03:30:41Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7WUzwywrDmB%2BW%3DSm%3DynzQkcS83p2z-Ywt8W8XdKhXOPcQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #8 measures the v2 cost on backends that never read the views, and message #5 names the v1 hot-path branch as a drawback. The thread shows no v1 measurement on an optimized build, and the author has not chosen a design.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Changed view semantics come with no documentation of the new contract",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "sql_standard_syntax",
+      "touch_points": [
+        "sql_standard_syntax"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A monitoring script reads pg_stat_xact_user_tables after a rollback to savepoint, or after a function that ran its own subtransactions. The numbers it gets depend on where the baseline was taken. The documentation does not say what is reported, so the user cannot tell a correct count from a new bug.",
+      "argument": "Message #2 calls the current documentation \"somewhat ambiguous\", and the fix resolves that ambiguity only in code. The touched-file list for v1 has no doc hunk, and no v2 commit message or doc change is shown. The patch redefines what four user-visible views mean, so the monitoring-stats page needs to state the scope (top-level transaction, subtransactions, PREPARE TRANSACTION). Then reviewers and users can check behaviour against it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2,
+        3,
+        5,
+        8
+      ],
+      "author_must_show": "What exact wording would the monitoring-stats documentation use for the pg_stat_xact_* views, including subtransactions and PREPARE TRANSACTION?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Xuneng Zhou",
+          "date": "2026-03-27T02:15:27Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7Wx%3DWTHa67PJUnH8VaJf-svrcFjt1ZgOVrqWzfgwDuMCA%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Xuneng Zhou",
+          "date": "2026-03-28T05:47:51Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7Wb6VOac1EFopGzhAtiHOU8_XRkFvhC6BnSj%3DjACBB%2BGw%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Xuneng Zhou",
+          "date": "2026-03-30T03:14:19Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7XO101mBvA9u01nHkvt1gaQ3i60hypYOvNp6DdOFnY0jQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Xuneng Zhou",
+          "date": "2026-05-13T03:30:41Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7WUzwywrDmB%2BW%3DSm%3DynzQkcS83p2z-Ywt8W8XdKhXOPcQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The v1 file list has no documentation hunk, and message #2 itself calls the current wording ambiguous. The thread does not define the scope for subtransactions or PREPARE TRANSACTION, so the request for wording stands.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Bugfix tag implies back-patch, but the change alters stable-branch structs and costs",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "abi_extension_api",
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The fix is back-patched as a bug fix. An extension built against a minor release that reads pending function stats through pgstat.h now sees PgStat_FunctionPending in place of PgStat_FunctionCounts. A minor update also adds per-commit work, and v2 costs 44% TPS in one measured workload. Users find out after upgrading a minor release.",
+      "argument": "The CommitFest entry is tagged Bugfix, and message #4 shows the behaviour goes back to v13. That invites back-patching through every supported branch. The thread never says whether this is master-only. v1 changes the pending-entry layout and adds a branch at every counter-increment macro in pgstat.h. v2 adds a sweep at every commit, with the regression shown in message #8. A committer would likely treat either change as master-only and want the decision stated.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4,
+        5,
+        8
+      ],
+      "author_must_show": "Is this proposed for master only, and if back-patched, how does it avoid changing pgstat.h struct layouts and commit-path cost in stable branches?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "Xuneng Zhou",
+          "date": "2026-03-29T03:17:23Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7VSNTvHTpS4ga1MfLYO-%3Dxt7mLQ0ONEFobRERnhzXSzxw%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Xuneng Zhou",
+          "date": "2026-03-30T03:14:19Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7XO101mBvA9u01nHkvt1gaQ3i60hypYOvNp6DdOFnY0jQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Xuneng Zhou",
+          "date": "2026-05-13T03:30:41Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7WUzwywrDmB%2BW%3DSm%3DynzQkcS83p2z-Ywt8W8XdKhXOPcQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The entry is tagged Bugfix, message #4 shows the behaviour on v13, and the thread does not state a target branch. The extension scenario is weak because the wrapper keeps PgStat_FunctionCounts at offset 0, but the stable-branch cost concern stands.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Every future counter site must repeat the lazy-baseline call",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds a counter to PgStat_TableCounts and increments it without calling pgstat_ensure_xact_baseline(). No test fails. Users then see that one column carry over between transactions in pg_stat_xact_* views, and the report arrives as a bug years later.",
+      "argument": "Message #3 places the helper in 7 macros and 4 functions in pgstat_relation.c. Message #5 states that a missed call makes the counter leak silently. Message #8 then leans back toward the lazy-baseline design but does not add a safeguard. The TAP test covers only n_tup_ins, seq_scan and function calls, so it would not catch a new counter.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        5,
+        8
+      ],
+      "author_must_show": "What makes a new counter added without a baseline call fail loudly in a test or an assertion?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Xuneng Zhou",
+          "date": "2026-03-28T05:47:51Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7Wb6VOac1EFopGzhAtiHOU8_XRkFvhC6BnSj%3DjACBB%2BGw%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Xuneng Zhou",
+          "date": "2026-03-30T03:14:19Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7XO101mBvA9u01nHkvt1gaQ3i60hypYOvNp6DdOFnY0jQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Xuneng Zhou",
+          "date": "2026-05-13T03:30:41Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7WUzwywrDmB%2BW%3DSm%3DynzQkcS83p2z-Ywt8W8XdKhXOPcQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #5 states this risk in the author's own words, and the TAP test covers only three counters. It applies to the lazy-baseline design only, but message #8 leans back toward that design without adding a safeguard.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "One report and no other users; a documentation fix may be enough",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The project adopts a per-entry baseline in the stats code to serve one reporter's psql -c test. Every later change to PgStat_TableCounts must keep the baseline right. The users who notice the difference are those who run several top-level transactions in one message and read pg_stat_xact_* between them.",
+      "argument": "The only demand in the thread is the bug report in message #1, a hand-written test with no production use behind it. Message #2 calls the documentation \"somewhat ambiguous\", so rewording it to describe the current behaviour costs nothing, and users who need exact deltas can read the view at the start and end of the transaction and subtract. Message #3 says the rate limiter can keep entries pending across ReadyForQuery, so the affected group may be larger, but no one in the thread shows such a case.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        3
+      ],
+      "author_must_show": "Which monitoring tools or applications read pg_stat_xact_* after an earlier transaction in the same session and act on the numbers, and why does a documentation change not serve them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "PG Bug reporting form",
+          "date": "2026-03-25T14:06:37Z",
+          "url": "https://www.postgresql.org/message-id/19439-8f02018f9fc3a240%40postgresql.org"
+        },
+        {
+          "index": 2,
+          "from": "Xuneng Zhou",
+          "date": "2026-03-27T02:15:27Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7Wx%3DWTHa67PJUnH8VaJf-svrcFjt1ZgOVrqWzfgwDuMCA%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Xuneng Zhou",
+          "date": "2026-03-28T05:47:51Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7Wb6VOac1EFopGzhAtiHOU8_XRkFvhC6BnSj%3DjACBB%2BGw%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The thread has one reporter and no production case, and reading the view twice and subtracting does the job. The flush rate limiter may make carry-over common in ordinary sessions, but the thread does not show this, so asking for evidence is fair.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Back-patching either design changes pgstat structs and macros that extensions use",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "abi_extension_api",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A minor release ships the fix, and a table AM or index AM extension built against the old pgstat.h keeps running. Its inlined pgstat_count_* macros write into a PgStat_TableStatus that now has a different size and layout, and they never set the baseline. Users then see wrong pg_stat_xact_* numbers or memory corruption, and only find out after the update.",
+      "argument": "The CommitFest entry is tagged Bugfix, and message #1 reports the bug on 18.0, so a request to back-patch is likely. v1 changes the counter macros in pgstat.h and adds baseline fields to pending entries. Both v1 and v2 add PgStat_FunctionPending around PgStat_FunctionCounts. The thread does not say whether the fix targets master only, and a committer would likely ask before taking a struct-layout change into a stable branch.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3,
+        5,
+        8
+      ],
+      "author_must_show": "Is this fix meant for master only, and if it is back-patched, how do extensions built against the old pgstat.h structs and macros keep working?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "PG Bug reporting form",
+          "date": "2026-03-25T14:06:37Z",
+          "url": "https://www.postgresql.org/message-id/19439-8f02018f9fc3a240%40postgresql.org"
+        },
+        {
+          "index": 3,
+          "from": "Xuneng Zhou",
+          "date": "2026-03-28T05:47:51Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7Wb6VOac1EFopGzhAtiHOU8_XRkFvhC6BnSj%3DjACBB%2BGw%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Xuneng Zhou",
+          "date": "2026-03-30T03:14:19Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7XO101mBvA9u01nHkvt1gaQ3i60hypYOvNp6DdOFnY0jQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Xuneng Zhou",
+          "date": "2026-05-13T03:30:41Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7WUzwywrDmB%2BW%3DSm%3DynzQkcS83p2z-Ywt8W8XdKhXOPcQ%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-2. The memory corruption claim also has no support in the material, which does not show where the baseline fields sit in the pending entry.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Every backend pays for a view that few sessions read",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A pooled application keeps thousands of tables touched per backend and runs short transactions. With v2 it loses up to 44% TPS at commit, and its users never query pg_stat_xact_*. With v1, every counter increment in every backend gets an extra branch to keep the view exact.",
+      "argument": "Message #8 measures the v2 cost at -44% with 5000 tables and -7% with 1000, and this cost lands on every workload of that shape, not only on sessions that read the view. Message #5 describes the v1 cost as an extra branch on some of the most frequently executed paths, plus a per-counter rule that fails silently if a future patch misses it. The gain goes to the few sessions that read these views between transactions in one message.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        5,
+        8
+      ],
+      "author_must_show": "Can the baseline work happen only when a session reads a pg_stat_xact_* view, so that backends that never read it pay nothing?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Xuneng Zhou",
+          "date": "2026-03-30T03:14:19Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7XO101mBvA9u01nHkvt1gaQ3i60hypYOvNp6DdOFnY0jQ%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Xuneng Zhou",
+          "date": "2026-05-13T03:30:41Z",
+          "url": "https://www.postgresql.org/message-id/CABPTF7WUzwywrDmB%2BW%3DSm%3DynzQkcS83p2z-Ywt8W8XdKhXOPcQ%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1, which uses the same measurements from message #8 and also notes the missing v1 measurement on an optimized build.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The patch adds PgStat_FunctionPending and changes the counter macros in pgstat.h, which extensions compile against."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": true,
+      "reason": "see objection standards-compat-1: Changed view semantics come with no documentation of the new contract"
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The entry is tagged Bugfix and the behaviour goes back to v13, but the thread names no target branch."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "With v1, every future counter-increment site must call pgstat_ensure_xact_baseline(), and nothing fails if one is missed."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "v1 adds a check to the counter-increment macros; v2 sweeps all pending entries at every commit, abort and PREPARE TRANSACTION."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "A rewording of the monitoring-stats page to describe the current behaviour is an open alternative."
+    }
+  ],
+  "questions": [
+    "Which design do you propose for commit, the lazy-baseline design of v1 or the commit-time sweep of v2?",
+    "Can the baseline work run only in sessions that read a pg_stat_xact_* view, so that other backends pay nothing on an optimized build?",
+    "What wording would the monitoring-stats page use for the pg_stat_xact_* views, including subtransactions, rollback to savepoint and PREPARE TRANSACTION?",
+    "Is this change for master only, and if not, how do stable branches avoid the pgstat.h struct changes and the added commit-path cost?",
+    "With the lazy-baseline design, what test or assertion fails when a new counter is incremented without a call to pgstat_ensure_xact_baseline()?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "A committer who knows the cumulative statistics code (pgstat pending entries and their flush path) would have to own this. None has spoken in the visible thread.",
+    "liability": "The owner signs for a per-entry baseline in the pgstat hot path or commit path, for any performance report from backends with many pending entries, and for the back-patch decision.",
+    "author_follow_up": "The author posted two versions and benchmarks within the thread. The CommitFest entry has needed a rebase since May, and the material shows no rebase after that."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "needs design rethink",
+    "reason": "One reporter reads these views between transactions in one session, and both designs put cost on all backends, with v2 measured at 44% TPS loss at 5000 tables. The patch is small and confined to pgstat, but it touches counter macros on common paths."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read, so the v1 overhead in the counter macros, the layout of the baseline fields and the handling of subtransactions could not be checked. Only 3 of the 8 messages were shown in full; the v2 details come from the brief and the objections.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "revert:5721e5453ebc59360b6756fe72d7499c4a02177c",
+      "kind": "revert",
+      "title": "Revert \"Add redo LSN to pgstats files\"",
+      "status": "Reverted",
+      "date": "2025-03-16",
+      "first_date": "2024-08-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=5721e5453ebc59360b6756fe72d7499c4a02177c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2563883.1741826489@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/Zp8o6_cl0KSgsnvS@paquier.xyz"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Add redo LSN to pgstats files\"\nReverted commit(s): Add redo LSN to pgstats files",
+      "objection": "This reverts commit b860848232aa, that was added as a prerequisite for\nthe support of pgstats data flush across checkpoints, linking a pgstats\nfile to a specific checkpoint redo LSN.\n\nAs reported, this is proving to be currently problematic when going\nthrough a pg_upgrade, that does direct manipulations of the control file\nin the new cluster.  The LSN stored in the pgstats file is not able to\ncope with any changes done in the control file by pg_upgrade yet,\ncausing the pgstats file to be discarded when starting the new cluster\nafter overriding its redo LSN (one is a `pg_resetwal -l` where the new\ncluster's start LSN is bumped by a hardcoded value of 8 segments, see\ncopy_xact_xlog_xid).\n\nThe least painful path going forward is likely going to be a refactor of\nthe pgstats code so as it is possible to read and write some of its data\nwith some routines in src/common/, so as pg_upgrade or pg_resetwal are\nable to update its data.  The main point is that we are going to need a\nLSN in the stats file should we make it written at checkpoint time and\nnot only as part of a shutdown sequence.  It is too late to dive into\nthese details for v18, so let's revert the change, and let's try to\nfigure out all the details in the next release cycle.  The pgstats file\nis currently only written as part of a shutdown sequence, and its\ncontents are still lost on crash, same as older releases.\n\nBump PGSTAT_FILE_FORMAT_ID.",
+      "touch_points": [
+        "on-disk format / pg_upgrade"
+      ],
+      "matched_queries": [
+        "pgstat pending entries flush ReadyForQuery",
+        "pgstat_report_stat multiple transactions query string",
+        "AtEOXact_PgStat pending entries"
+      ],
+      "from_hint": false,
+      "score": 0.378,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:790",
+      "kind": "cf",
+      "title": "SQL statements statistics counter view (pg_stat_sql)",
+      "status": "Returned with feedback",
+      "date": "2020-09-17",
+      "first_date": "2016-08-20",
+      "url": "https://commitfest.postgresql.org/patch/790/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJrrPGeY4xujjoR=z=KoyRMHEK_pSjjp=7VBhOAHq9rfgpV7QQ@mail.gmail.com"
+      ],
+      "authors": "Haribabu Kommi (haribabu)",
+      "objectors": "Andres Freund",
+      "summary": "The patch adds a pg_stat_sql view that counts SQL statements executed on the instance by command tag, behind a new track_sql GUC, with a reset function. Later versions keep one row per command tag in a hash table, counted in exec_simple_query and exec_execute_message.",
+      "objection": "Michael Paquier returned the entry with feedback after months without activity, after Alvaro Herrera asked who would rebase it onto the new cmdtaglist.h enum tags. Andres Freund's 2017 review had left open questions: an extension might be the better place, tags should be enums in a fixed array, and counting belongs at the executor level. The author promised an array version, but the visible messages do not show one. A competing cmdstats patch by Mark Dilger also waited on benchmarks that Robert Haas requested.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_xact_user_tables wrong counts",
+        "pg_stat_xact views transaction boundary",
+        "transaction-local statistics views"
+      ],
+      "from_hint": false,
+      "score": 0.373,
+      "enriched": true,
+      "key_quote": "This patch had no activity for months, so I am marking it as returned\nwith feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20200917050119.GI2873%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:5047",
+      "kind": "cf",
+      "title": "Flush pgstats file during checkpoints",
+      "status": "Returned with feedback",
+      "date": "2024-10-02",
+      "first_date": "2024-06-18",
+      "url": "https://commitfest.postgresql.org/patch/5047/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ZnEiqAITL-VgZDoY@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Heikki Linnakangas",
+      "summary": "The patch writes the pgstats file during non-shutdown checkpoints and restart points and stores the checkpoint redo LSN in the file. At startup, including crash recovery, stats load when the redo LSN matches, so statistics survive a crash.",
+      "objection": "Heikki Linnakangas found that stats entries can leak into the pgstats file after a crash, for example for a relation created in an uncommitted transaction. Since 5891c7a8ed nothing garbage-collects such orphaned entries. He also found that two immediate shutdowns in a row log an incorrect redo LSN warning, because the stats file is not flushed at the end-of-recovery checkpoint. Michael Paquier said he would look at these, and the visible messages end there.",
+      "touch_points": [],
+      "matched_queries": [
+        "pgstat pending entries flush ReadyForQuery",
+        "AtEOXact_PgStat pending entries"
+      ],
+      "from_hint": false,
+      "score": 0.29,
+      "enriched": true,
+      "key_quote": "There are various race conditions where a stats entry can be leaked in the pgstats file.",
+      "quote_message_url": "https://www.postgresql.org/message-id/54fdfc3e-74f6-4ea4-b844-05aa66b39490%40iki.fi",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:3504",
+      "kind": "cf",
+      "title": "transaction statistics of logical replication subscription",
+      "status": "Returned with feedback",
+      "date": "2022-03-28",
+      "first_date": "2021-07-08",
+      "url": "https://commitfest.postgresql.org/patch/3504/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/OSBPR01MB48887CA8F40C8D984A6DC00CED199@OSBPR01MB4888.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "Takamichi Osumi (tatatappp)",
+      "objectors": "Amit Kapila, Masahiko Sawada",
+      "summary": "The thread first proposed counting failed transactions and their sizes in pg_stat_replication_slots, so that users could tell successful logical decoding from repeated failed attempts. By the last version, the patch instead added apply_commit_count and apply_rollback_count columns to pg_stat_subscription_stats.",
+      "objection": "Amit Kapila noted that pg_stat_database already shows committed and rolled-back transactions per database, so the new counters largely duplicate it, and he asked whether anyone saw value in them. Masahiko Sawada agreed that commit and rollback counts without transaction sizes no longer meet the original goal and have no concrete use case. The author then marked the entry Returned with feedback.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_stat_xact views transaction boundary",
+        "pending stats per transaction baseline",
+        "transaction-local statistics views"
+      ],
+      "from_hint": false,
+      "score": 0.274,
+      "enriched": true,
+      "key_quote": "But I’m concerned that adding only apply_commit_count\nand apply_rollback_count ends up adding the duplicate statistics with\nno concrete use cases.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAD21AoDw4s%3De7ES2y6%2BGW1A_aahzPCm4nk1qHw9Y%2BsqxQ5wmqQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:3243",
+      "kind": "cf",
+      "title": "Add statistics refresh materialized view",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-07-08",
+      "url": "https://commitfest.postgresql.org/patch/3243/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6fe02a8ab3b2b0801933b9cabfab62cf@oss.nttdata.com"
+      ],
+      "authors": "Yuki Seino (seinoyu)",
+      "objectors": "Fujii Masao",
+      "summary": "Add per-view statistics for REFRESH MATERIALIZED VIEW (execution count and last refresh time) to the statistics collector, exposed as new columns in pg_stat_all_tables and its user/sys variants. The aim was to record when and how often each materialized view was refreshed without relying on pg_stat_statements.",
+      "objection": "Fujii Masao objected that adding columns to pg_stat_all_tables for one utility command is a poor design: it singles out REFRESH MATERIALIZED VIEW over commands such as TRUNCATE or CLUSTER, would lead to many per-command columns, and the columns would be useless for most entries, which are tables. He also suggested that pg_stat_statements and log_statement could already provide the information per view. The author agreed that these tools may be sufficient for most use cases and withdrew the proposal, and the entry was marked Returned with Feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_xact views transaction boundary",
+        "transaction-local statistics views"
+      ],
+      "from_hint": false,
+      "score": 0.246,
+      "enriched": true,
+      "key_quote": "It's not good design to add new columns per utility command into\npg_stat_all_tables. Otherwise pg_stat_all_tables will have to have lots of\ncolumns to expose the stats of many utility commands at last.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2262038c-7465-e588-5bcf-1df66d5eef45%40oss.nttdata.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:3793",
+      "kind": "cf",
+      "title": "pgstattuple: add test for coverage",
+      "status": "Returned with feedback",
+      "date": "2022-11-22",
+      "first_date": "2022-08-02",
+      "url": "https://commitfest.postgresql.org/patch/3793/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAcByaKGq2JCBii9Z2MJY0-_phcPsseHS0NOGccGBz77k=FfjA@mail.gmail.com"
+      ],
+      "authors": "DongWook Lee (dongwooklee)",
+      "objectors": "Tom Lane, Andres Freund",
+      "summary": "The patch adds SQL statements to the pgstattuple regression tests to raise code coverage from 50.6% to 78.7%. The tests insert data and check full `select *` output from the pgstattuple functions.",
+      "objection": "The tests added a dependency from pgstattuple on the bloom module, which Tom Lane objected to. The expected output also depended on platform details and failed on 32-bit systems. The author said he would fix it, but no updated version was posted, so Andres Freund marked the entry returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "pgstat pending entries flush ReadyForQuery",
+        "AtEOXact_PgStat pending entries"
+      ],
+      "from_hint": false,
+      "score": 0.242,
+      "enriched": true,
+      "key_quote": "You definitely can't rely on such details not to change across platforms.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20221002071430.xfurt6znk2ruyxwy%40awork3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:5466",
+      "kind": "cf",
+      "title": "WAL-logging facility for pgstats kinds",
+      "status": "Withdrawn",
+      "date": "2025-02-12",
+      "first_date": "2024-12-27",
+      "url": "https://commitfest.postgresql.org/patch/5466/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/Z24fyb3ipXKR38oS@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Andres Freund",
+      "summary": "The patch adds a new \"PgStat\" resource manager and a pgstat_xlog_data() entry point so that any pgstats kind, including custom ones, can WAL-log its own stats data. Each kind handles replay through a redo callback in PgStat_KindInfo, so it can decide how the data persists on standbys and after crash recovery.",
+      "objection": "Andres Freund objected that stats only make sense on a replica or after a crash when they cover changes that are already WAL-logged, so they should be rebuilt during replay from the WAL records of the underlying objects. For table stats he proposed keying relation stats by relfilenode. He repeated the objection when the entry moved to the next CF, and the author then withdrew the patch and kept it aside.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pgstat pending entries flush ReadyForQuery",
+        "AtEOXact_PgStat pending entries"
+      ],
+      "from_hint": false,
+      "score": 0.225,
+      "enriched": true,
+      "key_quote": "I can't think of a real case where we would want to WAL log the stats\nthemselves, rather than re-emitting stats during replay based on the WAL\nrecord of the \"underlying object\".",
+      "quote_message_url": "https://www.postgresql.org/message-id/xvetwjsnkhx2gp6np225g2h64f4mfmg6oopkuaiivrpzd2futj%40pflk55su36ho",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:4769",
+      "kind": "cf",
+      "title": "System username in pg_stat_activity",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2024-01-10",
+      "url": "https://commitfest.postgresql.org/patch/4769/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABUevEy8vkHLn2v0P3gkLhfDPCV9SFdtOqni9Oay3gB=APTkXg@mail.gmail.com"
+      ],
+      "authors": "Magnus Hagander (mha)",
+      "objectors": "",
+      "summary": "The patch adds an authname column to pg_stat_activity that shows the externally authenticated user name, the same value the SYSTEM_USER keyword returns. It also covers methods such as peer and ident, which have no view of their own like pg_stat_gss.",
+      "objection": "The thread stopped in February 2024 during an open discussion about whether pg_stat_activity already has too many columns and should be split into several views. Magnus Hagander replied that moving columns would break existing monitoring tools, and no one answered. Michael Paquier marked the entry Returned with feedback in October 2024 because nobody had posted since.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_xact_user_tables wrong counts",
+        "pg_stat_xact_user_functions cumulative"
+      ],
+      "from_hint": false,
+      "score": 0.225,
+      "enriched": true,
+      "key_quote": "This is the last message sent on this thread, and an entry was still registered in the CF app, so I am marking that as RwF for now.",
+      "quote_message_url": "https://www.postgresql.org/message-id/ZwM08Q8AH2IYnhG2%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:4606",
+      "kind": "cf",
+      "title": "Fix log_line_prefix to display the transaction id (%x) for statements not in a transaction block",
+      "status": "Withdrawn",
+      "date": "2024-05-18",
+      "first_date": "2023-10-08",
+      "url": "https://commitfest.postgresql.org/patch/4606/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/12fa0c9a-2189-ed7a-016a-3f1b99bd756c@yeah.net"
+      ],
+      "authors": "Zongliang Quan (quanzl)",
+      "objectors": "Robert Haas, jian he",
+      "summary": "The patch makes log_statement output show the real XID in the %x escape of log_line_prefix for statements outside a transaction block. When no XID is assigned yet, it holds back the statement log line and writes it before finish_xact_command, once the XID is known.",
+      "objection": "Robert Haas argued that log_statement should keep logging a statement before it runs, as it has long done. With the patch the log line comes sometimes before and sometimes after execution, so users can no longer assume a running statement has already been logged. jian he showed that with auto_explain the plan and statement lines come out in the wrong order. The author found no simpler design, withdrew the entry, and Bruce Momjian removed the TODO item.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_xact views transaction boundary",
+        "pending stats per transaction baseline"
+      ],
+      "from_hint": false,
+      "score": 0.199,
+      "enriched": true,
+      "key_quote": "I don't think it's reasonable at all. We can't log the XID before it's\nassigned, and we can't log the statement after the XID is assigned\nwithout completely changing how the parameter works.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoZMLA6G3ZknhDuC02evgU6Dc5GGb%2B-7YaonR-Qc%3DTcUXA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "revert:3adba736620c85112e0f9f6d043d3574e1c5830f",
+      "kind": "revert",
+      "title": "Revert XactLockTableWait context setup in conditional multixact wait",
+      "status": "Reverted",
+      "date": "2014-08-25",
+      "first_date": "2014-08-25",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=3adba736620c85112e0f9f6d043d3574e1c5830f",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert XactLockTableWait context setup in conditional multixact wait",
+      "objection": "There's no point in setting up a context error callback when doing\nconditional lock acquisition, because we never actually wait and so the\nuser wouldn't be able to see the context message anywhere.  In fact,\nthis is more in line with what ConditionalXactLockTableWait is doing.\n\nBackpatch to 9.4, where this was added.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_xact_user_tables wrong counts",
+        "pg_stat_xact_user_functions cumulative"
+      ],
+      "from_hint": false,
+      "score": 0.197,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "revert:390811750d1647ed81a462da3af7f1fd66166e95",
+      "kind": "revert",
+      "title": "Revert \"Use group updates when setting transaction status in clog.\"",
+      "status": "Reverted",
+      "date": "2017-03-10",
+      "first_date": "2017-03-09",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=390811750d1647ed81a462da3af7f1fd66166e95",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAA4eK1L_snxM_JcrzEstNq9P66++F4kKFce=1r5+D1vzPofdtg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAA4eK1LyR2A+m=RBSZ6rcPEwJ=rVi1ADPSndXHZdjn56yqO6Vg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/91d57161-d3ea-0cc2-6066-80713e4f90d7@2ndquadrant.com"
+      ],
+      "authors": "Robert Haas",
+      "objectors": "",
+      "summary": "Revert \"Use group updates when setting transaction status in clog.\"\nReverted commit(s): Use group updates when setting transaction status in clog.",
+      "objection": "This reverts commit ccce90b398673d55b0387b3de66639b1b30d451b.  This\noptimization is unsafe, at least, of rollbacks and rollbacks to\nsavepoints, but I'm concerned there may be other problematic cases as\nwell.  Therefore, I've decided to revert this pending further\ninvestigation.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_xact views transaction boundary",
+        "pending stats per transaction baseline"
+      ],
+      "from_hint": false,
+      "score": 0.179,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:2274",
+      "kind": "cf",
+      "title": "Invalid permission check in pg_stats for functional indexes",
+      "status": "Returned with feedback",
+      "date": "2020-07-05",
+      "first_date": "2019-04-06",
+      "url": "https://commitfest.postgresql.org/patch/2274/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6369212.CF36pTLAQO@peanuts2"
+      ],
+      "authors": "Pierre Ducroquet (pinaraf)",
+      "objectors": "",
+      "summary": "Invalid permission check in pg_stats for functional indexes\nThreads: [Patch] Invalid permission check in pg_stats for functional indexes",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pending stats per transaction baseline",
+        "pg_stat_xact_user_functions cumulative"
+      ],
+      "from_hint": false,
+      "score": 0.159,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:5a2bb060121f574d6587e5fc6c7f1d4e3a759351",
+      "kind": "revert",
+      "title": "Revert \"Add some temporary instrumentation to pgstat.c.\"",
+      "status": "Reverted",
+      "date": "2012-05-15",
+      "first_date": "2012-05-14",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=5a2bb060121f574d6587e5fc6c7f1d4e3a759351",
+      "thread_urls": [],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Add some temporary instrumentation to pgstat.c.\"\nReverted commit(s): Add some temporary instrumentation to pgstat.c.",
+      "objection": "This reverts commit 7d88bb73f755f7fb5d847ef2319c21076054fb0e.\nThat instrumentation has served its purpose.",
+      "touch_points": [],
+      "matched_queries": [
+        "pgstat pending entries flush ReadyForQuery",
+        "AtEOXact_PgStat pending entries"
+      ],
+      "from_hint": false,
+      "score": 0.148,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3665",
+      "kind": "cf",
+      "title": "An attempt to avoid locally-committed-but-not-replicated-to-standby-transactions in synchronous replication",
+      "status": "Returned with feedback",
+      "date": "2023-08-02",
+      "first_date": "2022-04-25",
+      "url": "https://commitfest.postgresql.org/patch/3665/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACUrOB59QaE6=jF2cFAyv1MR7fzD8tr4YM5+OwEYG1SNzA@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "",
+      "summary": "An attempt to avoid locally-committed-but-not-replicated-to-standby-transactions in synchronous replication\nThreads: An attempt to avoid locally-committed-but-not-replicated-to-standby-transactions\nin synchronous replication",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "transaction-local statistics views"
+      ],
+      "from_hint": false,
+      "score": 0.141,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:4156",
+      "kind": "cf",
+      "title": "Report the query string that caused a memory error under Valgrind",
+      "status": "Withdrawn",
+      "date": "2023-01-31",
+      "first_date": "2023-01-31",
+      "url": "https://commitfest.postgresql.org/patch/4156/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/AM9PR83MB0498531E804DC8DF8CFF0E8FE9D09@AM9PR83MB0498.EURPRD83.prod.outlook.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "Report the query string that caused a memory error under Valgrind\nThreads: [PATCH] Report the query string that caused a memory error under\nValgrind",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pgstat_report_stat multiple transactions query string"
+      ],
+      "from_hint": false,
+      "score": 0.14,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "revert:2c9b46c090e76c62f24563b9be2c34e6b92e9329",
+      "kind": "revert",
+      "title": "Revert \"Fix issues with Windows' stat() for files pending on deletion\"",
+      "status": "Reverted",
+      "date": "2021-07-12",
+      "first_date": "2021-07-12",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=2c9b46c090e76c62f24563b9be2c34e6b92e9329",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/YOvOlfRrIO0yGtgw@paquier.xyz",
+        "https://www.postgresql.org/message-id/flat/c3427edf-d7c0-ff57-90f6-b5de3bb62709@gmail.com"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Fix issues with Windows' stat() for files pending on deletion\"\nReverted commit(s): Fix issues with Windows' stat() for files pending on deletion",
+      "objection": "This reverts commit 54fb8c7, as per the issues reported by fairywren\nwhen it comes to MinGW because of the lack of microsoft_native_stat()\nthere.  Using just stat() for MSVC is not sufficient to take care of the\nconcurrency problems with files pending on deletion.  It may be possible\nto paint some __MINGW64__ in the code to switch to a different\nimplementation of stat() in this build context, but I am not sure either\nif relying on the implementation of stat() in MinGW to take care of the\nproblems we are trying to fix is enough or not.  So this needs more\nstudy.",
+      "touch_points": [],
+      "matched_queries": [
+        "pending stats per transaction baseline"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "revert:f85f6ab051b7cf6950247e5fa6072c4130613555",
+      "kind": "revert",
+      "title": "Revert support for improved tracking of nested queries",
+      "status": "Reverted",
+      "date": "2025-06-12",
+      "first_date": "2024-10-22",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f85f6ab051b7cf6950247e5fa6072c4130613555",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/18947-cdd2668beffe02bf@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/CAO6_XqqM6S9bQ2qd=75W+yKATwoazxSNhv5sjW06fjGAtHbTUA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/844a3b38-bbf1-4fb2-9fd6-f58c35c09917@pgbackrest.org"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert support for improved tracking of nested queries\nReverted commit(s): Track more precisely query locations for nested statements; Fix regression with location calculation of nested statements; pg_stat_statements: Add tests for nested queries with level tracking",
+      "objection": "This commit reverts the two following commits:\n- 499edb09741b, track more precisely query locations for nested\nstatements.\n- 06450c7b8c70, a follow-up fix of 499edb09741b with query locations.\nThe test introduced in this commit is not reverted.  This is proving\nuseful to track a problem that only pgaudit was able to detect.\n\nThese prove to have issues with the tracking of SELECT statements, when\nthese use multiple parenthesis which is something supported by the\ngrammar.  Incorrect location and lengths are causing pg_stat_statements\nto become confused, failing its job in query normalization with\npotential out-of-bound writes because the location and the length may\nnot match with what can be handled.  A lot of the query patterns\ndiscussed when this issue was reported have no test coverage in the main\nregression test suite, or the recovery test 027_stream_regress.pl would\nhave caught the problems as pg_stat_statements is loaded by the node\nrunning the regression tests.  A first step would be to improve the test\ncoverage to stress more the query normalization logic.\n\nA different portion of this work was done in 45e0ba30fc40, with the\naddition of tests for nested queries.  These can be left in the tree.\nThey are useful to track the way inner queries are currently tracked by\nPGSS with non-top-level entries, and will be useful when reconsidering\nin the future the work reverted here.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "SQL syntax / standard"
+      ],
+      "matched_queries": [
+        "pgstat_report_stat multiple transactions query string"
+      ],
+      "from_hint": false,
+      "score": 0.134,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:3988",
+      "kind": "cf",
+      "title": "User functions for building SCRAM secrets",
+      "status": "Returned with feedback",
+      "date": "2024-01-27",
+      "first_date": "2022-10-31",
+      "url": "https://commitfest.postgresql.org/patch/3988/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/fce7228e-d0d6-64a1-3dcb-bba85c2fac85@postgresql.org"
+      ],
+      "authors": "Jonathan Katz (jkatz05)",
+      "objectors": "",
+      "summary": "User functions for building SCRAM secrets\nThreads: User functions for building SCRAM secrets",
+      "objection": "",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "pg_stat_xact_user_functions cumulative"
+      ],
+      "from_hint": false,
+      "score": 0.13,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "revert:36b870623698332144c73e950d6a8f91e883d708",
+      "kind": "revert",
+      "title": "Revert exports.list change pending closer study.",
+      "status": "Reverted",
+      "date": "2006-12-28",
+      "first_date": "2006-12-28",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=36b870623698332144c73e950d6a8f91e883d708",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert exports.list change pending closer study.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pending stats per transaction baseline",
+        "AtEOXact_PgStat pending entries"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:3787",
+      "kind": "cf",
+      "title": "Add parallel counters to pg_stat_statements",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2022-07-21",
+      "url": "https://commitfest.postgresql.org/patch/3787/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6acbe570-068e-bd8e-95d5-00c737b865e8@gmail.com"
+      ],
+      "authors": "Daymel Bonne (bonne), Anthony Sotolongo León (asotolongo)",
+      "objectors": "",
+      "summary": "Add parallel counters to pg_stat_statements\nThreads: Expose Parallelism counters planned/execute in pg_stat_statements",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_xact_user_tables wrong counts"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "revert:7d4667c6203d0174903a53de9d1730fbec26576b",
+      "kind": "revert",
+      "title": "Revert \"postgres_fdw: Inherit the local transaction's access/deferrable modes.\"",
+      "status": "Reverted",
+      "date": "2025-06-08",
+      "first_date": "2025-06-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=7d4667c6203d0174903a53de9d1730fbec26576b",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ed2296f1-1a6b-4932-b870-5bb18c2591ae@oss.nttdata.com",
+        "https://www.postgresql.org/message-id/flat/CAPmGK16n_hcUUWuOdmeUS+w4Q6dZvTEDHb=OP=5JBzo-M3QmpQ@mail.gmail.com"
+      ],
+      "authors": "Etsuro Fujita",
+      "objectors": "",
+      "summary": "Revert \"postgres_fdw: Inherit the local transaction's access/deferrable modes.\"\nReverted commit(s): postgres_fdw: Inherit the local transaction's access/deferrable modes.",
+      "objection": "We concluded that commit e5a3c9d9b is a feature rather than a fix; since\nit was added after feature freeze, revert it.",
+      "touch_points": [],
+      "matched_queries": [
+        "transaction-local statistics views"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:3058",
+      "kind": "cf",
+      "title": "Eliminating \"Permission denied\" errors on stat() (on Windows)",
+      "status": "Withdrawn",
+      "date": "2021-12-03",
+      "first_date": "2020-11-14",
+      "url": "https://commitfest.postgresql.org/patch/3058/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/c3427edf-d7c0-ff57-90f6-b5de3bb62709@gmail.com"
+      ],
+      "authors": "Alexander Lakhin (law)",
+      "objectors": "",
+      "summary": "Eliminating \"Permission denied\" errors on stat() (on Windows)\nThreads: More time spending with \"delete pending\"",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pending stats per transaction baseline"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:1373",
+      "kind": "cf",
+      "title": "Planning counters in pg_stat_statements",
+      "status": "Returned with feedback",
+      "date": "2018-01-25",
+      "first_date": "2017-11-07",
+      "url": "https://commitfest.postgresql.org/patch/1373/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEepm=0e59Y_6Q_YXYCTHZkqOc6H2pJ54C_Xe=VFu50Aqqp_sA@mail.gmail.com"
+      ],
+      "authors": "Fujii Masao (masaofujii), Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Planning counters in pg_stat_statements\nThreads: Planning counters in pg_stat_statements",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_xact_user_tables wrong counts"
+      ],
+      "from_hint": false,
+      "score": 0.112,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:1003",
+      "kind": "cf",
+      "title": "pg_stat_walwrites system view",
+      "status": "Returned with feedback",
+      "date": "2017-11-27",
+      "first_date": "2017-02-15",
+      "url": "https://commitfest.postgresql.org/patch/1003/",
+      "thread_urls": [],
+      "authors": "Haribabu Kommi (haribabu)",
+      "objectors": "",
+      "summary": "pg_stat_walwrites system view",
+      "objection": "",
+      "touch_points": [
+        "catalog changes"
+      ],
+      "matched_queries": [
+        "pg_stat_xact views transaction boundary"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 7,
+    "new_calls": 1,
+    "failed": 0,
+    "quotes_verified": 1,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 0
+  },
+  "precedent_cutoff": "2026-03-25",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found: the precedent search returned no earlier proposal with the same or a similar idea. The thread itself points to no earlier discussion of scoping pg_stat_xact_* views per transaction, so this angle has nothing to raise."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "Two fixable objections only. No new syntax, GUC, catalog object or pg_dump state is involved, and existing users who depend on the leaking counts are unlikely."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "Pending stats are backend-local memory only. The shared stats file format, WAL, the catalogs, replication and the wire protocol are unchanged, so my only concern from this angle is ABI and back-patching."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The pg_stat_xact_* views read only the calling backend's own pending stats, and the patch changes only how those numbers are scoped in time. It adds no privilege, role or new exposure of other sessions' data. The v2 sweep cost falls on the backend that holds the pending entries, so it is a performance question for another angle and gives no cross-user denial of service."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "Two objections at level 2. No committer who knows pgstat has engaged in the thread, so the cleanup owner is open; this is a committability point and not an objection."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing feature, contrib module or extension gives transaction-scoped table or function counters; pg_stat_xact_* views are that mechanism, and the patch repairs them without adding a second one. A client could snapshot the view at BEGIN and subtract it, but that workaround for a bug is not an alternative a committer would offer."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "Two demand objections are raised; no precedent in the material applies."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 9,
+      "new_objections": 7,
+      "new_survived": 5,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "tone lint: 6 finding(s) remain after the repair call; see tone_lint in roast.json before forwarding this text"
+  ],
+  "tone_lint": {
+    "fields_checked": 81,
+    "hits_found": 6,
+    "sentences_rewritten": 6,
+    "repair_call": "done",
+    "remaining": [
+      {
+        "path": "brief.thread_state",
+        "rule": "about the author",
+        "match": "lazy",
+        "sentence": "A reviewer signed up in the CommitFest and later removed himself, the patch needed a rebase in May, and the author has not chosen between the lazy-baseline design and the eager design."
+      },
+      {
+        "path": "questions[0]",
+        "rule": "about the author",
+        "match": "lazy",
+        "sentence": "Which design do you propose for commit, the lazy-baseline design of v1 or the commit-time sweep of v2?"
+      },
+      {
+        "path": "questions[4]",
+        "rule": "about the author",
+        "match": "lazy",
+        "sentence": "With the lazy-baseline design, what test or assertion fails when a new counter is incremented without a call to pgstat_ensure_xact_baseline()?"
+      },
+      {
+        "path": "objections[3].title",
+        "rule": "about the author",
+        "match": "lazy",
+        "sentence": "Every future counter site must repeat the lazy-baseline call"
+      },
+      {
+        "path": "objections[3].argument",
+        "rule": "about the author",
+        "match": "lazy",
+        "sentence": "Message #8 then leans back toward the lazy-baseline design but does not add a safeguard."
+      },
+      {
+        "path": "objections[3].critic.reasoning",
+        "rule": "about the author",
+        "match": "lazy",
+        "sentence": "It applies to the lazy-baseline design only, but message #8 leans back toward that design without adding a safeguard."
+      }
+    ]
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 14,
+    "wall_ms": 149110,
+    "cost_usd": 1.5698644000000002,
+    "dry_run": false
+  }
+}

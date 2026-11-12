@@ -1,0 +1,1500 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:52:17.289Z",
+  "input": {
+    "arg": "6460",
+    "cf": {
+      "id": 6460,
+      "url": "https://commitfest.postgresql.org/patch/6460/",
+      "title": "Show expression of virtual columns in error messages",
+      "status": "Needs review",
+      "authors": "Matheus Alcantara (matheus.alcantara)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/DG5DV8SED62G.2WFJB46D7WIT8%40gmail.com",
+    "subject": "Show expression of virtual columns in error messages",
+    "thread_start": "2026-02-03T14:06:47Z",
+    "messages_read": 18,
+    "messages_total": 18,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v8-0001-Compute-virtual-generated-columns-during-INSERT-U.patch",
+      "v1-0001-Show-expression-of-virtual-columns-in-error-messa.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The goal of a useful DETAIL line is agreed, but v8 also makes write-time computation mandatory for every table with a virtual column. already-exists-1 survived: message #9 raised computing only when constraints exist, and the thread does not say why v8 rejects that. The author lists the consequences in message #17 and asks whether to continue, and nobody has replied. The list has to settle that scope before the level 2 points can be judged.",
+  "failing_level": "1b",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "failed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "not_evaluated"
+    }
+  ],
+  "brief": {
+    "title": "Compute virtual generated columns on insert and update",
+    "problem": "For a virtual generated column, the \"Failing row contains\" detail of check and not-null violations shows the string \"virtual\", which does not help users debug. Also, a row can be stored even when its virtual column cannot be computed, for example on integer overflow, and the error only appears when the row is read.",
+    "proposed_design": "v8 changes ExecConstraints() to compute all virtual generated columns of the new row into a separate slot and to check constraints against that slot, even when the table has no constraints. The input slot is not changed, so virtual columns are still stored as nulls. Each generation expression runs once per row, not once per check constraint that uses it.",
+    "user_visible_surface": [
+      "DETAIL of check and not-null violations shows the computed value of a virtual column instead of \"virtual\".",
+      "INSERT, UPDATE, ON CONFLICT, MERGE, COPY FROM and logical replication apply reject a row whose virtual column values cannot be computed.",
+      "An error in a generation expression now comes before not-null, check, unique and \"no partition found\" errors.",
+      "Restore of a dump, or initial table sync, fails for a table that has rows whose virtual column cannot be computed.",
+      "Docs for ddl.sgml and CREATE TABLE now say virtual columns are also computed on insert and update."
+    ],
+    "author_claims": [
+      "Each generation expression is evaluated once per row instead of once per check constraint.",
+      "Every write path is covered because all callers go through ExecConstraints(); foreign tables are not affected.",
+      "Computed values never reach disk because the input slot is not modified.",
+      "The author says the write-path consequences risk breaking existing workflows and asks if the feature is still worth pursuing."
+    ],
+    "thread_state": "Tom Lane rejected the v1/v2 approach of showing the expression and proposed computing values on write, which v4 to v8 implement; Peter Eisentraut was committer for a short time and then removed himself. After an offlist review found a COPY regression in v7, the author posted v8 with four new behaviour changes and asked whether to continue, and nobody has replied.",
+    "unclear": [
+      "No replies say whether the v8 behaviour changes for restore, table sync and error precedence are acceptable.",
+      "The material gives no performance numbers for the extra evaluation on writes, including tables without constraints.",
+      "The material does not say how existing rows that cannot be computed should be found or fixed before upgrade or restore.",
+      "The partition_merge expected output depends on OIDs, and the material does not say how v8 handles it.",
+      "The material does not say whether the SQL standard requires virtual columns to be computable at write time."
+    ],
+    "search_queries": [
+      "virtual generated columns",
+      "generated column error message",
+      "failing row contains virtual",
+      "compute virtual column on insert",
+      "generated column overflow on read",
+      "ExecBuildSlotValueDescription generated",
+      "virtual generated column check constraint",
+      "generated columns COPY constraint"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Unconditional write-time computation duplicates what stored columns and checks offer",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "desirability",
+      "touch_points": [
+        "does_not_fit",
+        "pg_dump_round_trip",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user runs ALTER COLUMN ... SET EXPRESSION, which leaves some existing rows that cannot be computed. A later dump restore or initial table sync fails on COPY and the table ends up empty, and the user learns this only during the restore.",
+      "argument": "Users who want write-time computability can already get it two ways: declare the column STORED, or add a CHECK constraint that refers to the virtual column, since check expressions are expanded and evaluated on write. v8 makes this computation mandatory for every table with a virtual column, and message #17 lists the cost: restore and table-sync failures, apply-worker errors, and a new order of errors. Message #11 argues that expensive expressions belong in STORED columns. That argument also means the users who want write-time checks already have STORED, so making the check mandatory for everyone adds little.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        9,
+        11,
+        17
+      ],
+      "author_must_show": "Why not compute virtual values only when the table has constraints to check, which message #9 suggests, and leave write-time validation to STORED or an explicit CHECK?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 9,
+          "from": "Tom Lane",
+          "date": "2026-02-26T18:47:07Z",
+          "url": "https://www.postgresql.org/message-id/719803.1772131627%40sss.pgh.pa.us"
+        },
+        {
+          "index": 11,
+          "from": "Tom Lane",
+          "date": "2026-02-26T22:14:43Z",
+          "url": "https://www.postgresql.org/message-id/742565.1772144083%40sss.pgh.pa.us"
+        },
+        {
+          "index": 17,
+          "from": "\"Matheus Alcantara\"",
+          "date": "2026-10-19T20:32:52Z",
+          "url": "https://www.postgresql.org/message-id/DM93NEP224GW.5527NY59BBN2%40gmail.com"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #11 argues for computing without constraints, but it predates the consequences listed in message #17, and nobody has weighed them. Message #9 itself raised computing only when constraints exist, and the thread does not say why v8 rejects that option.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "Dump restore and table sync fail on rows that master accepts",
+      "level": "2",
+      "rubric_item": 13,
+      "category": "pg_dump_round_trip",
+      "touch_points": [
+        "pg_dump_round_trip",
+        "wal_replication",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user has rows that became non-computable after ALTER COLUMN ... SET EXPRESSION and upgrades. The next pg_dump restores that table empty because COPY fails with \"integer out of range\". A subscriber's initial table sync for the same table keeps failing and retrying, and the user learns of both only at restore or subscribe time.",
+      "argument": "Message #17 confirms that ALTER TABLE ... ADD COLUMN and SET EXPRESSION do not check existing rows. Valid data written on master therefore stops round-tripping through pg_dump after upgrade. The proposal gives no way to find such rows beforehand and no restore-time escape. The author lists this in message #17 and asks whether to continue, and nobody has replied.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        11,
+        17
+      ],
+      "author_must_show": "How does a user find and fix existing non-computable rows before upgrade, and should SET EXPRESSION or ADD COLUMN check existing rows so the write-time guarantee holds?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 11,
+          "from": "Tom Lane",
+          "date": "2026-02-26T22:14:43Z",
+          "url": "https://www.postgresql.org/message-id/742565.1772144083%40sss.pgh.pa.us"
+        },
+        {
+          "index": 17,
+          "from": "\"Matheus Alcantara\"",
+          "date": "2026-10-19T20:32:52Z",
+          "url": "https://www.postgresql.org/message-id/DM93NEP224GW.5527NY59BBN2%40gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #17 confirms that restore leaves the table empty and table sync retries, and that ALTER does not check existing rows. Nobody in the thread has answered it, and the proposal gives no way to find such rows.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "Subscriber-only virtual columns can now stop logical replication apply",
+      "level": "2",
+      "rubric_item": 13,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A subscriber adds a virtual column that the publisher does not have, and the column has no constraint. After upgrade, one publisher row overflows the subscriber's generation expression. The apply worker errors and retries in a loop, and replication stalls until an administrator notices the lag.",
+      "argument": "Message #17, item 2, states that this happens even when the table has no constraints. On master the same setup replicates, and the error appears only when someone reads the row. Changing replication from \"replicates, fails on read\" to \"blocks the whole stream\" is a silent behaviour change for existing subscribers. The material has no option to opt out of it and no documentation for it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        17
+      ],
+      "author_must_show": "What should happen on apply when a subscriber-only virtual column cannot be computed, and is a stalled apply worker acceptable without an option or a release note?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 17,
+          "from": "\"Matheus Alcantara\"",
+          "date": "2026-10-19T20:32:52Z",
+          "url": "https://www.postgresql.org/message-id/DM93NEP224GW.5527NY59BBN2%40gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #17, item 2, confirms the change from \"fails on read\" to \"apply stops\", and nobody has accepted it. Existing tools (disable_on_error, ALTER SUBSCRIPTION ... SKIP, changing the expression) allow recovery, so it stays fixable.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    },
+    {
+      "title": "Unmeasured per-row cost for all writes to tables with virtual columns",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A table has several virtual columns and no constraints, for example cheap JSON or text extractions. With v8, every INSERT, COPY FROM and logical replication apply evaluates all those expressions and fills an extra slot. A bulk load gets slower, and the user finds out only after upgrading.",
+      "argument": "v8 computes every virtual column on every write, even with no constraints and even on UPDATEs that change no referenced column (message #17). The material contains no measurements. Tom Lane in message #11 argues that an expensive expression should be stored, but that does not cover many cheap expressions on a wide table during COPY. The cost falls only on users of virtual columns, which lowers the weight of this objection, but some numbers are still needed.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        11,
+        17
+      ],
+      "author_must_show": "What is the measured overhead of v8 on COPY FROM and UPDATE for a table with several virtual columns and no constraints?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 11,
+          "from": "Tom Lane",
+          "date": "2026-02-26T22:14:43Z",
+          "url": "https://www.postgresql.org/message-id/742565.1772144083%40sss.pgh.pa.us"
+        },
+        {
+          "index": 17,
+          "from": "\"Matheus Alcantara\"",
+          "date": "2026-10-19T20:32:52Z",
+          "url": "https://www.postgresql.org/message-id/DM93NEP224GW.5527NY59BBN2%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The thread has no measurements, and v8 adds evaluation for tables with virtual columns and no constraints, which master skips. The cost falls only on users of virtual columns, so numbers for COPY FROM and UPDATE would settle it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "level 2 is above the failing level 1b: not evaluated (base-up stop rule)"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Generation expression errors now take precedence over constraint errors",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "sql_standard_syntax"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An application catches SQLSTATE 23502 or 23505 to report a bad row or to retry. After upgrade, a row with both a NULL in a NOT NULL column and an overflowing virtual column raises 22003. The handler does not match, and the application finds out from a production error.",
+      "argument": "Message #17, item 3, says all virtual columns are computed at the start of ExecConstraints(). So an expression error comes before not-null, check, unique and \"no partition found\" errors. Stored generated columns are computed before constraints too, so this matches their behaviour, but it still changes which SQLSTATE existing clients receive. The material does not say whether this order is intended or whether computing only after the cheap checks was considered.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        9,
+        17
+      ],
+      "author_must_show": "Is the new error order the intended contract, matching stored generated columns, and should it be documented as a compatibility change?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 9,
+          "from": "Tom Lane",
+          "date": "2026-02-26T18:47:07Z",
+          "url": "https://www.postgresql.org/message-id/719803.1772131627%40sss.pgh.pa.us"
+        },
+        {
+          "index": 17,
+          "from": "\"Matheus Alcantara\"",
+          "date": "2026-10-19T20:32:52Z",
+          "url": "https://www.postgresql.org/message-id/DM93NEP224GW.5527NY59BBN2%40gmail.com"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The row in the scenario is rejected on master too, and Postgres does not promise which of two errors a row raises first. The objection itself says stored generated columns already behave this way, so v8 copies existing practice.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Rows already on disk can make dump restore and table sync fail",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "pg_dump_round_trip",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user has a table with a row whose virtual column overflows, created on master or through ALTER COLUMN ... SET EXPRESSION. They upgrade with pg_dump and restore. The COPY fails with \"integer out of range\" and the table is restored empty, which they may not notice until later. A new subscriber hits the same error in table sync and retries forever.",
+      "argument": "Message #17 states both effects. Rows that master accepts and stores stay on disk after pg_upgrade, and ALTER COLUMN ... SET EXPRESSION still does not check existing rows. So the cluster keeps rows that the new write path refuses to copy. The proposal gives no way to find such rows before a dump or a subscription starts, and no way to restore them anyway.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        11,
+        17
+      ],
+      "author_must_show": "How does a user find and fix rows that cannot be computed before dump, restore or table sync, and should SET EXPRESSION and ADD COLUMN check existing rows?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 11,
+          "from": "Tom Lane",
+          "date": "2026-02-26T22:14:43Z",
+          "url": "https://www.postgresql.org/message-id/742565.1772144083%40sss.pgh.pa.us"
+        },
+        {
+          "index": 17,
+          "from": "\"Matheus Alcantara\"",
+          "date": "2026-10-19T20:32:52Z",
+          "url": "https://www.postgresql.org/message-id/DM93NEP224GW.5527NY59BBN2%40gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Subscriber-only virtual column can stop logical replication apply",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A subscriber table has a virtual column that the publisher does not have. A publisher row arrives whose value overflows that expression. The apply worker errors, restarts and fails on the same change. Apply stops for every table in the subscription, and the publisher slot keeps WAL until someone finds the cause.",
+      "argument": "Message #17 point 2 says apply now fails even when the subscriber table has no constraint. The publisher cannot see or check the subscriber's expression, so the publisher accepts the write and the subscriber cannot apply it. On master such a row applies and only fails on read, which is a smaller failure. The proposal does not say how a stuck worker shows the cause, or how a user skips or fixes the row.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        17
+      ],
+      "author_must_show": "What should the apply worker do with a replicated row whose subscriber-only virtual column cannot be computed, and how does the user recover without losing other changes?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 17,
+          "from": "\"Matheus Alcantara\"",
+          "date": "2026-10-19T20:32:52Z",
+          "url": "https://www.postgresql.org/message-id/DM93NEP224GW.5527NY59BBN2%40gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-2. Its recovery question also has an answer today: the worker logs the error, and ALTER SUBSCRIPTION ... SKIP or disable_on_error apply as for any constraint failure on apply.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Write-time computability is a half-enforced invariant that breaks restore",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "pg_dump_round_trip",
+      "touch_points": [
+        "pg_dump_round_trip",
+        "wal_replication",
+        "maintenance_burden"
+      ],
+      "severity": "fatal",
+      "failure_scenario": "A user runs ALTER COLUMN ... SET EXPRESSION, and existing rows can no longer be computed. Months later pg_dump output restores that table empty with \"integer out of range\", and a new subscriber's table sync retries forever. The user learns of it during a migration or a restore after a failure.",
+      "argument": "Message #17 states that ADD COLUMN ... VIRTUAL and SET EXPRESSION do not check existing rows, so the patch enforces computability on write but not on DDL. A dump of today's valid database then fails to restore under the new rule, and the only sign comes late, at restore or table sync. Closing the gap means scanning or rewriting tables on ALTER, which is a different and larger proposal. The project would keep defending this rule for every later DDL path.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        11,
+        17
+      ],
+      "author_must_show": "How would ALTER TABLE enforce computability for existing rows, and how does a user find rows that would make a restore fail?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 11,
+          "from": "Tom Lane",
+          "date": "2026-02-26T22:14:43Z",
+          "url": "https://www.postgresql.org/message-id/742565.1772144083%40sss.pgh.pa.us"
+        },
+        {
+          "index": 17,
+          "from": "\"Matheus Alcantara\"",
+          "date": "2026-10-19T20:32:52Z",
+          "url": "https://www.postgresql.org/message-id/DM93NEP224GW.5527NY59BBN2%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1, which also asks whether SET EXPRESSION and ADD COLUMN should check existing rows. The fatal severity does not hold, because a new version could scan on ALTER or compute only when constraints exist.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No committer owns v8's behaviour changes, and the author doubts them",
+      "level": "2",
+      "rubric_item": 16,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "v8 changes error precedence, restore behaviour and apply worker failures, which are areas users notice after release. If it is committed without a committer having accepted those changes, bug reports about broken restores or stuck subscribers have no clear owner. The project learns of this after the release.",
+      "argument": "The CommitFest history shows Peter Eisentraut added and then removed himself as committer. Tom Lane proposed the direction in message #11 but has not commented on the v8 consequences. In message #17 the author lists four behaviour changes and asks whether the work is still worth pursuing, and nobody has replied.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        11,
+        17
+      ],
+      "author_must_show": "Which committer has reviewed the four consequences in message #17 and agreed to own them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 11,
+          "from": "Tom Lane",
+          "date": "2026-02-26T22:14:43Z",
+          "url": "https://www.postgresql.org/message-id/742565.1772144083%40sss.pgh.pa.us"
+        },
+        {
+          "index": 17,
+          "from": "\"Matheus Alcantara\"",
+          "date": "2026-10-19T20:32:52Z",
+          "url": "https://www.postgresql.org/message-id/DM93NEP224GW.5527NY59BBN2%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The scenario assumes a commit without a committer who accepted the changes, which cannot happen. The rubric treats a missing owner as a committability note that must not count against the design.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No user demand shown for computing virtual columns on write",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer weighs v8 and finds two motivations and no user report behind either: the \"virtual\" placeholder in DETAIL, and rows that fail only on read. Users who want write-time checking can already add a check constraint that references the column, or declare it STORED.",
+      "argument": "The thread contains no field report, no -general or -bugs reference, and no user asking for write-time evaluation. Message #1 calls the placeholder unhelpful, and message #11 builds the overflow case by hand. On master a check constraint on the virtual column already evaluates the expression on insert and update (message #10), so the safety goal has a declarative workaround. Tom Lane's correctness argument in message #11 is a design opinion and not evidence that users hit the problem.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        10,
+        11
+      ],
+      "author_must_show": "Which users have reported unreadable rows or unhelpful \"virtual\" DETAIL output, and why does a check constraint or a STORED column not serve them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "\"Matheus Alcantara\"",
+          "date": "2026-02-03T14:06:47Z",
+          "url": "https://www.postgresql.org/message-id/DG5DV8SED62G.2WFJB46D7WIT8%40gmail.com"
+        },
+        {
+          "index": 10,
+          "from": "\"Matheus Alcantara\"",
+          "date": "2026-02-26T20:29:34Z",
+          "url": "https://www.postgresql.org/message-id/DGP6EUP1QGYO.GVXRL0VYPEYW%40gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Tom Lane",
+          "date": "2026-02-26T22:14:43Z",
+          "url": "https://www.postgresql.org/message-id/742565.1772144083%40sss.pgh.pa.us"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "Neither STORED nor a check constraint fixes the \"virtual\" placeholder, and every participant agrees it is unhelpful. A committer raised the unreadable row himself in message #11 as a mismatch with stored columns; already-exists-1 keeps the workaround argument.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Existing virtual-column users pay restore and sync failures for a small gain",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "desirability",
+      "touch_points": [
+        "pg_dump_round_trip",
+        "wal_replication",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user ran ALTER COLUMN ... SET EXPRESSION on a table that has old rows the new expression overflows on. After upgrading, a dump restore leaves that table empty and initial table sync keeps retrying. They find out at restore or subscription time, with no warning beforehand.",
+      "argument": "Message #17 lists these consequences and also a change in error precedence, and the author asks whether the feature is still worth pursuing. Nobody has replied. The gain is a better DETAIL line and earlier errors. The cost lands on every existing user of virtual columns, including users who never hit an overflow, and the material offers no way to find bad rows before an upgrade.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        11,
+        17
+      ],
+      "author_must_show": "How would users find and fix uncomputable rows before restore or sync, and which users ask for this trade?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 11,
+          "from": "Tom Lane",
+          "date": "2026-02-26T22:14:43Z",
+          "url": "https://www.postgresql.org/message-id/742565.1772144083%40sss.pgh.pa.us"
+        },
+        {
+          "index": 17,
+          "from": "\"Matheus Alcantara\"",
+          "date": "2026-10-19T20:32:52Z",
+          "url": "https://www.postgresql.org/message-id/DM93NEP224GW.5527NY59BBN2%40gmail.com"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1 for the restore and sync failures. Its claim that every virtual-column user pays is too broad, because users without uncomputable rows pay only the evaluation cost that maintenance-fit-2 covers.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "No format change, but rows that cannot be computed stay on disk after pg_upgrade and the new write path refuses to copy them."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "Logical replication apply and initial table sync now fail on a row whose virtual column cannot be computed."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The patch changes src/include/nodes/execnodes.h, which extensions compile against."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": true,
+      "reason": "Restore of a dump fails on COPY for a table that holds rows whose virtual column cannot be computed."
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "DETAIL now shows computed virtual column values, so column privilege rules for the failing-row text apply to them."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "A write-time computability rule that ALTER TABLE ... SET EXPRESSION and ADD COLUMN do not enforce must be defended for later DDL paths."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "ExecConstraints() evaluates every virtual column on every insert, update and COPY FROM row, even without constraints."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "A STORED column or a check constraint on the virtual column already gives write-time validation to users who want it."
+    }
+  ],
+  "questions": [
+    "Why does v8 compute virtual columns for tables without constraints, when message #9 suggested computing them only when there are constraints to check?",
+    "How does a user find and fix existing rows that cannot be computed before a dump restore or initial table sync, and should SET EXPRESSION and ADD COLUMN check existing rows?",
+    "Is a stopped apply worker the intended result when a subscriber-only virtual column without constraints cannot be computed for a replicated row?",
+    "What is the measured overhead of v8 on COPY FROM and UPDATE for a table with several virtual columns and no constraints?",
+    "Does the SQL standard require a virtual generated column to be computable when the row is written?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "Someone who knows the executor constraint path and logical replication apply would have to own it. Tom Lane proposed the direction in message #11 and Peter Eisentraut removed himself as committer; neither has commented on v8.",
+    "liability": "The owner signs for restore failures, stopped apply workers and table sync retries on existing data, and for keeping the write-time rule consistent with later ALTER TABLE paths, with no end date.",
+    "author_follow_up": "The author posted eight versions over several months and fixed a COPY regression found offlist, but asks in message #17 whether the work is still worth pursuing."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "needs design rethink",
+    "reason": "The DETAIL improvement helps users of virtual columns with constraints, and the patch is small and limited to execMain.c and execnodes.h. The unconditional write-time computation adds restore and apply failures that nobody has accepted, so the scope needs a decision first."
+  },
+  "self_advice": [],
+  "provisional_note": "Without the code, I could not check that DETAIL hides a virtual column value from a user without SELECT on that column, or that every write path goes through ExecConstraints(). The level 2 objections on restore, apply and overhead were not evaluated in the verdict.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:5502",
+      "kind": "cf",
+      "title": "DOCS for generated column replication",
+      "status": "Rejected",
+      "date": "2025-03-12",
+      "first_date": "2025-02-02",
+      "url": "https://commitfest.postgresql.org/patch/5502/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHut+Pt_7GV8eHSW4XQsC6rF13TWrz-SrGeeiV71=SE14DC4Jg@mail.gmail.com"
+      ],
+      "authors": "Peter Smith (smithpb2250)",
+      "objectors": "Amit Kapila",
+      "summary": "Peter Smith proposed an \"Examples\" subsection for the new \"Generated Column Replication\" documentation page. The patch adds a few self-contained publication and subscription examples, including one showing that a publication column list overrides publish_generated_columns.",
+      "objection": "Amit Kapila judged the current text and example sufficient, and preferred to wait for user feedback on the new feature before adding more examples. No one else supported the patch, so vignesh C closed the entry for lack of interest, open to revisit if users ask for it.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "virtual generated columns",
+        "generated column error message",
+        "generated column overflow on read",
+        "ExecBuildSlotValueDescription generated",
+        "virtual generated column check constraint",
+        "generated columns COPY constraint"
+      ],
+      "from_hint": false,
+      "score": 0.77,
+      "enriched": true,
+      "key_quote": "This is a new feature, and I think it is better to\nget some feedback from users. We can add more examples or information\nbased on real user feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAA4eK1LipwqyW5hseh2Yu5%2BboD3D7iyVeOwvKgu%3DzJj5GbcoPg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:6179",
+      "kind": "cf",
+      "title": "COPY WHERE clause generated/system column reference",
+      "status": "Withdrawn",
+      "date": "2026-01-08",
+      "first_date": "2025-10-27",
+      "url": "https://commitfest.postgresql.org/patch/6179/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CACJufxHb8YPQ095R_pYDr77W9XKNaXg5Rzy-WP525mkq+hRM3g@mail.gmail.com"
+      ],
+      "authors": "Jian He (stayreal)",
+      "objectors": "Masahiko Sawada, Peter Eisentraut",
+      "summary": "The patches make COPY FROM ... WHERE work with generated columns: they expand virtual generated columns in the WHERE clause and compute stored generated columns before the WHERE clause is checked. They also reject system columns other than tableoid in the WHERE clause.",
+      "objection": "Peter Eisentraut committed a smaller fix that rejects generated columns in COPY FROM WHERE with a clear error, and left tableoid for a separate thread. He then argued that support should not be added, because generated columns belong to the target table while the WHERE clause filters input data. Masahiko Sawada had shown that computing stored generated columns before the WHERE clause runs them before BEFORE INSERT triggers, so the WHERE clause changes the row the trigger sees.",
+      "touch_points": [],
+      "matched_queries": [
+        "virtual generated columns",
+        "generated column error message",
+        "generated column overflow on read",
+        "ExecBuildSlotValueDescription generated",
+        "virtual generated column check constraint",
+        "generated columns COPY constraint"
+      ],
+      "from_hint": false,
+      "score": 0.71,
+      "enriched": true,
+      "key_quote": "This seems fundamentally wrong, because generated columns are a\nproperty of the target table, but the COPY WHERE clause is meant to\nfilter the input data.",
+      "quote_message_url": "https://www.postgresql.org/message-id/70f3402f-30a2-48e1-9fb3-a4da2e77296f%40eisentraut.org",
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:1271",
+      "kind": "cf",
+      "title": "generated columns",
+      "status": "Returned with feedback",
+      "date": "2017-10-02",
+      "first_date": "2017-08-31",
+      "url": "https://commitfest.postgresql.org/patch/1271/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/b151f851-4019-bdb1-699e-ebab07d2f40a@2ndquadrant.com"
+      ],
+      "authors": "Peter Eisentraut (petere)",
+      "objectors": "Jaime Casanova, Daniel Gustafsson",
+      "summary": "Peter Eisentraut proposed implementing SQL-standard generated columns (GENERATED ALWAYS AS (expr)), with the generation expression stored in pg_attrdef like a default and MySQL/Oracle-style VIRTUAL|STORED syntax. Only the VIRTUAL (computed-on-read) variant was fully implemented; STORED, various ALTER TABLE forms and index support were deferred.",
+      "objection": "Review by Jaime Casanova found multiple bugs: generated columns showed no value through a view, inheritance produced a malformed default and a server crash on insert, ALTER COLUMN TYPE on the referenced or generated column failed with internal errors, triggers saw NULL for the generated column, and the generation expression could be dropped via DROP DEFAULT. Based on these reviews, the commitfest manager marked the entry Returned with feedback, asking for an updated version to be resubmitted.",
+      "touch_points": [],
+      "matched_queries": [
+        "virtual generated columns",
+        "generated column error message",
+        "generated column overflow on read",
+        "ExecBuildSlotValueDescription generated",
+        "virtual generated column check constraint",
+        "generated columns COPY constraint"
+      ],
+      "from_hint": false,
+      "score": 0.702,
+      "enriched": true,
+      "key_quote": "Based on this review, and the errors noted in upthread in the previous review,\nI’m marking this Returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/FF486006-CA9E-47BA-BD0D-49FEC8EC1D69%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:5590",
+      "kind": "cf",
+      "title": "DOCS - Generated Column Logical Replication Examples",
+      "status": "Withdrawn",
+      "date": "2025-02-21",
+      "first_date": "2025-02-02",
+      "url": "https://commitfest.postgresql.org/patch/5590/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHut+Pt_7GV8eHSW4XQsC6rF13TWrz-SrGeeiV71=SE14DC4Jg@mail.gmail.com"
+      ],
+      "authors": "Peter Smith (smithpb2250)",
+      "objectors": "",
+      "summary": "The patch adds an \"Examples\" subsection to the new \"Generated Column Replication\" documentation section. The examples are self-contained publication, subscription and table setups that show subtle rules, such as publication column lists overriding publish_generated_columns.",
+      "objection": "The visible messages do not show why. Only the opening message is shown, and the entry was later withdrawn without any visible reply or objection.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "virtual generated columns",
+        "generated column error message",
+        "generated column overflow on read",
+        "ExecBuildSlotValueDescription generated",
+        "virtual generated column check constraint",
+        "generated columns COPY constraint"
+      ],
+      "from_hint": false,
+      "score": 0.616,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:5068",
+      "kind": "cf",
+      "title": "Allow logical decoding to output generated columns",
+      "status": "Returned with feedback",
+      "date": "2024-12-10",
+      "first_date": "2023-08-01",
+      "url": "https://commitfest.postgresql.org/patch/5068/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/B80D17B2-2C8E-4C7D-87F2-E5B4BE3C069E@gmail.com"
+      ],
+      "authors": "Peter Smith (smithpb2250), Shubham Khanna (skhanna), Shlok Kyal (shlokkyal)",
+      "objectors": "Peter Eisentraut, Michael Paquier",
+      "summary": "Let pgoutput send generated column values in logical replication, so consumers get a complete row instead of computing generated columns on the subscriber. The work added replication of generated columns named in a publication column list, then a publish_generated_columns publication parameter.",
+      "objection": "Most of the work was committed before the entry closed: generated columns in column lists and the publish_generated_columns parameter. After that commit, Peter Eisentraut asked how the feature should work with the proposed virtual generated columns, which he thought could not be replicated, and Amit Kapila suggested limiting the option to stored generated columns. The thread then went idle in Waiting on Author, and Michael Paquier returned the entry until that question is settled.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "virtual generated columns",
+        "generated column error message",
+        "generated column overflow on read",
+        "virtual generated column check constraint",
+        "generated columns COPY constraint"
+      ],
+      "from_hint": false,
+      "score": 0.557,
+      "enriched": true,
+      "key_quote": "As of now this thread is just waiting on author and idle in the CF app for no real purpose.",
+      "quote_message_url": "https://www.postgresql.org/message-id/Z1fkw0AKPudqA28l%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:5308",
+      "kind": "cf",
+      "title": "doc: virtual envs with Pl/Python",
+      "status": "Withdrawn",
+      "date": "2025-02-10",
+      "first_date": "2024-10-17",
+      "url": "https://commitfest.postgresql.org/patch/5308/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+v5N4219sn8Tv5j5Cs83P5hxKvQ4kcX2HWpDC0nC+kM9riH2w@mail.gmail.com"
+      ],
+      "authors": "Florents Tselai (florentst)",
+      "objectors": "Tom Lane, Jacob Champion",
+      "summary": "The patch adds a note to the PL/Python documentation on using a Python virtual environment, so that extra packages do not have to be installed into the system interpreter. The note points to the environment variables PL/Python already honors.",
+      "objection": "Tom Lane objected that the docs should not teach Python, and that the patch describes one installation pattern that may not apply on every platform. He and Jacob Champion added that a virtualenv user already knows about PYTHONPATH, and that the patch does not say how to set it for the server, which varies by packaging. Jacob Champion found the text too prescriptive and suggested a wiki page that also lists alternatives. The author withdrew the entry.",
+      "touch_points": [],
+      "matched_queries": [
+        "virtual generated columns",
+        "failing row contains virtual",
+        "compute virtual column on insert"
+      ],
+      "from_hint": false,
+      "score": 0.336,
+      "enriched": true,
+      "key_quote": "More, this\npatch seems like not merely teaching Python, but teaching the use of\nspecific Python installation patterns that might or might not apply\non a particular platform.  That's not going to scale.",
+      "quote_message_url": "https://www.postgresql.org/message-id/647811.1729173390%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:4531",
+      "kind": "cf",
+      "title": "Change tuple table slot for Unique node to \"virtual\"",
+      "status": "Withdrawn",
+      "date": "2024-03-28",
+      "first_date": "2023-08-30",
+      "url": "https://commitfest.postgresql.org/patch/4531/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/388BA879-CAEC-4930-A4EE-F06DC1F12C96@gmail.com"
+      ],
+      "authors": "Denis Smirnov (darthunix)",
+      "objectors": "Heikki Linnakangas, David Rowley, Ashutosh Bapat",
+      "summary": "The patch changed the Unique node's result slot from a minimal tuple slot to a virtual slot, because the copy into a minimal tuple slot (with palloc) made DISTINCT slower than the equivalent GROUP BY. A later version used the outer child's slot type instead of a fixed type.",
+      "objection": "Benchmarks showed mixed results. Heikki Linnakangas found a slowdown when the input is a minimal tuple from a Sort, and David Rowley measured Q2 and Q3 as slower with the revised patch because tts_virtual_materialize() costs more. Ashutosh Bapat doubted the change was worth pursuing when only one query improved clearly. The author then asked how slot types should be chosen across all materialization nodes, and the entry was withdrawn after an offline discussion.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "virtual generated columns",
+        "failing row contains virtual",
+        "compute virtual column on insert"
+      ],
+      "from_hint": false,
+      "score": 0.305,
+      "enriched": true,
+      "key_quote": "Q1 is consistently giving performance > 25% for both of us. But other queries aren't showing a whole lot improvement.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAExHW5uku%3DD2Dy6ST4JHO1sokZF8arecymk2RksioKk2BGb4UA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:4420",
+      "kind": "cf",
+      "title": "Unified file access using virtual file descriptors",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2023-06-29",
+      "url": "https://commitfest.postgresql.org/patch/4420/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/BYAPR13MB2677936EF82457FFA311626FA025A@BYAPR13MB2677.namprd13.prod.outlook.com"
+      ],
+      "authors": "John Morris (coyotebush)",
+      "objectors": "vignesh C",
+      "summary": "Make virtual file descriptors (VFDs) the common interface for most non-buffer-cache, non-WAL files, adding sequential read/write, seek/tell, append and ferror-style error calls to fd.c. A second patch converts many callers from system or C library file calls to VFDs, as groundwork for transparent encryption, compression or checksums.",
+      "objection": "The patch failed to compile on CFbot (an undeclared MAXIMUM_VFD in fd.c), and the author did not post a new version after this was reported. The commitfest manager returned it with feedback for that reason, and no design review appears in the thread.",
+      "touch_points": [],
+      "matched_queries": [
+        "virtual generated columns",
+        "failing row contains virtual"
+      ],
+      "from_hint": false,
+      "score": 0.204,
+      "enriched": true,
+      "key_quote": "With no update to the thread and the compilation still failing I'm\nmarking this as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALDaNm0R2va6z7a0h9QPfcLmGNxOA8JpH6iONxANnVNDUoMZnQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:4717",
+      "kind": "cf",
+      "title": "Avoid computing ORDER BY junk columns unnecessarily",
+      "status": "Returned with feedback",
+      "date": "2024-02-10",
+      "first_date": "2023-12-21",
+      "url": "https://commitfest.postgresql.org/patch/4717/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2ca5865b-4693-40e5-8f78-f3b45d5378fb@iki.fi"
+      ],
+      "authors": "Heikki Linnakangas (heikki)",
+      "objectors": "",
+      "summary": "Avoid computing ORDER BY junk columns unnecessarily\nThreads: Avoid computing ORDER BY junk columns unnecessarily",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "compute virtual column on insert"
+      ],
+      "from_hint": false,
+      "score": 0.143,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:4620",
+      "kind": "cf",
+      "title": "CRC32C Parallel Computation Optimization on ARM",
+      "status": "Returned with feedback",
+      "date": "2025-04-02",
+      "first_date": "2023-10-20",
+      "url": "https://commitfest.postgresql.org/patch/4620/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/DB9PR08MB6991329A73923BF8ED4B3422F5DBA@DB9PR08MB6991.eurprd08.prod.outlook.com"
+      ],
+      "authors": "xiang gao (xiang.gao)",
+      "objectors": "",
+      "summary": "CRC32C Parallel Computation Optimization on ARM\nThreads: CRC32C Parallel Computation Optimization on ARM",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "compute virtual column on insert"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "revert:20d3fe9009ddbbbb3da3a2da298f922054b43f8c",
+      "kind": "revert",
+      "title": "In INSERT/UPDATE, use the table's real tuple descriptor as target.",
+      "status": "Partially reverted",
+      "date": "2020-10-26",
+      "first_date": "2020-10-25",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=20d3fe9009ddbbbb3da3a2da298f922054b43f8c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/16644-5da7ef98a7ac4545@postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "In INSERT/UPDATE, use the table's real tuple descriptor as target.\nReverted commit(s): Fix corner case for a BEFORE ROW UPDATE trigger returning OLD.",
+      "objection": "Previously, ExecInitModifyTable relied on ExecInitJunkFilter,\nand thence ExecCleanTypeFromTL, to build the target descriptor from\nthe query tlist.  While we just checked (in ExecCheckPlanOutput)\nthat the tlist produces compatible output, this is not a great\nsubstitute for the relation's actual tuple descriptor that's\navailable from the relcache.  For one thing, dropped columns will\nnot be correctly marked attisdropped; it's a bit surprising that\nwe've gotten away with that this long.  But the real reason for\nbeing concerned with this is that using the table's descriptor means\nthat the slot will have correct attrmissing data, allowing us to\nrevert the klugy fix of commit ba9f18abd.  (This commit undoes\nthat one's changes in trigger.c, but keeps the new test case.)\nThus we can solve the bogus-trigger-tuple problem with fewer cycles\nrather than more.\n\nNo back-patch, since this doesn't fix any additional bug, and it\nseems somewhat more likely to have unforeseen side effects than\nba9f18abd's narrow fix.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "compute virtual column on insert"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:324",
+      "kind": "cf",
+      "title": "Mention column name in error messages",
+      "status": "Returned with feedback",
+      "date": "2015-12-22",
+      "first_date": "2015-06-29",
+      "url": "https://commitfest.postgresql.org/patch/324/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANfkH5k-6nNt-4cSv1vPB80nq2BZCzhFVR5O4VznYbsX0wZmow@mail.gmail.com"
+      ],
+      "authors": "Franck Verrot (franckverrot)",
+      "objectors": "",
+      "summary": "Mention column name in error messages\nThreads: Mention column name in error messages",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "generated column error message"
+      ],
+      "from_hint": false,
+      "score": 0.116,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:818",
+      "kind": "cf",
+      "title": "Mention column name in error messages",
+      "status": "Returned with feedback",
+      "date": "2016-11-29",
+      "first_date": "2015-06-29",
+      "url": "https://commitfest.postgresql.org/patch/818/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANfkH5k-6nNt-4cSv1vPB80nq2BZCzhFVR5O4VznYbsX0wZmow@mail.gmail.com"
+      ],
+      "authors": "Franck Verrot (franckverrot)",
+      "objectors": "",
+      "summary": "Mention column name in error messages\nThreads: Mention column name in error messages",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "generated column error message"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3513",
+      "kind": "cf",
+      "title": "Consider incremental sort for fractional paths in generate_orderappend_paths",
+      "status": "Returned with feedback",
+      "date": "2022-04-07",
+      "first_date": "2021-04-16",
+      "url": "https://commitfest.postgresql.org/patch/3513/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/e8f9ec90-546d-e948-acce-0525f3e92773@enterprisedb.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "Consider incremental sort for fractional paths in generate_orderappend_paths\nThreads: PATCH: generate fractional cheapest paths in\ngenerate_orderedappend_path",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "ExecBuildSlotValueDescription generated"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:2275",
+      "kind": "cf",
+      "title": "Add a reset_computed_values function in pg_stat_statements",
+      "status": "Returned with feedback",
+      "date": "2019-12-01",
+      "first_date": "2019-09-01",
+      "url": "https://commitfest.postgresql.org/patch/2275/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1762890.8ARNpCrDLI@peanuts2"
+      ],
+      "authors": "Pierre Ducroquet (pinaraf)",
+      "objectors": "",
+      "summary": "Add a reset_computed_values function in pg_stat_statements\nThreads: [Patch] Add a reset_computed_values function in pg_stat_statements",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "compute virtual column on insert"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:492",
+      "kind": "cf",
+      "title": "Add generate_series(date,date,[step])",
+      "status": "Returned with feedback",
+      "date": "2016-03-17",
+      "first_date": "2016-01-25",
+      "url": "https://commitfest.postgresql.org/patch/492/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CADkLM=dzw0Pvdqp5yWKxMd+VmNkAMhG=4ku7GnCZxebWnzmz3Q@mail.gmail.com"
+      ],
+      "authors": "Corey Huinker (coreyh)",
+      "objectors": "",
+      "summary": "Add generate_series(date,date,[step])\nThreads: Add generate_series(date,date) and generate_series(date,date,integer)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "ExecBuildSlotValueDescription generated"
+      ],
+      "from_hint": false,
+      "score": 0.098,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:4463",
+      "kind": "cf",
+      "title": "CHECK constraint deferrable Support",
+      "status": "Withdrawn",
+      "date": "2024-01-15",
+      "first_date": "2023-07-05",
+      "url": "https://commitfest.postgresql.org/patch/4463/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAPF61jBFT6iGv-Af=NrZx3vhqLYqx8WDvfjqVuRVYv2DFbbY4A@mail.gmail.com"
+      ],
+      "authors": "Himanshu Upadhyaya (himanshuu)",
+      "objectors": "",
+      "summary": "CHECK constraint deferrable Support\nThreads: CHECK Constraint Deferrable",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "virtual generated column check constraint"
+      ],
+      "from_hint": false,
+      "score": 0.095,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:2798",
+      "kind": "cf",
+      "title": "remove deprecated v8.2 containment operators",
+      "status": "Returned with feedback",
+      "date": "2021-02-01",
+      "first_date": "2020-10-27",
+      "url": "https://commitfest.postgresql.org/patch/2798/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20201027032511.GF9241@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "",
+      "summary": "remove deprecated v8.2 containment operators\nThreads: [PATCH] remove deprecated v8.2 containment operators",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "failing row contains virtual"
+      ],
+      "from_hint": false,
+      "score": 0.095,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:4304",
+      "kind": "cf",
+      "title": "[PATCH] Add support function for containment operators",
+      "status": "Returned with feedback",
+      "date": "2023-08-01",
+      "first_date": "2023-04-29",
+      "url": "https://commitfest.postgresql.org/patch/4304/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/94f64d1f-b8c0-b0c5-98bc-0793a34e0851@kimmet.dk"
+      ],
+      "authors": "Kim Johan Andersson (kimjand)",
+      "objectors": "",
+      "summary": "[PATCH] Add support function for containment operators\nThreads: [PATCH] Add support function for containment operators",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "failing row contains virtual"
+      ],
+      "from_hint": false,
+      "score": 0.094,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:5397",
+      "kind": "cf",
+      "title": "revamp row-security tracking",
+      "status": "Withdrawn",
+      "date": "2025-10-23",
+      "first_date": "2024-11-21",
+      "url": "https://commitfest.postgresql.org/patch/5397/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/Zz91RagtQg2s9497@nathan"
+      ],
+      "authors": "Nathan Bossart (bossartn)",
+      "objectors": "",
+      "summary": "revamp row-security tracking\nThreads: revamp row-security tracking",
+      "objection": "",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "failing row contains virtual"
+      ],
+      "from_hint": false,
+      "score": 0.093,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:3767",
+      "kind": "cf",
+      "title": "Bug: Reading from single byte character column type may cause out of bounds memory reads",
+      "status": "Returned with feedback",
+      "date": "2022-09-08",
+      "first_date": "2022-07-13",
+      "url": "https://commitfest.postgresql.org/patch/3767/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFM5RapGbBQm+dH=7K80HcvBvEWiV5Tm7N=NRaYURfm98YWc8A@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "Bug: Reading from single byte character column type may cause out of bounds memory reads\nThreads: Bug: Reading from single byte character column type may cause out of\nbounds memory reads.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "generated column overflow on read"
+      ],
+      "from_hint": false,
+      "score": 0.092,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:3673",
+      "kind": "cf",
+      "title": "Reducing Memory Consumption (aset and generation)",
+      "status": "Rejected",
+      "date": "2022-07-12",
+      "first_date": "2022-06-05",
+      "url": "https://commitfest.postgresql.org/patch/3673/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEudQApQk5OHj3ik6H2cq1Td_cX6-j3DCWLq7VTebXaaNtC9LQ@mail.gmail.com"
+      ],
+      "authors": "Ranier Vilela (raniervilela)",
+      "objectors": "",
+      "summary": "Reducing Memory Consumption (aset and generation)\nThreads: Reducing Memory Consumption (aset and generation)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "ExecBuildSlotValueDescription generated"
+      ],
+      "from_hint": false,
+      "score": 0.092,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:805",
+      "kind": "cf",
+      "title": "Contains and is contained by operators of inet datatypes",
+      "status": "Rejected",
+      "date": "2016-11-30",
+      "first_date": "2016-10-03",
+      "url": "https://commitfest.postgresql.org/patch/805/",
+      "thread_urls": [],
+      "authors": "Emre Hasegeli (hasegeli)",
+      "objectors": "",
+      "summary": "Contains and is contained by operators of inet datatypes",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "failing row contains virtual"
+      ],
+      "from_hint": false,
+      "score": 0.092,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:4641",
+      "kind": "cf",
+      "title": "Generate Doxygen documentation",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2008-05-31",
+      "url": "https://commitfest.postgresql.org/patch/4641/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/48416FA3.8060108@gmail.com"
+      ],
+      "authors": "John Morris (coyotebush)",
+      "objectors": "",
+      "summary": "Generate Doxygen documentation\nThreads: Where can I find the doxyfile?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "ExecBuildSlotValueDescription generated"
+      ],
+      "from_hint": false,
+      "score": 0.09,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 8,
+    "new_calls": 0,
+    "failed": 0,
+    "quotes_verified": 0,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2026-02-03",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found. [P2] is about generated columns in COPY FROM ... WHERE, and its recorded reason does not apply here: v8 computes values inside ExecConstraints(), after BEFORE triggers, and does not filter input rows. The only earlier attempt is this thread's own v1/v2 (show the expression). Tom Lane objected to it in message #9, and v4 to v8 follow his design from message #11."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "There are three objections, so no note is needed."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 2,
+      "note": "v8 adds no WAL record, no catalog change and no on-disk format change, and virtual columns are still stored as nulls. The objections concern rows that already exist and cross-node apply."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "No security objection found. Generation expressions now also run on write, as the writer, during restore and during apply, but Postgres limits virtual column expressions to built-in functions, so table owners cannot plant code there. Without the code I could not check one point: DETAIL must still hide a virtual column value from a user without SELECT on that column."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "Objections found. The only precedent concerns COPY WHERE filtering on input data, so it does not apply here."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "The error-message part has no existing equivalent for virtual columns, so this angle raises nothing against it."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "Two objections, both 'not now, show demand' in kind."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 11,
+      "new_survived": 4,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 105,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 12,
+    "wall_ms": 152961,
+    "cost_usd": 1.9224042,
+    "dry_run": false
+  }
+}

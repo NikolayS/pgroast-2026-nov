@@ -1,0 +1,1546 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:56:15.295Z",
+  "input": {
+    "arg": "6607",
+    "cf": {
+      "id": 6607,
+      "url": "https://commitfest.postgresql.org/patch/6607/",
+      "title": "New pg_stat_tablespace view for tablespace level metrics",
+      "status": "Needs review",
+      "authors": "shihao zhong (zhong950419)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAGRkXqRHsZw3%2BaeNZgnBYduQSY7qg1O4MBdmyFjK-A%2BTU1-b-A%40mail.gmail.com",
+    "subject": "[Patch] New pg_stat_tablespace view",
+    "thread_start": "2026-03-23T19:08:52Z",
+    "messages_read": 26,
+    "messages_total": 26,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "pg_stat_tablespace-v12.patch",
+      "pg_stat_tablespace_final.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "Block time per tablespace has no existing source, so the goal can stand, but two design questions from Andres Freund are open after v12. The thread shows no benchmark for the new code in the buffer manager I/O path (maintenance-fit-2). The block and tuple counts repeat per-relation counters without an accepted reason (already-exists-1). Field demand rests on one synthetic demo (demand-1), which alone would only mean \"show demand\".",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Add pg_stat_tablespace view with per-tablespace I/O, temp file and tuple stats",
+    "problem": "Postgres reports statistics per database and per relation, but a tablespace can span databases, so DBAs cannot see I/O or temp file load per tablespace. The author wants to find which storage device is slow when tablespaces sit on different storage, which pg_stat_io and pg_stat_database cannot show because they only report the sum.",
+    "proposed_design": "A new cumulative stats kind keeps one entry per tablespace with blocks read and hit, block read and write time, temp file usage and tuple counts. Block and tuple counts come from the relation stats flush. Block times are counted in a new pgstat_count_smgr_io_op_time(), which adds to a tablespace slot cached in the SMgrRelation; the entry is created at CREATE TABLESPACE, on first use, or when a relation moves.",
+    "user_visible_surface": [
+      "New system view pg_stat_tablespace: tablespace_id, tablespace_name, blks_read, blks_hit, blk_read_time, blk_write_time, temp_files, temp_bytes, tup_* columns.",
+      "pg_stat_tablespace.blk_write_time includes checkpointer and background writer writes, so it does not add up to pg_stat_database.blk_write_time.",
+      "Temp files count against the tablespace chosen by temp_tablespaces, not the tablespace of the relations in the query.",
+      "New stats kind 'tablespace', usable with pg_stat_have_stats('tablespace', 0, oid).",
+      "New pg_proc entries and catversion bump; the material does not list the function names."
+    ],
+    "author_claims": [
+      "With debug_io_direct=data, the same 5000 random lookups took about 69 us per block on SSD and about 18 us on a RAM disk; existing views show only the sum.",
+      "v11 keeps pgstat_count_io_op_time() identical to master, so WAL callers and the generic path pay nothing extra.",
+      "Counting a block time is one add into a cached slot, with no hash lookup and no new function call.",
+      "Per-tablespace block and tuple counts are needed because relation stats vanish with the relation and do not cross databases.",
+      "Without crash or reset gaps, counts match pg_stat_database for a database alone in one tablespace."
+    ],
+    "thread_state": "Several reviewers found crashes, leaks and wrong attribution, and the author fixed each in v2 to v12; Zsolt Parragi's last report, a missing entry after crash and a table move, is addressed in v12 without a reply yet. Andres Freund objected to duplicate counting in hot I/O paths and asked why tuple and block counts are kept per tablespace, and he has not answered v11 or v12.",
+    "unclear": [
+      "Whether Andres Freund accepts the v11/v12 hot-path design or the duplicated per-relation counters.",
+      "No measured overhead numbers for the buffer manager path with track_io_timing on or off.",
+      "The full column list and reset behaviour (stats_reset, a reset function) are cut off in the shown documentation hunk.",
+      "How the view behaves on a standby and what is lost after a crash beyond the cases reviewers tested.",
+      "Whether the view is restricted to privileged roles."
+    ],
+    "search_queries": [
+      "pg_stat_tablespace view",
+      "tablespace level statistics",
+      "per tablespace I/O statistics",
+      "tablespace I/O timing",
+      "pg_stat_io tablespace",
+      "cumulative stats new kind tablespace",
+      "temp files per tablespace stats",
+      "monitoring view storage hotspots"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "New code in the buffer manager I/O path with no overhead numbers",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Every installation runs the new path in bufmgr.c, localbuf.c and smgr.c, including those that never create a tablespace. A small regression in read-heavy workloads with track_io_timing on, or a wider SMgrRelation, would show up only after release. Other users of the feature would bear none of that cost alone.",
+      "argument": "Andres objected twice to duplicate counting in these paths (messages #16 and #23), and in message #23 he named cost details as small as argument passing on x86-64. v11 adds pgstat_count_smgr_io_op_time() and a cached slot in SMgrRelation, and the author describes the generated code in message #24. No benchmark is shown with track_io_timing on or off, and Andres has not said whether v11 or v12 meets his objection.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        16,
+        17,
+        23,
+        24
+      ],
+      "author_must_show": "What do read- and write-heavy pgbench or sequential-scan runs show for master versus v12, with track_io_timing on and off?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 16,
+          "from": "Andres Freund",
+          "date": "2026-09-21T14:24:21Z",
+          "url": "https://www.postgresql.org/message-id/qihwj3bbzazlcq4uxy3nfdnsekbdbbccsccmqyhv2q37oyl4t4%40f4jx4inuv2az"
+        },
+        {
+          "index": 17,
+          "from": "shihao zhong",
+          "date": "2026-09-21T15:41:10Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTTQ6pzTs1fKdUE%2BpzUHWryF5OQVVS9oZWUMV18wxa-fw%40mail.gmail.com"
+        },
+        {
+          "index": 23,
+          "from": "Andres Freund",
+          "date": "2026-10-09T12:32:36Z",
+          "url": "https://www.postgresql.org/message-id/43fmu6aqpuvjpgy23odpwb3zheufz2vkbriuoda5wqweqcs4jm%40s2jo5e6xrlxl"
+        },
+        {
+          "index": 24,
+          "from": "shihao zhong",
+          "date": "2026-10-12T04:11:27Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQ%2B06oP4kKvhtVh3-QRZ4nDqcVqWb%3DTme6FnF5DoNyL_A%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #24 describes the generated code but the thread shows no benchmark of master against v11 or v12. Andres Freund raised the hot-path cost twice and has not accepted the new design.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Entry creation spread over several code paths that are easy to miss",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A future feature does relation I/O, writes a temp file, or changes reltablespace through a path that does not hit one of the creation points. Its counts are dropped without error, because a flush only looks up the entry. A DBA sees a tablespace with missing I/O and has no way to know.",
+      "argument": "The entry is now created at CREATE TABLESPACE, at the first timed I/O per SMgrRelation, on temp file use, and on a relation move (messages #22 and #26). Each of v6, v7, v10 and v12 fixed a lifecycle bug: a shutdown crash, a stats leak, and a lost entry after a crash and a move. Every reported case was fixed, but each fix added one more creation point, so the invariant is spread across files rather than held in one place.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        11,
+        18,
+        21,
+        22,
+        25,
+        26
+      ],
+      "author_must_show": "What single rule guarantees an entry exists before any count is flushed, and which assertion would catch a new path that breaks it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 11,
+          "from": "shihao zhong",
+          "date": "2026-09-14T02:46:00Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqSN5JZPTMou4KwXpq6AFOD2McWJBzjtsPjqt-2TiHw_2A%40mail.gmail.com"
+        },
+        {
+          "index": 18,
+          "from": "shihao zhong",
+          "date": "2026-09-24T15:22:50Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQM90%3D58C%3Dht%2BnEFk7MTp1GMV8F3fw4Jg5z%2BNM3Wbu%3Dtg%40mail.gmail.com"
+        },
+        {
+          "index": 21,
+          "from": "Zsolt Parragi",
+          "date": "2026-10-06T22:06:26Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFOPiD-V8k5Pv7MrM-BzCK531p2HohA4%2BV5hNg8A73ysog%40mail.gmail.com"
+        },
+        {
+          "index": 22,
+          "from": "shihao zhong",
+          "date": "2026-10-09T04:49:20Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQsLfecnoA%2BNZvMW%2BQ2Z%2BnKGsdexeignD6utE0RWsHdQA%40mail.gmail.com"
+        },
+        {
+          "index": 25,
+          "from": "Zsolt Parragi",
+          "date": "2026-10-12T22:29:15Z",
+          "url": "https://www.postgresql.org/message-id/CAN4CZFMS8aMMu%3DEfdwPpnw8yrZGzA%3D%3Dqwo2tCru_BcLZQw-DsA%40mail.gmail.com"
+        },
+        {
+          "index": 26,
+          "from": "shihao zhong",
+          "date": "2026-10-12T23:33:33Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQAP%2BjspenndKS-QPZ3RMBnJ4Kc_bLBdHCg8xROA%3DandA%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #22 and #26 confirm four creation points and a flush that drops counts when the entry is missing. Each was added after a reviewer found a gap, and the material states no single rule or assertion that would catch a new path.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Standby lifecycle of tablespace stats entries is not defined",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication",
+        "catalog"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "On the primary, a DBA drops a tablespace and later creates a new one that reuses the OID. A standby replays both, but nothing removes or resets its stats entry, so the standby's pg_stat_tablespace shows the old counts under the new name. Nobody notices until standby numbers disagree with the primary after failover.",
+      "argument": "Message #11 resets stats in CreateTableSpace() and message #22 creates entries on first use, which covers standbys. Neither path runs during WAL replay, so the standby never reaches that reset. Relation and function stats avoid this by recording drops in the commit record so the standby replays them, and the proposal does not say whether tablespace drops use that path. Message #9 already fixed one standby crash, so the standby path is known to be fragile.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        9,
+        11,
+        22
+      ],
+      "author_must_show": "Are tablespace stats drops recorded in the commit record and replayed on standbys, and what clears a standby entry when the primary reuses a tablespace OID?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 9,
+          "from": "shihao zhong",
+          "date": "2026-08-28T02:52:13Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqRV02%3DiEhpOa1%3DJ8gtqwG5ZWs_TNDsqjPVNXggPW%3D8Mgg%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "shihao zhong",
+          "date": "2026-09-14T02:46:00Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqSN5JZPTMou4KwXpq6AFOD2McWJBzjtsPjqt-2TiHw_2A%40mail.gmail.com"
+        },
+        {
+          "index": 22,
+          "from": "shihao zhong",
+          "date": "2026-10-09T04:49:20Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQsLfecnoA%2BNZvMW%2BQ2Z%2BnKGsdexeignD6utE0RWsHdQA%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Replay of a tablespace creation does not go through CreateTableSpace(), so the reset from message #11 is not reached on a standby. The material does not say whether the stats drop is replayed, though OID reuse is rare.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Per-tablespace block and tuple counts repeat counters that already exist",
+      "level": "1b",
+      "rubric_item": 12,
+      "category": "does_not_fit",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA can already sum pg_statio_all_tables and pg_stat_all_tables by pg_class.reltablespace in each database, with a monitoring tool connected to each one. With the patch, every relation stats flush also updates a second shared entry. Every future counter added to relation stats then needs a decision about the tablespace copy, and a missed one only shows up as a mismatch between views.",
+      "argument": "In message #23 Andres Freund asked why these counters are kept per tablespace when the querying side could compute them. Message #24 answers that relation stats stay inside one database and vanish when the relation is dropped. Both points make the query less convenient, but they do not make it impossible: tools already connect to every database, and periodic sampling keeps the deltas of dropped relations. The new data with no existing source is block time per tablespace, and that could be shipped without the duplicated counts.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        23,
+        24
+      ],
+      "author_must_show": "Which question about blks_hit, blks_read or tup_* per tablespace cannot be answered by summing per-relation stats across databases, sampled at monitoring intervals?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 23,
+          "from": "Andres Freund",
+          "date": "2026-10-09T12:32:36Z",
+          "url": "https://www.postgresql.org/message-id/43fmu6aqpuvjpgy23odpwb3zheufz2vkbriuoda5wqweqcs4jm%40s2jo5e6xrlxl"
+        },
+        {
+          "index": 24,
+          "from": "shihao zhong",
+          "date": "2026-10-12T04:11:27Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQ%2B06oP4kKvhtVh3-QRZ4nDqcVqWb%3DTme6FnF5DoNyL_A%40mail.gmail.com"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #24 shows that the query-side sum is less convenient, but it does not show that it cannot do the job. Andres Freund's question in message #23 has no accepted answer, and block times could ship without the copied counts.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No field demand shown for per-tablespace I/O timing",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit",
+        "hot_path_performance",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Every cluster pays for a new stats kind, its flush and a slot in the SMgrRelation I/O path. The users who gain run tablespaces on separate devices and today read per-device latency from iostat or /proc/diskstats. If that group is small, the cost on bufmgr.c lands on everyone and few people use the view.",
+      "argument": "The only use case is the author's own (message #1, #17), shown with a RAM disk next to an SSD under debug_io_direct=data (message #18). That is a demo, not a production report. Bernd's comment in message #12 that it \"could be very useful\" is a hope, not a user problem. Andres opens message #16 with \"*If* we want this\". Message #17 admits the OS tools answer the question, though less conveniently, and mapping a tablespace to its device is a one-time step for the DBA.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        12,
+        16,
+        17,
+        18
+      ],
+      "author_must_show": "Which users with tablespaces on separate devices have asked for this, and why do per-device OS statistics not answer their question in practice?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "shihao zhong",
+          "date": "2026-03-23T19:08:52Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqRHsZw3%2BaeNZgnBYduQSY7qg1O4MBdmyFjK-A%2BTU1-b-A%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "Bernd Reiß",
+          "date": "2026-09-18T20:51:20Z",
+          "url": "https://www.postgresql.org/message-id/7f12ade9-1deb-4093-85c6-7c18271657ac%40gmx.at"
+        },
+        {
+          "index": 16,
+          "from": "Andres Freund",
+          "date": "2026-09-21T14:24:21Z",
+          "url": "https://www.postgresql.org/message-id/qihwj3bbzazlcq4uxy3nfdnsekbdbbccsccmqyhv2q37oyl4t4%40f4jx4inuv2az"
+        },
+        {
+          "index": 17,
+          "from": "shihao zhong",
+          "date": "2026-09-21T15:41:10Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqTTQ6pzTs1fKdUE%2BpzUHWryF5OQVVS9oZWUMV18wxa-fw%40mail.gmail.com"
+        },
+        {
+          "index": 18,
+          "from": "shihao zhong",
+          "date": "2026-09-24T15:22:50Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQM90%3D58C%3Dht%2BnEFk7MTp1GMV8F3fw4Jg5z%2BNM3Wbu%3Dtg%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The thread shows interest from five reviewers and one synthetic demo, but no field report or independent user request. This supports a \"show demand\" outcome, and it must not be read as a rejection without other failures.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "blk_write_time reuses a pg_stat_database column name with a different meaning",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "sql_standard_syntax",
+      "touch_points": [
+        "sql_standard_syntax",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A monitoring tool joins pg_stat_database and pg_stat_tablespace on blk_write_time for a database that lives alone in one tablespace, expecting equal values. The tablespace value is much larger because it includes checkpointer and background writer writes. The tool reports a discrepancy that is really a difference in definition, and users find out only by reading the docs.",
+      "argument": "The v12 docs say pg_stat_tablespace.blk_write_time includes checkpointer and bgwriter writes, \"so the two do not add up\". The other columns (blks_read, blks_hit, tup_*, temp_*) copy pg_stat_database names and do add up (message #12), which invites the same reading for blk_write_time. Message #11 also says most writes come from the checkpointer, so the gap is large. pg_stat_io already uses write_time for all backend types, so a committer would likely ask for a distinct name or a pg_stat_io-style definition.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        11,
+        12
+      ],
+      "author_must_show": "Why should blk_write_time keep the pg_stat_database name when its scope differs, rather than taking a name that shows it includes all backend types?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 11,
+          "from": "shihao zhong",
+          "date": "2026-09-14T02:46:00Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqSN5JZPTMou4KwXpq6AFOD2McWJBzjtsPjqt-2TiHw_2A%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "Bernd Reiß",
+          "date": "2026-09-18T20:51:20Z",
+          "url": "https://www.postgresql.org/message-id/7f12ade9-1deb-4093-85c6-7c18271657ac%40gmx.at"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The v12 docs state the difference, but the other shared column names match pg_stat_database in meaning and value. A documented difference under a reused name is still a consistency departure that a rename or a narrower definition would fix.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "Reset interface for tablespace stats is not stated",
+      "level": "2",
+      "rubric_item": 13,
+      "category": "design",
+      "touch_points": [
+        "sql_standard_syntax"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After replacing the disk under one tablespace, a DBA wants a fresh baseline for that tablespace only. If the only way is pg_stat_reset_shared(), which also clears pg_stat_io, bgwriter and other shared stats, monitoring baselines for the whole cluster are lost. Message #13 also shows that resetting database and tablespace stats in separate calls leaves them inconsistent.",
+      "argument": "Message #13 says pg_stat_reset_shared() clears the tablespace entry, while pg_stat_reset() clears the database entry. The tablespace entry is per object, and per-object stats elsewhere have pg_stat_reset_single_* functions and a reset target name. v1 listed stats_reset, but the v12 docs as shown and the brief do not confirm a stats_reset column, a target name or a per-tablespace reset function.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        12,
+        13
+      ],
+      "author_must_show": "Which functions reset one tablespace and all tablespaces, which pg_stat_reset_shared() target name applies, and does the view keep a stats_reset column?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 12,
+          "from": "Bernd Reiß",
+          "date": "2026-09-18T20:51:20Z",
+          "url": "https://www.postgresql.org/message-id/7f12ade9-1deb-4093-85c6-7c18271657ac%40gmx.at"
+        },
+        {
+          "index": 13,
+          "from": "shihao zhong",
+          "date": "2026-09-19T03:07:07Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqT0kE0cktzQALbzMrf_mHkfROPTJfCQvCYR02T9SAWt5A%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #13 shows only that pg_stat_reset_shared() clears the tablespace entry. The shown v12 material does not confirm a per-tablespace reset function or a stats_reset column, which per-object stats kinds normally have.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Column set copies pg_stat_database instead of pg_stat_io's layout",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "sql_standard_syntax",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA sees that ts_ssd is slow and wants to know whether the time comes from bulk reads, vacuum or normal access, or from client backends or the checkpointer. pg_stat_io splits by those dimensions, but pg_stat_tablespace only shows totals. Later requests to add context or backend_type columns would mean a second redesign of a released view.",
+      "argument": "The stated goal is to find which device is slow, and the commit message says pg_stat_io does not split by tablespace. The proposal adds a view in the older pg_stat_database shape, and that shape mixes tuple counts with I/O timings, which pg_stat_io keeps apart. In message #23 Andres asked why the tuple and block counts are kept per tablespace at all, and message #24 keeps them without a reply from him. A committer would likely ask why tablespace is not a dimension next to pg_stat_io's existing ones.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        23,
+        24
+      ],
+      "author_must_show": "Why is a pg_stat_database-shaped view with tuple counts better than adding tablespace as a dimension consistent with pg_stat_io for the slow-device question?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 23,
+          "from": "Andres Freund",
+          "date": "2026-10-09T12:32:36Z",
+          "url": "https://www.postgresql.org/message-id/43fmu6aqpuvjpgy23odpwb3zheufz2vkbriuoda5wqweqcs4jm%40s2jo5e6xrlxl"
+        },
+        {
+          "index": 24,
+          "from": "shihao zhong",
+          "date": "2026-10-12T04:11:27Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQ%2B06oP4kKvhtVh3-QRZ4nDqcVqWb%3DTme6FnF5DoNyL_A%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "Adding columns to a released stats view later does not break it, and pg_stat_io is a fixed-size stats kind that cannot take a variable number of tablespaces as a dimension. The tuple count question is covered by already-exists-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Per-tablespace copies of relation counters must track every future counter",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "catalog"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds a counter to the relation stats or moves one between structs, as 3f2f5e7c4c did in message #10. The tablespace aggregation in the relation flush and the 2PC record must change too. If the new counter is never mirrored, nothing fails, and pg_stat_tablespace silently drifts from pg_stat_database.",
+      "argument": "Andres asked in message #23 why tuple and block counts are kept per tablespace when the query side could sum them. The author answered in message #24 that relation stats vanish with the relation and do not cross databases, and pointed to pg_stat_database as the model. That precedent lowers the concern but does not remove it: it adds a third copy of the same counters, one more reset point with the skew Bernd found in message #12, and one more field in TwoPhasePgStatRecord. Andres has not replied since.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        10,
+        12,
+        13,
+        23,
+        24
+      ],
+      "author_must_show": "Which tablespace columns cannot be derived on the query side, and what keeps the copied counters in sync when relation stats gain a field?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 10,
+          "from": "Ahmed Gouda",
+          "date": "2026-09-11T08:13:55Z",
+          "url": "https://www.postgresql.org/message-id/CAKR6JgdmyYwN_WExQYUn79FccvrVrF3_rgSnfoAkDX2qBvAAGw%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "Bernd Reiß",
+          "date": "2026-09-18T20:51:20Z",
+          "url": "https://www.postgresql.org/message-id/7f12ade9-1deb-4093-85c6-7c18271657ac%40gmx.at"
+        },
+        {
+          "index": 13,
+          "from": "shihao zhong",
+          "date": "2026-09-19T03:07:07Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqT0kE0cktzQALbzMrf_mHkfROPTJfCQvCYR02T9SAWt5A%40mail.gmail.com"
+        },
+        {
+          "index": 23,
+          "from": "Andres Freund",
+          "date": "2026-10-09T12:32:36Z",
+          "url": "https://www.postgresql.org/message-id/43fmu6aqpuvjpgy23odpwb3zheufz2vkbriuoda5wqweqcs4jm%40s2jo5e6xrlxl"
+        },
+        {
+          "index": 24,
+          "from": "shihao zhong",
+          "date": "2026-10-12T04:11:27Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQ%2B06oP4kKvhtVh3-QRZ4nDqcVqWb%3DTme6FnF5DoNyL_A%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of already-exists-1, which carries the same silent drift scenario and the same exchange in messages #23 and #24. The relation flush already copies these counters into the database entry, so the tablespace copy follows existing practice in the same place.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Tuple and block count columns lack a stated user need",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "desirability",
+      "touch_points": [
+        "maintenance_burden",
+        "catalog"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Every relation stats flush in every database also updates a tablespace entry with tuple and block counts. A future patch that adds or changes a per-relation counter must remember this second copy, and nothing fails if it does not. No user in the thread asked for tup_* per tablespace.",
+      "argument": "In message #7 the tuple columns appear as a side effect of adding SpaceOid to TwoPhasePgStatRecord, not in answer to a request. In message #23 Andres asks why these counters are kept per tablespace when the query side could compute them. Message #24 answers that relation stats vanish with the relation and do not cross databases, but it names no user who needs historical tuple totals per tablespace. The only stated need is blks_* as a denominator for the block times.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        7,
+        23,
+        24
+      ],
+      "author_must_show": "Which monitoring question needs tup_* per tablespace, and who asked for it, as opposed to blks_read and blks_hit as the denominator for the block times?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "shihao zhong",
+          "date": "2026-03-27T18:05:22Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqT6dLa4H1ZbR_Tf6zMWA%2BKwi8_v-mncYMvHDo1YCd76hA%40mail.gmail.com"
+        },
+        {
+          "index": 23,
+          "from": "Andres Freund",
+          "date": "2026-10-09T12:32:36Z",
+          "url": "https://www.postgresql.org/message-id/43fmu6aqpuvjpgy23odpwb3zheufz2vkbriuoda5wqweqcs4jm%40s2jo5e6xrlxl"
+        },
+        {
+          "index": 24,
+          "from": "shihao zhong",
+          "date": "2026-10-12T04:11:27Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqQ%2B06oP4kKvhtVh3-QRZ4nDqcVqWb%3DTme6FnF5DoNyL_A%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of already-exists-1, which asks the same question about the tup_* and blks_* columns with the same failure scenario. Its point that message #7 added the tuple columns without a user request can support that objection.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "The stats file gains a new kind and the 2PC stats record gains a tablespace field; neither needs pg_upgrade work."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "Tablespace stats entries must be created, dropped and reset on standbys and after crash recovery."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "New system view pg_stat_tablespace, new pg_proc entries and a catversion bump."
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "SMgrRelation gains a cached slot, and pgstat.h and pgstat_kind.h gain a new stats kind."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "The proposal does not say who may read the view or run the new functions and any reset."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "A third copy of relation counters, four entry creation points, and a new stats kind to keep in sync."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "pgstat_count_smgr_io_op_time() runs in bufmgr.c, localbuf.c and smgr.c for every cluster."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "Per-device OS statistics and sums of per-relation stats already answer part of the question."
+    }
+  ],
+  "questions": [
+    "What do read-heavy and write-heavy runs show for master versus v12, with track_io_timing on and off?",
+    "Which question about blks_read, blks_hit or tup_* per tablespace cannot be answered by summing per-relation stats across databases at monitoring intervals?",
+    "What single rule guarantees a tablespace stats entry exists before any count is flushed, and which assertion catches a new path that breaks it?",
+    "Are tablespace stats drops replayed on standbys, and what clears a standby entry when the primary reuses a tablespace OID?",
+    "Which functions reset one tablespace and all tablespaces, and does the v12 view keep a stats_reset column?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Andres Freund reviewed the hot-path design in messages #16 and #23 but has not answered v11 or v12. The owner must know the buffer manager, smgr and cumulative stats code.",
+    "liability": "A permanent stats kind, a system view whose column meanings tools will depend on, and extra code in the buffer manager I/O path that every cluster runs.",
+    "author_follow_up": "The author fixed each reported crash, leak and attribution bug from v2 to v12 over about seven months."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "medium",
+    "review_cost": "high",
+    "recommended_action": "fix design first",
+    "reason": "The view helps clusters with tablespaces on separate devices, and the 87.5 KiB patch touches bufmgr.c, smgr.c, relcache.c and the stats core. Benchmarks and a decision on the copied counters should come before more code review."
+  },
+  "self_advice": [],
+  "provisional_note": "The cost of the cached slot in SMgrRelation, the standby drop path and the grants on the new functions could not be checked without the code. The v12 column list and reset behaviour are cut off in the shown documentation.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "wiki:Tablespaces:1",
+      "kind": "do_not_want",
+      "title": "Allow per-tablespace quotas",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Tablespaces",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Allow per-tablespace quotas\nSection: Administration / Tablespaces",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_tablespace view",
+        "tablespace level statistics",
+        "per tablespace I/O statistics",
+        "tablespace I/O timing",
+        "pg_stat_io tablespace",
+        "cumulative stats new kind tablespace",
+        "temp files per tablespace stats"
+      ],
+      "from_hint": false,
+      "score": 0.575,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "wiki:Tablespaces:3",
+      "kind": "do_not_want",
+      "title": "Close race in DROP TABLESPACE on Windows",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Tablespaces",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20141108050423.GA642055@tornado.leadboat.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "On Windows, DROP TABLESPACE can fail with \"tablespace is not empty\" because another backend still holds an open descriptor on an unlinked file, which Windows keeps in the directory. Noah Misch proposed that DROP TABLESPACE wait for other backends to close such files, for example by polling with a new wait_unlinked_files() function.",
+      "objection": "No code was written. Noah Misch recorded the fix as a TODO and changed the regression test to use RESET ROLE instead of \\c -, so only one backend is involved. Amit Kapila said the wait could last until the other backend runs another command. Alternatives (a catchup interrupt, renaming files to the tablespace top-level directory before unlink) were left for whoever decides to work on the issue.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_tablespace view",
+        "tablespace level statistics",
+        "per tablespace I/O statistics",
+        "tablespace I/O timing",
+        "pg_stat_io tablespace",
+        "cumulative stats new kind tablespace"
+      ],
+      "from_hint": false,
+      "score": 0.447,
+      "enriched": true,
+      "key_quote": "I think we can discuss further about which approach is better, once someone decides to work on this issue.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAA4eK1Lov-MyKvaRSqYGLm_Vop2UFZQ_hQ5eo4vjYHg6UyjvgQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:216",
+      "kind": "cf",
+      "title": "default_index_tablespace",
+      "status": "Returned with feedback",
+      "date": "2015-06-14",
+      "first_date": "2015-04-15",
+      "url": "https://commitfest.postgresql.org/patch/216/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/b040657607ba76fc55a311bbcec69da4@adv-solutions.net"
+      ],
+      "authors": "Jose Luis Tallon (jltallon)",
+      "objectors": "Tom Lane",
+      "summary": "Add a new GUC, default_index_tablespace, so that indexes are created by default in a chosen tablespace (for example one on SSD) rather than in the table's tablespace, without specifying TABLESPACE on each CREATE INDEX. If the new setting is unset, the code falls back to default_tablespace.",
+      "objection": "Tom Lane objected that the new GUC would break existing applications and existing pg_dump output files, which set default_tablespace to determine an index's tablespace; falling back when the new GUC is unset does not avoid the breakage when it is set. Alternatives were discussed (a database-level index tablespace option, separate table/index GUCs overridden by default_tablespace, making pg_dump emit TABLESPACE clauses), and the author offered to rework the patch once a viable design was agreed, but no revised patch appears in the visible messages.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_tablespace view",
+        "tablespace level statistics",
+        "per tablespace I/O statistics",
+        "tablespace I/O timing",
+        "cumulative stats new kind tablespace"
+      ],
+      "from_hint": false,
+      "score": 0.406,
+      "enriched": true,
+      "key_quote": "I'm afraid this idea is a nonstarter, because it will break existing\napplications, and in particular existing pg_dump output files, which\nexpect to be able to determine an index's tablespace by setting\n\"default_tablespace\".",
+      "quote_message_url": "https://www.postgresql.org/message-id/3600.1429139531%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "wiki:Tablespaces:2",
+      "kind": "do_not_want",
+      "title": "Allow tablespaces on RAM-based partitions for temporary objects",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Tablespaces",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20170529185308.GB28209@momjian.us"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "Bruce Momjian asked whether temp_tablespaces may point at storage that does not survive a restart, such as /tmp or a ramdisk, and whether to document this. The thread then moved to a TODO item for a new kind of tablespace that holds only temporary (and possibly unlogged) tables and is rebuilt empty at startup.",
+      "objection": "The visible messages do not show why. Claudio Freire noted that a tablespace whose directory structure is lost at restart stops the server from booting, and Andres Freund said that allowing unlogged tables adds work to recreate files and init forks. The visible thread ends with the ideas recorded as TODO items and a discussion of keyword names, not with a rejection.",
+      "touch_points": [],
+      "matched_queries": [
+        "tablespace level statistics",
+        "per tablespace I/O statistics",
+        "tablespace I/O timing",
+        "temp files per tablespace stats"
+      ],
+      "from_hint": false,
+      "score": 0.311,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:5157",
+      "kind": "cf",
+      "title": "Support specify tablespace for each merged/split partition",
+      "status": "Rejected",
+      "date": "2024-10-08",
+      "first_date": "2024-07-15",
+      "url": "https://commitfest.postgresql.org/patch/5157/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEG8a3KkzOqHushYhkMEpVvGiahLRPyEQu7VetUyMdbo30v+4w@mail.gmail.com"
+      ],
+      "authors": "Zhao Junwang (zhjwpku)",
+      "objectors": "",
+      "summary": "The patch adds an optional TABLESPACE clause to ALTER TABLE ... MERGE PARTITIONS ... INTO and to each new partition in ALTER TABLE ... SPLIT PARTITION. New partitions are placed in the named tablespace instead of the parent's tablespace.",
+      "objection": "The MERGE/SPLIT PARTITION grammar that the patch extends was reverted in commit 3890d90c1508, so the patch had nothing left to apply to. Reviewers had supported the idea and the author had addressed their comments.",
+      "touch_points": [],
+      "matched_queries": [
+        "tablespace level statistics",
+        "per tablespace I/O statistics",
+        "tablespace I/O timing"
+      ],
+      "from_hint": false,
+      "score": 0.273,
+      "enriched": true,
+      "key_quote": "The SPLIT/MERGE grammar has been reverted in 3890d90c1508, so this\npatch concept does not apply anymore.",
+      "quote_message_url": "https://www.postgresql.org/message-id/ZwSlIttUrZAp8VQA%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:1035",
+      "kind": "cf",
+      "title": "Reorder tablespaces for streaming basebackups",
+      "status": "Rejected",
+      "date": "2017-03-31",
+      "first_date": "2017-02-21",
+      "url": "https://commitfest.postgresql.org/patch/1035/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1487672275.15458.15.camel@credativ.de"
+      ],
+      "authors": "Michael Banck (mbanck)",
+      "objectors": "Fujii Masao, Michael Paquier",
+      "summary": "The patch changed the order of the tar streams sent by the BASE_BACKUP replication command so that the main data directory comes first, which puts backup_label at the beginning of a combined tarball for third-party tools. After review it was narrowed to apply only when WAL is not included, because in fetch mode the WAL files are appended to the main tarball, which must therefore stay last.",
+      "objection": "Fujii Masao pointed out that BASE_BACKUP already sends the start WAL location in its first result set, before any tar data, so reading backup_label early is not needed for that purpose; further information could be added to that result set instead. He also said that running BASE_BACKUP through psql is not a good approach and that a proper client or an extension of pg_basebackup should be used. Michael Paquier agreed that the patch was therefore not useful and proposed dropping it, and the author marked it Rejected as the consensus.",
+      "touch_points": [],
+      "matched_queries": [
+        "tablespace level statistics",
+        "per tablespace I/O statistics",
+        "tablespace I/O timing"
+      ],
+      "from_hint": false,
+      "score": 0.247,
+      "enriched": true,
+      "key_quote": "In my first reviews of the patch, I completely forgot the fact that\nBASE_BACKUP does send the start LSN of the backup in the first result\nset, so the patch proposed is actually rather useless because the data\nyou are looking for is already at hand.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB7nPqQU1H%3DPAG3XBYFFg9w%2BemeQFYAdkep7cWVeJukXtB_m_Q%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:1658",
+      "kind": "cf",
+      "title": "Improve recovery performance of dropping database having many tablespaces",
+      "status": "Returned with feedback",
+      "date": "2018-09-30",
+      "first_date": "2018-06-04",
+      "url": "https://commitfest.postgresql.org/patch/1658/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHGQGwF8YwNH0ZaL+2wjZPkj+ji9UhC+Z4ScnG97WKtVY5L9iw@mail.gmail.com"
+      ],
+      "authors": "Fujii Masao (masaofujii)",
+      "objectors": "",
+      "summary": "DROP DATABASE would write one XLOG_DBASE_DROP record listing all tablespaces of the database, instead of one record per tablespace. On a standby, replay would then scan shared_buffers once, not once per tablespace.",
+      "objection": "Reviewers supported the idea and found the patch logically correct, but asked for performance numbers that show the recovery gain. One tester saw no difference with the patch, and Simon Riggs asked to rename tablespace_num to ntablespaces. The author did not respond for about two and a half months while the patch waited on author, so Michael Paquier marked it returned with feedback.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "per tablespace I/O statistics",
+        "temp files per tablespace stats"
+      ],
+      "from_hint": false,
+      "score": 0.21,
+      "enriched": true,
+      "key_quote": "This was a couple of months ago, and nothing has happened since with the\npatch waiting on author, so the patch is marked as returned with\nfeedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20180930125129.GE1763%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "revert:a535cdf130167ca6a086805b35f59a6b669b73d7",
+      "kind": "revert",
+      "title": "Revert temp_tablespaces because of coding problems, per Tom.",
+      "status": "Reverted",
+      "date": "2007-03-06",
+      "first_date": "2007-03-06",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=a535cdf130167ca6a086805b35f59a6b669b73d7",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert temp_tablespaces because of coding problems, per Tom.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "per tablespace I/O statistics",
+        "temp files per tablespace stats"
+      ],
+      "from_hint": false,
+      "score": 0.183,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:2059",
+      "kind": "cf",
+      "title": "Add tablespace tap test to pg_rewind",
+      "status": "Returned with feedback",
+      "date": "2019-05-10",
+      "first_date": "2019-03-08",
+      "url": "https://commitfest.postgresql.org/patch/2059/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGRcZQXA-4hrCQy1xOAJ7WwBpEWEJJvgAU2dsNQr13C+6J8izQ@mail.gmail.com"
+      ],
+      "authors": "Shaoqi Bai (baishaoqi)",
+      "objectors": "Michael Paquier, Kyotaro HORIGUCHI",
+      "summary": "The patch adds a TAP test for pg_rewind that checks tablespaces created before and after standby promotion, modeled on 002_databases.pl. It extends RewindTest.pm, PostgresNode.pm and RecursiveCopy.pm so a standby can be built with tablespace mapping and symlinks can be copied.",
+      "objection": "The test setup made the primary, the backup and the standbys share the same tablespace paths, so multiple standbys from one backup would use one tablespace directory and the source and target servers would overwrite each other. A correct test needs a tablespace mapping option for the file-level backup routines in RecursiveCopy.pm and PostgresNode::init_from_backup, and an option in pg_rewind similar to pg_basebackup's --tablespace-mapping. Michael Paquier judged this a large amount of work that may be hard to justify.",
+      "touch_points": [],
+      "matched_queries": [
+        "tablespace level statistics",
+        "tablespace I/O timing"
+      ],
+      "from_hint": false,
+      "score": 0.164,
+      "enriched": true,
+      "key_quote": "And on top of that there is of course the argument of pg_rewind which\nwould need an option similar to pg_basebackup's --tablespace-mapping\nso as a target instance does not finish by using the same tablespace\npath as the source where there is a tablespace of difference during\nthe operation.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20190510115301.GD1498%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:5466",
+      "kind": "cf",
+      "title": "WAL-logging facility for pgstats kinds",
+      "status": "Withdrawn",
+      "date": "2025-02-12",
+      "first_date": "2024-12-27",
+      "url": "https://commitfest.postgresql.org/patch/5466/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/Z24fyb3ipXKR38oS@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Andres Freund",
+      "summary": "The patch adds a new \"PgStat\" resource manager and a pgstat_xlog_data() entry point so that any pgstats kind, including custom ones, can WAL-log its own stats data. Each kind handles replay through a redo callback in PgStat_KindInfo, so it can decide how the data persists on standbys and after crash recovery.",
+      "objection": "Andres Freund objected that stats only make sense on a replica or after a crash when they cover changes that are already WAL-logged, so they should be rebuilt during replay from the WAL records of the underlying objects. For table stats he proposed keying relation stats by relfilenode. He repeated the objection when the entry moved to the next CF, and the author then withdrew the patch and kept it aside.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "cumulative stats new kind tablespace"
+      ],
+      "from_hint": false,
+      "score": 0.146,
+      "enriched": true,
+      "key_quote": "I can't think of a real case where we would want to WAL log the stats\nthemselves, rather than re-emitting stats during replay based on the WAL\nrecord of the \"underlying object\".",
+      "quote_message_url": "https://www.postgresql.org/message-id/xvetwjsnkhx2gp6np225g2h64f4mfmg6oopkuaiivrpzd2futj%40pflk55su36ho",
+      "relevant": true
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:4416",
+      "kind": "cf",
+      "title": "Show WAL stats on pg_stat_io",
+      "status": "Returned with feedback",
+      "date": "2024-01-18",
+      "first_date": "2023-06-28",
+      "url": "https://commitfest.postgresql.org/patch/4416/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAN55FZ3AiQ+ZMxUuXnBpd0Rrh1YhwJ5FudkHg=JU0P+-W8T4Vg@mail.gmail.com"
+      ],
+      "authors": "Nazir Bilal Yavuz (nbyavuz)",
+      "objectors": "",
+      "summary": "Show WAL stats on pg_stat_io\nThreads: Show WAL write and fsync stats in pg_stat_io",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_stat_io tablespace"
+      ],
+      "from_hint": false,
+      "score": 0.143,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:4602",
+      "kind": "cf",
+      "title": "PGDOCS - inconsistent linkends to \"monitoring\" views",
+      "status": "Rejected",
+      "date": "2023-11-30",
+      "first_date": "2023-10-03",
+      "url": "https://commitfest.postgresql.org/patch/4602/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHut+Pv8Uk0BQhEXB_-fj6zMtLohZ3W-jPG8UpXFaV0YW5sKjw@mail.gmail.com"
+      ],
+      "authors": "Peter Smith (smithpb2250)",
+      "objectors": "",
+      "summary": "PGDOCS - inconsistent linkends to \"monitoring\" views\nThreads: [PGDOCS] Inconsistent linkends to \"monitoring\" views.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "monitoring view storage hotspots"
+      ],
+      "from_hint": false,
+      "score": 0.142,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:790",
+      "kind": "cf",
+      "title": "SQL statements statistics counter view (pg_stat_sql)",
+      "status": "Returned with feedback",
+      "date": "2020-09-17",
+      "first_date": "2016-08-20",
+      "url": "https://commitfest.postgresql.org/patch/790/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJrrPGeY4xujjoR=z=KoyRMHEK_pSjjp=7VBhOAHq9rfgpV7QQ@mail.gmail.com"
+      ],
+      "authors": "Haribabu Kommi (haribabu)",
+      "objectors": "",
+      "summary": "SQL statements statistics counter view (pg_stat_sql)\nThreads: New SQL counter statistics view (pg_stat_sql)",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_tablespace view"
+      ],
+      "from_hint": false,
+      "score": 0.132,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:4928",
+      "kind": "cf",
+      "title": "s/shm_mq_iovec/struct iovec/",
+      "status": "Returned with feedback",
+      "date": "2024-07-15",
+      "first_date": "2024-04-15",
+      "url": "https://commitfest.postgresql.org/patch/4928/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGLMs6O14yJDxv6TF7DPuBdMfDvRj6OQEZZ_CqdJei0+hg@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "s/shm_mq_iovec/struct iovec/\nThreads: s/shm_mq_iovec/struct iovec/",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_io tablespace"
+      ],
+      "from_hint": false,
+      "score": 0.131,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:3493",
+      "kind": "cf",
+      "title": "add the last checkpoint kind to the control file",
+      "status": "Withdrawn",
+      "date": "2022-02-03",
+      "first_date": "2021-12-07",
+      "url": "https://commitfest.postgresql.org/patch/3493/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACUSED8QQWDHZ6yPusH7p7VecQ0pNm5Oin7WwdxkyhhUWg@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "",
+      "summary": "add the last checkpoint kind to the control file\nThreads: Is there a way (except from server logs) to know the kind of\non-going/last checkpoint?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "cumulative stats new kind tablespace"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:3243",
+      "kind": "cf",
+      "title": "Add statistics refresh materialized view",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-07-08",
+      "url": "https://commitfest.postgresql.org/patch/3243/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6fe02a8ab3b2b0801933b9cabfab62cf@oss.nttdata.com"
+      ],
+      "authors": "Yuki Seino (seinoyu)",
+      "objectors": "",
+      "summary": "Add statistics refresh materialized view\nThreads: Add statistics refresh materialized view",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_tablespace view"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:3316",
+      "kind": "cf",
+      "title": "Asynchronous and \"direct\" IO support for PostgreSQL",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2021-02-23",
+      "url": "https://commitfest.postgresql.org/patch/3316/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210223100344.llw5an2aklengrmn@alap3.anarazel.de"
+      ],
+      "authors": "Andres Freund (andresfreund), David Rowley (davidrowley), Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Asynchronous and \"direct\" IO support for PostgreSQL\nThreads: Asynchronous and \"direct\" IO support for PostgreSQL.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_io tablespace"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "revert:eeda7f6338095701cfe1ba3da37070508efe019e",
+      "kind": "revert",
+      "title": "Revert \"Accept relations of any kind in LOCK TABLE\".",
+      "status": "Reverted",
+      "date": "2020-11-06",
+      "first_date": "2020-10-27",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=eeda7f6338095701cfe1ba3da37070508efe019e",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/16703-e348f58aab3cf6cc@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/20201021200659.GA32358@alvherre.pgsql"
+      ],
+      "authors": "Alvaro Herrera, Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Accept relations of any kind in LOCK TABLE\".\nReverted commit(s): Accept relations of any kind in LOCK TABLE; Doc: undo mistaken adjustment to LOCK TABLE docs in back branches.",
+      "objection": "Revert 59ab4ac32, as well as the followup fix 33862cb9c, in all\nbranches.  We need to think a bit harder about what the behavior\nof LOCK TABLE on views should be, and there's no time for that\nbefore next week's releases.  We'll take another crack at this\nlater.",
+      "touch_points": [],
+      "matched_queries": [
+        "cumulative stats new kind tablespace"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:297",
+      "kind": "cf",
+      "title": "Waits monitoring",
+      "status": "Returned with feedback",
+      "date": "2015-12-24",
+      "first_date": "2015-07-08",
+      "url": "https://commitfest.postgresql.org/patch/297/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/559D4729.9080704@postgrespro.ru"
+      ],
+      "authors": "Ildus Kurbangaliev (ildus)",
+      "objectors": "",
+      "summary": "Waits monitoring\nThreads: Waits monitoring",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "monitoring view storage hotspots"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:4428",
+      "kind": "cf",
+      "title": "Custom storage managers (SMGR), redux",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-06-30",
+      "url": "https://commitfest.postgresql.org/patch/4428/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2WgMySu2suO_TLvFyGY3URa4mAx22WeoEicnK=PCNWEMrA@mail.gmail.com"
+      ],
+      "authors": "Matthias van de Meent (mmeent), Tristan Partin (tristan957)",
+      "objectors": "",
+      "summary": "Custom storage managers (SMGR), redux\nThreads: Extensible storage manager API - SMGR hook Redux",
+      "objection": "",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "monitoring view storage hotspots"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:4352",
+      "kind": "cf",
+      "title": "Index-only filters without IOS",
+      "status": "Withdrawn",
+      "date": "2024-06-21",
+      "first_date": "2023-02-15",
+      "url": "https://commitfest.postgresql.org/patch/4352/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/N1xaIrU29uk5YxLyW55MGk5fz9s6V2FNtj54JRaVlFbPixD5z8sJ07Ite5CvbWwik8ZvDG07oSTN-usENLVMq2UAcizVTEd5b-o16ZGDIIU=@yamlcoder.me"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "Index-only filters without IOS\nThreads: Use of additional index columns in rows filtering",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_io tablespace"
+      ],
+      "from_hint": false,
+      "score": 0.103,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:1003",
+      "kind": "cf",
+      "title": "pg_stat_walwrites system view",
+      "status": "Returned with feedback",
+      "date": "2017-11-27",
+      "first_date": "2017-02-15",
+      "url": "https://commitfest.postgresql.org/patch/1003/",
+      "thread_urls": [],
+      "authors": "Haribabu Kommi (haribabu)",
+      "objectors": "",
+      "summary": "pg_stat_walwrites system view",
+      "objection": "",
+      "touch_points": [
+        "catalog changes"
+      ],
+      "matched_queries": [
+        "pg_stat_tablespace view"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:1268",
+      "kind": "cf",
+      "title": "CLUSTER command progress monitor",
+      "status": "Returned with feedback",
+      "date": "2017-10-02",
+      "first_date": "2017-08-31",
+      "url": "https://commitfest.postgresql.org/patch/1268/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/59A77072.3090401@lab.ntt.co.jp"
+      ],
+      "authors": "Tatsuro Yamada (tatsuro_yamada)",
+      "objectors": "",
+      "summary": "CLUSTER command progress monitor\nThreads: CLUSTER command progress monitor",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "monitoring view storage hotspots"
+      ],
+      "from_hint": false,
+      "score": 0.101,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:2003",
+      "kind": "cf",
+      "title": "Fix Deadlock Issue in Single User Mode When IO Failure Occurs",
+      "status": "Returned with feedback",
+      "date": "2020-02-01",
+      "first_date": "2018-11-30",
+      "url": "https://commitfest.postgresql.org/patch/2003/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CY4PR2101MB0804CE9836E582C0702214E8AAD30@CY4PR2101MB0804.namprd21.prod.outlook.com",
+        "https://www.postgresql.org/message-id/flat/CAKPRHzKsj0J0Q51L1SF-G7OmkgkXyifp1Aqe7T--S1gK0W7anQ@mail.gmail.com"
+      ],
+      "authors": "Chengchao Yu (allelujava)",
+      "objectors": "",
+      "summary": "Fix Deadlock Issue in Single User Mode When IO Failure Occurs\nThreads: [PATCH] Fix Proposal - Deadlock Issue in Single User Mode When IO\nFailure Occurs; RE: [PATCH] Fix Proposal - Deadlock Issue in Single User Mode When IO\nFailure Occurs",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_io tablespace"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 3,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 2
+  },
+  "precedent_cutoff": "2026-03-23",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found. [P11] adds WAL stats to pg_stat_io and has no recorded reason. [P10] was about WAL-logging stats data, which this proposal does not do, and the thread does not point to any earlier attempt at per-tablespace stats. Andres Freund's open questions about hot-path cost and duplicated counters (messages #16, #23) are design points for other angles."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "pg_dump and pg_upgrade are not affected because cumulative stats are not dumped. Standby behaviour and view privileges are left to other angles."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "The other persistent changes are the 2PC stats record, a new kind in the stats file and an SMgrRelation field. These fall within a major version and need no pg_upgrade work, so they raise no objection here."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "From the security angle I have no objection. The view shows cluster-wide aggregates of the kind pg_stat_database and pg_stat_io already show to every role, and creating tablespaces, and so stats entries, needs superuser or tablespace-creation rights. Not checked without the code: the grants on the new pg_proc functions, and whether resetting tablespace stats keeps the default restriction of pg_stat_reset_shared()."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "Objections raised. No listed precedent applies: [P10] is about WAL-logging stats and [P11] has no recorded reason."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 1,
+      "note": "Block read and write time per tablespace has no existing source. pg_stat_io has no tablespace dimension, and per-relation stats carry no timing, so I raise nothing against that part."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "Two demand objections raised. Both can be fixed with evidence or by narrowing the column set."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 10,
+      "new_survived": 7,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 100,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 15,
+    "wall_ms": 158350,
+    "cost_usd": 2.7328144,
+    "dry_run": false
+  }
+}

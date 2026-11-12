@@ -1,0 +1,1425 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T02:51:01.593Z",
+  "input": {
+    "arg": "6401",
+    "cf": {
+      "id": 6401,
+      "url": "https://commitfest.postgresql.org/patch/6401/",
+      "title": "Resetting snapshots during the first phase of [CREATE |RE]INDEX CONCURRENTLY",
+      "status": "Needs review",
+      "authors": "Mihail Nikalayeu (mihailnikalayeu)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CADzfLwWAiimwngq38x8Ji26AtYEmSqnFD7aa4kVGF4ObDswHMA%40mail.gmail.com",
+    "subject": "Resetting snapshots during the first phase of [CREATE |RE]INDEX CONCURRENTLY",
+    "thread_start": "2026-01-15T17:19:58Z",
+    "messages_read": 13,
+    "messages_total": 13,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v8-0001-Add-stress-tests-for-concurrent-index-builds.patch",
+      "v8-0005-Allow-snapshot-resets-in-parallel-concurrent-inde.patch",
+      "v8-0002-Periodically-reset-snapshots-in-concurrent-index-.patch",
+      "v8-0004-Allow-snapshot-resets-in-concurrent-BRIN-builds.patch",
+      "v8-0003-Allow-snapshot-resets-in-concurrent-GIN-builds.patch",
+      "v8-0006-Allow-snapshot-resets-in-concurrent-unique-index-.patch",
+      "v8-0007-Reset-snapshots-after-the-heap-scan-in-concurrent.patch",
+      "v1-0001-Add-stress-tests-for-concurrent-index-builds.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection is fatal, and demand for the goal is established by the PG14 feature that [P1] reverted only for safety. The open points are fixable: measurements (maintenance-fit-2, demand-1), a written invariant for the unique-build path (prior-attempts-1), and enforcement of the new AM rules (maintenance-fit-1). The design changes snapshot handling where an error gives a silently incomplete index, so a committer who knows that area has to sign for it.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Reset snapshots periodically during concurrent index builds to let xmin advance",
+    "problem": "Long CREATE INDEX CONCURRENTLY and REINDEX CONCURRENTLY runs pin xmin, so vacuum cannot remove dead tuples anywhere in the cluster. The earlier fix in PG14 (d9d0762) let vacuum ignore these snapshots, but it was reverted (e28bb88) because HOT pruning could make the build miss tuples. This affects operators of busy, large databases.",
+    "proposed_design": "The first heap scan replaces its MVCC snapshot at page boundaries after a time interval, and later build loops do the same between tuples; the validation scan keeps one snapshot. Index AMs opt in with a flag, fetch external TOAST values they keep, and parallel workers signal when they have restored the leader's snapshot. Unique builds recheck heap status for equal keys and leave unchecked entries for validation to insert.",
+    "user_visible_surface": [
+      "GUC concurrent_index_reset_snapshot_interval (integer, ms, default 100ms; 0 resets at every opportunity, -1 disables).",
+      "GUC index_build_duplicate_check_scale_factor (float, default 0.05, at least 1000 heap fetches per budget).",
+      "IndexAmRoutine field amcanresetsnapshot, so out-of-core index AMs must opt in.",
+      "C function index_build_rotate_snapshot() for AMs to call between tuples after the scan.",
+      "Wait event PARALLEL_CREATE_INDEX_SNAPSHOT."
+    ],
+    "author_claims": [
+      "Resetting snapshots in the first scan is safe because validation adds any tuples the scan missed.",
+      "No significant _bt_load slowdown from the extra per-tuple key comparison was observed; no numbers given.",
+      "The stress test detects the 2022 bug and found other bugs that were fixed in master.",
+      "AMs that do not set amcanresetsnapshot keep the old behavior.",
+      "Resets are skipped at REPEATABLE READ and above, where the transaction snapshot pins xmin anyway."
+    ],
+    "thread_state": "Matthias van de Meent reviewed v6 in depth and the author reworked it into v8, which has no reply yet; the CF entry needs a rebase. Álvaro Herrera questioned the stress test's runtime and proposed a shared PG_TEST_EXTRA stress_concurrently mechanism.",
+    "unclear": [
+      "The material gives no measurements of how far xmin advances or how much bloat drops on a real workload.",
+      "The author says the AI-written tests and the 0007 commit are not fully reviewed.",
+      "The proposal does not say how much extra validation work unique builds do when the duplicate budget runs out.",
+      "Sorting and tuplesort merges still pin one snapshot, and the material does not say how long that phase can take.",
+      "The proposal does not justify the 100ms default or the 0.05 scale factor default; the author calls 0.05 not measured."
+    ],
+    "search_queries": [
+      "vacuum ignore snapshot concurrent index",
+      "CREATE INDEX CONCURRENTLY xmin horizon",
+      "reset snapshot during index build",
+      "REINDEX CONCURRENTLY vacuum bloat",
+      "PROC_IN_SAFE_IC revert",
+      "concurrent index build missing tuples HOT pruning",
+      "long running snapshot holds back vacuum",
+      "unique index build duplicate check snapshot"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P1",
+      "source_id": "revert:e28bb885196916b0a3d898ae4f2be0e38108d81b",
+      "title": "Revert changes to CONCURRENTLY that \"sped up\" Xmin advance",
+      "kind": "revert",
+      "status": "Reverted",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e28bb885196916b0a3d898ae4f2be0e38108d81b",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/17485-396609c6925b982d@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/20210115133858.GA18931@alvherre.pgsql"
+      ],
+      "date": "2022-05-31",
+      "first_date": "2021-02-23",
+      "who_objected": "",
+      "quote": "In other words, Xmin advancement was sped up, but at the cost of corrupting the resulting index.",
+      "quote_url": null,
+      "enriched": false,
+      "reason": "This reverts commit d9d076222f5b \"VACUUM: ignore indexing operations\nwith CONCURRENTLY\".\n\nThese changes caused indexes created with the CONCURRENTLY option to\nmiss heap tuples that were HOT-updated and HOT-pruned during the index\ncreation.  Before these changes, HOT pruning would have been prevented\nby the Xmin of the transaction creating the index, but because this\nchange was precisely to allow the Xmin to move forward ignoring that\nbackend, now other backends scanning the table can prune them.  This is\nnot a problem for VACUUM (which requires a lock that conflicts with a\nCREATE INDEX CONCURRENTLY operation), but HOT-prune can definitely\noccur.  In other words, Xmin advancement was sped up, but at the cost of\ncorrupting the resulting index.\n\nRegrettably, this means that the new feature in PG14 that RIC/CIC on\nvery large tables no longer force VACUUM to retain very old tuples goes\naway.  We might try to implement it again in a later release, but for\nnow the risk of indexes missing tuples is too high and there's no easy\nfix.\n\nBackpatch to 14, where this change appeared.\n\nDiagnosys-by: Andrey Borodin <x4mmm@yandex-team.ru>\nDiagnosys-by: Michael Paquier <michael@paquier.xyz>\nDiagnosys-by: Andres Freund <andres@anarazel.de>",
+      "relation": "similar_idea",
+      "what_is_different": "P1 let vacuum ignore the build backend's xmin while the build kept an old snapshot. This proposal replaces the snapshot itself, so the build always holds a registered snapshot and pruning removes only tuples dead to it."
+    },
+    {
+      "precedent_id": "P2",
+      "source_id": "cf:1047",
+      "title": "avoid bloat from CREATE INDEX CONCURRENTLY",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/1047/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20170228052302.r7nvt4sbnsgu6job@alvherre.pgsql"
+      ],
+      "date": "2017-03-07",
+      "first_date": "2017-02-28",
+      "who_objected": "Tom Lane",
+      "quote": "However, now that I read the patch: this is a horribly ugly hack.",
+      "quote_url": "https://www.postgresql.org/message-id/1983.1488288643%40sss.pgh.pa.us",
+      "enriched": true,
+      "reason": "Tom Lane objected to the new, undocumented snapmgr API and proposed instead to make index AMs responsible for popping the snapshot. Simon Riggs answered that he had chosen the snapmgr API because an index AM that pops the snapshot wrongly would cause a crash, and he offered to follow consensus. The visible messages show no further discussion before the entry was returned with feedback.",
+      "relation": "similar_idea",
+      "what_is_different": "P2 released the snapshot once after the first scan, for btree only, through an undocumented snapmgr API. This proposal resets during the scan and between tuples afterwards, through a documented AM call and an opt-in flag, for all built-in AMs."
+    }
+  ],
+  "objections": [
+    {
+      "title": "On by default for every concurrent build, with no measurements",
+      "level": "1b",
+      "rubric_item": 8,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator upgrades and runs REINDEX CONCURRENTLY on a large unique index. The build now resets snapshots every 100ms, compares keys per tuple in _bt_load(), and may push many entries to validation once the 5% budget runs out. It runs longer, and the material gives no way to predict by how much or how much xmin advances.",
+      "argument": "Message #1 says no significant _bt_load slowdown was seen but shows no numbers. Message #11 calls the 0.05 default \"not measure\". Sorting and tuplesort merges still pin one snapshot, so the share of a long build that gains is unknown. Two new user GUCs for one command will be hard to remove later if their defaults turn out wrong.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        11
+      ],
+      "author_must_show": "On a large table, how far does xmin advance, and how do build time and validation work for unique builds change with the default settings?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Mihail Nikalayeu",
+          "date": "2026-01-15T17:19:58Z",
+          "url": "https://www.postgresql.org/message-id/CADzfLwWAiimwngq38x8Ji26AtYEmSqnFD7aa4kVGF4ObDswHMA%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Mihail Nikalayeu",
+          "date": "2026-10-17T16:10:00Z",
+          "url": "https://www.postgresql.org/message-id/CADzfLwVHrrCNoJ0_dGctFNLo2Xm3UabZk4mG7t9Km9S8kNzAYw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #1 reports no significant _bt_load slowdown but gives no numbers, and the feature is on by default at 100ms. The build-time cost stands here; the question about xmin gain belongs to demand-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Gain unmeasured while the validation scan still pins xmin",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "desirability",
+      "touch_points": [
+        "maintenance_burden",
+        "new_guc",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator runs REINDEX CONCURRENTLY on a large, busy table, expecting vacuum to keep up. The first scan now releases xmin, but the tuplesort phase and the full validation scan still hold one snapshot each. The operator sees the same horizon holdback for a large part of the run and the same bloat.",
+      "argument": "The demand for xmin advance during CIC is real: the project committed it once and reverted it only for safety [P1], and [P2] tried earlier. This set fixes only part of the run, and message #1 leaves the second phase to the separate STIR entry. The material has no numbers on how much of a long build's xmin holdback goes away. It does add two GUCs, an AM flag, a new C function and a reworked unique-build path, and a committer would likely ask whether that gain justifies that cost before the second phase lands.",
+      "precedent_ids": [
+        "P1",
+        "P2"
+      ],
+      "thread_message_refs": [
+        1,
+        11
+      ],
+      "author_must_show": "On a large table under write load, how much shorter is the xmin holdback across a whole CIC or REINDEX CONCURRENTLY run with this set, without STIR?",
+      "precedents": [
+        {
+          "id": "P1",
+          "title": "Revert changes to CONCURRENTLY that \"sped up\" Xmin advance",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e28bb885196916b0a3d898ae4f2be0e38108d81b",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/17485-396609c6925b982d@postgresql.org",
+            "https://www.postgresql.org/message-id/flat/20210115133858.GA18931@alvherre.pgsql"
+          ],
+          "date": "2022-05-31",
+          "status": "Reverted"
+        },
+        {
+          "id": "P2",
+          "title": "avoid bloat from CREATE INDEX CONCURRENTLY",
+          "url": "https://commitfest.postgresql.org/patch/1047/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/20170228052302.r7nvt4sbnsgu6job@alvherre.pgsql"
+          ],
+          "date": "2017-03-07",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Mihail Nikalayeu",
+          "date": "2026-01-15T17:19:58Z",
+          "url": "https://www.postgresql.org/message-id/CADzfLwWAiimwngq38x8Ji26AtYEmSqnFD7aa4kVGF4ObDswHMA%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Mihail Nikalayeu",
+          "date": "2026-10-17T16:10:00Z",
+          "url": "https://www.postgresql.org/message-id/CADzfLwVHrrCNoJ0_dGctFNLo2Xm3UabZk4mG7t9Km9S8kNzAYw%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "0007 rotates snapshots in the post-scan build loops, so only tuplesort's internal sorts and merges and the validation scan still pin xmin. The material gives no number for how much of a run's holdback goes away, so the request for a measurement stands.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Safety argument for missed tuples is informal, as in the reverted PG14 feature",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "prior_rejection",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A busy table gets HOT updates and pruning while CREATE INDEX CONCURRENTLY rotates its snapshot. In a case the stress test does not cover, validation skips a live tuple, and the new index silently misses it. Users see wrong query results or amcheck errors months later, as in the 2022 case.",
+      "argument": "[P1] reverted a feature whose goal was the same: let xmin advance during CIC. The revert reason was that pruning removed tuples the build still relied on, and validation did not repair this. The proposal's safety claim is one informal sentence in message #1, a README.HOT edit, and a stress test that the author says in message #11 was mostly AI-written and not yet reviewed closely. v8 also adds a new path where unique builds leave entries out for validation to insert.",
+      "precedent_ids": [
+        "P1"
+      ],
+      "thread_message_refs": [
+        1,
+        11
+      ],
+      "author_must_show": "What written invariant shows that validate_index still inserts every live tuple when the first scan and the unique-build load use rotating snapshots and pruning runs between rotations?",
+      "precedents": [
+        {
+          "id": "P1",
+          "title": "Revert changes to CONCURRENTLY that \"sped up\" Xmin advance",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e28bb885196916b0a3d898ae4f2be0e38108d81b",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/17485-396609c6925b982d@postgresql.org",
+            "https://www.postgresql.org/message-id/flat/20210115133858.GA18931@alvherre.pgsql"
+          ],
+          "date": "2022-05-31",
+          "status": "Reverted"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Mihail Nikalayeu",
+          "date": "2026-01-15T17:19:58Z",
+          "url": "https://www.postgresql.org/message-id/CADzfLwWAiimwngq38x8Ji26AtYEmSqnFD7aa4kVGF4ObDswHMA%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Mihail Nikalayeu",
+          "date": "2026-10-17T16:10:00Z",
+          "url": "https://www.postgresql.org/message-id/CADzfLwVHrrCNoJ0_dGctFNLo2Xm3UabZk4mG7t9Km9S8kNzAYw%40mail.gmail.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "[P1] let vacuum ignore the backend's xmin, while this build always holds a registered snapshot, so [P1] shows the stakes only. The material still has no written invariant for the unique-build path that leaves entries for validation, and the tests are not yet reviewed.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "New TOAST and snapshot rules for every index AM, enforced by nothing",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch changes the GIN accumulator, a BRIN opclass, or a GiST buffered-build path so that it keeps a datum across pages without detoasting it. Tests pass because a reset seldom lands between the copy and the use while vacuum removes that TOAST value. Months later a user's CREATE INDEX CONCURRENTLY fails or reads freed data.",
+      "argument": "0002-0007 add contracts that every build path must keep: detoast retained values, hold no extra snapshot, call index_build_rotate_snapshot() only after the scan is closed, and follow the parallel reset protocol. 0003 and 0004 show these rules are easy to miss, since GIN and BRIN both broke them. Only opt-in for out-of-core AMs answers the concern in message #10. In-core AMs still carry the rules, and a missed rule surfaces only as a rare race.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        10,
+        11
+      ],
+      "author_must_show": "Which assertion or test fails right away when a build path keeps an undetoasted datum or an extra snapshot across a reset?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 10,
+          "from": "Matthias van de Meent",
+          "date": "2026-08-03T20:07:06Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WhwwAB_DVAWfunO%3D_1QZu-J%2BThbpVbvdoOyycswQETFfw%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Mihail Nikalayeu",
+          "date": "2026-10-17T16:10:00Z",
+          "url": "https://www.postgresql.org/message-id/CADzfLwVHrrCNoJ0_dGctFNLo2Xm3UabZk4mG7t9Km9S8kNzAYw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Interval 0 and the 0001 TOAST-with-vacuum test give some detection, so \"enforced by nothing\" overstates it. The material shows no assertion that fails when a build path keeps a TOAST pointer or an extra snapshot, and the author has not yet reviewed the tests.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Duplicate-check budget exposed as a GUC with an unmeasured default",
+      "level": "2",
+      "rubric_item": 5,
+      "category": "new_guc",
+      "touch_points": [
+        "new_guc",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator builds a unique index concurrently on a table where the key column is updated often. The fetch budget runs out, many equal-key entries move to the validation scan, and the build takes longer. The only lever is index_build_duplicate_check_scale_factor, whose default 0.05 the author calls not measured, and whose meaning depends on build internals.",
+      "argument": "The author says in message #11 that 0.05 is \"not measure\". The setting describes internal mechanics, separate sort and load budgets and a floor of 1000 fetches, which a later design change such as the ReadStream batching suggested in message #11 would make obsolete. The documentation hunk places it next to post_auth_delay, so it may be meant as a developer option, but the proposal does not say so. Once a setting ships, removing or redefining it breaks configuration files.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        11,
+        12
+      ],
+      "author_must_show": "Is index_build_duplicate_check_scale_factor meant for users or only for developers, and what measurement supports 0.05 as the default?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 11,
+          "from": "Mihail Nikalayeu",
+          "date": "2026-10-17T16:10:00Z",
+          "url": "https://www.postgresql.org/message-id/CADzfLwVHrrCNoJ0_dGctFNLo2Xm3UabZk4mG7t9Km9S8kNzAYw%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "Mihail Nikalayeu",
+          "date": "2026-10-22T11:11:00Z",
+          "url": "https://www.postgresql.org/message-id/CADzfLwV%2Bng11CQPju9HxJvK_rLAZ0_Zozno_%2B4Td26ZL1V_%3DrA%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The hunk sits next to post_auth_delay, which suggests a developer option and weakens the configuration-file concern. The author still calls 0.05 not measured, and the proposal does not state the intended audience.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "Snapshot resets silently depend on default_transaction_isolation",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "new_guc",
+      "touch_points": [
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site runs with default_transaction_isolation = 'repeatable read' and starts a long REINDEX CONCURRENTLY, expecting the new behaviour to let xmin advance. Resets are skipped, xmin stays pinned as before, and nothing reports it. The operator finds out only when bloat grows the same way it did before upgrade.",
+      "argument": "The commit message for 0002 says resets are skipped at REPEATABLE READ or above, and message #11 gives the reason. CIC cannot run in a transaction block, so its isolation level comes only from default_transaction_isolation or PGOPTIONS. The documentation hunk for concurrent_index_reset_snapshot_interval does not mention this condition. A setting whose effect is switched off by an unrelated setting, with no notice, is a user-interface gap.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        10,
+        11
+      ],
+      "author_must_show": "How does a user running with default_transaction_isolation above READ COMMITTED learn that resets are disabled, through the documentation, a notice, or a forced READ COMMITTED for the build?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 10,
+          "from": "Matthias van de Meent",
+          "date": "2026-08-03T20:07:06Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WhwwAB_DVAWfunO%3D_1QZu-J%2BThbpVbvdoOyycswQETFfw%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Mihail Nikalayeu",
+          "date": "2026-10-17T16:10:00Z",
+          "url": "https://www.postgresql.org/message-id/CADzfLwVHrrCNoJ0_dGctFNLo2Xm3UabZk4mG7t9Km9S8kNzAYw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The config.sgml hunk for concurrent_index_reset_snapshot_interval does not mention the REPEATABLE READ condition, and default_transaction_isolation can put a concurrent build there. The behavior is no worse than today, so a documentation sentence or a notice would answer it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Silent-corruption risk spread over many subsystems, with thin review",
+      "level": "2",
+      "rubric_item": 16,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After commit, a bug in snapshot rotation or in the unique-build recheck yields an index that misses tuples, as in the 2022 case. Users find out only through wrong query results or amcheck. The committer then has to debug snapmgr, heapam, tuplesort, nbtree and five AMs at once.",
+      "argument": "[P1] shows that an earlier change to xmin handling in CIC corrupted indexes and was reverted after release. The series touches snapmgr.c, heapam, tuplesort, nbtsort.c and every built-in AM. In message #11 the author says most tests are AI-written and not yet reviewed, and that 0007 is a concept. v8 has no review reply yet. One reviewer is engaged, and no committer has said they would own the snapshot and nbtree parts.",
+      "precedent_ids": [
+        "P1"
+      ],
+      "thread_message_refs": [
+        10,
+        11,
+        12
+      ],
+      "author_must_show": "Could the series land in stages, starting with 0002 alone for serial non-unique builds, with a committer who knows snapmgr agreeing to own it?",
+      "precedents": [
+        {
+          "id": "P1",
+          "title": "Revert changes to CONCURRENTLY that \"sped up\" Xmin advance",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e28bb885196916b0a3d898ae4f2be0e38108d81b",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/17485-396609c6925b982d@postgresql.org",
+            "https://www.postgresql.org/message-id/flat/20210115133858.GA18931@alvherre.pgsql"
+          ],
+          "date": "2022-05-31",
+          "status": "Reverted"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 10,
+          "from": "Matthias van de Meent",
+          "date": "2026-08-03T20:07:06Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WhwwAB_DVAWfunO%3D_1QZu-J%2BThbpVbvdoOyycswQETFfw%40mail.gmail.com"
+        },
+        {
+          "index": 11,
+          "from": "Mihail Nikalayeu",
+          "date": "2026-10-17T16:10:00Z",
+          "url": "https://www.postgresql.org/message-id/CADzfLwVHrrCNoJ0_dGctFNLo2Xm3UabZk4mG7t9Km9S8kNzAYw%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "Mihail Nikalayeu",
+          "date": "2026-10-22T11:11:00Z",
+          "url": "https://www.postgresql.org/message-id/CADzfLwV%2Bng11CQPju9HxJvK_rLAZ0_Zozno_%2B4Td26ZL1V_%3DrA%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "The series is already staged: 0002 enables only serial non-unique builds, and later patches add GIN, BRIN, parallel and unique. The corruption risk duplicates prior-attempts-1, and ownership is a committability matter, with the committer of the original feature active in the thread.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "IndexAmRoutine gains amcanresetsnapshot, and AMs get index_build_rotate_snapshot() plus new rules for retained TOAST values and snapshots."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": true,
+      "reason": "Adds concurrent_index_reset_snapshot_interval and index_build_duplicate_check_scale_factor."
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "The series changes snapmgr.c, heapam, tuplesort, nbtsort.c and every built-in index AM, and adds rules that each build path must keep."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Unique builds compare keys per tuple in _bt_load(), and 0005 touches the shared parallel table scan code."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "What written invariant shows that validation still inserts every live tuple when the first scan and the unique-build load use rotating snapshots and pruning runs between resets?",
+    "On a large table under write load, how much shorter is the xmin holdback across a whole CREATE INDEX CONCURRENTLY run with this set, without STIR?",
+    "How much do build time and validation work change for a large unique build with the default settings, compared with master?",
+    "Which assertion or test fails right away when a build path keeps a TOAST pointer or an extra snapshot across a reset?",
+    "What measurements support the defaults of 100ms for the reset interval and 0.05 for index_build_duplicate_check_scale_factor?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Álvaro Herrera, who committed and reverted the PG14 feature [P1], takes part in the thread, so far only on the stress test. The owner needs to know snapshot management, heap pruning and nbtree builds.",
+    "liability": "The owner signs for the completeness of every index built concurrently, with no time limit, since a missed tuple shows up only as wrong results or amcheck errors. The owner also signs for two GUCs and the AM contract.",
+    "author_follow_up": "Strong sign: the author rebased from January to October 2026 and reworked v6 into v8 after review. The author says the tests and 0007 are not yet fully reviewed."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "high",
+    "review_cost": "high",
+    "recommended_action": "proceed",
+    "reason": "Operators of large, busy databases gain, and the project already accepted the goal once [P1]. The seven-patch series changes snapshot, heap, sort and index AM code, so review is costly; it needs a rebase and the measurements first."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read, so the claims that xmin stays valid during a reset, that the parallel handshake is correct, and that the unique recheck is complete are unchecked. Only 3 of 13 messages were shown.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "revert:e28bb885196916b0a3d898ae4f2be0e38108d81b",
+      "kind": "revert",
+      "title": "Revert changes to CONCURRENTLY that \"sped up\" Xmin advance",
+      "status": "Reverted",
+      "date": "2022-05-31",
+      "first_date": "2021-02-23",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e28bb885196916b0a3d898ae4f2be0e38108d81b",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/17485-396609c6925b982d@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/20210115133858.GA18931@alvherre.pgsql"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert changes to CONCURRENTLY that \"sped up\" Xmin advance\nReverted commit(s): VACUUM: ignore indexing operations with CONCURRENTLY",
+      "objection": "This reverts commit d9d076222f5b \"VACUUM: ignore indexing operations\nwith CONCURRENTLY\".\n\nThese changes caused indexes created with the CONCURRENTLY option to\nmiss heap tuples that were HOT-updated and HOT-pruned during the index\ncreation.  Before these changes, HOT pruning would have been prevented\nby the Xmin of the transaction creating the index, but because this\nchange was precisely to allow the Xmin to move forward ignoring that\nbackend, now other backends scanning the table can prune them.  This is\nnot a problem for VACUUM (which requires a lock that conflicts with a\nCREATE INDEX CONCURRENTLY operation), but HOT-prune can definitely\noccur.  In other words, Xmin advancement was sped up, but at the cost of\ncorrupting the resulting index.\n\nRegrettably, this means that the new feature in PG14 that RIC/CIC on\nvery large tables no longer force VACUUM to retain very old tuples goes\naway.  We might try to implement it again in a later release, but for\nnow the risk of indexes missing tuples is too high and there's no easy\nfix.\n\nBackpatch to 14, where this change appeared.\n\nDiagnosys-by: Andrey Borodin <x4mmm@yandex-team.ru>\nDiagnosys-by: Michael Paquier <michael@paquier.xyz>\nDiagnosys-by: Andres Freund <andres@anarazel.de>",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "vacuum ignore snapshot concurrent index",
+        "CREATE INDEX CONCURRENTLY xmin horizon",
+        "REINDEX CONCURRENTLY vacuum bloat",
+        "concurrent index build missing tuples HOT pruning"
+      ],
+      "from_hint": false,
+      "score": 0.512,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:1047",
+      "kind": "cf",
+      "title": "avoid bloat from CREATE INDEX CONCURRENTLY",
+      "status": "Returned with feedback",
+      "date": "2017-03-07",
+      "first_date": "2017-02-28",
+      "url": "https://commitfest.postgresql.org/patch/1047/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20170228052302.r7nvt4sbnsgu6job@alvherre.pgsql"
+      ],
+      "authors": "Simon Riggs (simon)",
+      "objectors": "Tom Lane",
+      "summary": "The patch releases the snapshot that create index concurrently takes for the first-phase table scan once the scan ends, so the sort and build phases do not hold back the global xmin and vacuum can control bloat in other tables. It covers btree only, through a new snapmgr API.",
+      "objection": "Tom Lane objected to the new, undocumented snapmgr API and proposed instead to make index AMs responsible for popping the snapshot. Simon Riggs answered that he had chosen the snapmgr API because an index AM that pops the snapshot wrongly would cause a crash, and he offered to follow consensus. The visible messages show no further discussion before the entry was returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "vacuum ignore snapshot concurrent index",
+        "CREATE INDEX CONCURRENTLY xmin horizon",
+        "REINDEX CONCURRENTLY vacuum bloat",
+        "concurrent index build missing tuples HOT pruning"
+      ],
+      "from_hint": false,
+      "score": 0.37,
+      "enriched": true,
+      "key_quote": "However, now that I read the patch: this is a horribly ugly hack.",
+      "quote_message_url": "https://www.postgresql.org/message-id/1983.1488288643%40sss.pgh.pa.us",
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:5004",
+      "kind": "cf",
+      "title": "CREATE INDEX CONCURRENTLY for partitioned tables",
+      "status": "Withdrawn",
+      "date": "2025-04-08",
+      "first_date": "2020-10-31",
+      "url": "https://commitfest.postgresql.org/patch/5004/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20201031063117.GF3080@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby), Ilya Gladyshev (qoops)",
+      "objectors": "",
+      "summary": "The patch adds CREATE INDEX CONCURRENTLY for partitioned tables. It first creates catalog entries for all partition indexes as invalid, then builds and validates them the way REINDEX CONCURRENTLY does, so an interrupted run leaves INVALID indexes that DROP or REINDEX can clean up.",
+      "objection": "The visible messages do not show why. The last messages are reviews and fixes from mid-2024 with no stated objection, and in October 2024 a user asked why progress had stalled; the entry was withdrawn in April 2025 with no visible closing message.",
+      "touch_points": [],
+      "matched_queries": [
+        "vacuum ignore snapshot concurrent index",
+        "CREATE INDEX CONCURRENTLY xmin horizon",
+        "concurrent index build missing tuples HOT pruning"
+      ],
+      "from_hint": false,
+      "score": 0.355,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:2815",
+      "kind": "cf",
+      "title": "CREATE INDEX CONCURRENTLY on partitioned table",
+      "status": "Withdrawn",
+      "date": "2023-09-18",
+      "first_date": "2020-10-31",
+      "url": "https://commitfest.postgresql.org/patch/2815/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20201031063117.GF3080@telsasoft.com",
+        "https://www.postgresql.org/message-id/flat/e47898da6a354262ec332ca073847c0a@postgrespro.ru"
+      ],
+      "authors": "Justin Pryzby (justinpryzby), Alexander Pyhalov (a.pyhalov)",
+      "objectors": "",
+      "summary": "The patch lets create index concurrently work on partitioned tables by first creating catalog entries for all partition indexes with indisvalid=false, then building each one concurrently. An interrupted run leaves invalid indexes that the user can clean up with DROP or REINDEX, as with CIC on a plain table.",
+      "objection": "The visible messages do not show why. The last shown message, from Alexander Pyhalov in July 2023, asks whether releasing the session lock on the parent table between child index builds is safe, and no reply is shown. No committer review appears in the thread.",
+      "touch_points": [],
+      "matched_queries": [
+        "vacuum ignore snapshot concurrent index",
+        "CREATE INDEX CONCURRENTLY xmin horizon",
+        "concurrent index build missing tuples HOT pruning"
+      ],
+      "from_hint": false,
+      "score": 0.317,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:2805",
+      "kind": "cf",
+      "title": "DROP INDEX CONCURRENTLY on partitioned index",
+      "status": "Withdrawn",
+      "date": "2021-07-24",
+      "first_date": "2020-10-28",
+      "url": "https://commitfest.postgresql.org/patch/2805/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20201028004432.GA17079@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch adds DROP INDEX CONCURRENTLY support for partitioned indexes. It changes index_drop() to expand a partitioned index into the list of its partition indexes and run the concurrent drop steps on all of them in two transactions.",
+      "objection": "Michael Paquier disliked the new code path for deleting dependent objects in the partition tree and said the problem needed more design work first. The patch then stopped applying to HEAD, and the author withdrew it until the related patch for CREATE INDEX CONCURRENTLY on partitioned tables makes progress.",
+      "touch_points": [],
+      "matched_queries": [
+        "vacuum ignore snapshot concurrent index",
+        "CREATE INDEX CONCURRENTLY xmin horizon",
+        "concurrent index build missing tuples HOT pruning"
+      ],
+      "from_hint": false,
+      "score": 0.304,
+      "enriched": true,
+      "key_quote": "Looking\nquicky at the patch, I am not much a fan of the new code path\nintroduced for the deletion of dependent objects in the partition\ntree, so my gut is telling me that we need to think harder about the\nproblem at hand first.",
+      "quote_message_url": "https://www.postgresql.org/message-id/YELeTx8xHfTRLXec%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:1866",
+      "kind": "cf",
+      "title": "Avoid duplicate XIDs at recovery when building initial snapshot - take 2",
+      "status": "Returned with feedback",
+      "date": "2018-12-03",
+      "first_date": "2018-10-14",
+      "url": "https://commitfest.postgresql.org/patch/1866/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/E1gBgPY-0006hw-HN@gemulon.postgresql.org"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Simon Riggs",
+      "summary": "The patch reverts commit 1df21ddb, which dropped duplicate XIDs from XLOG_RUNNING_XACTS records only when a standby applies them. Instead, GetRunningTransactionData() sorts the XIDs and subxids and removes duplicates on the primary whenever it finds a dummy two-phase proc entry, so the WAL record never holds duplicates.",
+      "objection": "Simon Riggs voted against the patch because it removes duplicates while holding ProcArrayLock, which is already a bottleneck, and he asked for proof that the performance cost is negligible. He also judged the committed fix in 1df21ddb sufficient and said the new patch was too complex to backpatch. The author agreed with these concerns and marked the patch returned with feedback.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "reset snapshot during index build",
+        "unique index build duplicate check snapshot"
+      ],
+      "from_hint": false,
+      "score": 0.253,
+      "enriched": true,
+      "key_quote": "I hadn't realised this patch holds ProcArrayLock while removing duplicates.\nNow I know I vote against applying this patch unless someone can show that\nthe performance effects of doing so are negligable, which I doubt.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CANP8%2BjKdrQpDU6pe%3Dde9gRz6zR0nJBXM5qU%3DTq0Jiz5TinZ5%3DQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "revert:50f770c3d92cfb2d62724d8c810d37c1f6249a11",
+      "kind": "revert",
+      "title": "Revert GetTransactionSnapshot() to return historic snapshot during LR",
+      "status": "Reverted",
+      "date": "2025-08-22",
+      "first_date": "2024-12-23",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=50f770c3d92cfb2d62724d8c810d37c1f6249a11",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20250809222338.cc.nmisch@google.com",
+        "https://www.postgresql.org/message-id/flat/a868fe78-ddb4-4b0a-9b96-873d91d93cfd@iki.fi"
+      ],
+      "authors": "Heikki Linnakangas",
+      "objectors": "",
+      "summary": "Revert GetTransactionSnapshot() to return historic snapshot during LR\nReverted commit(s): Don't allow GetTransactionSnapshot() in logical decoding",
+      "objection": "Commit 1585ff7387 changed GetTransactionSnapshot() to throw an error\nif it's called during logical decoding, instead of returning the\nhistoric snapshot. I made that change for extra protection, because a\nhistoric snapshot can only be used to access catalog tables while\nGetTransactionSnapshot() is usually called when you're executing\narbitrary queries. You might get very subtle visibility problems if\nyou tried to use the historic snapshot for arbitrary queries.\n\nThere's no built-in code in PostgreSQL that calls\nGetTransactionSnapshot() during logical decoding, but it turns out\nthat the pglogical extension does just that, to evaluate row filter\nexpressions. You would get weird results if the row filter runs\narbitrary queries, but it is sane as long as you don't access any\nnon-catalog tables. Even though there are no checks to enforce that in\npglogical, a typical row filter expression does not access any tables\nand works fine. Accessing tables marked with the user_catalog_table =\ntrue option is also OK.\n\nTo fix pglogical with row filters, and any other extensions that might\ndo similar things, revert GetTransactionSnapshot() to return a\nhistoric snapshot during logical decoding.\n\nTo try to still catch the unsafe usage of historic snapshots, add\nchecks in heap_beginscan() and index_beginscan() to complain if you\ntry to use a historic snapshot to scan a non-catalog table. We're very\nclose to the version 18 release however, so add those new checks only\nin master.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "catalog changes",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "reset snapshot during index build",
+        "long running snapshot holds back vacuum"
+      ],
+      "from_hint": false,
+      "score": 0.236,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "revert:099ca50bd41c1a72fe5a086bb095858ea74c88de",
+      "kind": "revert",
+      "title": "Revert \"Fix parallel-safety check of expressions and predicate for index builds\"",
+      "status": "Reverted",
+      "date": "2024-03-06",
+      "first_date": "2024-03-06",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=099ca50bd41c1a72fe5a086bb095858ea74c88de",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/162802.1709746091@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CAHewXN=UaAaNn9ruHDH3Os8kxLVmtWqbssnf=dZN_s9=evHUFA@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Fix parallel-safety check of expressions and predicate for index builds\"\nReverted commit(s): Fix parallel-safety check of expressions and predicate for index builds",
+      "objection": "This reverts commit eae7be600be7, following a discussion with Tom Lane,\ndue to concerns that this impacts the decisions made by the planner for\nthe number of workers spawned based on the inlining and const-folding of\nindex expressions and predicate for cases that would have worked until\nthis commit.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "PROC_IN_SAFE_IC revert",
+        "unique index build duplicate check snapshot"
+      ],
+      "from_hint": false,
+      "score": 0.223,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:2720",
+      "kind": "cf",
+      "title": "remove spurious CREATE INDEX CONCURRENTLY wait",
+      "status": "Withdrawn",
+      "date": "2020-09-01",
+      "first_date": "2020-08-10",
+      "url": "https://commitfest.postgresql.org/patch/2720/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200810233815.GA18970@alvherre.pgsql"
+      ],
+      "authors": "Álvaro Herrera (alvherre)",
+      "objectors": "",
+      "summary": "Let CREATE INDEX CONCURRENTLY set a PGPROC flag so that other CICs skip it in WaitForOlderSnapshots, and so do not wait for the slowest concurrent CIC to finish. After review, the patch was narrowed to a PROC_IN_SAFE_CIC flag, set only for indexes that are neither on expressions nor partial.",
+      "objection": "The visible messages do not show why. Tom Lane objected that expression indexes can run user-defined functions, as ANALYZE does. The author answered by narrowing the patch to non-expression, non-partial indexes, and the last message is a favorable review from Michael Paquier.",
+      "touch_points": [],
+      "matched_queries": [
+        "vacuum ignore snapshot concurrent index",
+        "CREATE INDEX CONCURRENTLY xmin horizon"
+      ],
+      "from_hint": false,
+      "score": 0.182,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:2141",
+      "kind": "cf",
+      "title": "Avoiding deadlock errors in CREATE INDEX CONCURRENTLY",
+      "status": "Returned with feedback",
+      "date": "2019-11-25",
+      "first_date": "2019-05-15",
+      "url": "https://commitfest.postgresql.org/patch/2141/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/6BF27921-C662-4C4A-A9DC-4E124C180CAF@amazon.com"
+      ],
+      "authors": "Dhruv Goel (goeldhru)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch removes the third wait in create index concurrently, the wait for transactions with older snapshots at the end of phase 3, so that concurrent DDL on the same table no longer fails with deadlock errors. It sets indcheckxmin when the index is marked ready and makes pg_index updates transactional so older snapshots cannot use the new index.",
+      "objection": "The patch was returned with feedback for lack of activity after it had waited on the author for more than two weeks. Michael Paquier doubted that the transactional pg_index update is safe and asked whether all cache lookup failures were fixed. Yoshikazu Imai pointed to comments describing the create index concurrently method that need changes, and the visible messages show no reply from the author.",
+      "touch_points": [],
+      "matched_queries": [
+        "vacuum ignore snapshot concurrent index",
+        "CREATE INDEX CONCURRENTLY xmin horizon"
+      ],
+      "from_hint": false,
+      "score": 0.167,
+      "enriched": true,
+      "key_quote": "And while looking at this patch, I have doubts that what you are doing\nis actually safe either.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20191108013039.GZ1768%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "revert:455f948b0d03a556533a7e4a1a8abf45f0eb202e",
+      "kind": "revert",
+      "title": "Revert \"ICU: do not convert locale 'C' to 'en-US-u-va-posix'.\"",
+      "status": "Reverted",
+      "date": "2023-05-09",
+      "first_date": "2023-05-08",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=455f948b0d03a556533a7e4a1a8abf45f0eb202e",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/483826.1683582475@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/f83f089ee1e9acd5dbbbf3353294d24e1f196e95.camel@j-davis.com",
+        "https://www.postgresql.org/message-id/flat/37520ec1ae9591f83132f82dbd625f3fc2d69c16.camel@j-davis.com"
+      ],
+      "authors": "Jeff Davis",
+      "objectors": "",
+      "summary": "Revert \"ICU: do not convert locale 'C' to 'en-US-u-va-posix'.\"\nReverted commit(s): ICU: do not convert locale 'C' to 'en-US-u-va-posix'.",
+      "objection": "This reverts commit f7faa9976cc0504c027a20ed66ceca9018041dd4.",
+      "touch_points": [],
+      "matched_queries": [
+        "PROC_IN_SAFE_IC revert"
+      ],
+      "from_hint": false,
+      "score": 0.141,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:5462",
+      "kind": "cf",
+      "title": "history of vacuum / checkpoint runs",
+      "status": "Withdrawn",
+      "date": "2025-11-14",
+      "first_date": "2024-12-21",
+      "url": "https://commitfest.postgresql.org/patch/5462/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/b68ab452-c41f-4d04-893f-eaab84f1855b@vondra.me"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "Add hooks that run after vacuum and checkpoint logging, and keep a history of individual runs that users can query instead of parsing the server log. A proof-of-concept extension stored events in a fixed-size circular buffer in shared memory, and the discussion moved toward a file with a time-based retention limit.",
+      "objection": "The visible messages do not show why. Reviewers discussed buffer size, file storage, retention policy, hook signatures and aggregation, but none of the shown messages objects to the idea. The last shown message is from January 2025 and the entry was withdrawn in November 2025, with no visible reason.",
+      "touch_points": [],
+      "matched_queries": [
+        "long running snapshot holds back vacuum"
+      ],
+      "from_hint": false,
+      "score": 0.136,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:e3fcca0d0d2414f3a50d6fd40eddf48b7df81475",
+      "kind": "revert",
+      "title": "Revert changes in HOT handling of BRIN indexes",
+      "status": "Reverted",
+      "date": "2022-06-16",
+      "first_date": "2021-11-30",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e3fcca0d0d2414f3a50d6fd40eddf48b7df81475",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/05ebcb44-f383-86e3-4f31-0a97a55634cf@enterprisedb.com",
+        "https://www.postgresql.org/message-id/flat/CAFp7QwpMRGcDAQumN7onN9HjrJ3u4X3ZRXdGFT0K5G2JWvnbWg@mail.gmail.com"
+      ],
+      "authors": "Tomas Vondra",
+      "objectors": "",
+      "summary": "Revert changes in HOT handling of BRIN indexes\nReverted commit(s): Ignore BRIN indexes when checking for HOT udpates; Move test for BRIN HOT behavior to stats.sql",
+      "objection": "This reverts commits 5753d4ee32 and fe60b67250 that modified HOT to\nignore BRIN indexes. The commit message for 5753d4ee32 claims that:\n\n    When determining whether an index update may be skipped by using\n    HOT, we can ignore attributes indexed only by BRIN indexes. There\n    are no index pointers to individual tuples in BRIN, and the page\n    range summary will be updated anyway as it relies on visibility\n    info.\n\nThis is partially incorrect - it's true BRIN indexes don't point to\nindividual tuples, so HOT chains are not an issue, but the visibitlity\ninfo is not sufficient to keep the index up to date. This can easily\nresult in corrupted indexes, as demonstrated in the hackers thread.\n\nThis does not mean relaxing the HOT restrictions for BRIN is a lost\ncause, but it needs to handle the two aspects (allowing HOT chains and\nupdating the page range summaries) as separate. But that requires a\nmajor changes, and it's too late for that in the current dev cycle.",
+      "touch_points": [],
+      "matched_queries": [
+        "concurrent index build missing tuples HOT pruning"
+      ],
+      "from_hint": false,
+      "score": 0.126,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "revert:5ad72cee7ed3ac0016c716f0408811274d822f14",
+      "kind": "revert",
+      "title": "Revert tests for drop index concurrently.",
+      "status": "Reverted",
+      "date": "2012-10-18",
+      "first_date": "2012-10-18",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=5ad72cee7ed3ac0016c716f0408811274d822f14",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert tests for drop index concurrently.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "vacuum ignore snapshot concurrent index",
+        "CREATE INDEX CONCURRENTLY xmin horizon"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:3382",
+      "kind": "cf",
+      "title": "Add support for ALTER INDEX .. ALTER [COLUMN] col_num {SET,RESET}",
+      "status": "Withdrawn",
+      "date": "2021-11-01",
+      "first_date": "2021-10-29",
+      "url": "https://commitfest.postgresql.org/patch/3382/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/YXuCDicA8rq4iryZ@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Add support for ALTER INDEX .. ALTER [COLUMN] col_num {SET,RESET}\nThreads: Add support for ALTER INDEX .. ALTER [COLUMN] col_num {SET,RESET}",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "reset snapshot during index build"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "revert:3c8e463b0d885e0d976f6a13a1fb78187b25c86f",
+      "kind": "revert",
+      "title": "Revert \"Tidy up locale thread safety in ECPG library.\"",
+      "status": "Reverted",
+      "date": "2025-03-28",
+      "first_date": "2025-03-28",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=3c8e463b0d885e0d976f6a13a1fb78187b25c86f",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CWZBBRR6YA8D.8EHMDRGLCKCD@neon.tech"
+      ],
+      "authors": "Peter Eisentraut",
+      "objectors": "",
+      "summary": "Revert \"Tidy up locale thread safety in ECPG library.\"\nReverted commit(s): Tidy up locale thread safety in ECPG library.",
+      "objection": "This reverts commit 8e993bff5326b00ced137c837fce7cd1e0ecae14.\n\nIt causes various build failures on the buildfarm, to be investigated.",
+      "touch_points": [],
+      "matched_queries": [
+        "PROC_IN_SAFE_IC revert"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:2976",
+      "kind": "cf",
+      "title": "Improve amcheck to check UNIQUE constraint in btree index",
+      "status": "Returned with feedback",
+      "date": "2021-04-08",
+      "first_date": "2021-02-08",
+      "url": "https://commitfest.postgresql.org/patch/2976/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALT9ZEHRn5xAM5boga0qnrCmPV52bScEK2QnQ1HmUZDD301JEg@mail.gmail.com"
+      ],
+      "authors": "Anastasia Lubennikova (lubennikovaav), Pavel Borisov (pborisov)",
+      "objectors": "",
+      "summary": "Improve amcheck to check UNIQUE constraint in btree index\nThreads: [PATCH] Improve amcheck to also check UNIQUE constraint in btree index.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "unique index build duplicate check snapshot"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "revert:b0ea16528cda1f3a993bbfeb2b93eed9762af4e6",
+      "kind": "revert",
+      "title": "Revert \"Fix partition pruning setup during DETACH CONCURRENTLY\"",
+      "status": "Reverted",
+      "date": "2024-06-24",
+      "first_date": "2024-06-24",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=b0ea16528cda1f3a993bbfeb2b93eed9762af4e6",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1158256.1719239648@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/18377-e0324601cfebdfe5@postgresql.org"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert \"Fix partition pruning setup during DETACH CONCURRENTLY\"\nReverted commit(s): Fix partition pruning setup during DETACH CONCURRENTLY",
+      "objection": "This reverts commit 27162a64b386; this branch is in code freeze due to a\nnearing release.  We can commit again after the release is out.",
+      "touch_points": [],
+      "matched_queries": [
+        "concurrent index build missing tuples HOT pruning"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:4860",
+      "kind": "cf",
+      "title": "create index failed. PARALLEL UNSAFE function does not prevent parallel index build",
+      "status": "Rejected",
+      "date": "2024-03-13",
+      "first_date": "2024-01-29",
+      "url": "https://commitfest.postgresql.org/patch/4860/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/18314-5f44050ce33a5492@postgresql.org"
+      ],
+      "authors": "Tender Wang (tndrwang)",
+      "objectors": "",
+      "summary": "create index failed. PARALLEL UNSAFE function does not prevent parallel index build\nThreads: BUG #18314: PARALLEL UNSAFE function does not prevent parallel index build",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "reset snapshot during index build"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:3467",
+      "kind": "cf",
+      "title": "Trigger failsafe when VACUUM is run in single user mode",
+      "status": "Returned with feedback",
+      "date": "2022-04-07",
+      "first_date": "2021-12-09",
+      "url": "https://commitfest.postgresql.org/patch/3467/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFBsxsFL5LoWanSLDjt_SjS9=FU_9XWi22iHMexRS2SubkX-Vw@mail.gmail.com"
+      ],
+      "authors": "John Naylor (john.naylor)",
+      "objectors": "",
+      "summary": "Trigger failsafe when VACUUM is run in single user mode\nThreads: do only critical work during single-user vacuum?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "long running snapshot holds back vacuum"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:5459",
+      "kind": "cf",
+      "title": "Parallel tests publication and subscription might fail due to concurrent tuple update",
+      "status": "Rejected",
+      "date": "2025-03-27",
+      "first_date": "2024-12-15",
+      "url": "https://commitfest.postgresql.org/patch/5459/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/18dcfb7f-5deb-4487-ae22-a2c16839519a@gmail.com"
+      ],
+      "authors": "Jelte Fennema-Nio (jeltef)",
+      "objectors": "",
+      "summary": "Parallel tests publication and subscription might fail due to concurrent tuple update\nThreads: Parallel tests publication and subscription might fail due to\nconcurrent tuple update",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "concurrent index build missing tuples HOT pruning"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:1060",
+      "kind": "cf",
+      "title": "REINDEX CONCURRENTLY",
+      "status": "Returned with feedback",
+      "date": "2017-04-03",
+      "first_date": "2013-11-15",
+      "url": "https://commitfest.postgresql.org/patch/1060/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB7nPqSTFkuc7dZxCDX4HOTU63YXHRroNv2aoUzyD-Zz_8Z_Zg@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun), Andreas Karlsson (kandreas)",
+      "objectors": "",
+      "summary": "REINDEX CONCURRENTLY\nThreads: REINDEX CONCURRENTLY 2.0",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "REINDEX CONCURRENTLY vacuum bloat"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "revert:2fcc7ee7affe2fb708d7b2727e93981216b5d2f8",
+      "kind": "revert",
+      "title": "Revert \"Fix search_path to a safe value during maintenance operations.\"",
+      "status": "Reverted",
+      "date": "2023-06-10",
+      "first_date": "2023-06-09",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=2fcc7ee7affe2fb708d7b2727e93981216b5d2f8",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/e44327179e5c9015c8dda67351c04da552066017.camel@j-davis.com"
+      ],
+      "authors": "Jeff Davis",
+      "objectors": "",
+      "summary": "Revert \"Fix search_path to a safe value during maintenance operations.\"\nReverted commit(s): Fix search_path to a safe value during maintenance operations.",
+      "objection": "This reverts commit 05e17373517114167d002494e004fa0aa32d1fd1.",
+      "touch_points": [],
+      "matched_queries": [
+        "PROC_IN_SAFE_IC revert"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:3508",
+      "kind": "cf",
+      "title": "Avoid smgrimmedsync() during index build and add unbuffered IO API",
+      "status": "Returned with feedback",
+      "date": "2022-08-02",
+      "first_date": "2021-01-21",
+      "url": "https://commitfest.postgresql.org/patch/3508/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210121203656.tc7kqildbqnyihog@alap3.anarazel.de"
+      ],
+      "authors": "Melanie Plageman (melanieplageman)",
+      "objectors": "",
+      "summary": "Avoid smgrimmedsync() during index build and add unbuffered IO API\nThreads: Avoiding smgrimmedsync() during nbtree index builds",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "reset snapshot during index build"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 7,
+    "new_calls": 1,
+    "failed": 0,
+    "quotes_verified": 0,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 3
+  },
+  "precedent_cutoff": "2026-01-15",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "Only one objection from this angle. Matthias's design concerns from message #10 got answers in v8, which has no reply yet. P9 is a different idea, and its expression-function concern is handled by keeping an active snapshot."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "From the standards angle the surface is small. There is no new SQL syntax, no catalog object and no pg_dump impact. The amcanresetsnapshot field follows the pattern of amcanbuildparallel and keeps old behaviour for AMs that do not set it."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The proposal adds no new persistent or cross-node state: no on-disk format, WAL record, catalog, or protocol change, so pg_upgrade and standbys are unaffected. The one ABI change, the new amcanresetsnapshot field in IndexAmRoutine, defaults to the old behavior for out-of-core AMs in a major release. Whether the built index is complete rests on the validation scan, which belongs to the safety angle. The nbtree VACUUM bookkeeping invariant does not apply because no VACUUM-time code changes."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "No security objection found. Only the table owner can run the build, and the patch adds no privilege, role, or view, and does not let a user see or do more than before. Expression and opclass functions still run as the table owner. A user can set the GUCs in their own session, but this only changes the cost of that user's own build, and -1 keeps today's xmin pinning. Unique-check correctness belongs to other angles."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "The nbtree invariant about VACUUM-time bookkeeping does not apply, because this proposal changes index builds and not VACUUM."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "Postgres has no existing feature, setting or extension that lets xmin advance during a concurrent index build; the PG14 mechanism was reverted [P1]. Workarounds such as smaller partitions or plain CREATE INDEX either do not give the same result or block writes, and snapshot handling inside the build cannot be done from an extension."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "Demand for the goal is established: a PG14 feature with the same aim was committed and reverted only for safety, and a 2017 attempt had the same aim. The open point is how much of that demand this partial fix serves."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 7,
+      "new_survived": 6,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [
+    "invariants/nbtree.md"
+  ],
+  "warnings": [
+    "attachment limit (8) reached; v1-0004-Support-snapshot-resets-in-concurrent-builds-of-u.patch not read",
+    "attachment limit (8) reached; v1-0002-Reset-snapshots-periodically-in-non-unique.patch not read",
+    "attachment limit (8) reached; v1-0003-Support-snapshot-resets-in-parallel-concurrent-in.patch not read",
+    "synthesis said NEEDS-COMMITTER-EYES but listed a level 1b objection (maintenance-fit-2); changed to NEEDS-DESIGN-DISCUSSION"
+  ],
+  "tone_lint": {
+    "fields_checked": 87,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 12,
+    "wall_ms": 172329,
+    "cost_usd": 2.8949228,
+    "dry_run": false
+  }
+}

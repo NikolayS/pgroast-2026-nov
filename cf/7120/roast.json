@@ -1,0 +1,1765 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:21:29.279Z",
+  "input": {
+    "arg": "7120",
+    "cf": {
+      "id": 7120,
+      "url": "https://commitfest.postgresql.org/patch/7120/",
+      "title": "Small fixes needed by high-availability tools",
+      "status": "Needs review",
+      "authors": "Andrey Borodin (x4m)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/0B44E464-BA62-4056-9465-3320DD2D0302%40yandex-team.ru",
+    "subject": "Small fixes needed by high-availability tools",
+    "thread_start": "2025-05-02T13:00:29Z",
+    "messages_read": 25,
+    "messages_total": 25,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v3-0001-Prevent-early-data-access-after-crash-recovery.patch",
+      "v3-0002-Optionally-wait-for-synchronous-replication-after.patch",
+      "0001-Allow-checking-standby-sync-before-making-data-visib.patch",
+      "0002-Do-not-allow-to-cancel-locally-written-transaction.patch",
+      "0003-Allow-reading-LSN-written-by-walreciever-but-not-flu.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "Demand is shown and both settings are off by default, so level 1 does not stop the proposal. The design is still open at level 2. Session termination still releases a non-replicated commit on a running primary (replication-ondisk-1), and the author's own question of GUC, hook or both has no reply (maintenance-fit-1). The WAL sender exemption (security-1) and the reason the gate must live in core (already-exists-1) also need an answer before code review.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Gate connections after recovery and block cancel of sync-rep waits",
+    "problem": "After a crash or restart, a primary can show locally committed WAL that never reached the synchronous standbys, and a later failover loses it. A query cancel during a synchronous replication wait also makes non-replicated changes visible, so a retry appears to succeed. The target users are HA tools and applications built on quorum replication.",
+    "proposed_design": "v3 adds two GUCs, both off by default. post_recovery_sync_level rejects ordinary connections after startup until the end-of-recovery WAL location reaches the synchronous standbys at the set level; WAL senders may connect, and an empty synchronous_standby_names bypasses the gate. synchronous_replication_wait_on_query_cancel makes the backend report but ignore query cancel during a sync-rep wait, while session termination and shutdown still end it.",
+    "user_visible_surface": [
+      "GUC post_recovery_sync_level (enum: remote_apply, on, remote_write, local, off), settable per role or database.",
+      "GUC synchronous_replication_wait_on_query_cancel (boolean, postgresql.conf or command line only).",
+      "New FATAL with ERRCODE_CANNOT_CONNECT_NOW for ordinary connections while the post-recovery check is pending.",
+      "New log message \"post-recovery synchronization wait skipped\" when synchronous_standby_names is empty.",
+      "Changed cancel behaviour in sync-rep wait: pg_cancel_backend() and statement_timeout no longer end the wait when the GUC is on."
+    ],
+    "author_claims": [
+      "Cancelling a sync-rep wait exposes non-replicated data, which retry patterns such as insert ... on conflict do nothing turn into data loss.",
+      "The cancel fix is incomplete without the post-recovery connection gate.",
+      "Both features keep existing behaviour by default.",
+      "A GUC gives a simple cluster-wide policy without a preload library; a hook would need a narrow API because it runs after local commit with interrupts held.",
+      "The problem has been discussed for almost seven years; a reply says cloud providers have applied a similar patch for over four years."
+    ],
+    "thread_state": "The written-LSN function moved to its own thread and was dropped in v3 after Fujii Masao showed unflushed write positions are unreliable. João Rito tested v3 and raised four issues, and the author's question of GUC, hook or both has no answer yet.",
+    "unclear": [
+      "The gate also applies after a clean restart and after promotion, but the commit message and docs say \"after crash recovery\".",
+      "pg_isready and PQping report a gated primary as accepting connections; the patch does not address this.",
+      "The docs do not say that statement_timeout is ignored during the sync-rep wait when the cancel GUC is on.",
+      "No reply addresses Matthias van de Meent's CSN-based visibility alternative or Amit Kapila's system-wide flag idea against v3.",
+      "The material does not say whether an empty synchronous_standby_names bypass is safe if an HA tool clears it during failover."
+    ],
+    "search_queries": [
+      "synchronous replication query cancel",
+      "cancel wait for synchronous commit",
+      "prevent cancel locally committed transaction",
+      "sync rep wait interrupt",
+      "connections after crash recovery standby quorum",
+      "startup synchronous standby level",
+      "synchronous replication data loss failover",
+      "pg_last_wal_receive_lsn write lsn"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P3",
+      "source_id": "cf:2402",
+      "title": "GUC to disable cancellation of awaiting for synchronous replication",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/2402/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/C1F7905E-5DB2-497D-ABCC-E14D4DEE506C@yandex-team.ru"
+      ],
+      "date": "2021-10-06",
+      "first_date": "2019-12-20",
+      "who_objected": "Michael Paquier, Fujii Masao",
+      "quote": "I don't think that preventing a backend from being canceled during waiting for sync rep actually addresses your issue.",
+      "quote_url": "https://www.postgresql.org/message-id/4f8d54c9-6f18-23d5-c4de-9d6656d3a408%40oss.nttdata.com",
+      "enriched": true,
+      "reason": "Reviewers said that blocking cancel does not close the hole, because a server restart or a backend crash also exposes locally committed data that no standby has received. Fujii Masao suggested making new snapshots wait for replication instead, and Andrey Borodin rejected that because of its latency cost. Aleksander Alekseev called the patch a workaround and asked for a community decision, and the visible messages show no agreement before the entry was returned.",
+      "relation": "same_idea",
+      "what_is_different": "v3 pairs the cancel GUC with a post-recovery connection gate, which covers the restart and crash case that reviewers raised there."
+    },
+    {
+      "precedent_id": "P4",
+      "source_id": "cf:3212",
+      "title": "GUC to prevent cancellation while waiting for sync rep",
+      "kind": "cf",
+      "status": "Withdrawn",
+      "url": "https://commitfest.postgresql.org/patch/3212/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/cac4b9df-92c6-77aa-687b-18b86cb13728@stratox.cz"
+      ],
+      "date": "2021-07-13",
+      "first_date": "2021-04-19",
+      "who_objected": "Andrey Borodin",
+      "quote": "OK. I don't think ignoring SIGTERM in the way my patch does it is a great solution, and it's not getting much support, so I think I'll back away from that idea.",
+      "quote_url": "https://www.postgresql.org/message-id/c162f1d08a04c78c5127b37fcfc02527900a8029.camel%40j-davis.com",
+      "enriched": true,
+      "reason": "The author withdrew it. Andrey Borodin objected to ignoring termination, because HA tools stop the instance with SIGTERM and the alternatives, kill -9 or SIGABRT, give slower recovery or core dumps; he asked for separate GUCs for cancel and termination. The author judged that ignoring SIGTERM was not a good solution and had little support, and withdrew because a second patch for the same problem existed.",
+      "relation": "similar_idea",
+      "what_is_different": "v3 ignores only query cancel and still honors session termination and shutdown, so it avoids the SIGTERM objection that led to that withdrawal."
+    },
+    {
+      "precedent_id": "P1",
+      "source_id": "cf:3665",
+      "title": "An attempt to avoid locally-committed-but-not-replicated-to-standby-transactions in synchronous replication",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/3665/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACUrOB59QaE6=jF2cFAyv1MR7fzD8tr4YM5+OwEYG1SNzA@mail.gmail.com"
+      ],
+      "date": "2023-08-02",
+      "first_date": "2022-04-25",
+      "who_objected": "Daniel Gustafsson, Laurenz Albe",
+      "quote": "Since there hasn't been any updates for the past six months, and the patch hasn't applied for a few months, I am marking this returned with feedback for now.",
+      "quote_url": "https://www.postgresql.org/message-id/D52A9851-E4C5-40CD-98E5-F6BC0417ED0F%40yesql.se",
+      "enriched": true,
+      "reason": "The entry was returned with feedback because the patch received no update for six months and no longer applied. The design was still open at the last author message. The author could not reliably detect, at restart, that a backend died while waiting for the sync replication ack, and the alternative of always waiting could keep the primary down. Earlier, Laurenz Albe objected that the approach still left some cases of transactions committed locally but not on the standby.",
+      "relation": "similar_idea",
+      "what_is_different": "v3 blocks cancel for the whole wait instead of a naptime, and its gate applies after every startup, so it does not need to detect a backend that died during the wait."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Session termination still exposes unreplicated commits without any restart",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A session killer, or a pooler that drops server connections on timeout, terminates a backend stuck in the sync-rep wait while the standby is unreachable. The local commit becomes visible, a retry sees the row and succeeds, and the primary keeps running, so the post-recovery gate never fires. A later failover loses the row.",
+      "argument": "v3 keeps ProcDiePending honored on purpose (message #24), which follows the SIGTERM concern recorded in [P4]. The gate only covers the window after postmaster start. Message #14 says the needed LSN is the end-of-recovery LSN, but that holds only for restarts. Amit Kapila's system-wide LSN idea (messages #4, #10, #13) covers the no-restart case and has no answer against v3, so the claim that the two patches together close the hole needs to be narrowed or defended.",
+      "precedent_ids": [
+        "P4",
+        "P3"
+      ],
+      "thread_message_refs": [
+        4,
+        10,
+        13,
+        14,
+        24
+      ],
+      "author_must_show": "After pg_terminate_backend() ends a sync-rep wait on a primary that keeps running, what stops other sessions from reading that unreplicated commit?",
+      "precedents": [
+        {
+          "id": "P4",
+          "title": "GUC to prevent cancellation while waiting for sync rep",
+          "url": "https://commitfest.postgresql.org/patch/3212/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/cac4b9df-92c6-77aa-687b-18b86cb13728@stratox.cz"
+          ],
+          "date": "2021-07-13",
+          "status": "Withdrawn"
+        },
+        {
+          "id": "P3",
+          "title": "GUC to disable cancellation of awaiting for synchronous replication",
+          "url": "https://commitfest.postgresql.org/patch/2402/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/C1F7905E-5DB2-497D-ABCC-E14D4DEE506C@yandex-team.ru"
+          ],
+          "date": "2021-10-06",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "Amit Kapila",
+          "date": "2025-05-12T09:40:42Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1L9fMPfqabjEBc5Ldro9rhKz7pMdQ4LMx1vzHOHS8W%3Dug%40mail.gmail.com"
+        },
+        {
+          "index": 10,
+          "from": "Mihail Nikalayeu",
+          "date": "2025-05-13T20:44:24Z",
+          "url": "https://www.postgresql.org/message-id/CADzfLwWLUXXQ%3DrYg2L6ZREbBu%2BzsZSBXFk0rJoAPvXKV9%3D9%2B9Q%40mail.gmail.com"
+        },
+        {
+          "index": 13,
+          "from": "Amit Kapila",
+          "date": "2025-05-14T09:33:33Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1JE0XDmn91H%3DAHrfPXghSJFK_NGY%2BP8HqCtvWN7nOwAsg%40mail.gmail.com"
+        },
+        {
+          "index": 14,
+          "from": "Andrey Borodin",
+          "date": "2025-05-14T18:13:58Z",
+          "url": "https://www.postgresql.org/message-id/1591B71B-3BC7-4F1F-BFAF-69C51E144299%40yandex-team.ru"
+        },
+        {
+          "index": 24,
+          "from": "Andrey Borodin",
+          "date": "2026-07-30T14:17:24Z",
+          "url": "https://www.postgresql.org/message-id/7FBC2251-A9A5-4B1C-944B-C575DE984C18%40yandex-team.ru"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #24 keeps ProcDiePending unchanged, and the gate acts only after a postmaster start. No message in the thread says what protects a commit released by pg_terminate_backend() on a primary that keeps running.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Two permanent GUCs fixed while the GUC, hook or snapshot choice is open",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "new_guc",
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "HA tools write synchronous_replication_wait_on_query_cancel and post_recovery_sync_level into their configs once a release ships them. Later the project chooses a hook or LSN-based snapshot visibility for the same problem. Both GUCs must then be kept, documented and tested next to the new mechanism, or their removal breaks those configs at upgrade.",
+      "argument": "Message #24 asks whether this should be a GUC, a hook or both, and no reply in the thread answers it. Messages #2 and #7 propose making visibility depend on replication state, and message #4 proposes a system-wide flag. No reply weighs these against v3. A committer would likely want that design choice settled before the project commits to two GUC names in the commit path.",
+      "precedent_ids": [
+        "P3"
+      ],
+      "thread_message_refs": [
+        2,
+        4,
+        7,
+        24
+      ],
+      "author_must_show": "If a hook or LSN-based snapshot visibility is added later, which of these two GUCs stays useful, and which becomes a compatibility burden?",
+      "precedents": [
+        {
+          "id": "P3",
+          "title": "GUC to disable cancellation of awaiting for synchronous replication",
+          "url": "https://commitfest.postgresql.org/patch/2402/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/C1F7905E-5DB2-497D-ABCC-E14D4DEE506C@yandex-team.ru"
+          ],
+          "date": "2021-10-06",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Matthias van de Meent",
+          "date": "2025-05-06T16:00:16Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2Wg_Deq0XaEBTwucFc2UuiWT55vCwXyrZMf4GXX_9H4RWw%40mail.gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "Amit Kapila",
+          "date": "2025-05-12T09:40:42Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1L9fMPfqabjEBc5Ldro9rhKz7pMdQ4LMx1vzHOHS8W%3Dug%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Ants Aasma",
+          "date": "2025-05-12T18:18:05Z",
+          "url": "https://www.postgresql.org/message-id/CANwKhkMjV%3D_BE3Ee2JNZeSMQRMwcVoSfNzv33U%3DFGwqzqG1UwA%40mail.gmail.com"
+        },
+        {
+          "index": 24,
+          "from": "Andrey Borodin",
+          "date": "2026-07-30T14:17:24Z",
+          "url": "https://www.postgresql.org/message-id/7FBC2251-A9A5-4B1C-944B-C575DE984C18%40yandex-team.ru"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #5, #14 and #15 do answer the CSN and flag ideas, so that part is overstated, and [P3] must not be used as support. The GUC-or-hook question in message #24 is the author's own and has no reply yet.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "WAL sender exemption may let database-connected replication roles read gated data",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A role with the REPLICATION attribute connects with replication=database while the gate is closed after a restart. It runs SQL in walsender mode, or a logical subscriber decodes changes, and sees data a later failover loses. The operator finds out only when the subscriber or reporting job has rows the new primary lacks.",
+      "argument": "The commit message for 0001 and the docs say \"WAL sender connections are allowed while the check is pending\" and do not separate physical from logical WAL senders. A logical WAL sender is bound to a database, can run ordinary SQL, and streams decoded commits to subscribers. If the exemption covers it, any role with REPLICATION and a matching pg_hba entry passes the gate, which defeats the stated goal that no client sees unreplicated data. Physical standbys are the only connections that need the exemption so that they can catch up.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        24,
+        25
+      ],
+      "author_must_show": "Does the exemption cover logical, database-connected WAL senders, and if so, why should they see or decode data the gate keeps from ordinary sessions?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 24,
+          "from": "Andrey Borodin",
+          "date": "2026-07-30T14:17:24Z",
+          "url": "https://www.postgresql.org/message-id/7FBC2251-A9A5-4B1C-944B-C575DE984C18%40yandex-team.ru"
+        },
+        {
+          "index": 25,
+          "from": "João Rito",
+          "date": "2026-11-11T04:11:13Z",
+          "url": "https://www.postgresql.org/message-id/CADMs5OMjJY-oOQ%3D5qR_2WRyvzspAp3HuCx%3DyLKKtJ_OJFDYuvQ%40mail.gmail.com"
+        }
+      ],
+      "id": "security-1",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The docs and commit message exempt \"WAL sender connections\" without separating physical from database-connected ones, and a replication=database connection can run SQL. Only the code can show whether v3 limits the exemption, and the prose does not say so.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "pg_isready and PQping report a gated primary as healthy",
+      "level": "2",
+      "rubric_item": 13,
+      "category": "design",
+      "touch_points": [
+        "wire_protocol",
+        "psql_ux"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An orchestrator restarts the primary while its standby is down, and its health check uses pg_isready. The check returns exit 0, so the tool routes traffic to the primary. Every application connection then fails with the new FATAL, and the operator learns this only from application errors.",
+      "argument": "Message #25 found that the gate raises its FATAL after authentication, and internal_ping() returns PQPING_OK once auth_req_received is set. The proposal targets HA tools, and those tools often use pg_isready or PQping as their readiness check. A client-visible state that existing tools read as \"ready\" is a contract problem. The thread has no answer yet on whether to fix this in libpq or in the docs.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        25
+      ],
+      "author_must_show": "Should a gated primary report PQPING_REJECT (or similar) to pg_isready, and if libpq stays unchanged, how should HA tools detect the gated state?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 25,
+          "from": "João Rito",
+          "date": "2026-11-11T04:11:13Z",
+          "url": "https://www.postgresql.org/message-id/CADMs5OMjJY-oOQ%3D5qR_2WRyvzspAp3HuCx%3DyLKKtJ_OJFDYuvQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #25 reproduced pg_isready returning exit 0 while every ordinary connection got the new FATAL. The thread has no reply yet, and HA tools are the users this proposal names.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Startup gate can be built on the existing ClientAuthentication_hook",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "does_not_fit",
+      "touch_points": [
+        "does_not_fit",
+        "new_guc",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Core gains post_recovery_sync_level, a new FATAL path in InitPostgres and per-level shared state that every later change to startup and syncrep must keep correct. A preload module using ClientAuthentication_hook could reject non-walsender connections until the synchronous standbys pass the end-of-recovery LSN. HA vendors who want a different policy still need such a module.",
+      "argument": "ClientAuthentication_hook already runs for each new connection, and auth_delay shows a module can delay or reject sessions there. The module can record an LSN at or above end of recovery and compare it with the walsender state that syncrep keeps in shared memory. Message #24 argues for a GUC because it needs no preload library. That is convenience. The material does not show the job is impossible outside core.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        24,
+        25
+      ],
+      "author_must_show": "Which part of the post-recovery gate cannot be done in a preload module using ClientAuthentication_hook, and why must that part live in core?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 24,
+          "from": "Andrey Borodin",
+          "date": "2026-07-30T14:17:24Z",
+          "url": "https://www.postgresql.org/message-id/7FBC2251-A9A5-4B1C-944B-C575DE984C18%40yandex-team.ru"
+        },
+        {
+          "index": 25,
+          "from": "João Rito",
+          "date": "2026-11-11T04:11:13Z",
+          "url": "https://www.postgresql.org/message-id/CADMs5OMjJY-oOQ%3D5qR_2WRyvzspAp3HuCx%3DyLKKtJ_OJFDYuvQ%40mail.gmail.com"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #24 gives a reason against a hook only for the cancel path, which runs after local commit with interrupts held. The thread does not say which state the connection gate needs that a preload module using ClientAuthentication_hook cannot read.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "Cancel GUC silently disables statement_timeout and driver query timeouts",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "new_guc",
+      "touch_points": [
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator enables synchronous_replication_wait_on_query_cancel cluster-wide, and later the sync standby goes away. A JDBC application with queryTimeout, or a session with statement_timeout, now blocks at commit with no error until someone changes synchronous_standby_names. Its connection pool runs out, and the application team finds no message explaining why.",
+      "argument": "The GUC is postgresql.conf-only, so it changes statement_timeout and cancel semantics for every application at once, and no application can opt out. Message #25 saw no client message after 4 seconds with statement_timeout = 500ms, and the doc hunk does not mention timeouts. The author argues that a GUC is a simpler policy than a hook (message #24). That does not address applications that treat statement_timeout as their last safety net.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        24,
+        25
+      ],
+      "author_must_show": "Which timeouts and cancel sources stop working when the GUC is on, and how is an application told that its cancel was ignored and not lost?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 24,
+          "from": "Andrey Borodin",
+          "date": "2026-07-30T14:17:24Z",
+          "url": "https://www.postgresql.org/message-id/7FBC2251-A9A5-4B1C-944B-C575DE984C18%40yandex-team.ru"
+        },
+        {
+          "index": 25,
+          "from": "João Rito",
+          "date": "2026-11-11T04:11:13Z",
+          "url": "https://www.postgresql.org/message-id/CADMs5OMjJY-oOQ%3D5qR_2WRyvzspAp3HuCx%3DyLKKtJ_OJFDYuvQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Ignoring cancel from statement_timeout is the purpose of the GUC, and operators opt in, so the pool scenario is a chosen trade. But message #25 shows pg_cancel_backend() gives a WARNING while a statement_timeout gives the client no message, and v3 does not explain that difference.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "Gate applies on every startup and promotion, not only after crash recovery",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator stops a primary with pg_ctl stop -m fast for a minor upgrade while one standby is under maintenance. After the restart, no application can connect. The operator reads the documentation, which mentions crash recovery only, and does not expect a planned restart or a promotion to be gated.",
+      "argument": "Message #25 confirmed that clean restarts and newly promoted standbys are gated. The commit message, the test comment and the docs say \"after crash recovery\", and the GUC name says \"post_recovery\". If the broader behaviour is intended, the name and the documented contract do not describe it. Operators who enable the setting for crash safety will meet it during routine restarts.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        25
+      ],
+      "author_must_show": "Is gating after a clean shutdown and after promotion intended, and if so, will the setting's name and documentation say \"after startup or promotion\"?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 25,
+          "from": "João Rito",
+          "date": "2026-11-11T04:11:13Z",
+          "url": "https://www.postgresql.org/message-id/CADMs5OMjJY-oOQ%3D5qR_2WRyvzspAp3HuCx%3DyLKKtJ_OJFDYuvQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The config.sgml hunk says \"after server startup\", so the objection overstates the documentation gap. The commit message says \"after crash recovery\" and nothing mentions promotion, so whether gating a newly promoted primary is intended still needs an answer.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "HA tools can already gate startup with pg_hba.conf and restart_after_crash",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "desirability",
+      "touch_points": [
+        "does_not_fit",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An HA agent sets restart_after_crash = off, so it controls every start. It then starts the old primary with a pg_hba.conf that allows only replication and its own role. It reloads a normal pg_hba.conf once pg_stat_replication shows the standbys past pg_current_wal_lsn(). This gives the same protection as the new GUC, so the GUC adds a second way to do the same job.",
+      "argument": "The target users named in the brief are HA tools, and those tools already rewrite configuration and decide when a node may serve clients. Message #25 shows the new gate needs a separate exempt role for pg_rewind and monitoring, and pg_isready reports a gated server as healthy. So HA tools still need to configure things around the GUC. The proposal does not say which failure the pg_hba.conf approach cannot handle.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        24,
+        25
+      ],
+      "author_must_show": "Which failure does a restrictive pg_hba.conf plus restart_after_crash = off, driven by the HA agent, fail to prevent that post_recovery_sync_level prevents?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 24,
+          "from": "Andrey Borodin",
+          "date": "2026-07-30T14:17:24Z",
+          "url": "https://www.postgresql.org/message-id/7FBC2251-A9A5-4B1C-944B-C575DE984C18%40yandex-team.ru"
+        },
+        {
+          "index": 25,
+          "from": "João Rito",
+          "date": "2026-11-11T04:11:13Z",
+          "url": "https://www.postgresql.org/message-id/CADMs5OMjJY-oOQ%3D5qR_2WRyvzspAp3HuCx%3DyLKKtJ_OJFDYuvQ%40mail.gmail.com"
+        }
+      ],
+      "id": "already-exists-2",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "An HA agent that controls every start and promotion can hold clients out with pg_hba.conf until pg_stat_replication shows the standbys caught up. The thread does not name a case this approach misses, and the reported use by cloud providers concerns the cancel patch.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Session termination still exposes non-replicated commits, the gap that stopped earlier attempts",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "prior_rejection",
+      "touch_points": [
+        "wal_replication",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An admin script or pooler runs pg_terminate_backend() on a session stuck in a sync-rep wait with the cancel GUC on. The backend exits, its locally committed row becomes visible, and a retry by another session succeeds. A failover then loses the row, and the operator finds out only when the data is missing.",
+      "argument": "In [P3], reviewers said blocking cancel does not close the hole because other paths also expose locally committed data. v3's post-recovery gate covers restart, but message #24 keeps ProcDiePending unchanged, so termination still ends the wait without a restart. [P4] shows that ignoring SIGTERM was dropped for lack of support, so this exit cannot be closed inside SyncRepWaitForLSN. Amit Kapila's flag idea (message #4, refined in messages #10 and #13) and Matthias van de Meent's CSN idea (message #2) target that path, and v3 does not answer either.",
+      "precedent_ids": [
+        "P3",
+        "P4"
+      ],
+      "thread_message_refs": [
+        2,
+        4,
+        10,
+        13,
+        24
+      ],
+      "author_must_show": "After pg_terminate_backend() ends a sync-rep wait with no restart, what stops other sessions from reading that commit before a standby has it?",
+      "precedents": [
+        {
+          "id": "P3",
+          "title": "GUC to disable cancellation of awaiting for synchronous replication",
+          "url": "https://commitfest.postgresql.org/patch/2402/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/C1F7905E-5DB2-497D-ABCC-E14D4DEE506C@yandex-team.ru"
+          ],
+          "date": "2021-10-06",
+          "status": "Returned with feedback"
+        },
+        {
+          "id": "P4",
+          "title": "GUC to prevent cancellation while waiting for sync rep",
+          "url": "https://commitfest.postgresql.org/patch/3212/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/cac4b9df-92c6-77aa-687b-18b86cb13728@stratox.cz"
+          ],
+          "date": "2021-07-13",
+          "status": "Withdrawn"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Matthias van de Meent",
+          "date": "2025-05-06T16:00:16Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2Wg_Deq0XaEBTwucFc2UuiWT55vCwXyrZMf4GXX_9H4RWw%40mail.gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "Amit Kapila",
+          "date": "2025-05-12T09:40:42Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1L9fMPfqabjEBc5Ldro9rhKz7pMdQ4LMx1vzHOHS8W%3Dug%40mail.gmail.com"
+        },
+        {
+          "index": 10,
+          "from": "Mihail Nikalayeu",
+          "date": "2025-05-13T20:44:24Z",
+          "url": "https://www.postgresql.org/message-id/CADzfLwWLUXXQ%3DrYg2L6ZREbBu%2BzsZSBXFk0rJoAPvXKV9%3D9%2B9Q%40mail.gmail.com"
+        },
+        {
+          "index": 13,
+          "from": "Amit Kapila",
+          "date": "2025-05-14T09:33:33Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1JE0XDmn91H%3DAHrfPXghSJFK_NGY%2BP8HqCtvWN7nOwAsg%40mail.gmail.com"
+        },
+        {
+          "index": 24,
+          "from": "Andrey Borodin",
+          "date": "2026-07-30T14:17:24Z",
+          "url": "https://www.postgresql.org/message-id/7FBC2251-A9A5-4B1C-944B-C575DE984C18%40yandex-team.ru"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1, which states the no-restart case more exactly. The gap recorded in [P3] was restart and backend crash, which the v3 gate covers, so [P3] does not support the termination point.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Logical WAL senders pass the gate and can stream unreplicated commits",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After a crash restart with the synchronous standby down, a logical replication or CDC walsender connects, because walsenders are exempt. It decodes transactions up to the end-of-recovery LSN and sends them to a subscriber. The HA tool then promotes the standby, which lacks those transactions, and the subscriber now holds rows the new primary never had.",
+      "argument": "The exemption exists so that physical standbys can catch up (message #24, v3-0001 docs), but the proposal does not separate physical from logical walsenders. The stated invariant is that no client sees data that is not yet known to be replicated, and a logical subscriber is such a client. The proposal does not mention synchronized_standby_slots, which already covers this case for logical slots, or say whether operators must set it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        24
+      ],
+      "author_must_show": "While the post-recovery check is pending, do logical walsenders wait for the end-of-recovery LSN to reach the synchronous standbys, or must operators set synchronized_standby_slots?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 24,
+          "from": "Andrey Borodin",
+          "date": "2026-07-30T14:17:24Z",
+          "url": "https://www.postgresql.org/message-id/7FBC2251-A9A5-4B1C-944B-C575DE984C18%40yandex-team.ru"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of security-1. The streaming part also exists today without the gate: logical walsenders do not wait for synchronous standbys unless synchronized_standby_slots is set.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Empty synchronous_standby_names bypass opens the gate when HA tools clear it",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An HA tool configured to favour availability empties synchronous_standby_names when no synchronous standby is connected. After a primary crash it does this during startup, the gate opens, and clients read commits the standby never got. If that standby is promoted later, those commits are lost.",
+      "argument": "The docs make an empty synchronous_standby_names an explicit bypass, and message #25 confirms that a reload releases the gate. Several HA tools change this setting on their own when standbys disappear, so a routine action by the tool turns off the protection, with only a log line as a trace. A separate operator switch would keep the bypass from being tied to a setting that HA tools already manage.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        24,
+        25
+      ],
+      "author_must_show": "How does the gate tell an operator's deliberate bypass apart from an HA tool that empties synchronous_standby_names automatically when standbys drop out?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 24,
+          "from": "Andrey Borodin",
+          "date": "2026-07-30T14:17:24Z",
+          "url": "https://www.postgresql.org/message-id/7FBC2251-A9A5-4B1C-944B-C575DE984C18%40yandex-team.ru"
+        },
+        {
+          "index": 25,
+          "from": "João Rito",
+          "date": "2026-11-11T04:11:13Z",
+          "url": "https://www.postgresql.org/message-id/CADMs5OMjJY-oOQ%3D5qR_2WRyvzspAp3HuCx%3DyLKKtJ_OJFDYuvQ%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-3",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "Emptying synchronous_standby_names already releases every sync-rep wait today, so a tool that clears it has chosen availability over durability for all commits. The gate follows that existing rule, and with an empty list there are no synchronous standbys to wait for.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Connection gate does not say why ClientAuthentication_hook is not enough",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "does_not_fit",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Core gains a new rejection point in InitPostgres and a per-role, per-level state tracked under SyncRepLock. Every later change to connection startup or to sync-rep state must keep that state correct. A preload library that rejects connections from the existing authentication hook could carry the same policy outside core.",
+      "argument": "Message #24 explains why a hook would be hard for the cancel path, since it runs after local commit with interrupts held. That reason does not cover the startup gate, which runs at connection time. The proposal does not say which core state an extension cannot reach, for example the end-of-recovery LSN or the per-level completion state. Without that, a committer would likely ask why the gate is not an extension built on a small exported accessor.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        24
+      ],
+      "author_must_show": "Which state needed by the startup gate cannot be read from an extension using ClientAuthentication_hook, and would exporting it be smaller than the GUC?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 24,
+          "from": "Andrey Borodin",
+          "date": "2026-07-30T14:17:24Z",
+          "url": "https://www.postgresql.org/message-id/7FBC2251-A9A5-4B1C-944B-C575DE984C18%40yandex-team.ru"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of already-exists-1, which names the hook, the auth_delay example and the shared state a module would read.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Gated primary looks healthy to pg_isready and PQping",
+      "level": "2",
+      "rubric_item": 13,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A primary restarts while its synchronous standby is down. pg_isready and PQping return \"accepting connections\" while every ordinary session gets the new FATAL. An orchestrator keeps routing traffic to a node that serves no one, and operators learn about it from application errors.",
+      "argument": "Message #25 traced this to internal_ping() in fe-connect.c, which returns PQPING_OK once authentication starts. The gate raises its error later, so that check never sees ERRCODE_CANNOT_CONNECT_NOW. The feature targets HA tools, and those tools often use these checks for health, so this gap affects the users the feature is for. The patch does not yet address it in libpq or in the docs.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        25
+      ],
+      "author_must_show": "How should pg_isready and PQping report a primary that is waiting on post_recovery_sync_level, and does that need a libpq change?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 25,
+          "from": "João Rito",
+          "date": "2026-11-11T04:11:13Z",
+          "url": "https://www.postgresql.org/message-id/CADMs5OMjJY-oOQ%3D5qR_2WRyvzspAp3HuCx%3DyLKKtJ_OJFDYuvQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "Both patches change synchronous replication waits in syncrep.c and add end-of-recovery state in xlog.c."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": true,
+      "reason": "see objection standards-compat-1: pg_isready and PQping report a gated primary as healthy"
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "Message #24 asks whether to add a hook, and the patches change syncrep.h and walsender_private.h."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": true,
+      "reason": "Adds post_recovery_sync_level and synchronous_replication_wait_on_query_cancel."
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": true,
+      "reason": "post_recovery_sync_level can be set per role or database, so dumps of role and database settings must carry it."
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": true,
+      "reason": "see objection standards-compat-1: pg_isready and PQping report a gated primary as healthy"
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "WAL sender connections pass the gate, and the gate level is settable per role with SET privilege."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Two permanent GUCs, a new FATAL path in InitPostgres and per-level shared state in syncrep."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "The gate adds a check to connection startup in postinit.c for every ordinary connection."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "The gate may be possible with ClientAuthentication_hook or with pg_hba.conf managed by the HA agent."
+    }
+  ],
+  "questions": [
+    "After pg_terminate_backend() ends a sync-rep wait on a primary that keeps running, what stops other sessions from reading that non-replicated commit?",
+    "If a hook or LSN-based snapshot visibility is added later, which of the two GUCs stays useful and which becomes a compatibility burden?",
+    "Does the WAL sender exemption cover logical, database-connected WAL senders, and if so, why may they read or decode data the gate keeps from ordinary sessions?",
+    "Which state does the post-recovery gate need that a preload module using ClientAuthentication_hook, or an HA agent managing pg_hba.conf, cannot reach?",
+    "Is gating after a clean restart and after promotion intended, and how should pg_isready and PQping report a gated primary?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "Needs a committer who knows synchronous replication and connection startup. Amit Kapila and Fujii Masao commented earlier in the thread, but only a tester has replied to v3.",
+    "liability": "Two GUC names that HA tools will write into configs, a new connection rejection path, and a durability claim that users will rely on during failover, for as long as the GUCs exist.",
+    "author_follow_up": "The author has pursued this problem since 2019 ([P3]), posted three versions here and moved the entry to the next CommitFest."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "fix design first",
+    "reason": "Users of quorum synchronous replication with HA tools report real data loss, and three authors have tried this fix. The patches are small but touch syncrep.c, xlog.c and postinit.c, and the termination path and the GUC-or-hook choice are open."
+  },
+  "self_advice": [],
+  "provisional_note": "Only 3 of 25 messages and no code were read. Whether v3 limits the WAL sender exemption to physical senders, and how the per-level shared state behaves on promotion, can only be checked in the code.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:3665",
+      "kind": "cf",
+      "title": "An attempt to avoid locally-committed-but-not-replicated-to-standby-transactions in synchronous replication",
+      "status": "Returned with feedback",
+      "date": "2023-08-02",
+      "first_date": "2022-04-25",
+      "url": "https://commitfest.postgresql.org/patch/3665/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACUrOB59QaE6=jF2cFAyv1MR7fzD8tr4YM5+OwEYG1SNzA@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "Daniel Gustafsson, Laurenz Albe",
+      "summary": "The patch adds a GUC, synchronous_replication_naptime_before_cancel, that makes a backend keep waiting for the sync standby ack for a set time before it handles a query cancel or proc die. A second part, not yet coded, would make the primary wait for sync standbys to catch up after a crash restart before it serves the locally committed transactions.",
+      "objection": "The entry was returned with feedback because the patch received no update for six months and no longer applied. The design was still open at the last author message. The author could not reliably detect, at restart, that a backend died while waiting for the sync replication ack, and the alternative of always waiting could keep the primary down. Earlier, Laurenz Albe objected that the approach still left some cases of transactions committed locally but not on the standby.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "synchronous replication query cancel",
+        "cancel wait for synchronous commit",
+        "prevent cancel locally committed transaction",
+        "sync rep wait interrupt",
+        "startup synchronous standby level",
+        "synchronous replication data loss failover"
+      ],
+      "from_hint": false,
+      "score": 0.666,
+      "enriched": true,
+      "key_quote": "Since there hasn't been any updates for the past six months, and the patch\nhasn't applied for a few months, I am marking this returned with feedback for\nnow.",
+      "quote_message_url": "https://www.postgresql.org/message-id/D52A9851-E4C5-40CD-98E5-F6BC0417ED0F%40yesql.se",
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:2676",
+      "kind": "cf",
+      "title": "Start WAL streaming as early as possible, without waiting for startup process to finish replaying existing WAL. This helps synchronous replication to resume quickly when significant replay lag has been built up.",
+      "status": "Returned with feedback",
+      "date": "2020-12-01",
+      "first_date": "2020-01-17",
+      "url": "https://commitfest.postgresql.org/patch/2676/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANXE4Tc3FNvZ_xAimempJWv_RH9pCvsZH7Yq93o1VuNLjUT-mQ@mail.gmail.com"
+      ],
+      "authors": "Asim Rama Praveen (apraveen), Hao Wu (hwu)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch starts the WAL receiver on a standby before the startup process finishes replaying WAL already in pg_wal, so synchronous commits on the primary are not held up by replay lag. A GUC, wal_receiver_start_condition, picks when the receiver starts, and the start LSN is the beginning of the most recently flushed segment, found by reading the first page of each segment in pg_wal.",
+      "objection": "Michael Paquier objected that the start LSN is roughly the consistency point, so streaming begins too early when many local segments, often copied by hand, are still left to replay. He also rejected the WAL page checks as hard to maintain, noted that the patch requests streaming when PrimaryConnInfo is not set, and suggested a WAL reader scan from the redo point to find the real end of local WAL. The entry stayed \"Waiting on Author\" after this review and was returned with feedback.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "synchronous replication query cancel",
+        "cancel wait for synchronous commit",
+        "sync rep wait interrupt",
+        "startup synchronous standby level",
+        "synchronous replication data loss failover"
+      ],
+      "from_hint": false,
+      "score": 0.544,
+      "enriched": true,
+      "key_quote": "Your patch would cause streaming to begin too early, and a manual copy of segments is not a rare thing as in some environments a bulk copy of segments can make the catchup of a standby faster than streaming.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20201120082106.GG8506%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:2402",
+      "kind": "cf",
+      "title": "GUC to disable cancellation of awaiting for synchronous replication",
+      "status": "Returned with feedback",
+      "date": "2021-10-06",
+      "first_date": "2019-12-20",
+      "url": "https://commitfest.postgresql.org/patch/2402/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/C1F7905E-5DB2-497D-ABCC-E14D4DEE506C@yandex-team.ru"
+      ],
+      "authors": "Andrey Borodin (x4m)",
+      "objectors": "Michael Paquier, Fujii Masao",
+      "summary": "The patch adds a GUC that stops a query cancel from ending the wait for synchronous replication, so a locally committed transaction keeps its locks and stays invisible until a standby confirms it. The goal is to stop clients, including drivers that send a cancel on a query timeout, from seeing data that a failover can lose.",
+      "objection": "Reviewers said that blocking cancel does not close the hole, because a server restart or a backend crash also exposes locally committed data that no standby has received. Fujii Masao suggested making new snapshots wait for replication instead, and Andrey Borodin rejected that because of its latency cost. Aleksander Alekseev called the patch a workaround and asked for a community decision, and the visible messages show no agreement before the entry was returned.",
+      "touch_points": [
+        "new GUC",
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "synchronous replication query cancel",
+        "cancel wait for synchronous commit",
+        "sync rep wait interrupt",
+        "synchronous replication data loss failover"
+      ],
+      "from_hint": false,
+      "score": 0.477,
+      "enriched": true,
+      "key_quote": "I don't think that preventing a backend from being canceled during waiting for sync rep actually addresses your issue.",
+      "quote_message_url": "https://www.postgresql.org/message-id/4f8d54c9-6f18-23d5-c4de-9d6656d3a408%40oss.nttdata.com",
+      "relevant": true
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:3212",
+      "kind": "cf",
+      "title": "GUC to prevent cancellation while waiting for sync rep",
+      "status": "Withdrawn",
+      "date": "2021-07-13",
+      "first_date": "2021-04-19",
+      "url": "https://commitfest.postgresql.org/patch/3212/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/cac4b9df-92c6-77aa-687b-18b86cb13728@stratox.cz"
+      ],
+      "authors": "Jeff Davis (jdavis)",
+      "objectors": "Andrey Borodin",
+      "summary": "The patch adds a GUC that makes SyncRepWaitForLSN keep waiting when a backend gets a cancel or termination request while it waits for sync rep. Other sessions then cannot see a commit that is not on the standby, and the administrator ends the wait by clearing synchronous_standby_names.",
+      "objection": "The author withdrew it. Andrey Borodin objected to ignoring termination, because HA tools stop the instance with SIGTERM and the alternatives, kill -9 or SIGABRT, give slower recovery or core dumps; he asked for separate GUCs for cancel and termination. The author judged that ignoring SIGTERM was not a good solution and had little support, and withdrew because a second patch for the same problem existed.",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "synchronous replication query cancel",
+        "cancel wait for synchronous commit",
+        "prevent cancel locally committed transaction",
+        "sync rep wait interrupt"
+      ],
+      "from_hint": false,
+      "score": 0.468,
+      "enriched": true,
+      "key_quote": "OK. I don't think ignoring SIGTERM in the way my patch does it is a great solution, and it's not getting much support, so I think I'll back away from that idea.",
+      "quote_message_url": "https://www.postgresql.org/message-id/c162f1d08a04c78c5127b37fcfc02527900a8029.camel%40j-davis.com",
+      "relevant": true
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:696",
+      "kind": "cf",
+      "title": "Quorum commit for multiple synchronous replication",
+      "status": "Returned with feedback",
+      "date": "2016-10-02",
+      "first_date": "2016-08-03",
+      "url": "https://commitfest.postgresql.org/patch/696/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAD21AoAACi9NeC_ecm+Vahm+MMA6nYh=Kqs3KB3np+MBOS_gZg@mail.gmail.com"
+      ],
+      "authors": "Masahiko Sawada (masahikosawada)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch adds quorum commit to synchronous replication through a new 'ANY k (n1, n2, ...)' form of synchronous_standby_names, where the primary waits for acknowledgement from any k of the listed standbys. A later version also adds 'FIRST k (...)' for the existing priority method and makes the bare 'k (...)' form mean quorum.",
+      "objection": "Michael Paquier returned the patch with feedback at the end of the commitfest because it still needed polishing after his review. His review covered the documentation wording, the case-insensitive flex switch that would make standby names match regardless of case, dead code and unclear comments. The design itself was not rejected, and he invited the author to move it to the next commitfest with a new patch.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "synchronous replication query cancel",
+        "cancel wait for synchronous commit",
+        "sync rep wait interrupt",
+        "connections after crash recovery standby quorum",
+        "synchronous replication data loss failover"
+      ],
+      "from_hint": false,
+      "score": 0.44,
+      "enriched": true,
+      "key_quote": "Returned with feedback for now. This just needs polishing so feel free\nto move it to the next CF once you have a new patch.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB7nPqTxxP2Tx-74xkdjjKithYcZ0FvaNZxd%2BUai-hhfeKj5%3DA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:3393",
+      "kind": "cf",
+      "title": "Synchronize logical replication slots from primary to standby",
+      "status": "Returned with feedback",
+      "date": "2022-02-18",
+      "first_date": "2021-10-31",
+      "url": "https://commitfest.postgresql.org/patch/3393/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/514f6f2f-6833-4539-39f1-96cd1e011f23@enterprisedb.com"
+      ],
+      "authors": "Peter Eisentraut (petere)",
+      "objectors": "Andres Freund, James Coleman",
+      "summary": "A background worker on a physical standby periodically fetches logical replication slot information from the primary, so that after failover a logical subscriber finds up-to-date slots on the new primary. Later versions added synchronize_slot_names on the standby to pick which slots to sync, and standby_slot_names on the primary to hold logical replication back until the listed physical standbys catch up.",
+      "objection": "Andres Freund found that the patch breaks the catalog_xmin guarantee: row versions still needed for logical decoding on the standby can be removed. He said it needs a mechanism such as the \"Minimal logical decoding on standbys\" patch, which the author said was not near ready. Reviewers also objected to the blocking wait and the per-commit work added to reorderbuffer.c, and to the worker-per-database design tied to the logical replication launcher. The author listed these and an open configuration design as significant jobs still to do.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "synchronous replication query cancel",
+        "sync rep wait interrupt",
+        "startup synchronous standby level",
+        "synchronous replication data loss failover"
+      ],
+      "from_hint": false,
+      "score": 0.372,
+      "enriched": true,
+      "key_quote": "The patch as-is just breaks one of the fundamental guarantees necessary for logical decoding, that no rows versions can be removed that are still required for logical decoding (signalled via catalog_xmin).",
+      "quote_message_url": "https://www.postgresql.org/message-id/20220218222319.yozkbhren7vkjbi5%40alap3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:1683",
+      "kind": "cf",
+      "title": "Fix cancelled queries when hot_standby_feedback = on",
+      "status": "Returned with feedback",
+      "date": "2019-01-31",
+      "first_date": "2017-09-04",
+      "url": "https://commitfest.postgresql.org/patch/1683/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/c9374921e50a5e8fb1ecf04eb8c6ebc3@postgrespro.ru"
+      ],
+      "authors": "Ivan Kartyshov (fenimorkin)",
+      "objectors": "Tom Lane, Robert Haas",
+      "summary": "With hot_standby_feedback = on, standby queries still get cancelled when vacuum truncates a heap on the primary, because the AccessExclusiveLock taken for truncation is replayed on the standby. The final patch adds a new lock level, ACCESS EXCLUSIVE LOCAL, that vacuum uses for heap truncation and that is not WAL-logged, so standby queries must tolerate concurrent truncation.",
+      "objection": "Tom Lane showed that letting scans run during truncation leaves a race: concurrent scans can load to-be-truncated pages back into shared buffers before ftruncate, and reading past EOF on a standby can extend the relation. Alexander Korotkov agreed the patch had to be revised and sketched a new truncation design, but Robert Haas called it fragile and doubted it prevents stale buffers from being taken as valid. No new version followed, the existing patch failed initdb, and the entry was closed.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "synchronous replication query cancel",
+        "prevent cancel locally committed transaction"
+      ],
+      "from_hint": false,
+      "score": 0.225,
+      "enriched": true,
+      "key_quote": "If we ever have valid-looking buffers in shared_buffers after the corresponding data has been truncated away on disk, we've got to make sure that nobody ever confuses one of them with an actually-valid buffer.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmobmA9VJOKQO1UuKurX7TPjVxFkYNAZPd8F2OOQ1kZS30A%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:3198",
+      "kind": "cf",
+      "title": "Automatic notification for top transaction IDs",
+      "status": "Withdrawn",
+      "date": "2021-07-01",
+      "first_date": "2019-12-20",
+      "url": "https://commitfest.postgresql.org/patch/3198/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/C1F7905E-5DB2-497D-ABCC-E14D4DEE506C@yandex-team.ru"
+      ],
+      "authors": "Gurjeet Singh (gurjeet)",
+      "objectors": "",
+      "summary": "When a new GUC is enabled, the backend sends a NotificationResponse with the full transaction ID at the moment the top-level transaction is assigned its ID. Clients and middleware could then check the status of a transaction after cancelling it post-COMMIT or after a server crash; the patch uses the NOTIFY infrastructure because elog output depends on client_min_messages.",
+      "objection": "The visible messages do not show why. No reply to the proposal (message #34) appears, and the entry was withdrawn about a week after it was posted. The earlier messages discuss a different patch, Andrey Borodin's patch to disallow cancellation of the synchronous replication wait.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "cancel wait for synchronous commit",
+        "prevent cancel locally committed transaction"
+      ],
+      "from_hint": false,
+      "score": 0.179,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:1589",
+      "kind": "cf",
+      "title": "Synchronous replay mode for avoiding stale reads on hot standbys",
+      "status": "Withdrawn",
+      "date": "2019-07-01",
+      "first_date": "2018-03-01",
+      "url": "https://commitfest.postgresql.org/patch/1589/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEepm=0Q6kCKMYFBN+Vv2frPc=3cS3T1MPOxnZ9do8+NHzoJTA@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Synchronous replay mode for avoiding stale reads on hot standbys\nThreads: Synchronous replay take III",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "sync rep wait interrupt",
+        "startup synchronous standby level"
+      ],
+      "from_hint": false,
+      "score": 0.174,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:951",
+      "kind": "cf",
+      "title": "\"synchronous_replay\" mode for load balancing reads without stale data",
+      "status": "Returned with feedback",
+      "date": "2017-11-29",
+      "first_date": "2017-01-03",
+      "url": "https://commitfest.postgresql.org/patch/951/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEepm=1iiEzCVLD=RoBgtZSyEY1CR-Et7fRc9prCZ9MuTz3pWg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CA+CSw_tz0q+FQsqh7Zx7xxF99Jm98VaAWGdEP592e7a+zkD_Mw@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "\"synchronous_replay\" mode for load balancing reads without stale data\nThreads: Causal reads take II; Re: Causal reads take II",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "sync rep wait interrupt",
+        "synchronous replication data loss failover"
+      ],
+      "from_hint": false,
+      "score": 0.147,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:4590",
+      "kind": "cf",
+      "title": "Incorrect handling of OOM in WAL replay leading to data loss",
+      "status": "Withdrawn",
+      "date": "2023-10-24",
+      "first_date": "2023-08-01",
+      "url": "https://commitfest.postgresql.org/patch/4590/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ZMh%2FWV+CuknqePQQ@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Incorrect handling of OOM in WAL replay leading to data loss\nThreads: Incorrect handling of OOM in WAL replay leading to data loss",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "synchronous replication data loss failover"
+      ],
+      "from_hint": false,
+      "score": 0.145,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:3666",
+      "kind": "cf",
+      "title": "Add last failed connection error message to pg_stat_wal_receiver",
+      "status": "Withdrawn",
+      "date": "2022-10-11",
+      "first_date": "2022-05-02",
+      "url": "https://commitfest.postgresql.org/patch/3666/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACWt6wkFnu7sac3pUb4WLZ3jA1m3cu7FJE3EovpGKzhwKw@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "",
+      "summary": "Add last failed connection error message to pg_stat_wal_receiver\nThreads: Add last failed connection error message to pg_stat_wal_receiver",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_last_wal_receive_lsn write lsn"
+      ],
+      "from_hint": false,
+      "score": 0.141,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "revert:ebf6de8692766177a36e7f5fb7545a52a0d5d881",
+      "kind": "revert",
+      "title": "Add more TAP coverage for archive status with crash recovery of standbys",
+      "status": "Partially reverted",
+      "date": "2020-04-27",
+      "first_date": "2020-04-24",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ebf6de8692766177a36e7f5fb7545a52a0d5d881",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200424034248.GL33034@paquier.xyz",
+        "https://www.postgresql.org/message-id/flat/20200424005929.GK33034@paquier.xyz"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Add more TAP coverage for archive status with crash recovery of standbys\nReverted commit(s): Remove some unstable parts from new TAP test for archive status check",
+      "objection": "This part of the test was included originally in 4e87c48, but got\nreverted as of f9c1b8d because of timing issues in the test, where,\nafter more analysis, we found that the standbys may not have recovered\nfrom the archives all the segments needed by the test.  This stabilizes\nthe test by making sure that standbys replay up to the position returned\nby pg_switch_wal(), meaning that all segments are recovered before the\nmanual checkpoint that tests WAL segment recycling and its interactions\nwith archive status files.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "connections after crash recovery standby quorum"
+      ],
+      "from_hint": false,
+      "score": 0.133,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3503",
+      "kind": "cf",
+      "title": "pg_receivewal fail to streams when the partial file to write is not fully initialized present in the wal receiver directory",
+      "status": "Returned with feedback",
+      "date": "2024-01-22",
+      "first_date": "2022-01-03",
+      "url": "https://commitfest.postgresql.org/patch/3503/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHg+QDcVUss6ocOmbLbV5f4YeGLhOCt+1x2yLNfG2H_eDwU8tw@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy), SATYANARAYANA NARLAPURAM (satyanarayanan)",
+      "objectors": "",
+      "summary": "pg_receivewal fail to streams when the partial file to write is not fully initialized present in the wal receiver directory\nThreads: pg_receivewal fail to streams when the partial file to write is not\nfully initialized present in the wal receiver directory",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_last_wal_receive_lsn write lsn"
+      ],
+      "from_hint": false,
+      "score": 0.132,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:4399",
+      "kind": "cf",
+      "title": "pgbench: allow to cancel queries during benchmark",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-06-26",
+      "url": "https://commitfest.postgresql.org/patch/4399/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20230626224628.61f372f25cde3747f164a4c6@sraoss.co.jp"
+      ],
+      "authors": "Yugo Nagata (yugo.nagata)",
+      "objectors": "",
+      "summary": "pgbench: allow to cancel queries during benchmark\nThreads: pgbnech: allow to cancel queries during benchmark",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "synchronous replication query cancel"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:4329",
+      "kind": "cf",
+      "title": "Issue in postgres_fdw causing unnecessary wait for cancel request reply",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2023-04-11",
+      "url": "https://commitfest.postgresql.org/patch/4329/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/e587761c-eef3-1f83-bf16-6dadba0acaab@oss.nttdata.com"
+      ],
+      "authors": "Fujii Masao (masaofujii)",
+      "objectors": "",
+      "summary": "Issue in postgres_fdw causing unnecessary wait for cancel request reply\nThreads: Issue in postgres_fdw causing unnecessary wait for cancel request\nreply",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "cancel wait for synchronous commit"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:2025",
+      "kind": "cf",
+      "title": "SimpleLruTruncate() mutual exclusion (data loss from lack thereof)",
+      "status": "Withdrawn",
+      "date": "2020-01-25",
+      "first_date": "2019-02-18",
+      "url": "https://commitfest.postgresql.org/patch/2025/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20190218073103.GA1434723@rfd.leadboat.com"
+      ],
+      "authors": "Noah Misch (nmisch)",
+      "objectors": "",
+      "summary": "SimpleLruTruncate() mutual exclusion (data loss from lack thereof)\nThreads: SimpleLruTruncate() mutual exclusion",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "synchronous replication data loss failover"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:3668",
+      "kind": "cf",
+      "title": "pg_receivewal fail to streams when the partial file to write is not fully initialized present in the wal receiver directory",
+      "status": "Withdrawn",
+      "date": "2022-07-20",
+      "first_date": "2022-01-03",
+      "url": "https://commitfest.postgresql.org/patch/3668/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHg+QDcVUss6ocOmbLbV5f4YeGLhOCt+1x2yLNfG2H_eDwU8tw@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy), SATYANARAYANA NARLAPURAM (satyanarayanan)",
+      "objectors": "",
+      "summary": "pg_receivewal fail to streams when the partial file to write is not fully initialized present in the wal receiver directory\nThreads: pg_receivewal fail to streams when the partial file to write is not\nfully initialized present in the wal receiver directory",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_last_wal_receive_lsn write lsn"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:3515",
+      "kind": "cf",
+      "title": "Add last commit LSN to pg_last_committed_xact()",
+      "status": "Returned with feedback",
+      "date": "2022-08-02",
+      "first_date": "2022-01-15",
+      "url": "https://commitfest.postgresql.org/patch/3515/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAaqYe9QBiAu+j8rBun_JKBRe-3HeKLUhfVVsYfsxQG0VqLXsA@mail.gmail.com"
+      ],
+      "authors": "James Coleman (jcole1989)",
+      "objectors": "",
+      "summary": "Add last commit LSN to pg_last_committed_xact()\nThreads: Add last commit LSN to pg_last_committed_xact()",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_last_wal_receive_lsn write lsn"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:1961",
+      "kind": "cf",
+      "title": "Synchronizing slots from primary to standby",
+      "status": "Returned with feedback",
+      "date": "2019-09-30",
+      "first_date": "2018-12-30",
+      "url": "https://commitfest.postgresql.org/patch/1961/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3095349b-44d4-bf11-1b33-7eefb585d578@2ndquadrant.com"
+      ],
+      "authors": "Petr Jelínek (pjmodos)",
+      "objectors": "",
+      "summary": "Synchronizing slots from primary to standby\nThreads: Synchronizing slots from primary to standby",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "startup synchronous standby level"
+      ],
+      "from_hint": false,
+      "score": 0.101,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:293",
+      "kind": "cf",
+      "title": "Support multiple synchronous standby servers",
+      "status": "Returned with feedback",
+      "date": "2016-02-03",
+      "first_date": "2015-05-15",
+      "url": "https://commitfest.postgresql.org/patch/293/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOG9ApHYCPmTypAAwfD3_V7sVOkbnECFivmRc1AxhB40ZBSwNQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/trinity-4258acb0-b75a-4bf1-9657-f8237883cd0d-1442981475318@3capp-mailcom-lxa02"
+      ],
+      "authors": "Masahiko Sawada (masahikosawada), Beena Emerson (beena.emerson)",
+      "objectors": "",
+      "summary": "Support multiple synchronous standby servers\nThreads: Support for N synchronous standby servers - take 2; Re: Support for N synchronous standby servers - take 2",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "startup synchronous standby level"
+      ],
+      "from_hint": false,
+      "score": 0.099,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "revert:212fab9926b2f0f04b0187568e7124b70e8deee5",
+      "kind": "revert",
+      "title": "Relax transactional restrictions on ALTER TYPE ... ADD VALUE (redux).",
+      "status": "Partially reverted",
+      "date": "2018-10-08",
+      "first_date": "2017-09-27",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=212fab9926b2f0f04b0187568e7124b70e8deee5",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEepm=0Ei7g6PaNTbcmAh9tCRahQrk=r5ZWLD-jr7hXweYX3yg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/4075.1459088427@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20170922185904.1448.16585@wrigleys.postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Relax transactional restrictions on ALTER TYPE ... ADD VALUE (redux).\nReverted commit(s): Revert to 9.6 treatment of ALTER TYPE enumtype ADD VALUE.",
+      "objection": "Originally committed as 15bc038f (plus some follow-ups), this was\nreverted in 28e07270 due to a problem discovered in parallel\nworkers.  This new version corrects that problem by sending the\nlist of uncommitted enum values to parallel workers.\n\nHere follows the original commit message describing the change:\n\nTo prevent possibly breaking indexes on enum columns, we must keep\nuncommitted enum values from getting stored in tables, unless we\ncan be sure that any such column is new in the current transaction.\n\nFormerly, we enforced this by disallowing ALTER TYPE ... ADD VALUE\nfrom being executed at all in a transaction block, unless the target\nenum type had been created in the current transaction.  This patch\nremoves that restriction, and instead insists that an uncommitted enum\nvalue can't be referenced unless it belongs to an enum type created\nin the same transaction as the value.  Per discussion, this should be\na bit less onerous.  It does require each function that could possibly\nreturn a new enum value to SQL operations to check this restriction,\nbut there aren't so many of those that this seems unmaintainable.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "prevent cancel locally committed transaction"
+      ],
+      "from_hint": false,
+      "score": 0.099,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:4117",
+      "kind": "cf",
+      "title": "delay starting WAL receiver",
+      "status": "Withdrawn",
+      "date": "2023-01-11",
+      "first_date": "2023-01-11",
+      "url": "https://commitfest.postgresql.org/patch/4117/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20230111010836.GA1550875@nathanxps13"
+      ],
+      "authors": "Nathan Bossart (bossartn)",
+      "objectors": "",
+      "summary": "delay starting WAL receiver\nThreads: delay starting WAL receiver",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "pg_last_wal_receive_lsn write lsn"
+      ],
+      "from_hint": false,
+      "score": 0.095,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:977",
+      "kind": "cf",
+      "title": "Use latch instead of pg_usleep for standby recovery conflicts",
+      "status": "Returned with feedback",
+      "date": "2017-04-03",
+      "first_date": "2017-01-26",
+      "url": "https://commitfest.postgresql.org/patch/977/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANP8+j+WWawZCR+w=887FcnqQibFf=j=kag98XNN9rAOM-4HTg@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Use latch instead of pg_usleep for standby recovery conflicts\nThreads: Allow interrupts on waiting standby",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "connections after crash recovery standby quorum"
+      ],
+      "from_hint": false,
+      "score": 0.095,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 3,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 4
+  },
+  "precedent_cutoff": "2025-05-02",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "The restart objection from the earlier attempts is answered by the v3 gate. Only the termination path remains open from the prior-attempt reasons."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "Objections are fixable contract issues. The pg_dump round-trip of per-role settings and the startup-option bypass path depend on code that is not shown."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 3,
+      "note": "There is no on-disk, catalog, WAL record or wire protocol change. Post-recovery completion state lives only in shared memory until the next postmaster start."
+    },
+    {
+      "angle": "security",
+      "objections": 1,
+      "note": "Apart from the WAL sender exemption, both settings are superuser-controlled, off by default and need no new privilege. Ignoring query cancel and statement_timeout hurts availability, but pg_terminate_backend still ends the wait and no user gains new rights."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "Committability: no committer has reviewed v3 in the thread. Fujii Masao commented only on the dropped write-LSN patch, and only a tester has replied since message #24. This should not raise the verdict by itself."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 2,
+      "note": "No objection from this angle on the cancel GUC: no existing feature or hook stops a query cancel from ending SyncRepWaitForLSN, so it cannot be done outside core today."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "The material shows real, lasting demand from several independent sources. Three authors proposed the same fix over about seven years ([P3], [P4], [P1]); message #10 says most cloud providers have applied a similar patch for over four years, and message #7 cites a Jepsen report. HA tool authors in messages #11 and #20 and the tester in message #25 describe concrete failover data loss, and both GUCs are off by default, so the cost falls on users who enable them."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 13,
+      "new_survived": 8,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 122,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 15,
+    "wall_ms": 196081,
+    "cost_usd": 3.1998623999999998,
+    "dry_run": false
+  }
+}

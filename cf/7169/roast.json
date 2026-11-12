@@ -1,0 +1,1328 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:24:51.272Z",
+  "input": {
+    "arg": "7169",
+    "cf": {
+      "id": 7169,
+      "url": "https://commitfest.postgresql.org/patch/7169/",
+      "title": "Dropping a composite attribute causes data integrity violations",
+      "status": "Needs review",
+      "authors": "Nikhil Sontakke (nsontakke)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CA%2BUBoq0F2ua2fQEAU3-6w0oxOgFc9BgEN4gRcchiUUZ%2BWouVrQ%40mail.gmail.com",
+    "subject": "Dropping a composite attribute causes data integrity violations",
+    "thread_start": "2026-08-17T07:03:24Z",
+    "messages_read": 3,
+    "messages_total": 3,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v2-0001-Refuse-to-drop-a-column-whose-row-type-is-stored-.patch",
+      "0001-Refuse-to-drop-a-column-whose-row-rowtype-drop-guard.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection disputes the goal: message #1 shows reproducible corruption, and the fix reuses the check that retyping already uses. The surviving objections are fixable and none stops review. They concern the target branches and the migration path (standards-compat-1, demand-1), whether the stored-expression cases go in together (standards-compat-3), and an owner blocked by another role's table (security-1). The backpatch decision is one a committer has to make.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Refuse to drop a column or attribute whose row type is stored elsewhere",
+    "problem": "A composite value stores only its type OID and typmod, so ALTER TYPE ... DROP ATTRIBUTE changes how existing stored values read. Distinct values can become equal under a unique index, after which REINDEX fails and a plain pg_dump of the database fails to restore. ALTER TABLE ... DROP COLUMN has the same problem for a table's row type.",
+    "proposed_design": "ATExecDropColumn() calls the existing find_composite_type_dependencies(), which ALTER COLUMN TYPE already uses but only when a rewrite is queued. The patch makes the call after the droppability check and before recursion, so it runs at each inheritance level. The drop is refused when another relation stores the row type, and CASCADE does not override this.",
+    "user_visible_surface": [
+      "ALTER TYPE ... DROP ATTRIBUTE now fails when a column of another relation uses the type.",
+      "ALTER TABLE ... DROP COLUMN now fails when another relation stores the table's row type.",
+      "The refusal uses the existing \"cannot alter type ... because column ... uses it\" error, and CASCADE does not bypass it."
+    ],
+    "author_claims": [
+      "The drop corrupts committed data: a unique index ends up violated, REINDEX fails and a dump does not restore.",
+      "The fix reuses an existing check and covers both commands and all inheritance levels.",
+      "Regression, isolation and pg_upgrade suites pass.",
+      "Three existing tests relied on the old behaviour and were changed: test_typex, the test_tbl3 pg_upgrade fixture, and test_decoding oldest_xmin."
+    ],
+    "thread_state": "Manuel Reyes Bravo reviewed v2, confirmed the fix and its tests, and showed that constants of the type in views, CHECK constraints and defaults still allow the drop. He proposes combining it with his separate pgsql-bugs patch and asked Heikki about overlap with d78040a469b; the author has not replied.",
+    "unclear": [
+      "The author does not say whether the fix should be backpatched, given that it turns accepted DDL into an error.",
+      "The author does not say if this patch should cover the constant-in-expression cases, or wait for the reviewer's separate patch.",
+      "There is no plan for databases that already hold values damaged by an earlier drop.",
+      "The material does not show the documentation changes for ALTER TYPE and ALTER TABLE, if there are any.",
+      "Users who drop attributes of types that are in use today have no workaround described, such as dropping and recreating the dependent columns first."
+    ],
+    "search_queries": [
+      "drop attribute composite type",
+      "alter type drop attribute stored",
+      "find_composite_type_dependencies",
+      "drop column row type dependency",
+      "composite type column in use",
+      "rowtype stored in another table",
+      "alter composite type typed table",
+      "composite datum typmod shape"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P6",
+      "source_id": "revert:ec62cb0aac5ba31a82339606009ddbd7eb00e2ac",
+      "title": "Revert applying column aliases to the output of whole-row Vars.",
+      "kind": "revert",
+      "status": "Reverted",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ec62cb0aac5ba31a82339606009ddbd7eb00e2ac",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2950001.1638729947@sss.pgh.pa.us"
+      ],
+      "date": "2022-03-17",
+      "first_date": "2014-11-10",
+      "who_objected": "",
+      "quote": "But corrupt data is worse, so back-patched it will be.",
+      "quote_url": null,
+      "enriched": false,
+      "reason": "In commit bf7ca1587, I had the bright idea that we could make the\nresult of a whole-row Var (that is, foo.*) track any column aliases\nthat had been applied to the FROM entry the Var refers to.  However,\nthat's not terribly logically consistent, because now the output of\nthe Var is no longer of the named composite type that the Var claims\nto emit.  bf7ca1587 tried to handle that by changing the output\ntuple values to be labeled with a blessed RECORD type, but that's\nreally pretty disastrous: we can wind up storing such tuples onto\ndisk, whereupon they're not readable by other sessions.\n\nThe only practical fix I can see is to give up on what bf7ca1587\ntried to do, and say that the column names of tuples produced by\na whole-row Var are always those of the underlying named composite\ntype, query aliases or no.  While this introduces some inconsistencies,\nit removes others, so it's not that awful in the abstract.  What *is*\nkind of awful is to make such a behavioral change in a back-patched\nbug fix.  But corrupt data is worse, so back-patched it will be.\n\n(A workaround available to anyone who's unhappy about this is to\nintroduce an extra level of sub-SELECT, so that the whole-row Var is\nreferring to the sub-SELECT's output and not to a named table type.\nThen the Var is of type RECORD to begin with and there's no issue.)\n\nPer report from Miles Delahunty.  The faulty commit dates to 9.5,\nso back-patch to all supported branches.",
+      "relation": "related_only",
+      "what_is_different": "P6 reverted a feature that labeled stored whole-row tuples with a blessed RECORD type. This patch refuses DDL that changes how stored composite values read. P6 shows a behaviour change was backpatched to stop corrupt data."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Accepted DDL becomes an error with no documented migration path",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "desirability",
+      "touch_points": [
+        "sql_standard_syntax",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A team runs a schema migration that drops an attribute from a composite type used by a column, which works today. After upgrade, the migration fails with \"cannot alter type ... because column ... uses it\", and CASCADE does not help. The team finds out in the deploy step, and the docs give no supported way to finish the change.",
+      "argument": "The touched files are code and tests only, so the ALTER TYPE and ALTER TABLE reference pages do not mention the new refusal or the workaround. The proposal does not say whether the fix is backpatched, which matters because a minor release would break scripts that ran the day before. [P6] shows the project has backpatched a behaviour change to stop corrupt data, but that commit message stated the workaround and the scope.",
+      "precedent_ids": [
+        "P6"
+      ],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "Which branches get this change, and what documented steps should a user follow to remove an attribute from a composite type that a table column uses?",
+      "precedents": [
+        {
+          "id": "P6",
+          "title": "Revert applying column aliases to the output of whole-row Vars.",
+          "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ec62cb0aac5ba31a82339606009ddbd7eb00e2ac",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/2950001.1638729947@sss.pgh.pa.us"
+          ],
+          "date": "2022-03-17",
+          "status": "Reverted"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Nikhil Sontakke",
+          "date": "2026-08-17T07:03:24Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BUBoq0F2ua2fQEAU3-6w0oxOgFc9BgEN4gRcchiUUZ%2BWouVrQ%40mail.gmail.com"
+        },
+        {
+          "index": 2,
+          "from": "Nikhil Sontakke",
+          "date": "2026-08-19T17:41:17Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BUBoq3D5SPuDGFQN5MVp09AYEV2SZz2twgyuGnuwigMrN7BHA%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The thread does not say which branches get the change or how a user removes an attribute from an in-use type. P6 is about whole-row Vars and supports only the general point that corruption fixes with behaviour changes were backpatched.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Narrow corruption case blocks a common schema change for all users",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "desirability",
+      "touch_points": [
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user has a column of type ct with no unique index or equality-dependent object, and runs alter type ct drop attribute b to retire a field. After this patch the command fails, even with CASCADE. The user finds out at deploy time and has no documented path that keeps the stored data.",
+      "argument": "Corruption needs a unique index, a constraint, or another equality-sensitive object on the type, and the only evidence of it is the constructed example in message #1. The patch refuses every drop on a stored type, so users without such objects lose an operation that works for them today. The changed test_typex and test_tbl3 fixture show the drop is used on stored types. The thread does not describe the migration those users would follow, which the brief lists as unclear.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3
+      ],
+      "author_must_show": "Is there any field report of this corruption, and what supported migration do users who drop attributes of stored types follow once the drop is refused?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Nikhil Sontakke",
+          "date": "2026-08-17T07:03:24Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BUBoq0F2ua2fQEAU3-6w0oxOgFc9BgEN4gRcchiUUZ%2BWouVrQ%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Manuel Reyes Bravo",
+          "date": "2026-09-21T04:45:03Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BbCEdCbDjqwv1h%3D9P1ZG-y9baFe9_74t2wZobeR6GuK98K-AQ%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The refusal covers stored types with no unique index, where the drop works as intended today, and the thread does not weigh that. A reproducible corruption case needs no field report, and the migration-path part duplicates standards-compat-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Contract changes twice if expression cases follow separately",
+      "level": "2",
+      "rubric_item": 13,
+      "category": "design",
+      "touch_points": [
+        "sql_standard_syntax",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Release N refuses the drop for columns but still allows it when a view, CHECK constraint or default holds a constant of the type. A later release adds those refusals too, so scripts break a second time. Between the two releases, a CHECK constraint can still make a table reject every row.",
+      "argument": "Message #3 shows six stored-expression cases with the same effect that v2 leaves open, and proposes combining with a separate pgsql-bugs patch. The author has not replied, so the proposal does not yet say whether one user-visible change or two is intended. One combined change is easier to document and to explain in release notes.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3
+      ],
+      "author_must_show": "Will this patch and the stored-expression patch go in together, so users see one change to when DROP ATTRIBUTE and DROP COLUMN are refused?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Manuel Reyes Bravo",
+          "date": "2026-09-21T04:45:03Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BbCEdCbDjqwv1h%3D9P1ZG-y9baFe9_74t2wZobeR6GuK98K-AQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #3 shows the CHECK constraint, view and default cases still allow the drop under v2, and the author has not answered the proposal to combine the patches. The scope of the user-visible change is still open.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Another role can block DROP COLUMN on a table it does not own",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Role bob, who can use alice's types, creates a table with a column of alice's composite type or of her table's row type. Alice then runs ALTER TABLE ... DROP COLUMN or ALTER TYPE ... DROP ATTRIBUTE on her own object and gets an error, even with CASCADE. She cannot drop or alter bob's table, so the change is blocked until a superuser or bob acts.",
+      "argument": "The brief and the v1 tests both say CASCADE does not override the refusal. DROP TYPE ... CASCADE does remove dependent columns in other roles' tables, so the owner can always undo a dependency some other role created. Under this patch a dependency that a non-owner creates becomes a hard block on routine DDL by the owner. The same block already exists for retyping, but dropping a column is far more common, and neither the proposal nor messages #1 and #3 discuss this privilege aspect.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3
+      ],
+      "author_must_show": "How does an owner drop a column when a role they cannot control stores the row type, and why should CASCADE not drop or rewrite those dependent columns?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Nikhil Sontakke",
+          "date": "2026-08-17T07:03:24Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BUBoq0F2ua2fQEAU3-6w0oxOgFc9BgEN4gRcchiUUZ%2BWouVrQ%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Manuel Reyes Bravo",
+          "date": "2026-09-21T04:45:03Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BbCEdCbDjqwv1h%3D9P1ZG-y9baFe9_74t2wZobeR6GuK98K-AQ%40mail.gmail.com"
+        }
+      ],
+      "id": "security-1",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "USAGE on types is granted to PUBLIC by default, so another role can create the dependent column, and CASCADE does not remove it. The retyping check already blocks the owner this way, which lowers the concern, but the thread does not discuss extending it to drops.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Refusal also hits drops that cannot change any stored value",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "sql_standard_syntax",
+      "touch_points": [
+        "sql_standard_syntax"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user has an empty table, or a column that is all NULL, of type ct and runs alter type ct drop attribute b. The drop is now refused, though no stored value can change meaning. The only way out is to drop the dependent column or table, then recreate it.",
+      "argument": "find_composite_type_dependencies() refuses whenever a column of the type exists in a relation with storage, as ALTER ATTRIBUTE ... TYPE does. That precedent makes the refusal consistent, which lowers this concern, but for retyping a rewrite exists as an alternative path and for drop there is none. The proposal does not weigh refusal against rewriting the dependent columns, which would keep the command usable.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "Why is a hard refusal better than rewriting the dependent columns, and how often do users drop attributes of in-use types today?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Nikhil Sontakke",
+          "date": "2026-08-17T07:03:24Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BUBoq0F2ua2fQEAU3-6w0oxOgFc9BgEN4gRcchiUUZ%2BWouVrQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "wrong_facts",
+        "reasoning": "Retyping an attribute of a type that another relation stores has no rewrite path either. Message #1 shows it is refused with the same error, regardless of table contents, so the patch copies existing practice.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Fixture change drops pg_upgrade coverage of stored values with dropped attributes",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Clusters created before this fix can still hold column values of a composite type that later lost an attribute, and pg_upgrade carries them forward. A later change to how pg_upgrade or binary-upgrade dump preserves dropped attribute numbers could break reading those values. The pg_upgrade test would not catch it, because the fixture no longer builds that state.",
+      "argument": "Per the v2 commit message, test_tbl3 used to drop an attribute of a type a table already stored, and v2 drops it before the table is created. That leaves the pg_upgrade suite with no stored composite value whose type has a dropped attribute. Same-version runs cannot build that state any more, but upgraded clusters will hold it for years. The proposal says the suites pass and does not say whether this coverage is moved elsewhere.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        2
+      ],
+      "author_must_show": "How will the pg_upgrade suite keep testing a stored composite value whose type has a dropped attribute, for example through a cross-version fixture built on the old server?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Nikhil Sontakke",
+          "date": "2026-08-19T17:41:17Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BUBoq3D5SPuDGFQN5MVp09AYEV2SZz2twgyuGnuwigMrN7BHA%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The scenario depends on an unnamed future change to pg_upgrade, and test coverage is outside levels 1-2. The changed fixture still creates a type with a dropped attribute and a table that uses it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No guidance for clusters already holding values damaged by a drop",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "wal_replication",
+        "pg_dump_round_trip"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user installs the release with this fix, and a table with a unique index already holds values that became equal after an earlier drop. pg_upgrade copies the table unchanged. Months later a dump and restore fails, or a logical replication subscriber's initial table sync stops on the duplicate key, and the user finds out only then.",
+      "argument": "Message #1 shows that the damage survives a restart and breaks REINDEX and restore, so it is persistent state. The patch prevents new damage, but the proposal does not say how a user can find tables that are already affected or repair them. A committer would likely ask for a detection query or release-note text with the fix, more so if it is backpatched.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3
+      ],
+      "author_must_show": "What query or procedure can a user run to find unique indexes over composite columns that hold duplicates from an earlier drop, and will the release notes include it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Nikhil Sontakke",
+          "date": "2026-08-17T07:03:24Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BUBoq0F2ua2fQEAU3-6w0oxOgFc9BgEN4gRcchiUUZ%2BWouVrQ%40mail.gmail.com"
+        },
+        {
+          "index": 3,
+          "from": "Manuel Reyes Bravo",
+          "date": "2026-09-21T04:45:03Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BbCEdCbDjqwv1h%3D9P1ZG-y9baFe9_74t2wZobeR6GuK98K-AQ%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The damaged values and the later restore failure exist today without the patch, so the proposal neither causes nor worsens them. Detection advice is release-note text, and item 14 concerns state that the patch itself creates.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "The patch concerns how stored composite values read after a drop, and it changes the test_tbl3 pg_upgrade fixture."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": true,
+      "reason": "ALTER TYPE ... DROP ATTRIBUTE and ALTER TABLE ... DROP COLUMN now fail in cases accepted today, and CASCADE does not override."
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": true,
+      "reason": "The bug makes a plain pg_dump fail to restore; the patch prevents new cases but not existing ones."
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "A role that creates a column of another role's type can block the owner's drop, even with CASCADE."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The entry is tagged Bugfix, but the thread does not say which branches get a change that turns accepted DDL into an error."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "see objection demand-1: Narrow corruption case blocks a common schema change for all users"
+    }
+  ],
+  "questions": [
+    "Which branches should get this change, given that it turns DDL accepted today into an error?",
+    "What documented steps should a user follow to remove an attribute from a composite type that a table column stores?",
+    "Should this patch go in together with the stored-expression patch from message #3, so that users see one change in when the drop is refused?",
+    "How does an owner drop a column when another role's table stores the row type, and why should CASCADE not handle those dependent columns?",
+    "Do the ALTER TYPE and ALTER TABLE reference pages need text about the new refusal?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "Someone who knows ALTER TABLE in tablecmds.c and composite type dependencies. Message #3 copies Heikki because d78040a469b touched this call site, but he has not replied in the visible thread.",
+    "liability": "The owner signs for a behaviour change in two common DDL commands, the backpatch decision, and reports from users whose migration scripts start to fail. The code added is one call to an existing function.",
+    "author_follow_up": "The author posted v2 two days after v1, but has not answered the review in message #3 of 2026-09-21."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "low",
+    "review_cost": "low",
+    "recommended_action": "proceed",
+    "reason": "The patch fixes reproducible corruption with one call to an existing check in tablecmds.c plus tests, and a reviewer has confirmed it. Only users who store composite types in columns and drop attributes are affected; the open points are scope and backpatch decisions."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read, so the placement of the call in ATExecDropColumn(), its behaviour under inheritance recursion and typed tables, and any documentation changes could not be checked. The interaction with the reviewer's pgsql-bugs patch is known only from message #3.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "revert:18661f282bae5599abb68f53bc8b451b2d67bd75",
+      "kind": "revert",
+      "title": "Revert badly-broken patch to dump comments on composite-type columns.",
+      "status": "Reverted",
+      "date": "2004-08-06",
+      "first_date": "2004-08-06",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=18661f282bae5599abb68f53bc8b451b2d67bd75",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert badly-broken patch to dump comments on composite-type columns.",
+      "objection": "",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "drop attribute composite type",
+        "find_composite_type_dependencies",
+        "drop column row type dependency",
+        "composite type column in use",
+        "alter composite type typed table",
+        "composite datum typmod shape"
+      ],
+      "from_hint": false,
+      "score": 0.568,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:1139",
+      "kind": "cf",
+      "title": "allow mix of composite and scalar variables in target list",
+      "status": "Returned with feedback",
+      "date": "2017-10-30",
+      "first_date": "2017-05-13",
+      "url": "https://commitfest.postgresql.org/patch/1139/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFj8pRB76FE2MVxJYPc1RvXmsf2upoTgoPCC9GsvSAssCM2APQ@mail.gmail.com"
+      ],
+      "authors": "Pavel Stehule (okbobcz)",
+      "objectors": "Tom Lane",
+      "summary": "The patch removes the PL/pgSQL parser check that rejects a row (composite) variable inside a multiple-item INTO list. With several targets, each target would take one output column, so a composite variable would receive one composite-valued column; record variables were left out.",
+      "objection": "Tom Lane objected that this makes a row variable mean one column in a multi-item INTO list but one column per field when it is the only target. That inconsistency would also limit later changes for backward-compatibility reasons. He asked for new notation that removes the ambiguity, and Robert Haas's support for the 1:1 matching did not settle it. The CF manager moved the patch on as needing a revised version, and Pavel Stehule answered with two new design options.",
+      "touch_points": [],
+      "matched_queries": [
+        "drop attribute composite type",
+        "find_composite_type_dependencies",
+        "composite type column in use",
+        "composite datum typmod shape"
+      ],
+      "from_hint": false,
+      "score": 0.339,
+      "enriched": true,
+      "key_quote": "I'm fine with doing something where we add new notation to dispel\nthe ambiguity.  I don't want to put in another layer of inconsistency\nand then have even more backwards-compatibility problems constraining\nour response to the inevitable complaints.",
+      "quote_message_url": "https://www.postgresql.org/message-id/19542.1506962641%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:412",
+      "kind": "cf",
+      "title": "plpgsql - possibility to get element or array type for referenced variable type",
+      "status": "Rejected",
+      "date": "2016-03-16",
+      "first_date": "2015-10-19",
+      "url": "https://commitfest.postgresql.org/patch/412/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFj8pRCQREdqf_Oov0-8xENUf-VxyQRptgAAat0rPNU7B+BHRA@mail.gmail.com"
+      ],
+      "authors": "Pavel Stehule (okbobcz)",
+      "objectors": "Tom Lane, Joe Conway",
+      "summary": "The patch lets PL/pgSQL `%TYPE` refer to variables of composite type, including polymorphic parameters. It also adds syntax to derive the array type or the element type of a referenced variable, first as `%ARRAYTYPE`/`%ELEMENTTYPE` and later as `%TYPE[]` and `ELEMENT OF ...%TYPE`.",
+      "objection": "Tom Lane proposed rejecting this PL/pgSQL-only implementation. He wanted these type operators added to the core grammar's Typename production, so PL/pgSQL would pick them up automatically. Joe Conway and Jim Nasby agreed. The author then found that a reduced patch with only the composite `%TYPE` fix gave too little benefit, and asked for it to be rejected.",
+      "touch_points": [],
+      "matched_queries": [
+        "drop attribute composite type",
+        "find_composite_type_dependencies",
+        "drop column row type dependency",
+        "composite type column in use"
+      ],
+      "from_hint": false,
+      "score": 0.338,
+      "enriched": true,
+      "key_quote": "I played with the reduced patch, and the benefit without all other things\nis negligible. It should be rejected.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAFj8pRB%2BECM4hOhLD1ze-13uW%3DD9fhVi2ao5KLPvT_tYRU_ttg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "revert:212fab9926b2f0f04b0187568e7124b70e8deee5",
+      "kind": "revert",
+      "title": "Relax transactional restrictions on ALTER TYPE ... ADD VALUE (redux).",
+      "status": "Partially reverted",
+      "date": "2018-10-08",
+      "first_date": "2017-09-27",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=212fab9926b2f0f04b0187568e7124b70e8deee5",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEepm=0Ei7g6PaNTbcmAh9tCRahQrk=r5ZWLD-jr7hXweYX3yg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/4075.1459088427@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20170922185904.1448.16585@wrigleys.postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Relax transactional restrictions on ALTER TYPE ... ADD VALUE (redux).\nReverted commit(s): Revert to 9.6 treatment of ALTER TYPE enumtype ADD VALUE.",
+      "objection": "Originally committed as 15bc038f (plus some follow-ups), this was\nreverted in 28e07270 due to a problem discovered in parallel\nworkers.  This new version corrects that problem by sending the\nlist of uncommitted enum values to parallel workers.\n\nHere follows the original commit message describing the change:\n\nTo prevent possibly breaking indexes on enum columns, we must keep\nuncommitted enum values from getting stored in tables, unless we\ncan be sure that any such column is new in the current transaction.\n\nFormerly, we enforced this by disallowing ALTER TYPE ... ADD VALUE\nfrom being executed at all in a transaction block, unless the target\nenum type had been created in the current transaction.  This patch\nremoves that restriction, and instead insists that an uncommitted enum\nvalue can't be referenced unless it belongs to an enum type created\nin the same transaction as the value.  Per discussion, this should be\na bit less onerous.  It does require each function that could possibly\nreturn a new enum value to SQL operations to check this restriction,\nbut there aren't so many of those that this seems unmaintainable.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "alter type drop attribute stored",
+        "composite type column in use",
+        "alter composite type typed table"
+      ],
+      "from_hint": false,
+      "score": 0.314,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:646",
+      "kind": "cf",
+      "title": "Prevent ALTER TABLE DROP NOT NULL on child tables if parent column has it",
+      "status": "Rejected",
+      "date": "2016-06-16",
+      "first_date": "2016-06-15",
+      "url": "https://commitfest.postgresql.org/patch/646/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB7nPqTPXgX9HiyhhtAgpW7jbA1iskMCSoqXPEEB_KYXYy1E1Q@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Tom Lane",
+      "summary": "Prevent ALTER TABLE ... DROP NOT NULL on a child table when the same column in a parent table is marked NOT NULL, so that the constraint can only be dropped from the parent. The patch added a function in pg_inherits.c to list a relation's parents and a new index on pg_inherits.",
+      "objection": "Tom Lane said the approach was wrong because it does not help decide whether to propagate DROP NOT NULL from a parent to its children, and pointed to the earlier plan of storing NOT NULL constraints in pg_constraint with inheritance counts as CHECK constraints do. After Vitaly Burovoy reported that he was writing such a patch, which already forbids dropping inherited NOT NULLs, the author withdrew his proposal in favour of that work.",
+      "touch_points": [],
+      "matched_queries": [
+        "alter type drop attribute stored",
+        "drop column row type dependency",
+        "alter composite type typed table"
+      ],
+      "from_hint": false,
+      "score": 0.275,
+      "enriched": true,
+      "key_quote": "This doesn't sound like the right approach; in particular, it won't really\nhelp for deciding whether to propagate a DROP NOT NULL on a parent rel to\nits children.",
+      "quote_message_url": "https://www.postgresql.org/message-id/16589.1465997664%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "revert:ec62cb0aac5ba31a82339606009ddbd7eb00e2ac",
+      "kind": "revert",
+      "title": "Revert applying column aliases to the output of whole-row Vars.",
+      "status": "Reverted",
+      "date": "2022-03-17",
+      "first_date": "2014-11-10",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ec62cb0aac5ba31a82339606009ddbd7eb00e2ac",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2950001.1638729947@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert applying column aliases to the output of whole-row Vars.\nReverted commit(s): Ensure that RowExprs and whole-row Vars produce the expected column names.",
+      "objection": "In commit bf7ca1587, I had the bright idea that we could make the\nresult of a whole-row Var (that is, foo.*) track any column aliases\nthat had been applied to the FROM entry the Var refers to.  However,\nthat's not terribly logically consistent, because now the output of\nthe Var is no longer of the named composite type that the Var claims\nto emit.  bf7ca1587 tried to handle that by changing the output\ntuple values to be labeled with a blessed RECORD type, but that's\nreally pretty disastrous: we can wind up storing such tuples onto\ndisk, whereupon they're not readable by other sessions.\n\nThe only practical fix I can see is to give up on what bf7ca1587\ntried to do, and say that the column names of tuples produced by\na whole-row Var are always those of the underlying named composite\ntype, query aliases or no.  While this introduces some inconsistencies,\nit removes others, so it's not that awful in the abstract.  What *is*\nkind of awful is to make such a behavioral change in a back-patched\nbug fix.  But corrupt data is worse, so back-patched it will be.\n\n(A workaround available to anyone who's unhappy about this is to\nintroduce an extra level of sub-SELECT, so that the whole-row Var is\nreferring to the sub-SELECT's output and not to a named table type.\nThen the Var is of type RECORD to begin with and there's no issue.)\n\nPer report from Miles Delahunty.  The faulty commit dates to 9.5,\nso back-patch to all supported branches.",
+      "touch_points": [],
+      "matched_queries": [
+        "drop column row type dependency",
+        "composite type column in use"
+      ],
+      "from_hint": false,
+      "score": 0.258,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:3767",
+      "kind": "cf",
+      "title": "Bug: Reading from single byte character column type may cause out of bounds memory reads",
+      "status": "Returned with feedback",
+      "date": "2022-09-08",
+      "first_date": "2022-07-13",
+      "url": "https://commitfest.postgresql.org/patch/3767/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFM5RapGbBQm+dH=7K80HcvBvEWiV5Tm7N=NRaYURfm98YWc8A@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "Tom Lane",
+      "summary": "The patch changes text_substring() so that it never copies more bytes than the input string holds, even when the last character is wrongly encoded. This stops the out-of-bounds read seen when left() runs on a \"char\" value that holds the first byte of a multibyte character.",
+      "objection": "Commit ec62ce55a, from a separate thread, fixed the conversion from \"char\" to text in HEAD and v15, so that case can no longer be reached. Tom Lane said the patch is therefore unnecessary, and that a fix in text_substring() alone is not enough because many other text functions assume valid encoding. Noah Misch argued that text functions should be safe on invalid text carried forward by pg_upgrade, but Tom Lane said the effort and performance cost were not justified.",
+      "touch_points": [],
+      "matched_queries": [
+        "drop column row type dependency",
+        "composite type column in use"
+      ],
+      "from_hint": false,
+      "score": 0.228,
+      "enriched": true,
+      "key_quote": "I think we should reject Aleksander's patch, on the grounds that\nit's now unnecessary --- or if you want to argue that it's still\nnecessary, then it's woefully inadequate, because there are surely\na bunch of other text-processing functions that will also misbehave\non wrongly-encoded data.",
+      "quote_message_url": "https://www.postgresql.org/message-id/591018.1662060952%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "wiki:Data_Types:2",
+      "kind": "do_not_want",
+      "title": "Add IMMUTABLE column attribute",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Data_Types",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Add IMMUTABLE column attribute\nSection: Data Types",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "drop attribute composite type",
+        "alter type drop attribute stored",
+        "composite type column in use"
+      ],
+      "from_hint": false,
+      "score": 0.217,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "revert:28e07270768518524291d7d7906668eb67f6b8a5",
+      "kind": "revert",
+      "title": "Revert to 9.6 treatment of ALTER TYPE enumtype ADD VALUE.",
+      "status": "Reverted",
+      "date": "2017-09-27",
+      "first_date": "2016-09-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=28e07270768518524291d7d7906668eb67f6b8a5",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20170922185904.1448.16585@wrigleys.postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert to 9.6 treatment of ALTER TYPE enumtype ADD VALUE.\nReverted commit(s): Relax transactional restrictions on ALTER TYPE ... ADD VALUE.; Use a blacklist to distinguish original from add-on enum values.; Remove heuristic same-transaction test from check_safe_enum_use().",
+      "objection": "This reverts commit 15bc038f9, along with the followon commits 1635e80d3\nand 984c92074 that tried to clean up the problems exposed by bug #14825.\nThe result was incomplete because it failed to address parallel-query\nrequirements.  With 10.0 release so close upon us, now does not seem like\nthe time to be adding more code to fix that.  I hope we can un-revert this\ncode and add the missing parallel query support during the v11 cycle.\n\nBack-patch to v10.",
+      "touch_points": [],
+      "matched_queries": [
+        "alter type drop attribute stored",
+        "alter composite type typed table"
+      ],
+      "from_hint": false,
+      "score": 0.186,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P10",
+      "source_id": "revert:cbadba8dd632fc0d4162f7d686fec631bce7dfd0",
+      "kind": "revert",
+      "title": "Revert \"Stabilize output of new regression test case\".",
+      "status": "Reverted",
+      "date": "2018-02-14",
+      "first_date": "2017-12-10",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=cbadba8dd632fc0d4162f7d686fec631bce7dfd0",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/31545.1512924904@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/8962.1514399547@sss.pgh.pa.us"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Stabilize output of new regression test case\".\nReverted commit(s): Stabilize output of new regression test case.; Make plpgsql use its DTYPE_REC code paths for composite-type variables.",
+      "objection": "This effectively reverts commit 9edc97b71 (although the test is now\nin a different place and has different contents).  We don't need that\nhack anymore, because since commit 4b93f5799, this test case no longer\nthrows an error and so there's no displayed CONTEXT that could vary\ndepending on CLOBBER_CACHE_ALWAYS.  The underlying unstable-output\nproblem isn't really gone, of course, but it no longer manifests here.",
+      "touch_points": [],
+      "matched_queries": [
+        "find_composite_type_dependencies",
+        "composite type column in use"
+      ],
+      "from_hint": false,
+      "score": 0.182,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "revert:7564654adf07ec26b83c7effc7f54f7183e04519",
+      "kind": "revert",
+      "title": "Revert addition of third argument to format_type().",
+      "status": "Reverted",
+      "date": "2011-03-10",
+      "first_date": "2011-03-10",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=7564654adf07ec26b83c7effc7f54f7183e04519",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert addition of third argument to format_type().",
+      "objection": "Including collation in the behavior of that function promotes a world view\nwe do not want.  Moreover, it was producing the wrong behavior for pg_dump\nanyway: what we want is to dump a COLLATE clause on attributes whose\nattcollation is different from the underlying type, and likewise for\ndomains, and the function cannot do that for us.  Doing it the hard way\nin pg_dump is a bit more tedious but produces more correct output.\n\nIn passing, fix initdb so that the initial entry in pg_collation is\nproperly pinned.  It was droppable before :-(",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "drop attribute composite type",
+        "alter type drop attribute stored"
+      ],
+      "from_hint": false,
+      "score": 0.168,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "revert:922c4c461d213a422ee7eb6c38e399607539210a",
+      "kind": "revert",
+      "title": "Revert: Allow table AM to store complex data structures in rd_amcache",
+      "status": "Reverted",
+      "date": "2024-04-11",
+      "first_date": "2024-03-21",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=922c4c461d213a422ee7eb6c38e399607539210a",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20240410165236.rwyrny7ihi4ddxw4@awork3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/CAPpHfdurb9ycV8udYqM=o0sPS66PJ4RCBM1g-bBpvzUfogY0EA@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov",
+      "objectors": "",
+      "summary": "Revert: Allow table AM to store complex data structures in rd_amcache\nReverted commit(s): Allow table AM to store complex data structures in rd_amcache",
+      "objection": "This commit reverts 02eb07ea89 per review by Andres Freund.",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "rowtype stored in another table"
+      ],
+      "from_hint": false,
+      "score": 0.142,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:85",
+      "kind": "cf",
+      "title": "Role Attribute Bitmask Representation",
+      "status": "Rejected",
+      "date": "2015-01-12",
+      "first_date": "2014-11-24",
+      "url": "https://commitfest.postgresql.org/patch/85/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKRt6CRskqEEMRw9pvFVyRcCvS9S_tZhVjBGFMnvYSo-pB5gRw@mail.gmail.com"
+      ],
+      "authors": "Adam Brightwell (abrightwell)",
+      "objectors": "",
+      "summary": "Replace the separate boolean role-attribute columns in pg_authid with a single int64 bitmask column (rolattr), and update CreateRole/AlterRole and the has_*_privilege checks to use it. The patch also adds int64-to-int8 genbki support, a has_role_attribute SQL function, and later an acldefs.h header for the attribute definitions.",
+      "objection": "The visible messages do not show why. The last visible messages show Alvaro Herrera committing the patch on 2014-12-23, and the entry was later marked Rejected on 2015-01-12. No message explains that decision. Earlier, Andres Freund said he was not yet convinced the single-column approach was the best route, but the thread does not show this as the deciding objection.",
+      "touch_points": [
+        "catalog changes",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "drop attribute composite type",
+        "alter type drop attribute stored"
+      ],
+      "from_hint": false,
+      "score": 0.14,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:5992",
+      "kind": "cf",
+      "title": "Fix ALTER TABLE DROP EXPRESSION with ONLY option",
+      "status": "Returned with feedback",
+      "date": "2026-04-02",
+      "first_date": "2025-08-24",
+      "url": "https://commitfest.postgresql.org/patch/5992/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CACJufxEW9L279n=fpUg+qrXYP6g4oh_RLOTHVVphkWDVqaNGDw@mail.gmail.com"
+      ],
+      "authors": "Jian He (stayreal)",
+      "objectors": "",
+      "summary": "The patch lets ALTER TABLE ... ALTER COLUMN ... DROP EXPRESSION work on inheritance trees with more than one level, where it now fails with \"must be applied to child tables too\". It adds a `!recursing` check in ATPrepDropExpression() so the ONLY check runs only for the table named in the command.",
+      "objection": "The visible messages do not show why. Peter Eisentraut asked why tablecmds.c passes recurse = false when recursing, and suggested a more consistent use of the two flags would make the existing code work. Tom Lane said that if the flags matter here, DROP EXPRESSION should not use ATSimpleRecursion. The author replied in December 2025 that v3 is correct, and no later reply appears before the entry was returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "alter type drop attribute stored"
+      ],
+      "from_hint": false,
+      "score": 0.135,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:5165",
+      "kind": "cf",
+      "title": "format_datum debugging function",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2024-08-09",
+      "url": "https://commitfest.postgresql.org/patch/5165/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/286814e4-46d4-44d6-be45-c2ee979021e1@illuminatedcomputing.com"
+      ],
+      "authors": "Paul Jungwirth (pjungwir)",
+      "objectors": "Peter Eisentraut, Tom Lane",
+      "summary": "Add a debugging function, format_datum, that takes a Datum and its type's output function and returns the text form as a char *. Developers could then print non-trivial values such as ranges from gdb, where the inline functions and macros are not available.",
+      "objection": "Peter Eisentraut said calling output functions at arbitrary points from a debugger is unsafe, and that OidOutputFunctionCall with the function's OID already works. Tom Lane accepted the idea but asked for the function to be renamed DirectOutputFunctionCall, moved into fmgr.c and written like the existing DirectFunctionCall functions. The visible messages show no revised patch after that review.",
+      "touch_points": [],
+      "matched_queries": [
+        "composite datum typmod shape"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": true,
+      "key_quote": "However, I would\ncall the result DirectOutputFunctionCall and put it near\nOidOutputFunctionCall in fmgr.c.",
+      "quote_message_url": "https://www.postgresql.org/message-id/451803.1723730707%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:6651",
+      "kind": "cf",
+      "title": "Optimize numeric comparison and aggregation via packed-datum extraction",
+      "status": "Rejected",
+      "date": "2026-05-10",
+      "first_date": "2026-04-04",
+      "url": "https://commitfest.postgresql.org/patch/6651/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/tencent_D999DB30A62C6B4D956CA9BADF35CFE91408@qq.com"
+      ],
+      "authors": "Chenhui Mo (littleganyu)",
+      "objectors": "",
+      "summary": "The patch speeds up numeric min, max, sum, avg and variance by reading numeric fields directly from packed (1-byte header) datums, so that each row no longer needs a detoast with palloc and memcpy. min and max return the original input Datum, and the accumulation functions use a new init_var_from_packed().",
+      "objection": "The visible messages do not show why. Only the author posted: a v2 patch fixed a CFBot alignment failure on strict architectures, and no reviewer reply appears in the thread.",
+      "touch_points": [],
+      "matched_queries": [
+        "composite datum typmod shape"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:5461",
+      "kind": "cf",
+      "title": "Stores short varlena in an array",
+      "status": "Rejected",
+      "date": "2025-01-25",
+      "first_date": "2024-12-25",
+      "url": "https://commitfest.postgresql.org/patch/5461/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2cc374ae-1aa4-449f-9fb4-41133b37d8a8@yeah.net"
+      ],
+      "authors": "Zongliang Quan (quanzl)",
+      "objectors": "",
+      "summary": "Stores short varlena in an array\nThreads: stored short varlena in array",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "rowtype stored in another table"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "revert:ec48314708262d8ea6cdcb83f803fc83dd89e721",
+      "kind": "revert",
+      "title": "Revert per-index collation version tracking feature.",
+      "status": "Reverted",
+      "date": "2021-05-07",
+      "first_date": "2020-11-15",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ec48314708262d8ea6cdcb83f803fc83dd89e721",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGLhj5t1fcjqAu8iD9B3ixJtsTNqyCCD4V0aTO9kAKAjjA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CA+hUKGJ_hk3rU==g2FpAMChb_4i+TJacpjjqFsinY-tRM3FBmA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/3044030.1618261159@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/HK0PR01MB22744393C474D503E16C8509F4709@HK0PR01MB2274.apcprd01.prod.exchangelabs.com",
+        "https://www.postgresql.org/message-id/flat/3564817.1618420687@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20210117215940.GE8560@telsasoft.com"
+      ],
+      "authors": "Thomas Munro, Tom Lane",
+      "objectors": "",
+      "summary": "Revert per-index collation version tracking feature.\nReverted commit(s): Doc: Document known problem with Windows collation versions.; Remove no-longer-relevant test case.; Fix bogus collation-version-recording logic.; Hide internal error for pg_collation_actual_version(<bad OID>).; Suppress \"warning: variable 'collcollate' set but not used\".",
+      "objection": "Design problems were discovered in the handling of composite types and\nrecord types that would cause some relevant versions not to be recorded.\nMisgivings were also expressed about the use of the pg_depend catalog\nfor this purpose.  We're out of time for this release so we'll revert\nand try again.\n\nCommits reverted:\n\n1bf946bd: Doc: Document known problem with Windows collation versions.\ncf002008: Remove no-longer-relevant test case.\nef387bed: Fix bogus collation-version-recording logic.\n0fb0a050: Hide internal error for pg_collation_actual_version(<bad OID>).\nff942057: Suppress \"warning: variable 'collcollate' set but not used\".\nd50e3b1f: Fix assertion in collation version lookup.\nf24b1569: Rethink extraction of collation dependencies.\n257836a7: Track collation versions for indexes.\ncd6f479e: Add pg_depend.refobjversion.\n7d1297df: Remove pg_collation.collversion.",
+      "touch_points": [
+        "catalog changes"
+      ],
+      "matched_queries": [
+        "find_composite_type_dependencies"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:2226",
+      "kind": "cf",
+      "title": "Store FullTransactionId in TwoPhaseFileHeader/GlobalTransactionData",
+      "status": "Withdrawn",
+      "date": "2019-09-04",
+      "first_date": "2019-08-01",
+      "url": "https://commitfest.postgresql.org/patch/2226/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALDaNm2fFeQC_SbM_LsSPNZG3HZ0SC34szY+451iW7oysAb8Cw@mail.gmail.com"
+      ],
+      "authors": "vigneshwaran C (vignesh.postgres)",
+      "objectors": "",
+      "summary": "Store FullTransactionId in TwoPhaseFileHeader/GlobalTransactionData\nThreads: Store FullTransactionId in TwoPhaseFileHeader/GlobalTransactionData",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "rowtype stored in another table"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "revert:8abbbbae610cd62faad4f9ec18e7cfa908593796",
+      "kind": "revert",
+      "title": "Revert \"Avoid race condition between \"GRANT role\" and \"DROP ROLE\"\".",
+      "status": "Reverted",
+      "date": "2025-09-16",
+      "first_date": "2025-02-21",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=8abbbbae610cd62faad4f9ec18e7cfa908593796",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABgZEgczOFicCJoqtrH9gbYMe_BV3Hq8zzCBRcMgmU6LRsihUA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAM6Zo8woa62ZFHtMKox6a4jb8qQ=w87R2L0K8347iE-juQL2EA@mail.gmail.com"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Avoid race condition between \"GRANT role\" and \"DROP ROLE\"\".\nReverted commit(s): Avoid race condition between \"GRANT role\" and \"DROP ROLE\".",
+      "objection": "This reverts commit 98fc31d6499163a0a781aa6f13582a07f09cd7c6.\nThat change allowed DROP OWNED BY to drop grants of the target\nrole to other roles, arguing that nobody would need those\nprivileges anymore.  But that's not so: if you're not superuser,\nyou still need admin privilege on the target role so you can\ndrop it.\n\nIt's not clear whether or how the dependency-based approach\nto solving the original problem can be adapted to keep these\ngrants.  Since v18 release is fast approaching, the sanest\nthing to do seems to be to revert this patch for now.  The\nrace-condition problem is low severity and not worth taking\nrisks for.\n\nI didn't force a catversion bump in 98fc31d64, so I won't do\nso here either.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "drop column row type dependency"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "revert:b4a07f532b40a64fb4714a3f7ab6063435411edb",
+      "kind": "revert",
+      "title": "Revert \"TupleHashTable: store additional data along with tuple.\"",
+      "status": "Reverted",
+      "date": "2025-01-13",
+      "first_date": "2025-01-11",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=b4a07f532b40a64fb4714a3f7ab6063435411edb",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/b9cbf0219a9859dc8d240311643ff4362fd9602c.camel@j-davis.com"
+      ],
+      "authors": "Jeff Davis",
+      "objectors": "",
+      "summary": "Revert \"TupleHashTable: store additional data along with tuple.\"\nReverted commit(s): TupleHashTable: store additional data along with tuple.",
+      "objection": "This reverts commit e0ece2a981ee9068f50c4423e303836c2585eb02 due to\nperformance regressions.",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "rowtype stored in another table"
+      ],
+      "from_hint": false,
+      "score": 0.103,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:3020",
+      "kind": "cf",
+      "title": "alter table set TABLE ACCESS METHOD",
+      "status": "Withdrawn",
+      "date": "2021-06-08",
+      "first_date": "2021-02-28",
+      "url": "https://commitfest.postgresql.org/patch/3020/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210228222530.GD20769@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "",
+      "summary": "alter table set TABLE ACCESS METHOD\nThreads: alter table set TABLE ACCESS METHOD",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "alter composite type typed table"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "wiki:Functions:1",
+      "kind": "do_not_want",
+      "title": "Enforce typmod for function inputs, function results and parameters for spi_prepare'd statements called from PLs",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Functions",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Enforce typmod for function inputs, function results and parameters for spi_prepare'd statements called from PLs\nSection: Functions\nLinked: Re: BUG #2917: spi_prepare doesn't accept typename aliases; RFC for adding typmods to functions",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "composite datum typmod shape"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "revert:e8d78581bb864369035c736a82ecfb57482a1a09",
+      "kind": "revert",
+      "title": "Revert \"Convert *GetDatum() and DatumGet*() macros to inline functions\"",
+      "status": "Reverted",
+      "date": "2022-09-12",
+      "first_date": "2022-09-12",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e8d78581bb864369035c736a82ecfb57482a1a09",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/8528fb7e-0aa2-6b54-85fb-0c0886dbd6ed@enterprisedb.com"
+      ],
+      "authors": "Peter Eisentraut",
+      "objectors": "",
+      "summary": "Revert \"Convert *GetDatum() and DatumGet*() macros to inline functions\"\nReverted commit(s): Convert *GetDatum() and DatumGet*() macros to inline functions",
+      "objection": "This reverts commit 595836e99bf1ee6d43405b885fb69bb8c6d3ee23.\n\nIt has problems when USE_FLOAT8_BYVAL is off.",
+      "touch_points": [],
+      "matched_queries": [
+        "composite datum typmod shape"
+      ],
+      "from_hint": false,
+      "score": 0.098,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 8,
+    "new_calls": 0,
+    "failed": 0,
+    "quotes_verified": 0,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 3
+  },
+  "precedent_cutoff": "2026-08-17",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent in the list proposed or rejected this guard, so no earlier rejection reason applies. P6 accepted a back-patched behaviour change to prevent corrupt composite data, which supports this patch on the open backpatch question. Message #3 points to a related pgsql-bugs patch by the reviewer that extends find_composite_type_dependencies() to stored expressions; the thread does not say that patch was rejected."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "The bug is real and the fix reuses an existing check, so these objections concern the user-facing contract only."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 2,
+      "note": "The patch adds no WAL records, catalog columns, protocol messages or on-disk format changes. Both objections concern data that already exists in the field, not new state that this patch creates."
+    },
+    {
+      "angle": "security",
+      "objections": 1,
+      "note": "The only privilege issue found is that a non-owner can block the owner's DDL. The error message names the other relation, but the existing ALTER COLUMN TYPE refusal already does this, so it is not raised."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 0,
+      "note": "From the maintenance and fit angle there is nothing to object to. The patch adds a call to the existing find_composite_type_dependencies() from ATExecDropColumn(). That matches how ALTER ... ALTER ATTRIBUTE TYPE already refuses, adds no new mechanism, GUC or API, and costs only a catalog scan during DROP COLUMN and DROP ATTRIBUTE. Nothing runs per tuple or per query, and it fixes data corruption that has to live in core. The patch also does not say whether it should go in alone or together with the reviewer's patch for constants inside expressions (message #3), nor whether it is to be backpatched. Those are scope and backpatch questions for the thread, and no failure scenario follows from them in this angle. No precedent applies: [P6] concerns whole-row Var labeling, and [P4] and [P9] concern enum ADD VALUE."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "Postgres has no feature, setting or extension that stops this data corruption, and the patch extends the existing find_composite_type_dependencies() check without adding a second mechanism. The reviewer's pgsql-bugs patch in message #3 adds to the same function and covers a different case, so it does not duplicate this one."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "Demand for fixing silent data corruption is not in doubt. The one objection asks for the cost to existing users to be weighed and a migration path to be stated."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 7,
+      "new_survived": 4,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "synthesis said NEEDS-COMMITTER-EYES but listed a level 1b objection (standards-compat-1); changed to NEEDS-DESIGN-DISCUSSION"
+  ],
+  "tone_lint": {
+    "fields_checked": 81,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 11,
+    "wall_ms": 126761,
+    "cost_usd": 1.3765032,
+    "dry_run": false
+  }
+}

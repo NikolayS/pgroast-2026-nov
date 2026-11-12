@@ -1,0 +1,1613 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:19:43.844Z",
+  "input": {
+    "arg": "7102",
+    "cf": {
+      "id": 7102,
+      "url": "https://commitfest.postgresql.org/patch/7102/",
+      "title": "Parallel heap vacuum",
+      "status": "Needs review",
+      "authors": "Masahiko Sawada (masahikosawada), Bharath Rupireddy (bharathrupireddy)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAD21AoAEfCNv-GgaDheDJ%2Bs-p_Lv1H24AiJeNoPGCmZNSwL1YA%40mail.gmail.com",
+    "subject": "Parallel heap vacuum",
+    "thread_start": "2024-06-28T04:13:25Z",
+    "messages_read": 137,
+    "messages_total": 137,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v18-0005-Add-more-parallel-vacuum-tests.patch",
+      "v18-0004-Support-parallelism-for-collecting-dead-items-du.patch",
+      "v18-0002-vacuumparallel.c-Support-parallel-vacuuming-for-.patch",
+      "v18-0001-Introduces-table-AM-APIs-for-parallel-table-vacu.patch",
+      "v18-0003-Move-lazy-heap-scan-related-variables-to-new-str.patch",
+      "parallel_heap_vacuum_scan.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection is fatal, and several committers in the thread accept the goal. The open points are fixable: heap scan workers start by default with no separate switch (standards-compat-1, standards-compat-2), autovacuum reach is not stated (demand-1), and v21 does not state why the merged relfrozenxid stays safe after a scan restart (replication-ondisk-1). The last point needs a committer who knows vacuumlazy.c. Most of v21's text is not visible, so confidence is medium.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Parallel workers for the heap scan phase of vacuum",
+    "problem": "Parallel vacuum today covers only index vacuuming and cleanup, so one process always scans the heap. Large tables without indexes, or vacuums run with INDEX_CLEANUP off for fast freezing, get no benefit from more workers.",
+    "proposed_design": "Vacuum phase 1 (heap scan, pruning, freezing, dead TID collection) runs in the leader plus parallel workers. Each process claims fixed-size chunks of blocks, writes into a shared dead TID store, and the leader merges per-worker scan results, including relfrozenxid and relminmxid. In v21 the parallel heap scan lives in vacuumlazy.c and reuses helpers split out of vacuumparallel.c, with no table AM callbacks; phase 3 stays serial.",
+    "user_visible_surface": [
+      "The VACUUM PARALLEL option now also covers the heap scan phase, with the worker count based on table size.",
+      "min_parallel_table_scan_size now decides whether a table gets a parallel heap scan in vacuum.",
+      "VACUUM VERBOSE reports workers launched for collecting dead tuples.",
+      "Earlier versions (v18) added table AM callbacks such as parallel_vacuum_compute_workers; v21 drops them."
+    ],
+    "author_claims": [
+      "In the v21 best-case benchmark, phase 1 is 2.4x to 4.3x faster on a 10GB table with 2 to 8 workers.",
+      "On a 50GB storage-bound table, phase 1 gains 1.5x to 3.6x.",
+      "Total VACUUM time improves 1.1x to 1.5x with indexes and up to 4.3x without.",
+      "A 32K-block chunk, matching one VM page, avoids VM page contention that a 1K chunk causes.",
+      "The shared TID store lock costs 11% to 17% of phase 1 at 4 to 8 workers."
+    ],
+    "thread_state": "Bharath Rupireddy posted v21 on 2026-11-11 after moving the parallel scan into vacuumlazy.c; no replies to v20 or v21 are visible. Earlier objections from Andres Freund, Melanie Plageman, Robert Haas and Tomas Vondra on layering and the eager scanning interaction may or may not be settled.",
+    "unclear": [
+      "The v21 documentation hunks are not shown, so the final wording of the PARALLEL option change is unknown.",
+      "The material does not show whether v21 keeps eager scanning working, which Andres Freund and Melanie Plageman required.",
+      "No cold-cache or real-disk results for v21; Amit Kapila asked for these earlier.",
+      "No way to enable parallel heap scan per table or per phase; Melanie Plageman raised this.",
+      "The material does not say whether autovacuum can use parallel heap scan."
+    ],
+    "search_queries": [
+      "parallel heap vacuum",
+      "parallel lazy vacuum heap scan",
+      "vacuum parallel workers table scan",
+      "parallel vacuum table AM callbacks",
+      "shared TidStore dead tuples parallel",
+      "vacuum PARALLEL option heap",
+      "parallel autovacuum workers",
+      "multiple workers vacuum single table"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P4",
+      "source_id": "cf:734",
+      "title": "Block level parallel vacuum",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/734/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAD21AoD1xAqp4zK-Vi1cuY3feq2oO8HcpJiz32UDUfe0BE31Xw@mail.gmail.com"
+      ],
+      "date": "2016-10-03",
+      "first_date": "2016-08-23",
+      "who_objected": "Robert Haas, Claudio Freire, Michael Paquier, Pavan Deolasee",
+      "quote": "This doesn't seem like a good design, because it adds a lot of extra index scanning work.",
+      "quote_url": "https://www.postgresql.org/message-id/CA%2BTgmobV6%2BZPTNE3Z%2B08D9Xp7UK%2BmSq-rztOW%2B%3DRGsr5-pKiUA%40mail.gmail.com",
+      "enriched": true,
+      "reason": "Reviewers rejected the design because each worker scans every index, which adds index scanning work and makes workers contend for cleanup locks on the same index pages; the author's own benchmark showed index vacuum getting slower with more workers. Robert Haas proposed a parallel heap scan with a shared dead tuple array and one worker per index, and the author agreed. While reworking the patch, the author hit an unsolved problem: parallel workers in one lock group can extend the FSM or VM at the same time and fail. The entry was then closed for lack of activity after the feedback was given.",
+      "relation": "similar_idea",
+      "what_is_different": "P4 had each worker scan a fixed heap range and then vacuum every index. v21 parallelizes only phase 1 into one shared dead TID store, keeps one worker per index, and leaves phase 3 serial."
+    },
+    {
+      "precedent_id": "P6",
+      "source_id": "cf:954",
+      "title": "Block level parallel vacuum",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/954/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAD21AoD1xAqp4zK-Vi1cuY3feq2oO8HcpJiz32UDUfe0BE31Xw@mail.gmail.com"
+      ],
+      "date": "2017-03-05",
+      "first_date": "2016-08-23",
+      "who_objected": "Robert Haas",
+      "quote": "I think there are too many issues here to address in the limited time we have remaining this cycle, and I believe that if we try to get them all solved in the next few weeks we're likely to end up getting backed into some choices by time pressure that we may later regret bitterly.",
+      "quote_url": "https://www.postgresql.org/message-id/CA%2BTgmobLcu_q7-0-rqiBuzowZ1J-ywDHdgBJzXdSx978JPorKA%40mail.gmail.com",
+      "enriched": true,
+      "reason": "Robert Haas proposed moving the patch to v11 because it still had too many open issues for the rest of the cycle, among them deadlock problems that need careful changes. The patch was also not in reviewable shape by March 1st. The author agreed that the design needed more discussion, and David Steele marked it Returned with Feedback.",
+      "relation": "similar_idea",
+      "what_is_different": "P6 changed buffer locking so several processes could wait for one cleanup lock, and added a vacuum_parallel_workers GUC. v21 does neither; workers claim disjoint 32K-block chunks and reuse the PARALLEL option."
+    },
+    {
+      "precedent_id": "P2",
+      "source_id": "cf:1223",
+      "title": "Block level parallel vacuum",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/1223/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAD21AoD1xAqp4zK-Vi1cuY3feq2oO8HcpJiz32UDUfe0BE31Xw@mail.gmail.com"
+      ],
+      "date": "2017-11-30",
+      "first_date": "2016-08-23",
+      "who_objected": "Michael Paquier",
+      "quote": "So I propose to mark this patch as returned with feedback for now, and come back to it once the root problems are addressed.",
+      "quote_url": "https://www.postgresql.org/message-id/CAB7nPqQiUYFEKnUUSMahDHA1bAqDLyMW0mjFHnUub%3DTZstr64A%40mail.gmail.com",
+      "enriched": true,
+      "reason": "Michael Paquier returned the patch in November 2017 because it depended on a separate extension lock patch, and he proposed coming back once those root problems were addressed. A regression failure (\"cache lookup failed for relation\" from DROP SCHEMA ... CASCADE) was also still unexplained. The first round in 2016 was returned for lack of activity, after early tests showed index vacuum slowing down with more workers because of cleanup lock contention on index buffers.",
+      "relation": "similar_idea",
+      "what_is_different": "P2 was returned because it depended on a separate extension lock patch. v21 does not depend on another lock patch and keeps the phase 1 heap scan apart from index work."
+    },
+    {
+      "precedent_id": "P5",
+      "source_id": "revert:cc32ec24fdf3b9808617439d41b0ba7f3eb16b04",
+      "title": "Revert the commits related to allowing page lock to conflict among parallel group members.",
+      "kind": "revert",
+      "status": "Reverted",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=cc32ec24fdf3b9808617439d41b0ba7f3eb16b04",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJKUy5jffnRKNvRHKQ0LynRb0RJC-o4P8Ku3x9vGAVLwDBWumQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAD21AoCmT3cFQUN4aVvzy5chw7DuzXrJCbrjTU05B+Ss=Gn1LA@mail.gmail.com"
+      ],
+      "date": "2023-07-06",
+      "first_date": "2020-03-19",
+      "who_objected": "",
+      "quote": "We can acquire a lock on catalogs while doing catalog look up after acquring page lock.",
+      "quote_url": null,
+      "enriched": false,
+      "reason": "This commit reverts the work done by commits 3ba59ccc89 and 72e78d831a.\nThose commits were incorrect in asserting that we never acquire any other\nheavy-weight lock after acquring page lock other than relation extension\nlock. We can acquire a lock on catalogs while doing catalog look up after\nacquring page lock.\n\nThis won't impact any existing feature but we need to think some other way\nto achieve this before parallelizing other write operations or even\nimproving the parallelism in vacuum (like allowing multiple workers\nfor an index).",
+      "relation": "related_only",
+      "what_is_different": "The revert concerns page locks among parallel group members and names several workers per index as the risk. v21's phase 1 works on heap pages only and does not put several workers on one index."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Existing VACUUM commands start heap scan workers without asking",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "desirability",
+      "touch_points": [
+        "backpatchability",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site runs nightly `vacuum` on large tables, or `vacuum (parallel 2)` sized for its indexes. After upgrade, each run also starts heap scan workers sized by table size. These workers take slots from max_parallel_maintenance_workers and add I/O during the maintenance window, and the DBA finds out from load graphs or new VACUUM VERBOSE lines.",
+      "argument": "The documentation hunk widens PARALLEL from index phases to heap scanning, and a bare `vacuum` already defaults to choosing a degree, so the new phase is on by default. In message #98 Andres notes that nightly vacuums are common and that the feature is enabled by default. In message #97 Melanie expected a separate switch for heap parallelism and did not find one. No visible version adds such a switch.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        97,
+        98,
+        100
+      ],
+      "author_must_show": "Why is it right for existing VACUUM invocations to gain heap scan workers by default, and how does a user keep only the old index-only parallel behavior?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 97,
+          "from": "Melanie Plageman",
+          "date": "2025-04-05T20:16:56Z",
+          "url": "https://www.postgresql.org/message-id/CAAKRu_atVy1RAOwRFwEAy0is-mRPay0cxGUO%2B%2BSdOCHgB-bSKQ%40mail.gmail.com"
+        },
+        {
+          "index": 98,
+          "from": "Andres Freund",
+          "date": "2025-04-05T20:32:00Z",
+          "url": "https://www.postgresql.org/message-id/qqguhicg3gvzs6z6enomx4mpcowvlknxuwtelbhmivmkdj622s%40bgo25mtkeoxe"
+        },
+        {
+          "index": 100,
+          "from": "Melanie Plageman",
+          "date": "2025-04-06T18:51:10Z",
+          "url": "https://www.postgresql.org/message-id/CAAKRu_ajnk7J4LjOXqh2V1%3DFZpTMkTpKZACpZ4tCt7UR3o9tqw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The v18 documentation hunk puts heap scanning under the existing PARALLEL option, and a bare VACUUM already chooses a degree. Messages #97 and #98 raise the default-on concern, and no visible version adds a separate switch.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Users with the clearest need run autovacuum, which this does not reach",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator has autovacuum stuck for hours on one large table, holding back the freeze horizon. They upgrade expecting faster heap scans, but autovacuum still scans the heap with one process. They gain only if they replace autovacuum with scheduled manual VACUUM (PARALLEL n).",
+      "argument": "Most of the demand in the thread is about autovacuum. Andres Freund describes autovacuum bound by CPU or I/O on one large table (messages #129, #133), and he called parallel vacuum without autovacuum integration a mistake not to repeat (message #98). Message #99 deferred this, and message #128 points to a separate autovacuum patch for index vacuuming only. The v21 material does not say whether autovacuum can use the parallel heap scan, so the benefit goes to manual VACUUM users while the whole project carries the code.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        98,
+        99,
+        128,
+        129,
+        133
+      ],
+      "author_must_show": "Can autovacuum, including the wraparound failsafe path, use the parallel heap scan in v21, and if not, which users who run manual VACUUM asked for it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 98,
+          "from": "Andres Freund",
+          "date": "2025-04-05T20:32:00Z",
+          "url": "https://www.postgresql.org/message-id/qqguhicg3gvzs6z6enomx4mpcowvlknxuwtelbhmivmkdj622s%40bgo25mtkeoxe"
+        },
+        {
+          "index": 99,
+          "from": "Masahiko Sawada",
+          "date": "2025-04-06T05:01:34Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoA9eJ0Qx%3D3h77__K5ssj8R3KoVY3Uw5P7vux8HmJMRKBg%40mail.gmail.com"
+        },
+        {
+          "index": 128,
+          "from": "Masahiko Sawada",
+          "date": "2025-09-17T23:18:31Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoAR79ai9bXLoqKyYzcYEgpOvd1y7eGqO7OGHpC_qQ%2Bi1Q%40mail.gmail.com"
+        },
+        {
+          "index": 129,
+          "from": "Andres Freund",
+          "date": "2025-09-17T23:22:02Z",
+          "url": "https://www.postgresql.org/message-id/xymq6plhuujm6rpb3hyqpwqkqo3q6kdx2a6nnei6sgpbzzj7lb%40ejwunmymqgxb"
+        },
+        {
+          "index": 133,
+          "from": "Andres Freund",
+          "date": "2025-09-18T00:43:22Z",
+          "url": "https://www.postgresql.org/message-id/toxt6ppr2swqrclx5kni3hdy4c2xqcdbojup2xwjlgsui3mwp7%40wqg3liamu44k"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Manual-only parallelism copies the existing parallel index vacuum, and message #98 says nightly manual vacuums are common, so some demand exists. But message #98 asks not to extend manual-only parallelism, and the v21 material does not say whether autovacuum can use the heap scan.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Measured gain is large only for tables without indexes or with warm cache",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA with a typical indexed table on network storage runs VACUUM (PARALLEL 8). Index vacuuming and phase 3 dominate the run time, so total time improves about 1.1x while eight workers compete with the user workload. They see little benefit and do not know which tables would gain more.",
+      "argument": "The v21 numbers in message #137 show total VACUUM gains of 1.1x to 1.5x once indexes exist, with warm caches and local NVMe. Tomas Vondra measured gains only without indexes and asked which workloads would benefit (message #122). Cold-cache phase 1 scaled less than expected (message #60), and message #137 has no cold-cache results. The remaining answer is INDEX_CLEANUP off for fast freezing (message #128), but no field report shows how often users run that by hand.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        60,
+        122,
+        128,
+        137
+      ],
+      "author_must_show": "Which production workloads, such as large index-free tables or manual INDEX_CLEANUP off freezing runs, are reported to need this, and what do cold-cache results on network storage show?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 60,
+          "from": "Masahiko Sawada",
+          "date": "2025-03-07T17:36:07Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoAHoU_dj0AJcTVRY%3DzL1jOcnkcihh9Y_Xuw7%2BEhBT9a5Q%40mail.gmail.com"
+        },
+        {
+          "index": 122,
+          "from": "Tomas Vondra",
+          "date": "2025-09-17T11:25:11Z",
+          "url": "https://www.postgresql.org/message-id/df858858-72da-4649-aaf9-ab97e4fb2d6f%40vondra.me"
+        },
+        {
+          "index": 128,
+          "from": "Masahiko Sawada",
+          "date": "2025-09-17T23:18:31Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoAR79ai9bXLoqKyYzcYEgpOvd1y7eGqO7OGHpC_qQ%2Bi1Q%40mail.gmail.com"
+        },
+        {
+          "index": 137,
+          "from": "Bharath Rupireddy",
+          "date": "2026-11-11T21:33:40Z",
+          "url": "https://www.postgresql.org/message-id/CALj2ACWtW0jCRddhpPG2t_ahX87fkbxZXj1ZKKPh3AnCT7gWjQ%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #128 answers the question in message #122 with the INDEX_CLEANUP off case, and v21 shows 1.5x to 3.6x on a storage-bound table. But v21 has no cold-cache results, and the earlier cold-cache run in message #60 scaled less than expected.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "relfrozenxid advance across workers and scan restarts lacks a stated invariant",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "design",
+      "touch_points": [
+        "catalog",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A large table fills maintenance_work_mem, so vacuum pauses phase 1 for index and heap vacuuming, then relaunches fewer workers. If a partly claimed 32K-block chunk is never finished, the leader can still store a merged relfrozenxid that is newer than unfrozen XIDs in those blocks. Nobody notices until clog truncation or wraparound, when those tuples read as invisible or fail.",
+      "argument": "The leader sets pg_class.relfrozenxid and relminmxid from the minimum of per-worker values, and the reported scanned_pages and skippedallvis decide whether it advances at all. Message #82 and message #108 show that resuming after a TID store cycle with fewer workers needed special takeover logic, and message #90 found a block-assignment bug in the skip path. Message #137 redesigns the scan with fixed chunks in vacuumlazy.c but does not say how every unskippable block is still covered. Melanie asked in message #90 for the reasoning to be written down because the merge is the place where a mistake leads to lost data.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        82,
+        90,
+        108,
+        137
+      ],
+      "author_must_show": "In v21, what guarantees that every block not skipped through the VM is scanned before the merged relfrozenxid is stored, including after a phase 1 restart with fewer workers?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 82,
+          "from": "Masahiko Sawada",
+          "date": "2025-03-20T08:35:42Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoC%2Bb8An4%3DbiuSCurxv1cTgfDyQzmBvdR%2BgisRj-qq5U_w%40mail.gmail.com"
+        },
+        {
+          "index": 90,
+          "from": "Melanie Plageman",
+          "date": "2025-03-26T20:00:38Z",
+          "url": "https://www.postgresql.org/message-id/CAAKRu_aS_k751daj0QfO%2B5ZgLDz8LP1Wo_b5%3DRRKt6%3Df6OStLg%40mail.gmail.com"
+        },
+        {
+          "index": 108,
+          "from": "Masahiko Sawada",
+          "date": "2025-06-13T20:05:55Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoB2zAeGjAARs5uExy66ZrYpfL5h_PQHQuCE6Dm%3D3rvSUw%40mail.gmail.com"
+        },
+        {
+          "index": 137,
+          "from": "Bharath Rupireddy",
+          "date": "2026-11-11T21:33:40Z",
+          "url": "https://www.postgresql.org/message-id/CALj2ACWtW0jCRddhpPG2t_ahX87fkbxZXj1ZKKPh3AnCT7gWjQ%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Earlier versions had the leader finish unclaimed work and tested it (message #108), but v21 replaces the scan with a new fixed-chunk design. The visible v21 text does not say why every unskippable block is covered after a restart.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Turning off heap scan workers also changes parallel seq scan plans",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "new_guc",
+      "touch_points": [
+        "new_guc",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA wants vacuum to stop using heap scan workers on one large table. The only knob given is min_parallel_table_scan_size, so the DBA raises it. Queries on all tables then lose parallel sequential scans, and the DBA finds out when reports run slower.",
+      "argument": "In message #99 the author names min_parallel_table_scan_size as the way to disable the parallel heap scan. In message #100 Melanie notes that this setting also drives parallel sequential scans and can only be set globally, and she asks for per-phase control. Nothing visible after that adds a reloption or a VACUUM option for heap scan parallelism, and the brief lists this as open. Reusing a planner setting to control a maintenance phase ties two unrelated behaviors to one knob.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        99,
+        100
+      ],
+      "author_must_show": "How can a user disable or limit parallel heap scanning for one table or one VACUUM run without changing parallel query planning?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 99,
+          "from": "Masahiko Sawada",
+          "date": "2025-04-06T05:01:34Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoA9eJ0Qx%3D3h77__K5ssj8R3KoVY3Uw5P7vux8HmJMRKBg%40mail.gmail.com"
+        },
+        {
+          "index": 100,
+          "from": "Melanie Plageman",
+          "date": "2025-04-06T18:51:10Z",
+          "url": "https://www.postgresql.org/message-id/CAAKRu_ajnk7J4LjOXqh2V1%3DFZpTMkTpKZACpZ4tCt7UR3o9tqw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The scenario is overstated, because min_parallel_table_scan_size can be set in the session that runs VACUUM. The request in message #100 for per-table or per-phase control is still unanswered, and reusing a planner setting needs a stated reason.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Two phase 1 code paths, and the parallel one rarely runs in tests",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch changes eager scanning, SKIP_PAGES_THRESHOLD handling or relfrozenxid tracking in the serial heap scan and passes make check. The parallel path, with its own chunk logic and its leader-side merge of NewRelfrozenXid and NewRelminMxid, is not updated. A user running VACUUM (PARALLEL) on a large table gets a wrong relfrozenxid and finds out only at a later truncation or lookup error.",
+      "argument": "Message #82 shows the parallel scan already differs from the serial one in block assignment, and message #90 found loop and chunk bugs that exist only in that path. Message #90 also asked for comments because parallel relfrozenxid advancement is easy to get wrong. A heap scan in parallel needs a table above min_parallel_table_scan_size, so regression tables will not use it unless something forces it. The only extra tests visible are injection-point tests from v18 (message #108).",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        82,
+        90,
+        108,
+        137
+      ],
+      "author_must_show": "What makes the buildfarm run the parallel phase 1 path on every run, so that a change to serial phase 1 that breaks it fails loudly?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 82,
+          "from": "Masahiko Sawada",
+          "date": "2025-03-20T08:35:42Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoC%2Bb8An4%3DbiuSCurxv1cTgfDyQzmBvdR%2BgisRj-qq5U_w%40mail.gmail.com"
+        },
+        {
+          "index": 90,
+          "from": "Melanie Plageman",
+          "date": "2025-03-26T20:00:38Z",
+          "url": "https://www.postgresql.org/message-id/CAAKRu_aS_k751daj0QfO%2B5ZgLDz8LP1Wo_b5%3DRRKt6%3Df6OStLg%40mail.gmail.com"
+        },
+        {
+          "index": 108,
+          "from": "Masahiko Sawada",
+          "date": "2025-06-13T20:05:55Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoB2zAeGjAARs5uExy66ZrYpfL5h_PQHQuCE6Dm%3D3rvSUw%40mail.gmail.com"
+        },
+        {
+          "index": 137,
+          "from": "Bharath Rupireddy",
+          "date": "2026-11-11T21:33:40Z",
+          "url": "https://www.postgresql.org/message-id/CALj2ACWtW0jCRddhpPG2t_ahX87fkbxZXj1ZKKPh3AnCT7gWjQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "wrong_facts",
+        "reasoning": "The v18 patch touches the vacuum_parallel regression test, and message #136 says v20 includes tests, so injection-point tests are not the only coverage. A regression test can lower min_parallel_table_scan_size, as vacuum_parallel.sql already does for min_parallel_index_scan_size.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Existing VACUUM commands start heap workers without being asked",
+      "level": "2",
+      "rubric_item": 4,
+      "category": "design",
+      "touch_points": [
+        "new_guc",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site runs a nightly plain VACUUM or VACUUM (PARALLEL 4) to get parallel index vacuuming. After upgrade the same command also launches heap scan workers sized by table size, which raises I/O and uses up max_parallel_maintenance_workers. The only way to turn the heap part off is min_parallel_table_scan_size, which also changes parallel sequential scans for queries.",
+      "argument": "Message #100 noted that min_parallel_table_scan_size is global and shared with parallel seq scan, and asked for a way to control parallelism per phase. Message #97 shows that a reviewer accepted an earlier trade-off only because she assumed a separate switch existed. Message #98 objects to features that are on by default and change existing behaviour. The brief lists no per-table or per-phase control in v21.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        97,
+        98,
+        100
+      ],
+      "author_must_show": "How does a user keep parallel index vacuuming but turn off the parallel heap scan for one table, without changing parallel query settings?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 97,
+          "from": "Melanie Plageman",
+          "date": "2025-04-05T20:16:56Z",
+          "url": "https://www.postgresql.org/message-id/CAAKRu_atVy1RAOwRFwEAy0is-mRPay0cxGUO%2B%2BSdOCHgB-bSKQ%40mail.gmail.com"
+        },
+        {
+          "index": 98,
+          "from": "Andres Freund",
+          "date": "2025-04-05T20:32:00Z",
+          "url": "https://www.postgresql.org/message-id/qqguhicg3gvzs6z6enomx4mpcowvlknxuwtelbhmivmkdj622s%40bgo25mtkeoxe"
+        },
+        {
+          "index": 100,
+          "from": "Melanie Plageman",
+          "date": "2025-04-06T18:51:10Z",
+          "url": "https://www.postgresql.org/message-id/CAAKRu_ajnk7J4LjOXqh2V1%3DFZpTMkTpKZACpZ4tCt7UR3o9tqw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1 (heap workers on by default) and standards-compat-2 (min_parallel_table_scan_size as the only switch).",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Parallel heap scan helps only manual VACUUM, not autovacuum",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "desirability",
+      "touch_points": [
+        "maintenance_burden",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A large table holds back the freeze horizon because one autovacuum worker scans it alone. Its users cannot use the new feature unless they schedule manual VACUUM, and the project then carries a second mechanism that only manual VACUUM can use.",
+      "argument": "Message #98 calls the index-only, manual-only vacuum parallelism a mistake and asks the project not to go further down that road. Message #99 agreed to consider this point for the next cycle. Message #129 and message #133 describe autovacuum bottlenecked on one large table by CPU or I/O, which is the case this proposal targets. The material does not say whether v21 or the separate autovacuum patch in message #128 lets autovacuum use parallel workers for the heap scan.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        98,
+        99,
+        128,
+        129,
+        133
+      ],
+      "author_must_show": "Can autovacuum use the v21 parallel heap scan once the parallel autovacuum patch lands, and what in the v21 design would block or allow that?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 98,
+          "from": "Andres Freund",
+          "date": "2025-04-05T20:32:00Z",
+          "url": "https://www.postgresql.org/message-id/qqguhicg3gvzs6z6enomx4mpcowvlknxuwtelbhmivmkdj622s%40bgo25mtkeoxe"
+        },
+        {
+          "index": 99,
+          "from": "Masahiko Sawada",
+          "date": "2025-04-06T05:01:34Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoA9eJ0Qx%3D3h77__K5ssj8R3KoVY3Uw5P7vux8HmJMRKBg%40mail.gmail.com"
+        },
+        {
+          "index": 128,
+          "from": "Masahiko Sawada",
+          "date": "2025-09-17T23:18:31Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoAR79ai9bXLoqKyYzcYEgpOvd1y7eGqO7OGHpC_qQ%2Bi1Q%40mail.gmail.com"
+        },
+        {
+          "index": 129,
+          "from": "Andres Freund",
+          "date": "2025-09-17T23:22:02Z",
+          "url": "https://www.postgresql.org/message-id/xymq6plhuujm6rpb3hyqpwqkqo3q6kdx2a6nnei6sgpbzzj7lb%40ejwunmymqgxb"
+        },
+        {
+          "index": 133,
+          "from": "Andres Freund",
+          "date": "2025-09-18T00:43:22Z",
+          "url": "https://www.postgresql.org/message-id/toxt6ppr2swqrclx5kni3hdy4c2xqcdbojup2xwjlgsui3mwp7%40wqg3liamu44k"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of demand-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Heap-only placement leaves other table AMs to copy the code",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension table AM that is mostly heap wants a parallel table scan in its vacuum. With the scan inside vacuumlazy.c, it copies the leader and worker setup, chunk claiming and result merging, and later fixes to the core copy do not reach it.",
+      "argument": "Message #117 wants such AMs to avoid more duplication of heapam code, and message #127 calls a half-generic design the worst outcome. Message #137 moves the scan into vacuumlazy.c to avoid the library-preload problem of the v20 callbacks, which is a fair reason. It also leaves no reusable interface for other table AMs, and the prose does not say which helpers split out of vacuumparallel.c other AMs could use.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        117,
+        123,
+        127,
+        137
+      ],
+      "author_must_show": "Which parts of the v21 parallel scan could a non-heap table AM call directly, and which would it have to copy?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 117,
+          "from": "Robert Haas",
+          "date": "2025-07-25T17:40:10Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmoaxu8w0ieP7ofKvbY5T5qnvOG%3DAhVka19QMhG-nuXuVzQ%40mail.gmail.com"
+        },
+        {
+          "index": 123,
+          "from": "Robert Haas",
+          "date": "2025-09-17T16:01:47Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmob_WzU84cdRjVUFk7D_TaDZ6p-31t23%3DH5Dyy%3DjPohETQ%40mail.gmail.com"
+        },
+        {
+          "index": 127,
+          "from": "Robert Haas",
+          "date": "2025-09-17T17:17:30Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BTgmoaHosc%3DC9rywziRDyYc-r83MM0v_8_uzPXDKVLMRA4h4Q%40mail.gmail.com"
+        },
+        {
+          "index": 137,
+          "from": "Bharath Rupireddy",
+          "date": "2026-11-11T21:33:40Z",
+          "url": "https://www.postgresql.org/message-id/CALj2ACWtW0jCRddhpPG2t_ahX87fkbxZXj1ZKKPh3AnCT7gWjQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-4",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "The thread weighed this: messages #114 and #123 reject table AM callbacks, and messages #122 and #127 accept shared helpers as one option. v21-0001 moves the reusable code in vacuumparallel.c into separate functions, which other table AMs can already call.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "see objection replication-ondisk-1: relfrozenxid advance across workers and scan restarts lacks a stated invariant"
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "see objection replication-ondisk-1: relfrozenxid advance across workers and scan restarts lacks a stated invariant"
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "v18 added five table AM callbacks in tableam.h; v21 drops them and splits helpers out of vacuumparallel.c instead."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": true,
+      "reason": "No new GUC, but min_parallel_table_scan_size gains a second meaning as the threshold for the parallel heap scan in vacuum."
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": true,
+      "reason": "see objection standards-compat-2: Turning off heap scan workers also changes parallel seq scan plans"
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "see objection standards-compat-1: Existing VACUUM commands start heap scan workers without asking"
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "vacuumlazy.c gains a parallel phase 1 path with a leader-side merge of relfrozenxid and relminmxid next to the serial path."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Workers take an exclusive lock on the shared dead TID store; the author reports 11% to 17% of phase 1 at 4 to 8 workers."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "see objection demand-1: Users with the clearest need run autovacuum, which this does not reach"
+    }
+  ],
+  "questions": [
+    "In v21, what guarantees that every block not skipped through the VM is scanned before the merged relfrozenxid is stored, including after a phase 1 restart with fewer workers?",
+    "How does a user keep parallel index vacuuming but turn off the parallel heap scan for one table or one VACUUM run, without changing min_parallel_table_scan_size?",
+    "Why is it right for an existing plain `vacuum` or `vacuum (parallel n)` to start heap scan workers by default after upgrade?",
+    "Can autovacuum, including the wraparound failsafe path, use the v21 parallel heap scan, and if not, what in the design allows adding that later?",
+    "What do cold-cache results on network storage show for v21, with and without indexes?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Masahiko Sawada, a committer, started the thread and co-authors the patch. A second reviewer who knows the phase 1 loop in vacuumlazy.c, eager scanning and relfrozenxid tracking should sign off on v21.",
+    "liability": "The owner signs for the merged relfrozenxid and relminmxid across workers and scan restarts, where a mistake loses data much later. The owner also keeps the parallel phase 1 path in step with every later change to the serial path.",
+    "author_follow_up": "Good sign: the thread has run since 2024-06, and Bharath Rupireddy posted v21 on 2026-11-11 after reworking the layering in response to review."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "high",
+    "review_cost": "high",
+    "recommended_action": "proceed",
+    "reason": "Large tables with slow vacuum are a known problem and reviewers in the thread accept the goal, but v21 shows large gains mainly without indexes. The patch adds a second phase 1 path in vacuumlazy.c with shared state, so review needs area experts; the control switch and the relfrozenxid invariant should be settled during that review."
+  },
+  "self_advice": [],
+  "provisional_note": "The v21 code, its documentation hunks and most of the 137 messages were not read. Coverage of every unskippable block after a restart, eager scanning in parallel mode, and what autovacuum can use cannot be judged without them.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:3404",
+      "kind": "cf",
+      "title": "Skip vacuum log report code in lazy_scan_heap() if possible",
+      "status": "Rejected",
+      "date": "2021-12-04",
+      "first_date": "2021-10-29",
+      "url": "https://commitfest.postgresql.org/patch/3404/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJcOf-fH5FGsF3mpPL1m5yHLeR0HdXWQp9RA=LnHu0Qd=eq9DA@mail.gmail.com"
+      ],
+      "authors": "Greg Nancarrow (gregn1234)",
+      "objectors": "Andres Freund, Peter Geoghegan",
+      "summary": "The patch makes lazy_scan_heap() skip the formatting of its end-of-scan vacuum log report when nothing would be logged. Without VERBOSE that report is logged at DEBUG2, so the work usually produces no output.",
+      "objection": "lazy_scan_heap() runs once per relation, so the code path is not hot and the change saves no measurable time. Andres Freund also said the skip reduces test coverage of the report code, and Michael Paquier accepted that argument. Peter Geoghegan noted that his patch to unite VACUUM VERBOSE and autovacuum logging would remove the issue, so the entry was rejected in favour of that patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel heap vacuum",
+        "parallel lazy vacuum heap scan",
+        "vacuum PARALLEL option heap"
+      ],
+      "from_hint": false,
+      "score": 0.424,
+      "enriched": true,
+      "key_quote": "I think this mostly reduces the coverage of the relevant code without any\nmeasurable speed gain.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20211203011344.lkxqyzhnm6jopubh%40alap3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:1223",
+      "kind": "cf",
+      "title": "Block level parallel vacuum",
+      "status": "Returned with feedback",
+      "date": "2017-11-30",
+      "first_date": "2016-08-23",
+      "url": "https://commitfest.postgresql.org/patch/1223/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAD21AoD1xAqp4zK-Vi1cuY3feq2oO8HcpJiz32UDUfe0BE31Xw@mail.gmail.com"
+      ],
+      "authors": "Masahiko Sawada (masahikosawada)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch adds parallel workers to VACUUM: each worker scans a range of heap blocks, collects dead tuple locations and reclaims them, and the leader gathers the statistics and updates relfrozenxid. Later versions added progress reporting and a per-table parallel degree for autovacuum.",
+      "objection": "Michael Paquier returned the patch in November 2017 because it depended on a separate extension lock patch, and he proposed coming back once those root problems were addressed. A regression failure (\"cache lookup failed for relation\" from DROP SCHEMA ... CASCADE) was also still unexplained. The first round in 2016 was returned for lack of activity, after early tests showed index vacuum slowing down with more workers because of cleanup lock contention on index buffers.",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel heap vacuum",
+        "parallel vacuum table AM callbacks",
+        "vacuum PARALLEL option heap"
+      ],
+      "from_hint": false,
+      "score": 0.349,
+      "enriched": true,
+      "key_quote": "So I propose to mark this patch as\nreturned with feedback for now, and come back to it once the root\nproblems are addressed.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB7nPqQiUYFEKnUUSMahDHA1bAqDLyMW0mjFHnUub%3DTZstr64A%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:2987",
+      "kind": "cf",
+      "title": "Allow setting parallel_workers on partitioned tables",
+      "status": "Returned with feedback",
+      "date": "2021-09-04",
+      "first_date": "2021-02-15",
+      "url": "https://commitfest.postgresql.org/patch/2987/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/95b1dd96-8634-4545-b1de-e2ac779beb44@www.fastmail.com"
+      ],
+      "authors": "Seamus Abshere (seamusabshere)",
+      "objectors": "David Rowley",
+      "summary": "Allow the parallel_workers reloption on partitioned tables, so that the planner uses it to choose the number of workers for a Parallel Append over the partitions. A later version also let grouping relations take the setting from the partitioned table they read, for partitionwise aggregation.",
+      "objection": "David Rowley questioned the semantics: a high setting on the partitioned table can request more workers than the partitions use, and the number does not shrink when the planner or run-time pruning removes partitions. Laurenz Albe and Amit Langote agreed the design needed more thought, and Amit Langote suggested a separate parallel_append_workers option. The thread then stalled, the patch stopped applying, and Daniel Gustafsson marked it Returned with Feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "vacuum parallel workers table scan",
+        "parallel autovacuum workers",
+        "multiple workers vacuum single table"
+      ],
+      "from_hint": false,
+      "score": 0.349,
+      "enriched": true,
+      "key_quote": "If someone sets the partitioned table's parallel_workers high so that\nthey get a large number of workers when no partitions are pruned\nduring planning, do they really want the same number of workers in\nqueries where a large number of partitions are pruned?",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAApHDvruNYmZXc%2BojqXYfEby_JtNSqrYsC89f0zZKEBk05u0Jg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:734",
+      "kind": "cf",
+      "title": "Block level parallel vacuum",
+      "status": "Returned with feedback",
+      "date": "2016-10-03",
+      "first_date": "2016-08-23",
+      "url": "https://commitfest.postgresql.org/patch/734/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAD21AoD1xAqp4zK-Vi1cuY3feq2oO8HcpJiz32UDUfe0BE31Xw@mail.gmail.com"
+      ],
+      "authors": "Masahiko Sawada (masahikosawada)",
+      "objectors": "Robert Haas, Claudio Freire, Michael Paquier, Pavan Deolasee",
+      "summary": "The patch parallelizes VACUUM by giving each worker a fixed range of heap blocks, for which the worker collects dead tuples and then vacuums both the heap and all indexes. It also changes buffer locking so that several processes can wait for a cleanup lock, and adds a vacuum_parallel_workers GUC.",
+      "objection": "Reviewers rejected the design because each worker scans every index, which adds index scanning work and makes workers contend for cleanup locks on the same index pages; the author's own benchmark showed index vacuum getting slower with more workers. Robert Haas proposed a parallel heap scan with a shared dead tuple array and one worker per index, and the author agreed. While reworking the patch, the author hit an unsolved problem: parallel workers in one lock group can extend the FSM or VM at the same time and fail. The entry was then closed for lack of activity after the feedback was given.",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel heap vacuum",
+        "parallel vacuum table AM callbacks",
+        "vacuum PARALLEL option heap"
+      ],
+      "from_hint": false,
+      "score": 0.311,
+      "enriched": true,
+      "key_quote": "This doesn't seem like a good design, because it adds a lot of extra\nindex scanning work.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmobV6%2BZPTNE3Z%2B08D9Xp7UK%2BmSq-rztOW%2B%3DRGsr5-pKiUA%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:cc32ec24fdf3b9808617439d41b0ba7f3eb16b04",
+      "kind": "revert",
+      "title": "Revert the commits related to allowing page lock to conflict among parallel group members.",
+      "status": "Reverted",
+      "date": "2023-07-06",
+      "first_date": "2020-03-19",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=cc32ec24fdf3b9808617439d41b0ba7f3eb16b04",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJKUy5jffnRKNvRHKQ0LynRb0RJC-o4P8Ku3x9vGAVLwDBWumQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAD21AoCmT3cFQUN4aVvzy5chw7DuzXrJCbrjTU05B+Ss=Gn1LA@mail.gmail.com"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Revert the commits related to allowing page lock to conflict among parallel group members.\nReverted commit(s): Allow page lock to conflict among parallel group members.; Add assert to ensure that page locks don't participate in deadlock cycle.",
+      "objection": "This commit reverts the work done by commits 3ba59ccc89 and 72e78d831a.\nThose commits were incorrect in asserting that we never acquire any other\nheavy-weight lock after acquring page lock other than relation extension\nlock. We can acquire a lock on catalogs while doing catalog look up after\nacquring page lock.\n\nThis won't impact any existing feature but we need to think some other way\nto achieve this before parallelizing other write operations or even\nimproving the parallelism in vacuum (like allowing multiple workers\nfor an index).",
+      "touch_points": [
+        "catalog changes",
+        "security / privileges",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "parallel heap vacuum",
+        "shared TidStore dead tuples parallel",
+        "vacuum PARALLEL option heap"
+      ],
+      "from_hint": false,
+      "score": 0.309,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:954",
+      "kind": "cf",
+      "title": "Block level parallel vacuum",
+      "status": "Returned with feedback",
+      "date": "2017-03-05",
+      "first_date": "2016-08-23",
+      "url": "https://commitfest.postgresql.org/patch/954/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAD21AoD1xAqp4zK-Vi1cuY3feq2oO8HcpJiz32UDUfe0BE31Xw@mail.gmail.com"
+      ],
+      "authors": "Masahiko Sawada (masahikosawada)",
+      "objectors": "Robert Haas",
+      "summary": "The patch lets VACUUM use several worker processes, each scanning a block range of the heap for dead tuples, with the leader then collecting the results and updating relfrozenxid. It also lets several processes wait for a cleanup lock on one buffer, and it adds a vacuum_parallel_workers GUC.",
+      "objection": "Robert Haas proposed moving the patch to v11 because it still had too many open issues for the rest of the cycle, among them deadlock problems that need careful changes. The patch was also not in reviewable shape by March 1st. The author agreed that the design needed more discussion, and David Steele marked it Returned with Feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel heap vacuum",
+        "parallel vacuum table AM callbacks",
+        "vacuum PARALLEL option heap"
+      ],
+      "from_hint": false,
+      "score": 0.29,
+      "enriched": true,
+      "key_quote": "I think there are\ntoo many issues here to address in the limited time we have remaining\nthis cycle, and I believe that if we try to get them all solved in the\nnext few weeks we're likely to end up getting backed into some choices\nby time pressure that we may later regret bitterly.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmobLcu_q7-0-rqiBuzowZ1J-ywDHdgBJzXdSx978JPorKA%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:4180",
+      "kind": "cf",
+      "title": "Support SK_SEARCHNULL / SK_SEARCHNOTNULL for heap-only scans",
+      "status": "Returned with feedback",
+      "date": "2023-12-02",
+      "first_date": "2023-02-13",
+      "url": "https://commitfest.postgresql.org/patch/4180/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJ7c6TPKeh7UwEN9ORqP_dmR8uxiFhxT8Pecq01zw1HKpTBMBg@mail.gmail.com"
+      ],
+      "authors": "Aleksander Alekseev (a.alekseev), Jacob Champion (jchampion)",
+      "objectors": "Heikki Linnakangas",
+      "summary": "The patch makes heap scans honor SK_SEARCHNULL and SK_SEARCHNOTNULL scan keys in HeapKeyTest(), which skey.h documents as supported only for index scans. The goal was convenience for extensions that scan tables directly without SPI; a later follow-up by Jacob Champion added planner pushdown of IS [NOT] NULL quals into Seq Scan as scan keys.",
+      "objection": "Heikki Linnakangas saw no benefit in heapam support alone and asked that nodeSeqScan.c use it, with performance results, and that the table AM API get an 'amsearchnulls' field. The author wanted to defer the executor part to a later patch, so Heikki marked the entry Returned with Feedback. The later executor and planner patches got no visible review before the entry closed.",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel heap vacuum",
+        "parallel lazy vacuum heap scan",
+        "vacuum PARALLEL option heap"
+      ],
+      "from_hint": false,
+      "score": 0.288,
+      "enriched": true,
+      "key_quote": "Ok, I don't think this patch on its own is a good idea, without the\nother parts, so I'll mark this as Returned with Feedback in the commitfest.",
+      "quote_message_url": "https://www.postgresql.org/message-id/a4ca496e-c80f-0511-0590-b6997ac8c095%40iki.fi",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:3969",
+      "kind": "cf",
+      "title": "Allow single table VACUUM in transaction block",
+      "status": "Returned with feedback",
+      "date": "2022-11-24",
+      "first_date": "2022-10-27",
+      "url": "https://commitfest.postgresql.org/patch/3969/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANbhV-EGkXfWymABGyNo0ZiwOW8=QZ84CmTrYSNSUq1-XbBC7g@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon)",
+      "objectors": "Greg Stark, Robert Haas, Tom Lane",
+      "summary": "The patch let VACUUM on a single table run inside a transaction block, so scripts run with --single-transaction would not fail; it skipped PROC_IN_VACUUM and the datfrozenxid update in that case. Later versions forced VACUUM FULL for temp tables and queued an autovacuum request for other tables, and finally added an explicit VACUUM (BACKGROUND) option.",
+      "objection": "Reviewers objected to a VACUUM command that runs in-process in some cases and as a background autovacuum request in others. Robert Haas and Tom Lane also rejected making background vacuum the default or controlling it with a GUC, because users would notice the delay and regression tests expect VACUUM to finish at once. The author agreed, switched to an explicit VACUUM (BACKGROUND) option, and proposed returning this entry and opening a new one for that design.",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel vacuum table AM callbacks",
+        "multiple workers vacuum single table"
+      ],
+      "from_hint": false,
+      "score": 0.241,
+      "enriched": true,
+      "key_quote": "Basically, I am not buying Simon's requirement that this be transparent.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2249011.1668796016%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:4027",
+      "kind": "cf",
+      "title": "Teach autovacuum.c to launch workers to advance table age without attendant antiwraparound cancellation behavior",
+      "status": "Withdrawn",
+      "date": "2023-01-26",
+      "first_date": "2022-10-19",
+      "url": "https://commitfest.postgresql.org/patch/4027/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAH2-Wz=S-R_2rO49Hm94Nuvhu9_twRGbTm6uwDRmRu-Sqn_t3w@mail.gmail.com"
+      ],
+      "authors": "Peter Geoghegan (pgeoghegan)",
+      "objectors": "Robert Haas",
+      "summary": "The patch separates the rule that an antiwraparound autovacuum cannot be auto-cancelled from the XID age that launches it, so table-age autovacuums stay cancellable until a later age. In v5 a new setting, autovacuum_no_auto_cancel_age, sets that later age (default 1.8x the launch threshold), and a first patch adds instrumentation for what triggered each autovacuum.",
+      "objection": "Peter Geoghegan withdrew the entry, saying he could not do more work on it. He did not give a reason beyond that. Before that, Robert Haas objected that keeping these autovacuums cancellable could make things worse for users whose autovacuums are already cancelled repeatedly. He found the evidence too speculative to justify the change, and the thread did not resolve this. Andres Freund was still asking for changes to the structure and naming of the instrumentation patch (0001).",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel autovacuum workers",
+        "multiple workers vacuum single table"
+      ],
+      "from_hint": false,
+      "score": 0.236,
+      "enriched": true,
+      "key_quote": "In my opinion, this is too speculative to justify making changes to the behavior.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoZ84CNpWojX%3DJYedkaHCfjz-tRuYr0XcXLbkMPd4f0NSw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:3756",
+      "kind": "cf",
+      "title": "Add last_vacuum_index_scans in pg_stat_all_tables",
+      "status": "Withdrawn",
+      "date": "2023-01-31",
+      "first_date": "2022-07-04",
+      "url": "https://commitfest.postgresql.org/patch/3756/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ce4a6ee93d78e2c4dafe4c1e515b342b@oss.nttdata.com"
+      ],
+      "authors": "Ken Kato (kkato)",
+      "objectors": "",
+      "summary": "Add last_vacuum_index_scans in pg_stat_all_tables\nThreads: Add last_vacuum_index_scans in pg_stat_all_tables",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel lazy vacuum heap scan",
+        "vacuum parallel workers table scan"
+      ],
+      "from_hint": false,
+      "score": 0.218,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:527",
+      "kind": "cf",
+      "title": "speeding up GIN build with parallel workers",
+      "status": "Returned with feedback",
+      "date": "2016-10-03",
+      "first_date": "2016-01-15",
+      "url": "https://commitfest.postgresql.org/patch/527/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20160116013839.57cfcb37@thought"
+      ],
+      "authors": "Constantin Pan (kvap)",
+      "objectors": "",
+      "summary": "speeding up GIN build with parallel workers\nThreads: Proposal: speeding up GIN build with parallel workers",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "vacuum parallel workers table scan",
+        "parallel autovacuum workers"
+      ],
+      "from_hint": false,
+      "score": 0.216,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:703",
+      "kind": "cf",
+      "title": "Add a max_parallel_workers GUC",
+      "status": "Returned with feedback",
+      "date": "2016-10-03",
+      "first_date": "2016-08-05",
+      "url": "https://commitfest.postgresql.org/patch/703/",
+      "thread_urls": [],
+      "authors": "Julien Rouhaud (rjuju)",
+      "objectors": "",
+      "summary": "Add a max_parallel_workers GUC",
+      "objection": "",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "vacuum parallel workers table scan",
+        "parallel autovacuum workers"
+      ],
+      "from_hint": false,
+      "score": 0.199,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:1275",
+      "kind": "cf",
+      "title": "Allow VACUUM to have multiple target tables",
+      "status": "Rejected",
+      "date": "2017-09-05",
+      "first_date": "2017-08-31",
+      "url": "https://commitfest.postgresql.org/patch/1275/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20170831.215301.31675036.horiguchi.kyotaro@lab.ntt.co.jp"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti)",
+      "objectors": "",
+      "summary": "Allow VACUUM to have multiple target tables\nThreads: multiple target of VACUUM command",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel vacuum table AM callbacks",
+        "multiple workers vacuum single table"
+      ],
+      "from_hint": false,
+      "score": 0.191,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "revert:7db0cde6b58eef2ba0c70437324cbc7622230320",
+      "kind": "revert",
+      "title": "Revert \"Avoid the creation of the free space map for small heap relations\".",
+      "status": "Reverted",
+      "date": "2019-05-07",
+      "first_date": "2019-02-04",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=7db0cde6b58eef2ba0c70437324cbc7622230320",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20190416180452.3pm6uegx54iitbt5@alap3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/CACPNZCswjyGJxTT=mxHgK=Z=mJ9uJ4WEx_UO=bNwpR_i0EaHHg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAJVSVGWvB13PzpbLEecFuGFc5V2fsO736BsdTakPiPAcdMM5tQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CACPNZCu4cOdm3uGnNEGXivy7Gz8UWyQjynDpdkPGabQ18_zK6g@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAA4eK1L=qWp_bJ5aTc9+fy4Ewx2LPaLWY-RbR4a60g_rupCKnQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/32368.1551114120@sss.pgh.pa.us"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Revert \"Avoid the creation of the free space map for small heap relations\".\nReverted commit(s): Improve code comments in b0eaa4c51b.; Avoid creation of the free space map for small heap relations, take 2.; During pg_upgrade, conditionally skip transfer of FSMs.; Add more tests for FSM.; Clear the local map when not used.",
+      "objection": "This feature was using a process local map to track the first few blocks\nin the relation.  The map was reset each time we get the block with enough\nfreespace.  It was discussed that it would be better to track this map on\na per-relation basis in relcache and then invalidate the same whenever\nvacuum frees up some space in the page or when FSM is created.  The new\ndesign would be better both in terms of API design and performance.\n\nList of commits reverted, in reverse chronological order:\n\n06c8a5090e  Improve code comments in b0eaa4c51b.\n13e8643bfc  During pg_upgrade, conditionally skip transfer of FSMs.\n6f918159a9  Add more tests for FSM.\n9c32e4c350  Clear the local map when not used.\n29d108cdec  Update the documentation for FSM behavior..\n08ecdfe7e5  Make FSM test portable.\nb0eaa4c51b  Avoid creation of the free space map for small heap relations.",
+      "touch_points": [
+        "on-disk format / pg_upgrade",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "parallel heap vacuum",
+        "vacuum PARALLEL option heap"
+      ],
+      "from_hint": false,
+      "score": 0.19,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:725",
+      "kind": "cf",
+      "title": "system load consideration hook for parallel workers",
+      "status": "Rejected",
+      "date": "2016-09-22",
+      "first_date": "2016-07-29",
+      "url": "https://commitfest.postgresql.org/patch/725/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJrrPGe23T0TQ3V5GABDv0rGdBXhQtCp=SpfY6fJ+YHxuSt5nQ@mail.gmail.com"
+      ],
+      "authors": "Haribabu Kommi (haribabu)",
+      "objectors": "",
+      "summary": "system load consideration hook for parallel workers\nThreads: System load consideration before spawning parallel workers",
+      "objection": "",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "vacuum parallel workers table scan",
+        "parallel autovacuum workers"
+      ],
+      "from_hint": false,
+      "score": 0.177,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "revert:1d6fb35ad62968c8678d0321887e2b9ca8fe1a84",
+      "kind": "revert",
+      "title": "Revert \"Fix accumulation of parallel worker instrumentation.\"",
+      "status": "Reverted",
+      "date": "2017-12-13",
+      "first_date": "2017-12-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1d6fb35ad62968c8678d0321887e2b9ca8fe1a84",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAA4eK1LW2aFKzY3=vwvc=t-juzPPVWP2uT1bpx_MeyEqnM+p8g@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20171127175631.GA405@depesz.com"
+      ],
+      "authors": "Robert Haas",
+      "objectors": "",
+      "summary": "Revert \"Fix accumulation of parallel worker instrumentation.\"\nReverted commit(s): Fix accumulation of parallel worker instrumentation.",
+      "objection": "This reverts commit 2c09a5c12a66087218c7f8cba269cd3de51b9b82.  Per\nfurther discussion, that doesn't seem to be the best possible fix.",
+      "touch_points": [],
+      "matched_queries": [
+        "vacuum parallel workers table scan",
+        "parallel autovacuum workers"
+      ],
+      "from_hint": false,
+      "score": 0.171,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:1830",
+      "kind": "cf",
+      "title": "heap_insert() and heap_update() optimization",
+      "status": "Rejected",
+      "date": "2018-10-17",
+      "first_date": "2018-10-16",
+      "url": "https://commitfest.postgresql.org/patch/1830/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1539678497.898777998@f532.i.mail.ru"
+      ],
+      "authors": "Andrew Klychkov (andreiklychkov)",
+      "objectors": "",
+      "summary": "heap_insert() and heap_update() optimization\nThreads: [PATCH] heap_insert() and heap_update() optimization",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel heap vacuum",
+        "vacuum PARALLEL option heap"
+      ],
+      "from_hint": false,
+      "score": 0.164,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:1519",
+      "kind": "cf",
+      "title": "autovacuum: add possibility to change priority of vacuumed tables",
+      "status": "Returned with feedback",
+      "date": "2018-03-02",
+      "first_date": "2018-02-08",
+      "url": "https://commitfest.postgresql.org/patch/1519/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20180208170107.365496e3@wp.localdomain"
+      ],
+      "authors": "Ildus Kurbangaliev (ildus)",
+      "objectors": "",
+      "summary": "autovacuum: add possibility to change priority of vacuumed tables\nThreads: autovacuum: change priority of the vacuumed tables",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel vacuum table AM callbacks",
+        "multiple workers vacuum single table"
+      ],
+      "from_hint": false,
+      "score": 0.156,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:220",
+      "kind": "cf",
+      "title": "optimizing vacuum truncation scans WIP",
+      "status": "Returned with feedback",
+      "date": "2015-08-12",
+      "first_date": "2015-04-20",
+      "url": "https://commitfest.postgresql.org/patch/220/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMkU=1wK_At0JfE4Esm8Mgrfrr8mLTxpEYnvpVggPawKv6VC0A@mail.gmail.com"
+      ],
+      "authors": "Jeff Janes (jjanes)",
+      "objectors": "",
+      "summary": "optimizing vacuum truncation scans WIP\nThreads: optimizing vacuum truncation scans",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel lazy vacuum heap scan",
+        "vacuum parallel workers table scan"
+      ],
+      "from_hint": false,
+      "score": 0.151,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:3073",
+      "kind": "cf",
+      "title": "Add callback table access method to reset filenode when dropping relation",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2021-02-22",
+      "url": "https://commitfest.postgresql.org/patch/3073/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+14425cNfF=P_z5LNb3TLkunEGG5CYBKBKnTREd_RuWCS5rrA@mail.gmail.com"
+      ],
+      "authors": "Mats Kindahl (matski)",
+      "objectors": "",
+      "summary": "Add callback table access method to reset filenode when dropping relation\nThreads: Table AM and DDLs",
+      "objection": "",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "parallel vacuum table AM callbacks"
+      ],
+      "from_hint": false,
+      "score": 0.144,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:2302",
+      "kind": "cf",
+      "title": "Remove size limitations of vacuums dead_tuples array",
+      "status": "Returned with feedback",
+      "date": "2019-11-30",
+      "first_date": "2019-10-09",
+      "url": "https://commitfest.postgresql.org/patch/2302/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANwKhkO7+FzZsS_cbDFRKb-M3vVhWksfEcZamnjDqxDF6XgCUg@mail.gmail.com"
+      ],
+      "authors": "Ants Aasma (ants)",
+      "objectors": "",
+      "summary": "Remove size limitations of vacuums dead_tuples array\nThreads: Remove size limitations of vacuums dead_tuples array",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "shared TidStore dead tuples parallel"
+      ],
+      "from_hint": false,
+      "score": 0.135,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "revert:9d20b0ec8f2af43041b1a65e5fcd91acc47e9ace",
+      "kind": "revert",
+      "title": "Revert \"Avoid spurious deadlocks when upgrading a tuple lock\"",
+      "status": "Reverted",
+      "date": "2019-06-17",
+      "first_date": "2019-06-13",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9d20b0ec8f2af43041b1a65e5fcd91acc47e9ace",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/E1hbXKQ-0003g1-0C@gemulon.postgresql.org",
+        "https://www.postgresql.org/message-id/flat/B9C9D7CD-EB94-4635-91B6-E558ACEC0EC3@hintbits.com"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert \"Avoid spurious deadlocks when upgrading a tuple lock\"\nReverted commit(s): Silence compiler warning; Avoid spurious deadlocks when upgrading a tuple lock",
+      "objection": "This reverts commits 3da73d6839dc and de87a084c0a5.\n\nThis code has some tricky corner cases that I'm not sure are correct and\nnot properly tested anyway, so I'm reverting the whole thing for next\nweek's releases (reintroducing the deadlock bug that we set to fix).\nI'll try again afterwards.",
+      "touch_points": [],
+      "matched_queries": [
+        "shared TidStore dead tuples parallel"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "revert:6c6b4972664491de408670354fdbccc7c83a1c89",
+      "kind": "revert",
+      "title": "Revert \"Add eager and lazy freezing strategies to VACUUM.\"",
+      "status": "Reverted",
+      "date": "2023-01-26",
+      "first_date": "2023-01-25",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6c6b4972664491de408670354fdbccc7c83a1c89",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20230126004347.gepcmyenk2csxrri@awork3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/CAH2-WzkFok_6EAHuK39GaW4FjEFQsY=3J0AAd6FXk93u-Xq3Fg@mail.gmail.com"
+      ],
+      "authors": "Peter Geoghegan",
+      "objectors": "",
+      "summary": "Revert \"Add eager and lazy freezing strategies to VACUUM.\"\nReverted commit(s): Add eager and lazy freezing strategies to VACUUM.",
+      "objection": "This reverts commit 4d417992613949af35530b4e8e83670c4e67e1b2.  Broad\nconcerns about regressions caused by eager freezing strategy have been\nraised.  Whether or not these concerns can be worked through in any time\nframe is far from certain.",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel lazy vacuum heap scan"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:3467",
+      "kind": "cf",
+      "title": "Trigger failsafe when VACUUM is run in single user mode",
+      "status": "Returned with feedback",
+      "date": "2022-04-07",
+      "first_date": "2021-12-09",
+      "url": "https://commitfest.postgresql.org/patch/3467/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFBsxsFL5LoWanSLDjt_SjS9=FU_9XWi22iHMexRS2SubkX-Vw@mail.gmail.com"
+      ],
+      "authors": "John Naylor (john.naylor)",
+      "objectors": "",
+      "summary": "Trigger failsafe when VACUUM is run in single user mode\nThreads: do only critical work during single-user vacuum?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "multiple workers vacuum single table"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 4,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 4
+  },
+  "precedent_cutoff": "2024-06-28",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "The 2016-2017 attempts [P4], [P6] and [P2] died on per-worker index scans, cleanup lock waiting changes and an extension lock dependency. v21 contains none of these, and [P5] concerns index-level parallelism, which v21 does not add. The open points in the thread are layering and the eager scanning interaction (messages #97, #98, #114, #123), which belong to other angles."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "Two objections from the standards and compatibility angle. Eager scanning support is not raised: v17 (message #108) and the v21 notes (message #137) say chunks serve as eager scan regions."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "No new WAL record types, on-disk format, catalog columns or protocol messages appear. Standby replay and pg_upgrade are unaffected. VM and pruning WAL come from several processes, but the record contents stay the same."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal has no privilege or exposure aspect. VACUUM PARALLEL keeps its current ownership/MAINTAIN checks. Workers stay capped by max_parallel_maintenance_workers, the shared dead TID store is bounded by maintenance_work_mem, and heap pruning and freezing run no user-supplied code. Existing parallel index vacuum already allows the same worker use, so no new escalation, leak or unprivileged denial-of-service path is visible."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 4,
+      "note": "Not applicable; objections are listed. A committer, Masahiko Sawada, is a co-author, so cleanup ownership is less of a concern than usual."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "Postgres has no existing way to scan the heap of one table with several processes during vacuum. Parallel vacuum covers only index phases, and vacuumdb --jobs parallelizes across tables, so neither helps a single large table without indexes or a fast INDEX_CLEANUP off freeze. Partitioning a table so that several vacuums can run at once is a schema redesign, too large to count as an existing alternative. No extension can replace the phase 1 loop in vacuumlazy.c, and no hook exists for it. The v21 code split between vacuumlazy.c and vacuumparallel.c is a layering question for the design angle, and it does not add a second mechanism for a job that is already done."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "The thread shows real interest from several committers in faster vacuum of large tables, so both objections ask for evidence that the demand reaches this design, not that the problem is missing."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 9,
+      "new_survived": 5,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "45 long messages in the middle of the thread were left out of the prompts",
+    "synthesis said NEEDS-COMMITTER-EYES but listed a level 1b objection (standards-compat-1); changed to NEEDS-DESIGN-DISCUSSION"
+  ],
+  "tone_lint": {
+    "fields_checked": 99,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 15,
+    "wall_ms": 181711,
+    "cost_usd": 7.4850144,
+    "dry_run": false
+  }
+}

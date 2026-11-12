@@ -1,0 +1,1519 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:13:24.223Z",
+  "input": {
+    "arg": "7005",
+    "cf": {
+      "id": 7005,
+      "url": "https://commitfest.postgresql.org/patch/7005/",
+      "title": "Add configure-time choice of either port/atomics.h or <stdatomic.h> for atomic operations",
+      "status": "Needs review",
+      "authors": "Thomas Munro (macdice), Greg Burd (gregburd)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CA%2BhUKGKFvu3zyvv3aaj5hHs9VtWcjFAmisOwOc7aOZNc5AF3NA%40mail.gmail.com",
+    "subject": "Trying out <stdatomic.h>",
+    "thread_start": "2025-11-10T13:17:31Z",
+    "messages_read": 35,
+    "messages_total": 35,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v2-0001-ci-Use-Visual-Studio-2022-for-stdatomic.h.patch",
+      "v2-0002-Enable-Visual-Studio-s-stdatomic.h-support.patch",
+      "v2-0003-Redefine-port-atomics.h-on-top-of-stdatomic.h.patch",
+      "v2-0004-Use-atomics-API-to-implement-spinlocks.patch",
+      "v2-0005-Remove-configure-meson-checks-for-atomics.patch",
+      "v1-0001-Add-some-missing-include-limits.h.patch",
+      "v1-0002-Redefine-port-atomics.h-on-top-of-stdatomic.h.patch",
+      "v1-0003-Use-atomics-API-to-implement-spinlocks.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The goal has support in the thread, but the design is not settled. The proposal offers v11 and v12 together and does not say which one is for commit. Each has an open design point: v11 has no tester or exit rule and changes the slock_t layout by build option (maintenance-fit-1, replication-ondisk-1); v12 removes the old code on untested platforms (maintenance-fit-3, standards-compat-2). Both rely on a seq_cst read that hides a tuple loss of unknown cause (maintenance-fit-2).",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Opt-in C11 <stdatomic.h> implementation of port/atomics.h and spinlocks",
+    "problem": "Postgres maintains its own atomics and spinlock code, written per architecture and per compiler. Greg Burd wants to reduce that code and possibly improve performance by using the compiler's C11 atomics. Peter Eisentraut names the end goal: no longer maintaining an in-tree atomics library at all.",
+    "proposed_design": "v11 adds a second atomics implementation built on <stdatomic.h>, chosen at build time and off by default; the old code stays untouched. Spinlocks become a pg_atomic_uint32, and barriers use a signal fence plus a thread fence. v12 is the alternative: one patch that makes <stdatomic.h> the only implementation and removes arch-*.h, generic*.h, fallback.h and s_lock.h.",
+    "user_visible_surface": [
+      "New meson option -Duse_stdatomic=auto|yes|no, default no (v11).",
+      "New configure option --with-stdatomic=auto|yes|no, default no (v11).",
+      "v12 makes configure and meson fail when 32- and 64-bit atomics are not always lock-free.",
+      "pg_atomic_read_u32/u64 get seq_cst ordering, stronger than their documented \"no barrier semantics\"; extensions use these.",
+      "pg_atomic_flag and slock_t change internal representation; the public pg_atomic_* and SpinLock* APIs stay the same."
+    ],
+    "author_claims": [
+      "No measurable regression on x86-64 (within about 0.5%), and parity to slightly faster on aarch64 read-only pgbench.",
+      "Builds and passes check-world on x86-64, aarch64, RISC-V, FreeBSD and Windows ARM64 with MSVC.",
+      "With relaxed reads, join_hash loses a tuple on rv64 with gcc 13.3; seq_cst reads fix it, and the cause is unknown.",
+      "Master already requires Visual Studio 2022, so v12 does not raise the MSVC baseline.",
+      "The seq_cst read cost on ARM64, rv64 and POWER, across about 200 call sites, is not benchmarked."
+    ],
+    "thread_state": "Tom Lane asked for an alternative rather than a replacement; Peter Eisentraut asked what the long-term plan is and what testing a default-off option is for. Shihao Zhong reviewed v8 to v10 on macOS and found three bugs, now fixed; no committer has replied since Greg posted v11 and v12 together.",
+    "unclear": [
+      "The material does not say which version, v11 or v12, is proposed for commit, or what the plan is for moving from one to the other.",
+      "The cause of the RISC-V join_hash tuple loss is unknown, so the seq_cst read may hide a real bug.",
+      "No tests are reported on POWER, s390x, Solaris or illumos.",
+      "The material does not say who would build and test the opt-in path once it is in the tree.",
+      "Using /experimental:c11atomics, which Microsoft still calls experimental, carries a risk the material does not weigh."
+    ],
+    "search_queries": [
+      "stdatomic.h atomics",
+      "C11 atomics port atomics.h",
+      "replace spinlock assembler atomics",
+      "remove hand-written atomics architecture",
+      "spinlock test-and-set pg_atomic_flag",
+      "memory barrier compiler fence atomics",
+      "Visual Studio atomics MSVC minimum",
+      "atomics implementation configure option"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Seq_cst read is a workaround for a bug whose cause is unknown",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "design",
+      "touch_points": [
+        "hot_path_performance",
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Under v12, a POWER or rv64 build pays an hwsync or two fences on each of about 200 pg_atomic_read_u32/u64 call sites, including LWLock and buffer paths. Nobody can safely relax this later, because no one knows which caller needs the ordering. A new compiler then exposes the hidden bug in some other form.",
+      "argument": "Message #35 says relaxed reads lose a join_hash tuple on rv64 with gcc 13.3 only, and the cause is not found. Message #24 also reports that a pg_read_barrier in the consumer did not help. So the stronger ordering hides a missing ordering somewhere, and the project would keep it forever against the documented \"no barrier semantics\" contract. The read cost is measured on aarch64 only; message #35 says it is not benchmarked on rv64 or POWER.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        24,
+        35
+      ],
+      "author_must_show": "Which caller relies on ordering that pg_atomic_read_u32 does not promise, and what does seq_cst cost on POWER and rv64 under a contended pgbench run?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 24,
+          "from": "\"Greg Burd\"",
+          "date": "2026-09-10T14:10:30Z",
+          "url": "https://www.postgresql.org/message-id/34101612-a419-4811-a672-f9e55b4fbec2%40app.fastmail.com"
+        },
+        {
+          "index": 35,
+          "from": "Greg Burd",
+          "date": "2026-10-23T21:36:39Z",
+          "url": "https://www.postgresql.org/message-id/BGXViuPJAXY5dAefuF31MhArLzQjKYoS60rlNordOBLSX7_pATL66i-2-nYMIHeyoHSGLDQ3plkUjSpW-1SPAE4y0MBdWo8JVFbUj4UKKO4%3D%40burd.me"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #35 itself says the cause of the rv64 tuple loss is unknown and the seq_cst read cost on rv64 and POWER is not benchmarked. Nothing in the thread answers either point.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Default-off second atomics implementation has no tester and no exit plan",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds a new pg_atomic_* operation or changes barrier use and updates only the traditional headers, which every default build uses. The stdatomic path then stops building or behaves differently. Nobody finds out until someone tries -Duse_stdatomic=yes months later.",
+      "argument": "v11 keeps arch-*.h, generic*.h and s_lock.h and adds stdatomic_impl.h beside them, so each atomics change must be made twice. The proposal names no CI task or buildfarm animal that builds the opt-in path. In message #25 Peter asks what testing the option is for and what happens when it is complete. Message #26 answers only with \"cut over mid-cycle if all looks good\", which gives no criteria and no date. No committer has replied since v11 was posted, and co-author Thomas Munro has not posted since message #15.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        15,
+        25,
+        26,
+        35
+      ],
+      "author_must_show": "Which CI tasks or buildfarm animals will build the opt-in path by default, and what results would trigger removing one implementation?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 15,
+          "from": "Thomas Munro",
+          "date": "2025-11-23T21:08:19Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BhUKGJSx124Y1gFJi2y_eRFpO%3DUbcdi71-iEn6nmBQjbZFZ%2Bg%40mail.gmail.com"
+        },
+        {
+          "index": 25,
+          "from": "Peter Eisentraut",
+          "date": "2026-09-14T18:48:24Z",
+          "url": "https://www.postgresql.org/message-id/649b0015-f345-42fe-b1ec-a23beadeec6e%40eisentraut.org"
+        },
+        {
+          "index": 26,
+          "from": "\"Greg Burd\"",
+          "date": "2026-09-14T19:02:33Z",
+          "url": "https://www.postgresql.org/message-id/cae320c9-6882-47c0-8d06-8ff8ab48aafb%40app.fastmail.com"
+        },
+        {
+          "index": 35,
+          "from": "Greg Burd",
+          "date": "2026-10-23T21:36:39Z",
+          "url": "https://www.postgresql.org/message-id/BGXViuPJAXY5dAefuF31MhArLzQjKYoS60rlNordOBLSX7_pATL66i-2-nYMIHeyoHSGLDQ3plkUjSpW-1SPAE4y0MBdWo8JVFbUj4UKKO4%3D%40burd.me"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Peter asked in message #25 what testing the option is for and what follows. Message #26 names no tester, no criteria and no date, and cfbot builds only the default path.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "V12 hands atomics to compilers on untested platforms, with no fallback",
+      "level": "2",
+      "rubric_item": 15,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After v12 is committed, a POWER, s390x or illumos buildfarm animal shows rare corruption or a hang, or an MSVC update changes /experimental:c11atomics. The project has deleted the hand-written code it would compare against. Back branches keep the old code, so fixes no longer backpatch cleanly.",
+      "argument": "In message #20 Tom asked for an alternative and not a replacement, because stdatomic codegen is not under project control. v12 removes the fallback anyway, and message #35 says the buildfarm \"would be the first real test\" on POWER, s390x and Solaris/illumos. MSVC still calls the needed flag experimental. A committer would likely ask for v11-style evidence on those platforms before deleting anything.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        8,
+        20,
+        35
+      ],
+      "author_must_show": "What codegen comparison or test results on POWER, s390x and illumos show the stdatomic path matches the existing code before the old headers are removed?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 8,
+          "from": "Thomas Munro",
+          "date": "2025-11-20T07:12:18Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BhUKGKfNuXYVKT7WPpKTNYTgPduzu0%3DG5yFEMju_4kbW0ybOQ%40mail.gmail.com"
+        },
+        {
+          "index": 20,
+          "from": "Tom Lane",
+          "date": "2026-03-23T14:13:06Z",
+          "url": "https://www.postgresql.org/message-id/3532551.1774275186%40sss.pgh.pa.us"
+        },
+        {
+          "index": 35,
+          "from": "Greg Burd",
+          "date": "2026-10-23T21:36:39Z",
+          "url": "https://www.postgresql.org/message-id/BGXViuPJAXY5dAefuF31MhArLzQjKYoS60rlNordOBLSX7_pATL66i-2-nYMIHeyoHSGLDQ3plkUjSpW-1SPAE4y0MBdWo8JVFbUj4UKKO4%3D%40burd.me"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Tom asked in message #20 for an alternative and no removal, and message #35 says POWER, s390x and Solaris/illumos are untested. The backpatch remark is generic and should not be used as support.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Build option changes slock_t layout without an extension ABI check",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user runs a server built with -Duse_stdatomic=yes or auto and loads an extension binary built against default headers. A shared-memory struct holding slock_t or pg_atomic_flag gets different offsets on each side. The extension then reads and writes the wrong bytes under load, and nothing reports a mismatch at load time.",
+      "argument": "Message #34 says slock_t becomes a pg_atomic_uint32, and the brief says pg_atomic_flag changes representation. On x86 the traditional slock_t is one byte. With v11 the layout of extension-visible shared-memory structs therefore depends on a configure choice, and with \"auto\" on the build host's probe result. The proposal does not say whether the option goes into the PG_MODULE_MAGIC ABI fields or whether both paths keep identical sizes. v12 avoids this because it has only one layout per major version.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        34,
+        35
+      ],
+      "author_must_show": "Do slock_t and pg_atomic_flag keep the same size and alignment under both settings, and if not, how does loading a mismatched extension fail?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 34,
+          "from": "Greg Burd",
+          "date": "2026-10-23T16:30:24Z",
+          "url": "https://www.postgresql.org/message-id/7gJmxtbunjsr2_04YEK5pN3XH0ZqYY8E2HQxFZFEsCUxScihXgxQyL5KNQ6nCO_X1bOLgsiCcPX1iy7sB9BSQH8MoqdB4-wgRTYAYXo0UR4%3D%40burd.me"
+        },
+        {
+          "index": 35,
+          "from": "Greg Burd",
+          "date": "2026-10-23T21:36:39Z",
+          "url": "https://www.postgresql.org/message-id/BGXViuPJAXY5dAefuF31MhArLzQjKYoS60rlNordOBLSX7_pATL66i-2-nYMIHeyoHSGLDQ3plkUjSpW-1SPAE4y0MBdWo8JVFbUj4UKKO4%3D%40burd.me"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #34 confirms slock_t becomes a pg_atomic_uint32 on the opt-in path, while the traditional x86 slock_t is one byte. The material shows no load-time check for an extension built with the other setting.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "v12 turns build success on some platforms into a configure failure",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A packager for a 32-bit target whose compiler emulates 64-bit atomics with locks upgrades to the release with v12. configure now stops with an error, where master builds through the existing fallback code. The packager finds out at build time, with no supported way to continue.",
+      "argument": "Message #35 says configure and meson now fail unless 32- and 64-bit atomics are always lock-free. The v1 commit message planned to let the compiler emulate 64-bit atomics with locks on armv7, so the requirement is narrower than the earlier design. Message #35 also says POWER, s390x, Solaris and illumos are untested and that \"the buildfarm would be the first real test\". The proposal does not list which supported platforms and compilers meet the new requirement and which lose support.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        12,
+        35
+      ],
+      "author_must_show": "Which platforms that master builds on today would fail the new lock-free check, and is dropping them an explicit decision?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Thomas Munro",
+          "date": "2025-11-10T13:17:31Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BhUKGKFvu3zyvv3aaj5hHs9VtWcjFAmisOwOc7aOZNc5AF3NA%40mail.gmail.com"
+        },
+        {
+          "index": 12,
+          "from": "Tom Lane",
+          "date": "2025-11-23T17:02:17Z",
+          "url": "https://www.postgresql.org/message-id/543920.1763917337%40sss.pgh.pa.us"
+        },
+        {
+          "index": 35,
+          "from": "Greg Burd",
+          "date": "2026-10-23T21:36:39Z",
+          "url": "https://www.postgresql.org/message-id/BGXViuPJAXY5dAefuF31MhArLzQjKYoS60rlNordOBLSX7_pATL66i-2-nYMIHeyoHSGLDQ3plkUjSpW-1SPAE4y0MBdWo8JVFbUj4UKKO4%3D%40burd.me"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #35 says v12 fails configure where 64-bit atomics are not lock-free, and master still emulates those in fallback.h. The proposal does not list which targets lose support.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "The v11 build option creates two extension ABIs within one major version",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A vendor builds the server with -Duse_stdatomic=yes and loads an extension binary built against default headers from a package repository. slock_t and pg_atomic_flag differ in size between the two builds, so the extension reads core shared structs such as ReplicationSlot at wrong offsets. Nothing reports this at load time; it shows up as corrupted state or hangs.",
+      "argument": "Per the brief, v11 changes the internal representation of pg_atomic_flag and slock_t, which becomes a pg_atomic_uint32, but only when the option is enabled. Core headers expose shared structs with spinlock members that extensions read. Today, build options that change struct layout are either fixed per platform or checked through the module magic block. The proposal does not say whether the option is recorded there, or whether packagers are warned that it changes the ABI.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        24,
+        34
+      ],
+      "author_must_show": "Is the stdatomic choice recorded in the module magic block, or how else does a server reject an extension built with the other implementation?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 24,
+          "from": "\"Greg Burd\"",
+          "date": "2026-09-10T14:10:30Z",
+          "url": "https://www.postgresql.org/message-id/34101612-a419-4811-a672-f9e55b4fbec2%40app.fastmail.com"
+        },
+        {
+          "index": 34,
+          "from": "Greg Burd",
+          "date": "2026-10-23T16:30:24Z",
+          "url": "https://www.postgresql.org/message-id/7gJmxtbunjsr2_04YEK5pN3XH0ZqYY8E2HQxFZFEsCUxScihXgxQyL5KNQ6nCO_X1bOLgsiCcPX1iy7sB9BSQH8MoqdB4-wgRTYAYXo0UR4%3D%40burd.me"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1, which states the same layout mismatch with more detail (the one-byte x86 slock_t and the \"auto\" setting).",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "C++ extension compatibility of the atomics header is not defined",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension written in C++17 includes storage/lwlock.h inside extern \"C\". Depending on what the header gives pre-C++23 code, the build fails, or the extension sees std::atomic types whose layout may differ from the C _Atomic layout the server uses for shared structs.",
+      "argument": "The patch has a C++23 branch that uses <atomic>. Message #29 found that this branch broke the usual extern \"C\" include pattern. The fix in message #30 addressed that one case. The material does not say what C++ code before C++23 gets, or why layout matches the C side.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        29,
+        30
+      ],
+      "author_must_show": "What does the header provide to C++11 through C++20 extensions, and what guarantees their pg_atomic_* and slock_t layout matches the server's C build?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 29,
+          "from": "shihao zhong",
+          "date": "2026-10-21T00:56:45Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqS5cDNNVwLfqpGGe2ozYTCRUNcRErzX4F4h6sXufsLx8A%40mail.gmail.com"
+        },
+        {
+          "index": 30,
+          "from": "Greg Burd",
+          "date": "2026-10-21T19:16:56Z",
+          "url": "https://www.postgresql.org/message-id/atkB3a-Ed_od6FMZ%40floki"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The commit message says C++11 and later use <atomic>, and message #31 retested the reported extern \"C\" failure after the fix. The objection names no ABI where lock-free 32- or 64-bit std::atomic and _Atomic differ in layout.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Opt-in v11 adds a second atomics implementation beside port/atomics.h",
+      "level": "1b",
+      "rubric_item": 12,
+      "category": "does_not_fit",
+      "touch_points": [
+        "maintenance_burden",
+        "abi_extension_api",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds a pg_atomic operation or a new caller and tests only the default build. The stdatomic path, which no buildfarm animal builds by default, breaks or behaves differently, for example with relaxed versus seq_cst reads. Someone finds out months later when they turn on -Duse_stdatomic.",
+      "argument": "Postgres already provides every pg_atomic_* and SpinLock* function through port/atomics.h and s_lock.h, and v11 keeps all of that code. In message #25 Peter Eisentraut said a compile-time variant adds code to maintain and asked what testing it is for. Message #26 answers \"test while both are in tree, then cut over mid-cycle\" but names no testers, no exit criteria and no date. Message #35 then offers v12 as well, so the proposal does not yet commit to either path.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        20,
+        25,
+        26,
+        35
+      ],
+      "author_must_show": "Which buildfarm animals will build the stdatomic path, and what result would remove one of the two implementations within a stated release?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 20,
+          "from": "Tom Lane",
+          "date": "2026-03-23T14:13:06Z",
+          "url": "https://www.postgresql.org/message-id/3532551.1774275186%40sss.pgh.pa.us"
+        },
+        {
+          "index": 25,
+          "from": "Peter Eisentraut",
+          "date": "2026-09-14T18:48:24Z",
+          "url": "https://www.postgresql.org/message-id/649b0015-f345-42fe-b1ec-a23beadeec6e%40eisentraut.org"
+        },
+        {
+          "index": 26,
+          "from": "\"Greg Burd\"",
+          "date": "2026-09-14T19:02:33Z",
+          "url": "https://www.postgresql.org/message-id/cae320c9-6882-47c0-8d06-8ff8ab48aafb%40app.fastmail.com"
+        },
+        {
+          "index": 35,
+          "from": "Greg Burd",
+          "date": "2026-10-23T21:36:39Z",
+          "url": "https://www.postgresql.org/message-id/BGXViuPJAXY5dAefuF31MhArLzQjKYoS60rlNordOBLSX7_pATL66i-2-nYMIHeyoHSGLDQ3plkUjSpW-1SPAE4y0MBdWo8JVFbUj4UKKO4%3D%40burd.me"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1, which makes the same point about two implementations with no tester and no exit criteria.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Existing gcc and clang path already uses compiler atomic builtins",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "desirability",
+      "touch_points": [
+        "maintenance_burden",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer takes on v12 to stop maintaining an atomics library. On gcc and clang, generic-gcc.h already maps most operations to __atomic builtins, which is what <stdatomic.h> uses there too. The project gets new seq_cst read costs and a weaker platform floor in exchange for removing a smaller amount of hand-written code than the thread suggests.",
+      "argument": "The goal stated in messages #17 and #25 is to rely on the compiler, but the current tree already does that for most operations on its main compilers. The material does not list what is still hand-written and would go away, such as the x86 and PPC inline asm, the TAS code in s_lock.h and the MSVC header. Without that list, a committer cannot weigh the gain against the open RISC-V ordering question from message #35.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        17,
+        25,
+        35
+      ],
+      "author_must_show": "Which hand-written code paths remain today that generic-gcc.h does not already delegate to the compiler, and how many platforms still use them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 17,
+          "from": "\"Greg Burd\"",
+          "date": "2026-03-21T18:39:31Z",
+          "url": "https://www.postgresql.org/message-id/5542e706-c802-476c-abc2-9ecbe5cb66e4%40app.fastmail.com"
+        },
+        {
+          "index": 25,
+          "from": "Peter Eisentraut",
+          "date": "2026-09-14T18:48:24Z",
+          "url": "https://www.postgresql.org/message-id/649b0015-f345-42fe-b1ec-a23beadeec6e%40eisentraut.org"
+        },
+        {
+          "index": 35,
+          "from": "Greg Burd",
+          "date": "2026-10-23T21:36:39Z",
+          "url": "https://www.postgresql.org/message-id/BGXViuPJAXY5dAefuF31MhArLzQjKYoS60rlNordOBLSX7_pATL66i-2-nYMIHeyoHSGLDQ3plkUjSpW-1SPAE4y0MBdWo8JVFbUj4UKKO4%3D%40burd.me"
+        }
+      ],
+      "id": "already-exists-2",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "Message #35 lists what v12 removes: arch-arm.h, arch-ppc.h, arch-x86.h, fallback.h, generic.h, generic-gcc.h, generic-msvc.h, s_lock.h and s_lock_test. Peter also named removal of the in-tree library as a valuable outcome in message #25.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Default-off second atomics implementation has no named users or test plan",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "maintenance_burden",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "v11 goes in with use_stdatomic defaulting to no, and no buildfarm animal or packager turns it on. Later changes to atomics.h, spin.h or new pg_atomic_* callers are tested only on the traditional path. The stdatomic path breaks without notice, and nobody finds out until someone tries the cutover.",
+      "argument": "Message #25 asks who the option is for, what testing it should get and what happens after; message #26 answers only \"testing and so on\" before a mid-cycle cutover. The material names no packager, buildfarm owner or user who would build with the option. The thread also shows no end-user demand: the performance claim is parity, and the gain is less code for maintainers, which v11 does not deliver because it adds code. Until there are named testers and an exit rule, every atomics change pays for two implementations.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        25,
+        26,
+        35
+      ],
+      "author_must_show": "Which buildfarm animals or CI tasks would build with use_stdatomic=yes, and what concrete result would trigger the switch to v12 or the removal of the option?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 25,
+          "from": "Peter Eisentraut",
+          "date": "2026-09-14T18:48:24Z",
+          "url": "https://www.postgresql.org/message-id/649b0015-f345-42fe-b1ec-a23beadeec6e%40eisentraut.org"
+        },
+        {
+          "index": 26,
+          "from": "\"Greg Burd\"",
+          "date": "2026-09-14T19:02:33Z",
+          "url": "https://www.postgresql.org/message-id/cae320c9-6882-47c0-8d06-8ff8ab48aafb%40app.fastmail.com"
+        },
+        {
+          "index": 35,
+          "from": "Greg Burd",
+          "date": "2026-10-23T21:36:39Z",
+          "url": "https://www.postgresql.org/message-id/BGXViuPJAXY5dAefuF31MhArLzQjKYoS60rlNordOBLSX7_pATL66i-2-nYMIHeyoHSGLDQ3plkUjSpW-1SPAE4y0MBdWo8JVFbUj4UKKO4%3D%40burd.me"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-1. End-user demand is a weak test for a refactoring whose goal Peter called valuable in message #25.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "slock_t and pg_atomic_flag change representation, and pg_atomic_read_u32/u64, which extensions call, get seq_cst ordering."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "v12 removes arch-*.h, generic*.h, fallback.h and s_lock.h, which back branches keep."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "v11 keeps two atomics implementations in the tree; v12 depends on compiler codegen and on MSVC's /experimental:c11atomics."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "seq_cst reads apply to about 200 pg_atomic_read call sites and are not benchmarked on rv64 or POWER."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Which version is proposed for commit, v11 or v12, and if v11, what result and what release would trigger the move to v12?",
+    "Which caller relies on ordering that pg_atomic_read_u32/u64 does not promise, causing the join_hash tuple loss on rv64 with gcc 13.3?",
+    "What does the seq_cst read cost on POWER and rv64 under a contended pgbench run?",
+    "Which CI tasks or buildfarm animals will build the opt-in stdatomic path, and how does a server reject an extension built with the other slock_t layout?",
+    "Which platforms that master builds today would fail v12's lock-free check, and what test results exist for POWER, s390x and illumos?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Thomas Munro co-wrote the patch, and Tom Lane, Heikki Linnakangas and Peter Eisentraut commented, but none has replied since v11 and v12 were posted. The owner must know atomics, spinlocks and weak-memory architectures.",
+    "liability": "The owner signs for the correctness of every atomic and spinlock operation on all supported architectures and compilers, including codegen the project does not control, with no end date.",
+    "author_follow_up": "Greg Burd posted versions up to v12 and fixed three bugs that a reviewer found in v8 to v10. Thomas Munro has not posted since message #15."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "medium",
+    "review_cost": "high",
+    "recommended_action": "fix design first",
+    "reason": "The gain is less in-tree code for maintainers; users get performance parity. The patch touches atomics, spinlocks and the build system on every architecture, and the choice between v11 and v12 and the rv64 tuple loss are open."
+  },
+  "self_advice": [],
+  "provisional_note": "Only the first 3 of 35 messages and the v1 and v2 patch prose were read; no code was read. Layout sizes under both settings, the barrier implementation and the generated code per architecture could not be checked.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:2637",
+      "kind": "cf",
+      "title": "audo-detect and use -moutline-atomics compilation flag for aarch64",
+      "status": "Rejected",
+      "date": "2020-09-29",
+      "first_date": "2020-07-01",
+      "url": "https://commitfest.postgresql.org/patch/2637/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/099F69EE-51D3-4214-934A-1F28C0A1A7A7@amazon.com"
+      ],
+      "authors": "Tsahi Zidenberg (tsahee)",
+      "objectors": "Heikki Linnakangas, Tom Lane",
+      "summary": "Make configure detect gcc's -moutline-atomics flag and add it to CFLAGS on aarch64. The flag makes the compiler choose at run time between LSE atomic instructions and load-exclusive/store-exclusive sequences, depending on what the CPU supports.",
+      "objection": "Heikki Linnakangas rejected it because the choice to enable -moutline-atomics belongs to the compiler or the distribution, and Postgres should not override their defaults. Tom Lane had asked earlier whether enough production systems use a gcc with this flag but without it on by default to justify a configure check. The author's benchmarks showed only modest gains, about 6% on pgbench simple-update.",
+      "touch_points": [],
+      "matched_queries": [
+        "stdatomic.h atomics",
+        "C11 atomics port atomics.h",
+        "replace spinlock assembler atomics",
+        "remove hand-written atomics architecture",
+        "spinlock test-and-set pg_atomic_flag",
+        "memory barrier compiler fence atomics",
+        "Visual Studio atomics MSVC minimum",
+        "atomics implementation configure option"
+      ],
+      "from_hint": false,
+      "score": 0.761,
+      "enriched": true,
+      "key_quote": "If it's a good idea to use -moutline-atomics, I would expect the\ncompiler or distribution to enable it by default.",
+      "quote_message_url": "https://www.postgresql.org/message-id/1a87852e-70ad-0740-8e9b-0114b032f179%40iki.fi",
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:1386",
+      "kind": "cf",
+      "title": "Atomic pgrename on Windows",
+      "status": "Returned with feedback",
+      "date": "2018-03-06",
+      "first_date": "2017-11-27",
+      "url": "https://commitfest.postgresql.org/patch/1386/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAPpHfds7dyuGZt+PF2GL9qSSVV0OZnjNwqiCPjN7mirDw882tA@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov (smagen)",
+      "objectors": "Andres Freund, Magnus Hagander, David Steele",
+      "summary": "The patch made pgrename() on Windows replace the target file atomically, even when another process has it open, by calling ReplaceFile() when the target exists and MoveFileEx() otherwise. It aimed to fix \"Permission denied\" errors seen when renaming the statistics temp file on loaded Windows servers.",
+      "objection": "Reviewers questioned the approach. Andres Freund asked why opening files with FILE_SHARE_DELETE does not already prevent the error, and suggested retry logic instead. Magnus Hagander proposed trying MoveFileEx() first and falling back to ReplaceFile() on a sharing violation, possibly with a retry loop. The commitfest manager marked it Returned with Feedback because a new patch was needed, and the author agreed both approaches still had to be implemented and tested.",
+      "touch_points": [],
+      "matched_queries": [
+        "stdatomic.h atomics",
+        "C11 atomics port atomics.h",
+        "replace spinlock assembler atomics",
+        "remove hand-written atomics architecture",
+        "memory barrier compiler fence atomics",
+        "Visual Studio atomics MSVC minimum",
+        "atomics implementation configure option"
+      ],
+      "from_hint": false,
+      "score": 0.736,
+      "enriched": true,
+      "key_quote": "Even so, it looks like the approach needs a rethink so better to wait for that.",
+      "quote_message_url": "https://www.postgresql.org/message-id/7c8d369e-a1c8-dc8b-bd45-6f32aa0fbd32%40pgmasters.net",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:3347",
+      "kind": "cf",
+      "title": "Atomic rename feature for Windows",
+      "status": "Returned with feedback",
+      "date": "2022-11-30",
+      "first_date": "2021-07-05",
+      "url": "https://commitfest.postgresql.org/patch/3347/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/a529b660-da15-5b62-21a0-9936768210fd@postgrespro.ru"
+      ],
+      "authors": "Victor Spirin (v.spirin)",
+      "objectors": "Michael Paquier, Thomas Munro",
+      "summary": "The patch makes pgrename() on Windows use SetFileInformationByHandle with FILE_RENAME_FLAG_POSIX_SEMANTICS, so a rename can replace a file that is still open, as on POSIX. It raised _WIN32_WINNT to Windows 10 and added a manifest so IsWindows10OrGreater() works; a later version used the feature only on Windows build 17763 and up.",
+      "objection": "The entry closed because Thomas Munro rebased and simplified the patch and moved the work to a new thread and CommitFest entry. Earlier review had objected to raising the minimum Windows version and to the extra manifest files. Thomas Munro's open questions were behavior on non-NTFS filesystems and whether to require POSIX rename, since the non-POSIX fallback would likely go untested.",
+      "touch_points": [],
+      "matched_queries": [
+        "stdatomic.h atomics",
+        "C11 atomics port atomics.h",
+        "replace spinlock assembler atomics",
+        "remove hand-written atomics architecture",
+        "memory barrier compiler fence atomics",
+        "Visual Studio atomics MSVC minimum",
+        "atomics implementation configure option"
+      ],
+      "from_hint": false,
+      "score": 0.719,
+      "enriched": true,
+      "key_quote": "As Thomas has incorporated this patch into another CommitFest entry\n[1], we'll close\nthe entry for this thread [2].",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB8KJ%3DjHfC_tBi7JaV1wFW9Su41nkiRzU2bZZRT-sVVOR7nk2w%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:370",
+      "kind": "cf",
+      "title": "Move PinBuffer and UnpinBuffer to atomics",
+      "status": "Returned with feedback",
+      "date": "2015-12-16",
+      "first_date": "2015-09-11",
+      "url": "https://commitfest.postgresql.org/patch/370/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2400449.GjM57CE0Yg@dinodell"
+      ],
+      "authors": "Uriy Zhuravlev (stalkerg)",
+      "objectors": "Andres Freund",
+      "summary": "The patch made the buffer descriptor fields refcount and usage_count atomic, so PinBuffer and UnpinBuffer no longer take the buffer header spinlock. Later in the thread it was replaced by a version from Andres Freund that packs flags, usage_count and refcount into one 32-bit atomic state, with a BM_LOCKED flag acting as the header lock.",
+      "objection": "Andres Freund judged the first patch incorrect. PinBuffer no longer took the header lock, but StrategyGetBuffer, SyncOneBuffer and BufferAlloc still relied on that lock for mutual exclusion. Work moved to the single atomic state version, which Alexander Korotkov refactored and others benchmarked, and it was still being cleaned up when the entry closed. No visible message states why the entry was returned.",
+      "touch_points": [],
+      "matched_queries": [
+        "stdatomic.h atomics",
+        "C11 atomics port atomics.h",
+        "replace spinlock assembler atomics",
+        "remove hand-written atomics architecture",
+        "memory barrier compiler fence atomics",
+        "Visual Studio atomics MSVC minimum",
+        "atomics implementation configure option"
+      ],
+      "from_hint": false,
+      "score": 0.642,
+      "enriched": true,
+      "key_quote": "Which you made ineffective because PinBuffer() doesn't take a lock\nanymore. Mutual exclusion through locks only works if all participants\ntake the locks.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20150914154142.GB9666%40alap3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:87e9fae0696d9e3ff70a1438775ad9f786b854a5",
+      "kind": "revert",
+      "title": "Revert \"For all ppc compilers, implement pg_atomic_fetch_add_ with inline asm.\"",
+      "status": "Reverted",
+      "date": "2019-09-15",
+      "first_date": "2019-09-14",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=87e9fae0696d9e3ff70a1438775ad9f786b854a5",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/7517.1568470247@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20190831071157.GA3251746@rfd.leadboat.com"
+      ],
+      "authors": "Noah Misch",
+      "objectors": "",
+      "summary": "Revert \"For all ppc compilers, implement pg_atomic_fetch_add_ with inline asm.\"\nReverted commit(s): For all ppc compilers, implement pg_atomic_fetch_add_ with inline asm.",
+      "objection": "This reverts commit e7ff59686eacf5021fb84be921116986c3828d8a.  It\ndefined pg_atomic_fetch_add_u32_impl() without defining\npg_atomic_compare_exchange_u32_impl(), which is incompatible with\nsrc/include/port/atomics/fallback.h.  Per buildfarm member prairiedog.",
+      "touch_points": [],
+      "matched_queries": [
+        "stdatomic.h atomics",
+        "C11 atomics port atomics.h",
+        "replace spinlock assembler atomics",
+        "memory barrier compiler fence atomics",
+        "Visual Studio atomics MSVC minimum",
+        "atomics implementation configure option"
+      ],
+      "from_hint": false,
+      "score": 0.598,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:3983",
+      "kind": "cf",
+      "title": "Lockless queue of waiters based on atomic operations for LWLock",
+      "status": "Returned with feedback",
+      "date": "2024-01-26",
+      "first_date": "2022-10-31",
+      "url": "https://commitfest.postgresql.org/patch/3983/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALT9ZEEz+=Nepc5eti6x531q64Z6+DxtP3h-h_8O5HDdtkJcPw@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov (smagen), Pavel Borisov (pborisov)",
+      "objectors": "",
+      "summary": "Store the head and tail of the LWLock wait queue in a 64-bit atomic lock state, so that waiters are added and removed with CAS operations and LWLockWaitListLock is no longer needed. The patch builds on ideas from OrioleDB and showed gains with about 1000 pgbench connections, with a small regression near 20 connections.",
+      "objection": "The thread went idle for more than a year after v6 in November 2022, and no reviewer took the patch forward. vignesh C returned it in the commitfest for lack of interest. Earlier, Andres Freund noted that the approach needs O(waiters) atomic operations instead of O(1), which may explain the regression, but the visible messages do not show this point deciding the outcome.",
+      "touch_points": [],
+      "matched_queries": [
+        "stdatomic.h atomics",
+        "C11 atomics port atomics.h",
+        "atomics implementation configure option"
+      ],
+      "from_hint": false,
+      "score": 0.259,
+      "enriched": true,
+      "key_quote": "I have returned this patch in commitfest as nobody had shown any\ninterest in pursuing it.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALDaNm2vk_NkwtNdUZNHi9wcfOb9xTBcTCVGdtXCgiPgKgzzGg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "revert:befa3e648ce018d84cd2a0df701927c56fe3da4e",
+      "kind": "revert",
+      "title": "Revert 9.5 pgindent changes to atomics directory files",
+      "status": "Reverted",
+      "date": "2015-05-25",
+      "first_date": "2015-05-25",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=befa3e648ce018d84cd2a0df701927c56fe3da4e",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert 9.5 pgindent changes to atomics directory files",
+      "objection": "This is because there are many __asm__ blocks there that pgindent messes\nup.  Also configure pgindent to skip that directory in the future.",
+      "touch_points": [],
+      "matched_queries": [
+        "stdatomic.h atomics",
+        "C11 atomics port atomics.h",
+        "atomics implementation configure option"
+      ],
+      "from_hint": false,
+      "score": 0.244,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:2716",
+      "kind": "cf",
+      "title": "fix spinlock contention in LogwrtResult",
+      "status": "Withdrawn",
+      "date": "2022-09-23",
+      "first_date": "2020-08-31",
+      "url": "https://commitfest.postgresql.org/patch/2716/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200831182156.GA3983@alvherre.pgsql"
+      ],
+      "authors": "Álvaro Herrera (alvherre)",
+      "objectors": "",
+      "summary": "The patch removes contention on XLogCtl's info_lck spinlock, which backends take often to read LogwrtResult. The first version added an LWLock covering LogwrtResult and LogwrtRqst; later versions turned the shared LogwrtResult fields into 64-bit atomics, as Andres Freund suggested.",
+      "objection": "The author withdrew the patch himself. In April 2022 he held it back from that cycle because the memory barrier needs were hard to get right and he did not want subtle bugs in WAL. In September 2022 he withdrew it because commit e369f3708636 made the change less critical.",
+      "touch_points": [],
+      "matched_queries": [
+        "replace spinlock assembler atomics",
+        "spinlock test-and-set pg_atomic_flag"
+      ],
+      "from_hint": false,
+      "score": 0.227,
+      "enriched": true,
+      "key_quote": "I realized that because of commit e369f3708636 this change is no longer\nas critical as it used to be, so I'm withdrawing this patch from the\ncommitfest.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20220923084941.g3756xqz6lwnqwso%40alvherre.pgsql",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:180",
+      "kind": "cf",
+      "title": "Atomic commit support for foreign data wrappers",
+      "status": "Returned with feedback",
+      "date": "2016-01-31",
+      "first_date": "2015-01-01",
+      "url": "https://commitfest.postgresql.org/patch/180/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFjFpRfQaCTt1vD9E35J+XxfCnZC5HONqgJgGpUjfktJdoYZVw@mail.gmail.com"
+      ],
+      "authors": "Ashutosh Bapat (ashutoshbapat)",
+      "objectors": "Alvaro Herrera",
+      "summary": "The patch adds a foreign transaction manager to core that uses two-phase commit across foreign servers, so a transaction's changes on all of them commit or roll back together. FDWs register connections and supply prepare, resolve and commit/abort hooks, and prepared foreign transactions are WAL-logged and kept in pg_fdw_xact files.",
+      "objection": "No reviewer took up the patch in the 2015-11 commitfest, so Michael Paquier moved it to the next one. In the 2016-01 commitfest, Alvaro Herrera found that the latest patch no longer applied because of many conflicts and returned it, asking the author to rebase and resubmit. Earlier rounds had raised design concerns, but the visible messages do not show them deciding this entry.",
+      "touch_points": [],
+      "matched_queries": [
+        "stdatomic.h atomics",
+        "C11 atomics port atomics.h",
+        "memory barrier compiler fence atomics"
+      ],
+      "from_hint": false,
+      "score": 0.226,
+      "enriched": true,
+      "key_quote": "Um, I tried this patch and it doesn't apply at all.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20160131124326.GA43476%40alvherre.pgsql",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:2541",
+      "kind": "cf",
+      "title": "Additional Chapter \"Architecture\" for Part \"Tutorial\"",
+      "status": "Returned with feedback",
+      "date": "2021-04-07",
+      "first_date": "2020-04-17",
+      "url": "https://commitfest.postgresql.org/patch/2541/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/13c65997-9502-7671-1a7b-50e5d5093514@purtz.de"
+      ],
+      "authors": "Jürgen Purtz (juergen@purtz.de)",
+      "objectors": "Peter Eisentraut",
+      "summary": "Add a new chapter to the Tutorial part of the documentation that gives beginners an overview of the Postgres architecture: processes, memory, files, and later MVCC, vacuum, backup and replication. The first part came with text and four figures.",
+      "objection": "Peter Eisentraut objected twice that the material does not belong in the tutorial, which should be hands-on. He said the chapter is mostly advanced low-level information, irrelevant for someone starting out, and largely duplicates what other parts of the documentation already explain. At the end only a separate small wording patch to the \"Overview of Query Handling\" chapter was committed. The large chapter patch was not, and the visible messages show no committer taking it up.",
+      "touch_points": [],
+      "matched_queries": [
+        "remove hand-written atomics architecture"
+      ],
+      "from_hint": false,
+      "score": 0.135,
+      "enriched": true,
+      "key_quote": "It is mostly\nadvanced low-level information that is irrelevant for someone starting\nup, it is not hands-on, so quite unlike the rest of the tutorial, and\nfor the most part the information just duplicates what is already\nexplained elsewhere.",
+      "quote_message_url": "https://www.postgresql.org/message-id/d8e2f31f-f2e8-0482-2b10-2ae06a6b8fb7%402ndquadrant.com",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:2634",
+      "kind": "cf",
+      "title": "Replace spinlock with lwlock in pg_stat_statements",
+      "status": "Returned with feedback",
+      "date": "2020-09-30",
+      "first_date": "2020-06-29",
+      "url": "https://commitfest.postgresql.org/patch/2634/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2895b53b033c47ccb22972b589050dd9@EX13D05UWC001.ant.amazon.com"
+      ],
+      "authors": "Fujii Masao (masaofujii)",
+      "objectors": "",
+      "summary": "Replace spinlock with lwlock in pg_stat_statements\nThreads: track_planning causing performance regression",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "replace spinlock assembler atomics"
+      ],
+      "from_hint": false,
+      "score": 0.133,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:3027",
+      "kind": "cf",
+      "title": "Add regexp_positions(string text, pattern text, flags text) → setof record (starts integer[], lengths integer[])",
+      "status": "Returned with feedback",
+      "date": "2021-12-03",
+      "first_date": "2021-03-01",
+      "url": "https://commitfest.postgresql.org/patch/3027/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/9b2fe34e-b666-471d-8297-f0c82b133085@www.fastmail.com"
+      ],
+      "authors": "Joel Jacobson (joeljacobson)",
+      "objectors": "",
+      "summary": "Add regexp_positions(string text, pattern text, flags text) → setof record (starts integer[], lengths integer[])\nThreads: [PATCH] regexp_positions ( string text, pattern text, flags text ) → setof int4range[]",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "spinlock test-and-set pg_atomic_flag"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:5763",
+      "kind": "cf",
+      "title": "remove ISB in AArch64's spin_delay() implementation",
+      "status": "Returned with feedback",
+      "date": "2025-08-19",
+      "first_date": "2025-04-29",
+      "url": "https://commitfest.postgresql.org/patch/5763/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGnuAhW+b3smF7jGP7ijhdoUc3w1tw462OqTyEpwJtpmjaAtwA@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "remove ISB in AArch64's spin_delay() implementation\nThreads: Remove Instruction Synchronization Barrier in spin_delay() for ARM64 architecture",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "remove hand-written atomics architecture"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:69",
+      "kind": "cf",
+      "title": "Clarify need for memory barriers in bgworkers",
+      "status": "Rejected",
+      "date": "2015-02-03",
+      "first_date": "2014-10-25",
+      "url": "https://commitfest.postgresql.org/patch/69/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/544AF3FB.5000604@BlueTreble.com"
+      ],
+      "authors": "Jim Nasby (decibel)",
+      "objectors": "",
+      "summary": "Clarify need for memory barriers in bgworkers\nThreads: Comment patch for bgworker.c",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "memory barrier compiler fence atomics"
+      ],
+      "from_hint": false,
+      "score": 0.114,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:4999",
+      "kind": "cf",
+      "title": "Restrict EXPLAIN (ANALYZE) for RLS and security_barrier views",
+      "status": "Rejected",
+      "date": "2024-09-19",
+      "first_date": "2024-05-06",
+      "url": "https://commitfest.postgresql.org/patch/4999/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3a60be45e7a89f50d166dba49553950d6b8a97f5.camel@cybertec.at"
+      ],
+      "authors": "Laurenz Albe (laurenz)",
+      "objectors": "",
+      "summary": "Restrict EXPLAIN (ANALYZE) for RLS and security_barrier views\nThreads: Restrict EXPLAIN (ANALYZE) for RLS and security_barrier views",
+      "objection": "",
+      "touch_points": [
+        "planner",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "memory barrier compiler fence atomics"
+      ],
+      "from_hint": false,
+      "score": 0.112,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "revert:20d9adab60754ac71b0b500c91c45e12e940b3ce",
+      "kind": "revert",
+      "title": "Revert \"Allow --with-bonjour to work with non-macOS implementations of Bonjour.\"",
+      "status": "Reverted",
+      "date": "2017-11-09",
+      "first_date": "2017-11-08",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=20d9adab60754ac71b0b500c91c45e12e940b3ce",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2D8331C5-D64F-44C1-8717-63EDC6EAF7EB@brightforge.com"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Allow --with-bonjour to work with non-macOS implementations of Bonjour.\"\nReverted commit(s): Allow --with-bonjour to work with non-macOS implementations of Bonjour.",
+      "objection": "Upon further review, our Bonjour code doesn't actually work with the\nAvahi not-too-compatible compatibility library.  While you can get it\nto work on non-macOS platforms if you link to Apple's own mDNSResponder\ncode, there don't seem to be many people who care about that.  Leaving in\nthe AC_SEARCH_LIBS call seems more likely to encourage people to build\nbroken configurations than to do anything very useful.\n\nHence, remove the AC_SEARCH_LIBS call and put in a warning comment instead.",
+      "touch_points": [],
+      "matched_queries": [
+        "atomics implementation configure option"
+      ],
+      "from_hint": false,
+      "score": 0.103,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:1188",
+      "kind": "cf",
+      "title": "Allow HAVE_UCOL_STRCOLLUTF8 flag to be set conditionally on Windows",
+      "status": "Rejected",
+      "date": "2017-08-11",
+      "first_date": "2017-06-10",
+      "url": "https://commitfest.postgresql.org/patch/1188/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAE9k0P=+30KLJp1Fmhso4P9Ep9_SqXftCXukAxg_Q5GoQ4E7Kg@mail.gmail.com"
+      ],
+      "authors": "Ashutosh Sharma (ashutosh.sharma88)",
+      "objectors": "",
+      "summary": "Allow HAVE_UCOL_STRCOLLUTF8 flag to be set conditionally on Windows\nThreads: Getting server crash on Windows when using ICU collation",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "spinlock test-and-set pg_atomic_flag"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:2526",
+      "kind": "cf",
+      "title": "Use internal pthreads reimplementation only when building with MSVC",
+      "status": "Returned with feedback",
+      "date": "2020-07-31",
+      "first_date": "2020-04-08",
+      "url": "https://commitfest.postgresql.org/patch/2526/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ff533e2c-48a3-3bc2-ca9b-243642c03a8f@gmail.com"
+      ],
+      "authors": "Sandro Mani (sandrom)",
+      "objectors": "",
+      "summary": "Use internal pthreads reimplementation only when building with MSVC\nThreads: [Patch] Use internal pthreads reimplementation only when building\nwith MSVC",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "Visual Studio atomics MSVC minimum"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:3354",
+      "kind": "cf",
+      "title": "add subscription TAP test option \"vcregress subscriptioncheck\" for MSVC builds",
+      "status": "Returned with feedback",
+      "date": "2022-02-07",
+      "first_date": "2021-10-05",
+      "url": "https://commitfest.postgresql.org/patch/3354/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACW1g-6U9SC5a=Q7niE9CE_uZOaUEMoh19T2ND_h6qT-yw@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "",
+      "summary": "add subscription TAP test option \"vcregress subscriptioncheck\" for MSVC builds\nThreads: can we add subscription TAP test option \"vcregress subscriptioncheck\"\nfor MSVC builds?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "Visual Studio atomics MSVC minimum"
+      ],
+      "from_hint": false,
+      "score": 0.098,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:208",
+      "kind": "cf",
+      "title": "Improve documentation for spinlocks file",
+      "status": "Rejected",
+      "date": "2015-07-02",
+      "first_date": "2015-04-05",
+      "url": "https://commitfest.postgresql.org/patch/208/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/331112346.129305.1428259859929.JavaMail.yahoo@mail.yahoo.com"
+      ],
+      "authors": "Artem Luzyanin (aluzyanin)",
+      "objectors": "",
+      "summary": "Improve documentation for spinlocks file\nThreads: PATCH: Spinlock Documentation",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "replace spinlock assembler atomics"
+      ],
+      "from_hint": false,
+      "score": 0.096,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:3534",
+      "kind": "cf",
+      "title": "Reloption tests iprovement. Test resetting illegal option that was actually set for some reason",
+      "status": "Returned with feedback",
+      "date": "2022-06-29",
+      "first_date": "2022-02-11",
+      "url": "https://commitfest.postgresql.org/patch/3534/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/4563991.km65PDbjlG@thinkpad-pgpro"
+      ],
+      "authors": "Nikolay Shaplov (nataraj)",
+      "objectors": "",
+      "summary": "Reloption tests iprovement. Test resetting illegal option that was actually set for some reason\nThreads: [PATCH] minor reloption regression tests improvement",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "spinlock test-and-set pg_atomic_flag"
+      ],
+      "from_hint": false,
+      "score": 0.093,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "revert:ef6164de1d60f65039a73f5975d50b4fa10b8a5b",
+      "kind": "revert",
+      "title": "Revert removal of signed, volatile, and signal handler arg type tests.",
+      "status": "Reverted",
+      "date": "2000-08-29",
+      "first_date": "2000-08-29",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ef6164de1d60f65039a73f5975d50b4fa10b8a5b",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert removal of signed, volatile, and signal handler arg type tests.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "remove hand-written atomics architecture"
+      ],
+      "from_hint": false,
+      "score": 0.091,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:3731",
+      "kind": "cf",
+      "title": "Reloption tests iprovement. Test resetting illegal option that was actually set for some reason",
+      "status": "Withdrawn",
+      "date": "2022-07-01",
+      "first_date": "2022-02-11",
+      "url": "https://commitfest.postgresql.org/patch/3731/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/4563991.km65PDbjlG@thinkpad-pgpro"
+      ],
+      "authors": "Nikolay Shaplov (nataraj)",
+      "objectors": "",
+      "summary": "Reloption tests iprovement. Test resetting illegal option that was actually set for some reason\nThreads: [PATCH] minor reloption regression tests improvement",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "spinlock test-and-set pg_atomic_flag"
+      ],
+      "from_hint": false,
+      "score": 0.087,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:3747",
+      "kind": "cf",
+      "title": "Reloption tests improvement. Test resetting illegal option that was actually set for some reason",
+      "status": "Returned with feedback",
+      "date": "2022-08-02",
+      "first_date": "2022-02-11",
+      "url": "https://commitfest.postgresql.org/patch/3747/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/4563991.km65PDbjlG@thinkpad-pgpro"
+      ],
+      "authors": "Nikolay Shaplov (nataraj)",
+      "objectors": "",
+      "summary": "Reloption tests improvement. Test resetting illegal option that was actually set for some reason\nThreads: [PATCH] minor reloption regression tests improvement",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "spinlock test-and-set pg_atomic_flag"
+      ],
+      "from_hint": false,
+      "score": 0.082,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 3,
+    "new_calls": 5,
+    "failed": 0,
+    "quotes_verified": 5,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 2
+  },
+  "precedent_cutoff": "2025-11-10",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No listed precedent proposes C11 atomics, and neither recorded reason applies here. [P5] reverted a ppc inline-asm change that conflicted with fallback.h, and [P1] said the compiler should own atomics code generation, which this proposal does; message #15 mentions an earlier opt-in version but no rejection reason."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "Objections were found; none apply to the SQL surface, pg_dump or psql, which this proposal does not touch."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "Apart from the ABI point, the proposal touches only in-memory and shared-memory synchronization. It changes no on-disk format, WAL record, catalog or wire protocol, so pg_upgrade and replication are not affected."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal changes how atomics and spinlocks are built and adds a build-time option. It adds no SQL object, privilege, role, catalog, monitoring view or connection path, and it does not change what an unprivileged user can do or see. Correctness risks such as the RISC-V tuple loss, weak-memory ordering and untested platforms belong to the safety and design angles. They are not a privilege or exposure issue."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "Objections raised. The precedents were not cited: P1 is about adding a compiler flag, and P5 is a single ppc revert, so neither recorded reason applies here."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 2,
+      "note": "Two objections; no contrib module or external tool replaces the in-tree atomics, so no extension-based objection applies."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "This is internal infrastructure with a maintainer-side goal that Peter Eisentraut supports in message #25, so v12's code removal has real value to the project. The only demand gap is the opt-in v11 path, which has no stated users."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 10,
+      "new_survived": 5,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "attachment limit (8) reached; v1-0004-Remove-configure-meson-checks-for-atomics.patch not read"
+  ],
+  "tone_lint": {
+    "fields_checked": 98,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 16,
+    "wall_ms": 167481,
+    "cost_usd": 3.4016982000000002,
+    "dry_run": false
+  }
+}

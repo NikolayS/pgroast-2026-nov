@@ -1,0 +1,1333 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:24:27.395Z",
+  "input": {
+    "arg": "7161",
+    "cf": {
+      "id": 7161,
+      "url": "https://commitfest.postgresql.org/patch/7161/",
+      "title": "Apply extended statistics to join clause during parameterized path costing",
+      "status": "Needs review",
+      "authors": "Ilia Evdokimov (ilidock95)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/7b1bd383-fa74-4c0e-a75a-52ff9c753750%40tantorlabs.com",
+    "subject": "Apply extended statistics to join clause during parameterized path costing",
+    "thread_start": "2026-08-17T11:17:08Z",
+    "messages_read": 3,
+    "messages_total": 3,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v1-0001-Use-extended-statistics-for-join-clauses-during-p.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The goal has support in message #2, but the design step is disputed. prior-attempts-1 survives: the patch changes the parameterized scan estimate while the join estimate stays at 98, and message #3 defers the join-level fix without saying why the scan-only step is safe alone. demand-1 adds that the only example forces a nested loop and runs slower after the change. The thread needs agreement on scope before code review.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Use dependency extended statistics when costing parameterized inner paths",
+    "problem": "Extended statistics apply only when every clause references one relation, so a parameterized inner scan of a nested loop falls back to per-column independence. With correlated join columns this underestimates rows per probe, and the planner can pick a poor inner access path. The example shows 2 estimated rows per probe against 200 actual.",
+    "proposed_design": "dependency_is_compatible_clause() also accepts clauses of the form relid.a = otherrel.b, with exactly two varnos, and treats the other relation's Var as a pseudoconstant. When a clause list spans relations but is estimated for a specific varRelid, the planner looks up that relation's dependencies statistics and applies them through dependencies_clauselist_selectivity. The degree logic is unchanged, and only the dependencies kind is used.",
+    "user_visible_surface": [
+      "Row estimates and costs of parameterized inner scans change when dependencies statistics exist on correlated join columns, which can change plan choice."
+    ],
+    "author_claims": [
+      "With dependencies statistics, the per-probe estimate in the example moves from 2 rows to 200, matching the actual count.",
+      "The nested loop cost changes from 579.23 to 4474.19, because inner path costing uses inner_path->rows.",
+      "ndistinct and MCV support would need much more code and should be separate follow-ups.",
+      "Join-level estimation in calc_joinrel_size_estimate is a separate, larger change, and related work is linked."
+    ],
+    "thread_state": "Tomas Vondra supports using per-table extended statistics for joins, asks why ndistinct and MCV are not used, and objects that the scan estimate now disagrees with the join estimate (50 * 200 != 98). The author replied, proposing dependencies first and the join-level fix later; nobody has replied since, and the scope question is open.",
+    "unclear": [
+      "The proposal does not say how the inconsistency between inner scan rows and join rows affects plans above the join.",
+      "The patch has no tests or regression output in the touched files list.",
+      "The proposal does not measure planning-time overhead; the example shows planning time rising from 0.110 ms to 0.648 ms, but over one run.",
+      "The example's execution time rose from 2.690 ms to 14.428 ms after the plan change, and the author does not discuss it.",
+      "The proposal does not say how clauses with non-equality operators or expressions on the other side are handled."
+    ],
+    "search_queries": [
+      "extended statistics join clauses",
+      "functional dependencies join estimation",
+      "parameterized path extended statistics",
+      "dependency_is_compatible_clause",
+      "extended statistics nested loop estimate",
+      "multivariate statistics joins",
+      "eqjoinsel extended statistics MCV",
+      "join cardinality correlated columns"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P2",
+      "source_id": "cf:2959",
+      "title": "Improve join selectivity estimation using extended statistics",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/2959/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/71d67391-16a9-3e5e-b5e4-8f7fd32cc1b2@postgrespro.ru"
+      ],
+      "date": "2021-10-01",
+      "first_date": "2021-01-27",
+      "who_objected": "Tomas Vondra, Ibrar Ahmed",
+      "quote": "The patch includes some *very* interesting ideas, but I think it's does them too late and at the wrong level of abstraction.",
+      "quote_url": "https://www.postgresql.org/message-id/2a7a4c58-d9b4-5529-945a-0dcba6f6ef22%40enterprisedb.com",
+      "enriched": true,
+      "reason": "Tomas Vondra found the design at the wrong level of abstraction. Clausesel.c handled extended statistics directly, dependencies were applied clause by clause in a fixed order and only on the inner relation, and he proposed handling all join clauses for a pair of relations at once in extended_stats.c. The author agreed it could be done better but posted no new version. In July the patch no longer compiled, and it still did not one commitfest later, so it was returned with feedback.",
+      "relation": "similar_idea",
+      "what_is_different": "This patch narrows the scope to parameterized inner-path costing and leaves calc_joinrel_size_estimate alone. P2 also tried join selectivity and conditional probabilities with relation filters."
+    },
+    {
+      "precedent_id": "P6",
+      "source_id": "cf:2386",
+      "title": "Using multicolumn statistics for more precise join selectivity estimatation",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/2386/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/196f1e1a-5464-ed07-ab3c-0c9920564af7@postgrespro.ru"
+      ],
+      "date": "2021-10-01",
+      "first_date": "2019-10-14",
+      "who_objected": "vignesh C, Yugo NAGATA, Tomas Vondra",
+      "quote": "Also Yugo Nagata's comments need to be addressed, I'm changing the\nstatus to \"Waiting for Author\".",
+      "quote_url": "https://www.postgresql.org/message-id/CALDaNm1THv0os7C%3DwF44fGBNVoTBf%2B7xWRAuc87%2Bto%2BNMPUdxg%40mail.gmail.com",
+      "enriched": true,
+      "reason": "The last visible message (July 2021) reports that the patch no longer compiled on Windows against changed ModifyTableState fields. The same message says Yugo Nagata's open review comments still needed addressing, and the entry was moved to Waiting on Author. Those comments included duplicate statistics suggestions causing a unique-constraint error, redundant suggestions, and a request to explain why each statistic is suggested. Earlier, Tomas Vondra had suggested moving the advisor into a separate extension rather than auto_explain, collecting data across many runs, and not creating statistics automatically. The visible messages show no new version after that, and the entry was returned with feedback.",
+      "relation": "similar_idea",
+      "what_is_different": "P6 used functional dependencies for join selectivity and bundled an auto_explain statistics advisor. Its recorded reasons concern build failures and the advisor part, which do not apply here."
+    },
+    {
+      "precedent_id": "P1",
+      "source_id": "cf:3055",
+      "title": "estimating joins using extended statistics",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/3055/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/c8c0ff31-3a8a-7562-bbd3-78b2ec65f16c@enterprisedb.com"
+      ],
+      "date": "2022-02-07",
+      "first_date": "2021-03-31",
+      "who_objected": "Andres Freund, Julien Rouhaud",
+      "quote": "Also the patch doesn't apply anymore:",
+      "quote_url": "https://www.postgresql.org/message-id/20220119101809.wzrjvh4jsnoakgny%40jrouhaud",
+      "enriched": true,
+      "reason": "No reviewer objected to the design in the visible messages. The last messages report that the 2022-01-01 version fails cfbot with uninitialized-variable warnings in mcv_combine_simple() and no longer applies to master, and no new version appears before the entry was returned. The author still listed open items, such as no support for outer or inequality joins and possibly wrong ndistinct and nullfract assumptions for column subsets.",
+      "relation": "similar_idea",
+      "what_is_different": "P1 matched multi-column MCV lists of both relations at join level, like eqjoinsel_inner. This patch uses only dependencies on one relation, at scan level. P1 stopped because the patch no longer applied; no design objection is recorded."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Repeats the per-relation clausesel.c approach that an earlier attempt was told to restructure",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "prior_rejection",
+      "touch_points": [
+        "planner_behaviour",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user adds dependencies statistics on big(a, b). The parameterized inner scan is now costed for 200 rows per probe, but the join estimate stays at 98. Upper joins and aggregates plan on 98 rows while the nested loop is costed for 10000. The user sees plans change after CREATE STATISTICS, and EXPLAIN shows row counts that do not multiply out.",
+      "argument": "[P2] also applied dependencies only on the inner relation inside clausesel.c. It was returned with \"too late and at the wrong level of abstraction\", with a suggestion to handle all join clauses for a relation pair at once. Message #2 raises the same kind of concern in a new form: the scan estimate moves and the join estimate does not. Message #3 defers the join-level fix but does not say why the scan-only step is safe on its own, and nobody has replied since.",
+      "precedent_ids": [
+        "P2"
+      ],
+      "thread_message_refs": [
+        2,
+        3
+      ],
+      "author_must_show": "Why is changing only the parameterized scan estimate, with join rows unchanged, a safe first step and not a structure that the join-level fix will have to replace?",
+      "precedents": [
+        {
+          "id": "P2",
+          "title": "Improve join selectivity estimation using extended statistics",
+          "url": "https://commitfest.postgresql.org/patch/2959/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/71d67391-16a9-3e5e-b5e4-8f7fd32cc1b2@postgrespro.ru"
+          ],
+          "date": "2021-10-01",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 2,
+          "from": "Tomas Vondra",
+          "date": "2026-08-21T14:35:58Z",
+          "url": "https://www.postgresql.org/message-id/e651725f-4bf0-4fa6-8c5d-db27d96a2e31%40vondra.me"
+        },
+        {
+          "index": 3,
+          "from": "Ilia Evdokimov",
+          "date": "2026-09-15T18:58:22Z",
+          "url": "https://www.postgresql.org/message-id/24bf4ee2-3904-47d0-8181-96d23f3fa201%40tantorlabs.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #2 raises the scan and join mismatch (50 * 200 != 98), and message #3 defers it without saying why the scan-only step is safe. [P2] concerned join selectivity, so it supports the placement concern only loosely.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No workload shown where the corrected estimate gives a better plan",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "desirability",
+      "touch_points": [
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user with dependencies statistics on join columns upgrades, and the parameterized inner scans in their nested loops get new estimates and new access paths. In the only example given, the plan moves from an index scan to a bitmap heap scan, and execution time goes from about 2.7 ms to 14.4 ms. The user sees the slowdown after the upgrade and has no setting to get the old plan back.",
+      "argument": "The example forces a nested loop with enable_mergejoin and enable_hashjoin off, so it shows a corrected estimate, not a better plan. Message #1 does not discuss that its new plan runs about 5 times slower. The thread has no field report and no -performance or -bugs case where this misestimate led to a bad plan. The broader demand for using extended statistics in join estimation is real, as message #2 agrees, but this patch changes only the scan estimate and only for the dependencies kind.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2
+      ],
+      "author_must_show": "Which real query, without forced enable_* settings, gets a faster plan from this change, and how often does the plan get slower instead?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Ilia Evdokimov",
+          "date": "2026-08-17T11:17:08Z",
+          "url": "https://www.postgresql.org/message-id/7b1bd383-fa74-4c0e-a75a-52ff9c753750%40tantorlabs.com"
+        },
+        {
+          "index": 2,
+          "from": "Tomas Vondra",
+          "date": "2026-08-21T14:35:58Z",
+          "url": "https://www.postgresql.org/message-id/e651725f-4bf0-4fa6-8c5d-db27d96a2e31%40vondra.me"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The only example forces a nested loop and runs slower after the change, and the thread does not discuss it. Message #2 supports the general direction, but the material shows no query that gets a better plan from this step.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Existing dependencies statistics silently change nested loop plans after upgrade",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "planner_behaviour",
+      "touch_points": [
+        "planner_behaviour",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user created dependencies statistics to fix single-table WHERE estimates. After upgrade, the same objects also change parameterized inner path costs, so join plans flip with no new DDL or setting. The only way back is to drop the statistics, which also undoes the WHERE estimates they were created for.",
+      "argument": "The patch reuses existing statistics objects for a new purpose, and the patch prose has no documentation hunk or release-note text saying that dependencies now affect join costing. The only example in message #1 moves execution from 2.690 ms to 14.428 ms after the plan change, and the thread does not discuss this. Message #2 notes that the scan and join estimates now disagree (50 * 200 != 98), so plans above the join may also change. The CommitFest entry lists target version \"stable\", and planner changes like this are not normally backpatched.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        2,
+        3
+      ],
+      "author_must_show": "How will users who already rely on dependencies statistics learn about the new join-costing effect, and how can they keep their current plans without losing their WHERE estimates?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Ilia Evdokimov",
+          "date": "2026-08-17T11:17:08Z",
+          "url": "https://www.postgresql.org/message-id/7b1bd383-fa74-4c0e-a75a-52ff9c753750%40tantorlabs.com"
+        },
+        {
+          "index": 2,
+          "from": "Tomas Vondra",
+          "date": "2026-08-21T14:35:58Z",
+          "url": "https://www.postgresql.org/message-id/e651725f-4bf0-4fa6-8c5d-db27d96a2e31%40vondra.me"
+        },
+        {
+          "index": 3,
+          "from": "Ilia Evdokimov",
+          "date": "2026-09-15T18:58:22Z",
+          "url": "https://www.postgresql.org/message-id/24bf4ee2-3904-47d0-8181-96d23f3fa201%40tantorlabs.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Every planner estimate improvement changes plans for existing statistics at a major upgrade, and earlier extended statistics work did the same with no opt-out. The thread does not ask for a backpatch, and the missing documentation is outside levels 1-2.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Second estimation path for join clauses that join-level work must reconcile",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user adds dependencies statistics. The parameterized inner scan now estimates 200 rows per probe while the join still estimates 98 rows, as in message #1. Later the join-level work changes eqjoinsel() or calc_joinrel_size_estimate. Its author must keep both paths consistent, and no test flags a mismatch, so it ships unnoticed.",
+      "argument": "Message #2 shows the scan and join estimates now disagree (50 * 200 != 98), and the proposal leaves that disagreement in place for an unstated time. [P2] was returned partly because it applied dependencies in clausesel.c, clause by clause, only on the inner relation, which Tomas Vondra called the wrong level of abstraction. This patch takes the same placement. Message #3 says the join-level fix should come later but does not say how the two paths will share logic.",
+      "precedent_ids": [
+        "P2"
+      ],
+      "thread_message_refs": [
+        1,
+        2,
+        3
+      ],
+      "author_must_show": "How will this clausesel.c path and a later eqjoinsel() or calc_joinrel_size_estimate change share one estimate, so the scan and join rows cannot drift apart?",
+      "precedents": [
+        {
+          "id": "P2",
+          "title": "Improve join selectivity estimation using extended statistics",
+          "url": "https://commitfest.postgresql.org/patch/2959/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/71d67391-16a9-3e5e-b5e4-8f7fd32cc1b2@postgrespro.ru"
+          ],
+          "date": "2021-10-01",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Ilia Evdokimov",
+          "date": "2026-08-17T11:17:08Z",
+          "url": "https://www.postgresql.org/message-id/7b1bd383-fa74-4c0e-a75a-52ff9c753750%40tantorlabs.com"
+        },
+        {
+          "index": 2,
+          "from": "Tomas Vondra",
+          "date": "2026-08-21T14:35:58Z",
+          "url": "https://www.postgresql.org/message-id/e651725f-4bf0-4fa6-8c5d-db27d96a2e31%40vondra.me"
+        },
+        {
+          "index": 3,
+          "from": "Ilia Evdokimov",
+          "date": "2026-09-15T18:58:22Z",
+          "url": "https://www.postgresql.org/message-id/24bf4ee2-3904-47d0-8181-96d23f3fa201%40tantorlabs.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of prior-attempts-1: it rests on the same scan and join mismatch and the same [P2] placement point. Its added scenario of a later mismatch that ships unnoticed is speculative.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Plan changes for existing statistics users, with a slower example",
+      "level": "1b",
+      "rubric_item": 6,
+      "category": "planner_behaviour",
+      "touch_points": [
+        "planner_behaviour",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site created dependencies statistics years ago to fix single-table filters. After upgrade, its nested loop inner paths are costed differently and switch, for example from index scan to bitmap heap scan. Some queries get slower, and the site finds out from production latency.",
+      "argument": "In the only example in message #1, the plan with the better estimate ran 14.428 ms against 2.690 ms before, and the thread does not discuss this. Part of the gap may be cold cache (read=265), but no repeated runs are shown. A committer would likely ask for evidence that the change helps plan choice in general before existing dependencies statistics take on a new role.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3
+      ],
+      "author_must_show": "Which workloads get faster plans from this change, and how did the example perform over repeated warm-cache runs?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Ilia Evdokimov",
+          "date": "2026-08-17T11:17:08Z",
+          "url": "https://www.postgresql.org/message-id/7b1bd383-fa74-4c0e-a75a-52ff9c753750%40tantorlabs.com"
+        },
+        {
+          "index": 3,
+          "from": "Ilia Evdokimov",
+          "date": "2026-09-15T18:58:22Z",
+          "url": "https://www.postgresql.org/message-id/24bf4ee2-3904-47d0-8181-96d23f3fa201%40tantorlabs.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of demand-1, which makes the same point about the slower example and adds that the forced nested loop shows no better plan.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": true,
+      "reason": "Row estimates and costs of parameterized inner scans change when dependencies statistics exist, which can change the chosen access path."
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The CommitFest entry lists target version \"stable\", and the patch changes plans for existing statistics objects."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "The patch adds a scan-level path in clausesel.c that later join-level work in eqjoinsel() or calc_joinrel_size_estimate must stay consistent with."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Planning now looks up dependencies statistics for cross-relation clause lists; the example shows planning time of 0.110 ms before and 0.648 ms after, over one run."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Why is changing only the parameterized scan estimate, with join rows unchanged at 98, a safe first step and not a structure the join-level fix must replace?",
+    "How do plans above the join behave when the inner scan is costed for 200 rows per probe but the join reports 98 rows?",
+    "Which query, without forced enable_* settings, gets a faster plan from this change, and how often does the plan get slower?",
+    "How does the example perform over repeated warm-cache runs, given that execution time went from 2.690 ms to 14.428 ms in the single run shown?",
+    "How much planning time does the new lookup add for joins on tables that have dependencies statistics, measured over many runs?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "Tomas Vondra reviewed in message #2 and supports the general direction. The owner must know both extended statistics and join selectivity estimation.",
+    "liability": "The owner signs for plan changes on every site that has dependencies statistics on join columns, and for keeping the scan-level path consistent with later join-level estimation work.",
+    "author_follow_up": "The author answered the review in message #3 and proposes follow-up patches for ndistinct, MCV and join-level estimation."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "medium",
+    "review_cost": "low",
+    "recommended_action": "fix design first",
+    "reason": "The patch is 4.3 KB in two planner files and helps only users with dependencies statistics on correlated join columns in nested loops. The scope question from message #2 is open, and the scan and join estimates disagree until it is settled."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read. It could not be checked how non-equality operators or expressions on the other side are handled, whether the new path keeps the existing column-privilege checks, or whether it can apply a dependency twice alongside other estimates.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:3055",
+      "kind": "cf",
+      "title": "estimating joins using extended statistics",
+      "status": "Returned with feedback",
+      "date": "2022-02-07",
+      "first_date": "2021-03-31",
+      "url": "https://commitfest.postgresql.org/patch/3055/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/c8c0ff31-3a8a-7562-bbd3-78b2ec65f16c@enterprisedb.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "Andres Freund, Julien Rouhaud",
+      "summary": "The patch uses multi-column MCV lists from extended statistics to estimate equijoin selectivity, matching the MCV lists of the two joined relations the way eqjoinsel_inner does. It can also use base restrictions as conditions on the MCV lists, and estimates joins of more than two relations one relation pair at a time.",
+      "objection": "No reviewer objected to the design in the visible messages. The last messages report that the 2022-01-01 version fails cfbot with uninitialized-variable warnings in mcv_combine_simple() and no longer applies to master, and no new version appears before the entry was returned. The author still listed open items, such as no support for outer or inequality joins and possibly wrong ndistinct and nullfract assumptions for column subsets.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "extended statistics join clauses",
+        "functional dependencies join estimation",
+        "parameterized path extended statistics",
+        "extended statistics nested loop estimate",
+        "multivariate statistics joins",
+        "eqjoinsel extended statistics MCV"
+      ],
+      "from_hint": false,
+      "score": 0.683,
+      "enriched": true,
+      "key_quote": "Also the patch doesn't apply anymore:",
+      "quote_message_url": "https://www.postgresql.org/message-id/20220119101809.wzrjvh4jsnoakgny%40jrouhaud",
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:2959",
+      "kind": "cf",
+      "title": "Improve join selectivity estimation using extended statistics",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-01-27",
+      "url": "https://commitfest.postgresql.org/patch/2959/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/71d67391-16a9-3e5e-b5e4-8f7fd32cc1b2@postgrespro.ru"
+      ],
+      "authors": "Konstantin Knizhnik (knizhnik)",
+      "objectors": "Tomas Vondra, Ibrar Ahmed",
+      "summary": "The patch uses per-table extended statistics, mainly functional dependencies, when it estimates join selectivity in clausesel.c. It also tries to combine join clauses with relation-level filters in calc_joinrel_size_estimate to estimate conditional probabilities.",
+      "objection": "Tomas Vondra found the design at the wrong level of abstraction. Clausesel.c handled extended statistics directly, dependencies were applied clause by clause in a fixed order and only on the inner relation, and he proposed handling all join clauses for a pair of relations at once in extended_stats.c. The author agreed it could be done better but posted no new version. In July the patch no longer compiled, and it still did not one commitfest later, so it was returned with feedback.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "extended statistics join clauses",
+        "functional dependencies join estimation",
+        "parameterized path extended statistics",
+        "extended statistics nested loop estimate",
+        "multivariate statistics joins",
+        "eqjoinsel extended statistics MCV"
+      ],
+      "from_hint": false,
+      "score": 0.56,
+      "enriched": true,
+      "key_quote": "The patch includes some *very* interesting ideas, but I think it's does them too late and at the wrong level of abstraction.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2a7a4c58-d9b4-5529-945a-0dcba6f6ef22%40enterprisedb.com",
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:3050",
+      "kind": "cf",
+      "title": "Extended statistics in EXPLAIN",
+      "status": "Returned with feedback",
+      "date": "2022-08-01",
+      "first_date": "2021-03-27",
+      "url": "https://commitfest.postgresql.org/patch/3050/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/8081617b-d80f-ae2b-b79f-ea7e926f9fcf@enterprisedb.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "Show in EXPLAIN (VERBOSE) which extended statistics objects the planner applied to a scan node and to which clauses, so users can see whether a statistics object affects an estimate. The PoC patch stores this information in lists added to the Plan and deparses the clauses the way index quals are deparsed.",
+      "objection": "The commitfest manager returned the entry because it had too little reviewer interest, and said the return was not a rejection. Earlier, Tom Lane objected that the feature exposes unstable planner internals, adds data and copying cost to every finished plan, and fails if a statistics object is dropped between planning and EXPLAIN. Robert Haas disputed this, and Tatsuro Yamada posted a rebase in January 2022, but no review followed before the entry was closed in August 2022.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "extended statistics join clauses",
+        "parameterized path extended statistics",
+        "extended statistics nested loop estimate",
+        "eqjoinsel extended statistics MCV"
+      ],
+      "from_hint": false,
+      "score": 0.443,
+      "enriched": true,
+      "key_quote": "Rather than code changes, what this patch needs is more community interest.",
+      "quote_message_url": "https://www.postgresql.org/message-id/aaabc116-511b-bbf3-adbb-6971e93c6452%40timescale.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:2831",
+      "kind": "cf",
+      "title": "Extended statistics / estimate Var op Var clauses",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2020-11-13",
+      "url": "https://commitfest.postgresql.org/patch/2831/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/9e0a12e0-c05f-b193-ed3d-fe88bc1e5fe1@enterprisedb.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "Dean Rasheed",
+      "summary": "The patch series lets the planner use extended statistics (MCV lists) to estimate (Var op Var) clauses such as a < b, which before were estimated only for (Var op Const). It also improves selfuncs estimates for clauses with the same expression on both sides, such as a = a, and changes which clauses count as \"simple\" in the MCV OR handling.",
+      "objection": "Dean Rasheed's July 2022 review found that the change to \"issimple\" handling makes some estimates worse, for example WHERE a = 1 OR (b > 0 AND b < 10), and no existing regression test caught this. He asked whether that part was still needed after the selfuncs fixes. The author did not answer for two months, so Michael Paquier marked the entry Returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "extended statistics join clauses",
+        "parameterized path extended statistics",
+        "extended statistics nested loop estimate",
+        "eqjoinsel extended statistics MCV"
+      ],
+      "from_hint": false,
+      "score": 0.424,
+      "enriched": true,
+      "key_quote": "The patch changes that, which ends up making things worse in some cases.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAEZATCWjQcp_xNaaEKjnBJLMKcHzjnHpy83QxyYSak2zcE63yA%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:2692",
+      "kind": "cf",
+      "title": "list of extended statistics on psql",
+      "status": "Returned with feedback",
+      "date": "2020-09-30",
+      "first_date": "2020-08-24",
+      "url": "https://commitfest.postgresql.org/patch/2692/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/c027a541-5856-75a5-0868-341301e1624b@nttcom.co.jp_1"
+      ],
+      "authors": "Tatsuro Yamada (tatsuro_yamada)",
+      "objectors": "",
+      "summary": "A new psql meta-command, first \\dz and then \\dX, lists extended statistics objects with schema, table, name, columns and which statistics kinds are enabled. Later discussion turned to the output layout, such as one row per statistics kind and showing built/required status.",
+      "objection": "The patch stopped applying, and the commitfest manager asked for a rebased version. The author did not answer for two weeks, so the entry was marked Returned with Feedback. The output layout was still under discussion, but no reviewer opposed the feature itself.",
+      "touch_points": [
+        "psql"
+      ],
+      "matched_queries": [
+        "extended statistics join clauses",
+        "parameterized path extended statistics",
+        "extended statistics nested loop estimate",
+        "eqjoinsel extended statistics MCV"
+      ],
+      "from_hint": false,
+      "score": 0.391,
+      "enriched": true,
+      "key_quote": "Not seeing this answered after two weeks, I have marked the patch as\nRwF for now.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20200930061947.GD1996%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:2386",
+      "kind": "cf",
+      "title": "Using multicolumn statistics for more precise join selectivity estimatation",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2019-10-14",
+      "url": "https://commitfest.postgresql.org/patch/2386/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/196f1e1a-5464-ed07-ab3c-0c9920564af7@postgrespro.ru"
+      ],
+      "authors": "Konstantin Knizhnik (knizhnik)",
+      "objectors": "vignesh C, Yugo NAGATA, Tomas Vondra",
+      "summary": "The patch had two parts. One let the planner use extended (multicolumn) statistics, specifically functional dependencies, when estimating join selectivity. The other made auto_explain create multicolumn statistics automatically, or just suggest them, when a plan node's estimated row count differs from the actual count by more than a threshold.",
+      "objection": "The last visible message (July 2021) reports that the patch no longer compiled on Windows against changed ModifyTableState fields. The same message says Yugo Nagata's open review comments still needed addressing, and the entry was moved to Waiting on Author. Those comments included duplicate statistics suggestions causing a unique-constraint error, redundant suggestions, and a request to explain why each statistic is suggested. Earlier, Tomas Vondra had suggested moving the advisor into a separate extension rather than auto_explain, collecting data across many runs, and not creating statistics automatically. The visible messages show no new version after that, and the entry was returned with feedback.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "functional dependencies join estimation",
+        "extended statistics nested loop estimate",
+        "multivariate statistics joins",
+        "join cardinality correlated columns"
+      ],
+      "from_hint": false,
+      "score": 0.368,
+      "enriched": true,
+      "key_quote": "Also Yugo Nagata's comments need to be addressed, I'm changing the\nstatus to \"Waiting for Author\".",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALDaNm1THv0os7C%3DwF44fGBNVoTBf%2B7xWRAuc87%2Bto%2BNMPUdxg%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:5077",
+      "kind": "cf",
+      "title": "Showing applied extended statistics in explain Part2",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2024-03-01",
+      "url": "https://commitfest.postgresql.org/patch/5077/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/TYYPR01MB82310B308BA8770838F681619E5E2@TYYPR01MB8231.jpnprd01.prod.outlook.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz), Tatsuro Yamada (yamatattsu)",
+      "objectors": "Tomas Vondra",
+      "summary": "The patch, a rebase of Tomas Vondra's earlier proof of concept, records which extended statistics the planner applied and to which clauses. EXPLAIN shows them as an \"Ext Stats\" line under a new STATS option.",
+      "objection": "No message states the decision; the last visible message is from July 2024 and the entry closed in October 2024. Several review items were still open at that point. The patch fails with \"unrecognized node type: 268\" on EXPLAIN of a prepared statement because StatisticExtInfo cannot be copied, and the suggested new plan node was not done. There were no regression tests, no planning-overhead measurements in reply to Tom's cost concern, and no output for dependencies or expression and ndistinct statistics.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "extended statistics join clauses",
+        "parameterized path extended statistics",
+        "eqjoinsel extended statistics MCV"
+      ],
+      "from_hint": false,
+      "score": 0.291,
+      "enriched": true,
+      "key_quote": "His concern is that to make this work, we have to keep/copy the information for all queries, even if that user never does explain.",
+      "quote_message_url": "https://www.postgresql.org/message-id/f74b4577-f80d-48a0-aff0-92c76c9bbe34%40enterprisedb.com",
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:4114",
+      "kind": "cf",
+      "title": "Implement type input functions for extended statistics types",
+      "status": "Withdrawn",
+      "date": "2023-03-01",
+      "first_date": "2023-01-05",
+      "url": "https://commitfest.postgresql.org/patch/4114/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/MN2PR05MB68795FCDB5B560D350084753B6FA9@MN2PR05MB6879.namprd05.prod.outlook.com"
+      ],
+      "authors": "David Kimura (dgkimura)",
+      "objectors": "Tomas Vondra, Tom Lane",
+      "summary": "The patch adds input functions for the extended statistics types pg_ndistinct, pg_dependencies and pg_mcv_list, so that dumped extended statistics can be restored. It parses pg_ndistinct and pg_dependencies with a new yacc grammar and reads pg_mcv_list through byteain().",
+      "objection": "The author withdrew the entry after Tomas Vondra and Tom Lane said dump and reload should start with regular statistics, and that it needs a plan for statistics whose format changes between major versions or whose meaning depends on the environment, such as collation. The patch also had build warnings and failed regression tests, and Andres Freund reported that it crashed in CI. The thread has no author reply after these comments.",
+      "touch_points": [],
+      "matched_queries": [
+        "extended statistics join clauses",
+        "parameterized path extended statistics",
+        "eqjoinsel extended statistics MCV"
+      ],
+      "from_hint": false,
+      "score": 0.284,
+      "enriched": true,
+      "key_quote": "And yes, the main\nstumbling block is that you need to have a plan for stats changing\nacross versions, or even just environmental issues.",
+      "quote_message_url": "https://www.postgresql.org/message-id/1368469.1675263529%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:5180",
+      "kind": "cf",
+      "title": "Add support for (Var op Var) clause in extended MCV statistics",
+      "status": "Returned with feedback",
+      "date": "2024-09-30",
+      "first_date": "2024-08-12",
+      "url": "https://commitfest.postgresql.org/patch/5180/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/46d09d66-1692-4a12-a106-06981a47cb28@tantorlabs.com"
+      ],
+      "authors": "Ilia Evdokimov (ilidock95)",
+      "objectors": "",
+      "summary": "Add support for (Var op Var) clause in extended MCV statistics\nThreads: Add support for (Var op Var) clause in extended MCV statistics",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "extended statistics join clauses",
+        "eqjoinsel extended statistics MCV"
+      ],
+      "from_hint": false,
+      "score": 0.274,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:5422",
+      "kind": "cf",
+      "title": "[PERF] Improve Cardinality Estimation for Joins with GROUP BY Having Single Clause",
+      "status": "Withdrawn",
+      "date": "2025-04-06",
+      "first_date": "2024-11-27",
+      "url": "https://commitfest.postgresql.org/patch/5422/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1936dbf4b8d.b32ac0029858.4190526705225323910@zohocorp.com"
+      ],
+      "authors": "Ravi Revathy (revathyraavi)",
+      "objectors": "",
+      "summary": "[PERF] Improve Cardinality Estimation for Joins with GROUP BY Having Single Clause\nThreads: [PERF] Improve Cardinality Estimation for Joins with GROUP BY\nHaving Single Clause",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "functional dependencies join estimation",
+        "join cardinality correlated columns"
+      ],
+      "from_hint": false,
+      "score": 0.242,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:2765",
+      "kind": "cf",
+      "title": "Add extra statistics to explain for Nested Loop",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2020-10-16",
+      "url": "https://commitfest.postgresql.org/patch/2765/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/f6490a9dec1b97118ac5a8509f095877@postgrespro.ru",
+        "https://www.postgresql.org/message-id/flat/ae576cac3f451d318374f2a2e494aab1@postgrespro.ru"
+      ],
+      "authors": "Justin Pryzby (justinpryzby), Ekaterina Sokolova (e.sokolova)",
+      "objectors": "",
+      "summary": "Add extra statistics to explain for Nested Loop\nThreads: [PATCH] Add extra statistics to explain for Nested Loop; Re: [PATCH] Add extra statistics to explain for Nested Loop",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "extended statistics nested loop estimate"
+      ],
+      "from_hint": false,
+      "score": 0.137,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:5606",
+      "kind": "cf",
+      "title": "Remove extra Sort node above a btree-compatible Index Scan",
+      "status": "Returned with feedback",
+      "date": "2025-09-01",
+      "first_date": "2025-02-28",
+      "url": "https://commitfest.postgresql.org/patch/5606/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAK98qZ0MVVdV1tQKhHq=2qVkKN1rWff-YW6BGOOLoO509krv4Q@mail.gmail.com"
+      ],
+      "authors": "Alexandra Wang (alexandrawang)",
+      "objectors": "",
+      "summary": "Remove extra Sort node above a btree-compatible Index Scan\nThreads: Remove extra Sort node above a btree-compatible Index Scan",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "dependency_is_compatible_clause"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:2810",
+      "kind": "cf",
+      "title": "OpenSSL 3.0.0 compatibility",
+      "status": "Withdrawn",
+      "date": "2021-03-10",
+      "first_date": "2020-05-28",
+      "url": "https://commitfest.postgresql.org/patch/2810/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/FEF81714-D479-4512-839B-C769D2605F8A@yesql.se"
+      ],
+      "authors": "Daniel Gustafsson (d_gustafsson)",
+      "objectors": "",
+      "summary": "OpenSSL 3.0.0 compatibility\nThreads: OpenSSL 3.0.0 compatibility",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "dependency_is_compatible_clause"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:2322",
+      "kind": "cf",
+      "title": "Join Correlation Name",
+      "status": "Withdrawn",
+      "date": "2019-11-01",
+      "first_date": "2019-10-29",
+      "url": "https://commitfest.postgresql.org/patch/2322/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2aa57950-b1d7-e9b6-0770-fa592d565dda@2ndquadrant.com"
+      ],
+      "authors": "Vik Fearing (xocolatl)",
+      "objectors": "",
+      "summary": "Join Correlation Name\nThreads: Join Correlation Name",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "join cardinality correlated columns"
+      ],
+      "from_hint": false,
+      "score": 0.116,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:120",
+      "kind": "cf",
+      "title": "multivariate statistics",
+      "status": "Returned with feedback",
+      "date": "2015-08-25",
+      "first_date": "2014-10-12",
+      "url": "https://commitfest.postgresql.org/patch/120/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/543AFA15.4080608@fuzzy.cz"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "multivariate statistics\nThreads: WIP: multivariate statistics / proof of concept",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "multivariate statistics joins"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:3211",
+      "kind": "cf",
+      "title": "PoC: improving join estimates using sampling",
+      "status": "Returned with feedback",
+      "date": "2022-03-22",
+      "first_date": "2021-06-27",
+      "url": "https://commitfest.postgresql.org/patch/3211/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/580ba824-7630-e6e8-f80f-725dfa587da5@enterprisedb.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "PoC: improving join estimates using sampling\nThreads: PoC: using sampling to estimate joins / complex conditions",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "functional dependencies join estimation"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:450",
+      "kind": "cf",
+      "title": "multivariate statistics",
+      "status": "Returned with feedback",
+      "date": "2016-04-08",
+      "first_date": "2014-10-12",
+      "url": "https://commitfest.postgresql.org/patch/450/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/543AFA15.4080608@fuzzy.cz"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "multivariate statistics\nThreads: WIP: multivariate statistics / proof of concept",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "multivariate statistics joins"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:210",
+      "kind": "cf",
+      "title": "improving join estimates using FK",
+      "status": "Returned with feedback",
+      "date": "2016-01-31",
+      "first_date": "2015-04-07",
+      "url": "https://commitfest.postgresql.org/patch/210/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/552335D9.3090707@2ndquadrant.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "improving join estimates using FK\nThreads: PATCH: use foreign keys to improve join estimates v1",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "functional dependencies join estimation"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:3821",
+      "kind": "cf",
+      "title": "Patch to implement missing join selectivity estimation for range types",
+      "status": "Returned with feedback",
+      "date": "2024-04-09",
+      "first_date": "2022-06-30",
+      "url": "https://commitfest.postgresql.org/patch/3821/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB4o4asMq3k6HN9WfDsssQ5DDVfAziB4TpiFJ8RBJgZTVuwC7g@mail.gmail.com"
+      ],
+      "authors": "Mahmoud SAKR (mahmsakr), Diogo Repas (diogo.repas), Maxime Schoemans (mschoema), Zhicheng Luo (zcsysu.163.com)",
+      "objectors": "",
+      "summary": "Patch to implement missing join selectivity estimation for range types\nThreads: Implement missing join selectivity estimation for range types",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "functional dependencies join estimation"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "wiki:Features_We_Do_Not_Want:5",
+      "kind": "do_not_want",
+      "title": "Indeterminate behavior for the GROUP BY clause",
+      "status": "Not wanted",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Features_We_Do_Not_Want",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Indeterminate behavior for the GROUP BY clause\nSection: Features We Do Not Want\nLinked: Re: SQL compatibility reminder: MySQL vs PostgreSQL",
+      "objection": "At least one other database product allows specification of a subset of the result columns which GROUP BY would need to be able to provide predictable results; the server is free to return any value from the group. This is not viewed as a desirable feature. PostgreSQL 9.1 allows result columns that are not referenced by GROUP BY if a primary key for the same table is referenced in GROUP BY.",
+      "touch_points": [],
+      "matched_queries": [
+        "dependency_is_compatible_clause"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:4253",
+      "kind": "cf",
+      "title": "Improve the performance of nested loop join in the case of partitioned inner table",
+      "status": "Returned with feedback",
+      "date": "2023-08-01",
+      "first_date": "2023-03-23",
+      "url": "https://commitfest.postgresql.org/patch/4253/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHdr9ueefdCCCq1mXAYfLmRgEKfhWQDCU7=XmureEAzJcOwfag@mail.gmail.com"
+      ],
+      "authors": "Alexandr Nikulin (anikulin)",
+      "objectors": "",
+      "summary": "Improve the performance of nested loop join in the case of partitioned inner table\nThreads: Improve the performance of nested loop join in the case of\npartitioned inner table",
+      "objection": "",
+      "touch_points": [
+        "planner",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "extended statistics nested loop estimate"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:2310",
+      "kind": "cf",
+      "title": "bitmap cost should account for correlated indexes",
+      "status": "Returned with feedback",
+      "date": "2021-02-01",
+      "first_date": "2019-01-01",
+      "url": "https://commitfest.postgresql.org/patch/2310/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20190101225615.GF25379@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "",
+      "summary": "bitmap cost should account for correlated indexes\nThreads: bitmaps and correlation",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "join cardinality correlated columns"
+      ],
+      "from_hint": false,
+      "score": 0.094,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:58",
+      "kind": "cf",
+      "title": "multivariate statistics",
+      "status": "Rejected",
+      "date": "2015-01-16",
+      "first_date": "2014-10-12",
+      "url": "https://commitfest.postgresql.org/patch/58/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/543AFA15.4080608@fuzzy.cz"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "multivariate statistics\nThreads: WIP: multivariate statistics / proof of concept",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "multivariate statistics joins"
+      ],
+      "from_hint": false,
+      "score": 0.093,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:3941",
+      "kind": "cf",
+      "title": "Pulling up direct-correlated ANY_SUBLINK",
+      "status": "Returned with feedback",
+      "date": "2023-01-31",
+      "first_date": "2022-11-02",
+      "url": "https://commitfest.postgresql.org/patch/3941/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAKU4AWoZksNZ4VR-fLTdwmiR91WU8qViDBNQKNwY=7iyo+uV0w@mail.gmail.com"
+      ],
+      "authors": "Andy Fan (andyf)",
+      "objectors": "",
+      "summary": "Pulling up direct-correlated ANY_SUBLINK\nThreads: A new strategy for pull-up correlated ANY_SUBLINK",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "join cardinality correlated columns"
+      ],
+      "from_hint": false,
+      "score": 0.092,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 6,
+    "new_calls": 2,
+    "failed": 0,
+    "quotes_verified": 2,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 7
+  },
+  "precedent_cutoff": "2026-08-17",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "Message #1 links related ongoing work [0], and message #3 links a join-level discussion. The thread gives no outcome for either. P4, P9, P16 and P18 share the area, but their recorded reasons do not apply."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 1,
+      "note": "From the standards angle the patch adds no syntax, GUC, catalog entry or dump-visible object. Only the plan change for existing statistics users remains."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The proposal changes only planner selectivity estimation in clausesel.c and dependencies.c. It adds no on-disk format, WAL record, catalog column, statistics format, or protocol change, and reads existing pg_statistic_ext_data dependencies as they are. Exported function signatures in dependencies.c could matter for extensions, but the material does not show any signature change."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal has no privilege or exposure aspect that I can tie to a failure scenario. It changes only row estimates for parameterized inner scans, using dependencies statistics that the planner already reads for single-relation clauses. Dependencies store only a degree per column pair and no data values, and the patch does not evaluate operators against stored values, so leaky-operator and row-level security concerns do not apply as they would for MCV lists. Whether the new code path keeps the existing column-privilege checks in extended statistics cannot be checked without the code. Planning cost and plan quality belong to other angles."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "Planning overhead seems to fall mostly on tables that have dependencies statistics, so I raise no hot-path objection, but the proposal does not yet measure it."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "Core Postgres has no way to apply a relation's dependencies statistics to the per-probe estimate of a parameterized inner scan, and I know of no extension that does this. Hint extensions can fix join row counts but not inner path rows. The overlap with join-level work ([P2], [P1], Tomas's eqjoinsel point in message #2) is a design question for other angles."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "Demand for using extended statistics in join estimation is real, and message #2 says so. The objection is limited to missing evidence that this narrow change helps a real plan."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 5,
+      "new_survived": 2,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 74,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 13,
+    "wall_ms": 111259,
+    "cost_usd": 1.4691668,
+    "dry_run": false
+  }
+}

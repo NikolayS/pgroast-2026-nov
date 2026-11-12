@@ -1,0 +1,1371 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:20:24.382Z",
+  "input": {
+    "arg": "7107",
+    "cf": {
+      "id": 7107,
+      "url": "https://commitfest.postgresql.org/patch/7107/",
+      "title": "BUG #19603: NaN coordinates in cube type break comparison and GiST scans",
+      "status": "Needs review",
+      "authors": "Ayush Tiwari (aytiwari)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/19603-7b1f783d5bbfe791%40postgresql.org",
+    "subject": "BUG #19603: Vuln47: distance_taxicab and distance_chebyshev silently return 0 instead of NaN when a cube coordin",
+    "thread_start": "2026-08-03T07:00:47Z",
+    "messages_read": 9,
+    "messages_total": 9,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "0001-cube-propagate-NaN-in-taxicab-Chebyshev-and-Euclidea.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection questions the goal or the NaN semantics, which follow float8 practice. The two surviving objections, standards-compat-1 and replication-ondisk-1, are fixable rollout points. The patch changes the comparisons behind the cube btree operator class, the thread covers REINDEX only for GiST, and the entry targets stable. A committer has to decide between back branches and master only.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Fix NaN handling in contrib/cube distances, comparisons and GiST",
+    "problem": "A NaN coordinate in a cube value makes all float comparisons false, so distance_taxicab, distance_chebyshev and <-> return 0 or a finite value instead of NaN. The reviewer found that equality, ordering, cube_is_point, cube_size and GiST KNN scans are wrong in the same way. This affects users who store or query cube values with NaN coordinates.",
+    "proposed_design": "distance_1D() returns NaN when any endpoint is NaN, and Chebyshev uses float8_max so NaN wins the running maximum. Comparisons and bound selection use the float8 helpers, so NaN sorts the way it does for float8. For GiST internal keys, a NaN distance becomes -Infinity so subtrees that hold finite values are still searched.",
+    "user_visible_surface": [
+      "distance_taxicab, distance_chebyshev and <-> return NaN when a cube has a NaN coordinate.",
+      "Cube equality and ordering operators (=, <, >) change results for cubes with NaN coordinates.",
+      "cube_is_point and cube_size change results for NaN coordinates written as point or as box.",
+      "Existing GiST indexes on cube columns that contain NaN need REINDEX to give correct results."
+    ],
+    "author_claims": [
+      "NaN should propagate through distances the way IEEE 754 arithmetic does.",
+      "NaN is not a valid lower bound for an internal GiST key that also covers finite values, so -Infinity is used.",
+      "Replacing the library and restarting does not repair existing indexes; REINDEX does.",
+      "The reindex need should go into the release notes."
+    ],
+    "thread_state": "Aleksander Alekseev reviewed v1 to v3 and found more NaN bugs, a missing GiST test, removed tests and a split patch. Ayush posted v4 as one patch that restores the old tests; no one has replied to v4.",
+    "unclear": [
+      "The material has only the v1 commit message, so the full scope of v4 is not visible.",
+      "The thread does not say whether the fix goes to back branches, given that btree and GiST order changes and existing indexes need REINDEX.",
+      "The thread does not say how btree indexes on cube columns with NaN behave after the comparison change.",
+      "The proposal does not say whether cube input should reject NaN as an alternative fix."
+    ],
+    "search_queries": [
+      "cube NaN coordinates",
+      "contrib cube distance NaN",
+      "cube GiST NaN ordering",
+      "NaN comparison float8 sort order",
+      "cube equality comparison fix",
+      "GiST distance NaN KNN",
+      "reject NaN cube input",
+      "NaN handling geometric types"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P1",
+      "source_id": "cf:2710",
+      "title": "Fix behavior of geo_ops when NaN is involved",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/2710/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGf+fX70rWFOk5cd00uMfa__0yP+vtQg5ck7c2Onb-Yczp0URA@mail.gmail.com"
+      ],
+      "date": "2022-08-01",
+      "first_date": "2020-06-24",
+      "who_objected": "",
+      "quote": "Rather than code changes, what this patch needs is more community interest.",
+      "quote_url": "https://www.postgresql.org/message-id/f84318e2-2918-8c21-436f-a79823c9e097%40timescale.com",
+      "enriched": true,
+      "reason": "Tom Lane committed parts of the work in November 2020. The rest was rebased, and a reviewer was asked for comments in March 2021, but no reviewer answered that request or the expanded patch set posted in December 2021. Jacob Champion returned the entry in August 2022 for lack of reviewer interest, and said this was not a rejection.",
+      "relation": "similar_idea",
+      "what_is_different": "P1 made NaN behave consistently in core geo_ops. This proposal does the same for contrib/cube, starts from a bug report, and has an engaged reviewer."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Back-patching changes cube btree and GiST ordering in minor releases",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "planner_behaviour",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user has a btree index or unique constraint on a cube column that holds NaN coordinates. After a minor upgrade, the new comparison function no longer matches the order the existing index was built in. Index scans then miss rows, or a unique index accepts values it used to reject, and the user sees no error.",
+      "argument": "The CommitFest entry targets \"stable\", but the patch changes `=`, `<` and `>` for cube, and these operators back the cube btree operator class. Message #5 covers REINDEX only for GiST, and no message in the thread mentions btree indexes. Before the patch '(1,1)' = '(nan,nan)' returned true (message #3), so a unique index built on the old behaviour can hold values that are inconsistent under the new behaviour. A committer would likely ask whether a silent change in index semantics belongs in a minor release, even as a bug fix.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        5
+      ],
+      "author_must_show": "Which index types on cube columns become invalid after this change, and why is a minor release the right place for that change rather than master only?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Aleksander Alekseev",
+          "date": "2026-11-04T09:05:27Z",
+          "url": "https://www.postgresql.org/message-id/CAJ7c6TM7CNrQShuPapof77A6SoP-qqjpQX2q1C3B0HT4749T6A%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Ayush Tiwari",
+          "date": "2026-11-04T15:58:47Z",
+          "url": "https://www.postgresql.org/message-id/CAJTYsWWQhEA_FS8%3DeKbZ%2BcmuAHhHXBv%3DPaGQjExZu0VKQSm6yw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The CommitFest entry targets stable, and the patch changes the comparisons behind the cube btree operator class. The thread discusses REINDEX only around the GiST fix and does not weigh back branches against master only.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Btree indexes and unique constraints on cube need reindex too",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user has a btree index or a unique constraint on a cube column holding NaN coordinates, built with the old cube_cmp order. After the update, the new comparison order no longer matches the order of the index pages. Lookups miss rows and the unique check can admit duplicates, and nothing reports it unless the user runs amcheck.",
+      "argument": "Message #5 changes comparisons to the float8 helpers, so NaN now sorts above all finite values. Message #3 shows that the old code treated '(1,1)' and '(nan,nan)' as equal. Each btree index on cube built under the old order is therefore out of order for NaN keys. Message #5 asks for a release note about REINDEX only for GiST, and the brief notes that btree is not addressed.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        5
+      ],
+      "author_must_show": "Which index types and constraints on cube columns must be rebuilt after the fix, and how can a user find the affected ones before updating?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Aleksander Alekseev",
+          "date": "2026-11-04T09:05:27Z",
+          "url": "https://www.postgresql.org/message-id/CAJ7c6TM7CNrQShuPapof77A6SoP-qqjpQX2q1C3B0HT4749T6A%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Ayush Tiwari",
+          "date": "2026-11-04T15:58:47Z",
+          "url": "https://www.postgresql.org/message-id/CAJTYsWWQhEA_FS8%3DeKbZ%2BcmuAHhHXBv%3DPaGQjExZu0VKQSm6yw%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Cube has a btree operator class built on the comparison the patch changes, and no message mentions btree indexes or unique constraints. This holds for a master-only fix too, because pg_upgrade keeps index files.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Comparison change targets stable branches but invalidates existing indexes",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user on a stable branch has a btree or GiST index on a cube column that holds NaN coordinates. A minor-release update changes the cube ordering and the GiST distance results. The index still matches the old ordering, so index scans return wrong or missing rows until someone reads the release notes and runs REINDEX.",
+      "argument": "The CommitFest entry sets the target version to stable. Message #5 says existing indexes with NaN stay wrong until REINDEX. The fix changes =, < and > for NaN, which a btree opclass relies on, so it changes index ordering in a minor release. In [P1] and [P11], earlier NaN and comparison work on geometric types stalled; [P11] stalled partly because indexes built under one comparison rule become invalid under another (AI summary, a pointer only). The thread does not discuss whether this belongs in back branches or only in master.",
+      "precedent_ids": [
+        "P11"
+      ],
+      "thread_message_refs": [
+        5
+      ],
+      "author_must_show": "Is the comparison and ordering change meant for back branches, and if so, why is a REINDEX requirement in a minor release acceptable compared with fixing only master?",
+      "precedents": [
+        {
+          "id": "P11",
+          "title": "Floating point comparison inconsistencies of the geometric types",
+          "url": "https://commitfest.postgresql.org/patch/679/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CAE2gYzwwxPWbzxY3mtN4WL7W0DCkWo8gnB2ThUHU2XQ9XwgHMg@mail.gmail.com"
+          ],
+          "date": "2017-03-16",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Ayush Tiwari",
+          "date": "2026-11-04T15:58:47Z",
+          "url": "https://www.postgresql.org/message-id/CAJTYsWWQhEA_FS8%3DeKbZ%2BcmuAHhHXBv%3DPaGQjExZu0VKQSm6yw%40mail.gmail.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1. [P11] must not be used as support: that objection was to a GUC that switched comparison rules at run time, which this patch does not add.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No way to find which indexes need REINDEX",
+      "level": "2",
+      "rubric_item": 13,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An administrator with many cube indexes reads the release note, but nothing tells them which indexes hold NaN coordinates. They either reindex every cube index or leave a wrong one in place. A wrong index shows up later as missing KNN or range results, and pg_upgrade carries it over without a warning.",
+      "argument": "Message #5 proposes a release-note mention as the only remedy for indexes that the fix makes wrong. The proposal does not give a query or a check that identifies affected indexes, and it does not cover pg_upgrade, which keeps index files as they are. Past release notes that asked for a reindex usually said how to find the affected indexes.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        5
+      ],
+      "author_must_show": "What query or check can an administrator run to list the btree and GiST indexes on cube that contain NaN coordinates?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Ayush Tiwari",
+          "date": "2026-11-04T15:58:47Z",
+          "url": "https://www.postgresql.org/message-id/CAJTYsWWQhEA_FS8%3DeKbZ%2BcmuAHhHXBv%3DPaGQjExZu0VKQSm6yw%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "Rebuilding every cube index is a complete remedy, so an administrator is not left without a safe action. The wording of the release note is documentation detail, and replication-ondisk-1 already asks how users find affected indexes.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "A stable-branch fix changes persisted index order in a minor release",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "wal_replication",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator applies the minor release to a standby first, as usual. The standby then reads GiST and btree pages that the old primary built with the old NaN rules, and KNN or equality queries on the standby return rows that differ from the primary until a REINDEX runs on the primary after its own update.",
+      "argument": "The CommitFest entry targets stable, but the fix changes comparison and GiST distance results that index pages already depend on. Message #5 says a library update does not repair existing indexes. Minor releases rarely require a REINDEX, and the thread does not discuss a master-only fix. [P11] records that a change to geometric comparison semantics was rejected in part because indexes built under one rule become invalid under another.",
+      "precedent_ids": [
+        "P11"
+      ],
+      "thread_message_refs": [
+        5
+      ],
+      "author_must_show": "Why should this go to back branches instead of master only, given that every existing cube index with NaN keys becomes inconsistent after a minor update?",
+      "precedents": [
+        {
+          "id": "P11",
+          "title": "Floating point comparison inconsistencies of the geometric types",
+          "url": "https://commitfest.postgresql.org/patch/679/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CAE2gYzwwxPWbzxY3mtN4WL7W0DCkWo8gnB2ThUHU2XQ9XwgHMg@mail.gmail.com"
+          ],
+          "date": "2017-03-16",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Ayush Tiwari",
+          "date": "2026-11-04T15:58:47Z",
+          "url": "https://www.postgresql.org/message-id/CAJTYsWWQhEA_FS8%3DeKbZ%2BcmuAHhHXBv%3DPaGQjExZu0VKQSm6yw%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1. The standby case adds no new failure, since the indexes disagree with the new code on every node until REINDEX, and [P11] concerned a run-time GUC.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Back-patching changes cube btree and GiST ordering inside a minor release",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "on_disk_pg_upgrade",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user with a btree or GiST index on a cube column that holds NaN installs the next minor release. Comparisons and GiST distances now order NaN differently from the stored index, so index scans can miss rows or return them in the wrong order. Nobody sees an error, and wrong results continue until someone runs amcheck or REINDEX.",
+      "argument": "The CommitFest entry targets \"stable\", and v2 moves comparisons and bound selection to the float8 helpers, which changes the sort order the cube btree operator class relies on. Message #5 says existing GiST indexes need REINDEX, but the thread does not mention btree indexes or unique constraints, which also depend on cube equality. Asking users to REINDEX after a minor update is rare, so a committer would likely want master only, or an explicit back-branch plan. In [P11] a committer objected to a setting because indexes built under one comparison rule become invalid under another.",
+      "precedent_ids": [
+        "P11"
+      ],
+      "thread_message_refs": [
+        5,
+        7,
+        9
+      ],
+      "author_must_show": "Is this meant for back branches, and if so, how do users find and fix btree and GiST indexes on cube columns that hold NaN?",
+      "precedents": [
+        {
+          "id": "P11",
+          "title": "Floating point comparison inconsistencies of the geometric types",
+          "url": "https://commitfest.postgresql.org/patch/679/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CAE2gYzwwxPWbzxY3mtN4WL7W0DCkWo8gnB2ThUHU2XQ9XwgHMg@mail.gmail.com"
+          ],
+          "date": "2017-03-16",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Ayush Tiwari",
+          "date": "2026-11-04T15:58:47Z",
+          "url": "https://www.postgresql.org/message-id/CAJTYsWWQhEA_FS8%3DeKbZ%2BcmuAHhHXBv%3DPaGQjExZu0VKQSm6yw%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Ayush Tiwari",
+          "date": "2026-11-05T11:12:20Z",
+          "url": "https://www.postgresql.org/message-id/CAJTYsWWKA6WJJQ6rs4MQmxiuEH8QrBBUzqHCuOEZo3Ma8X3_XA%40mail.gmail.com"
+        },
+        {
+          "index": 9,
+          "from": "Ayush Tiwari",
+          "date": "2026-11-06T09:56:46Z",
+          "url": "https://www.postgresql.org/message-id/CAJTYsWUiikmNW9t%2BqohPHv9JPzbeckTwKZECQpLSJO_6vDUCLg%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1, which makes the same back-branch and btree points without relying on [P11]. [P11] concerned a GUC that changed comparison rules, so it does not support this objection.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Back-patching a NaN ordering change has no field demand behind it",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "demand",
+      "touch_points": [
+        "backpatchability",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A minor release changes how cube =, < and > order NaN coordinates, and the release notes ask for REINDEX. A site with NaN cubes in a btree or GiST index skips the note and gets wrong index scans until it rebuilds. Every other site must check its cube columns for NaN before it can safely ignore the note.",
+      "argument": "The only report is message #1, a numbered vulnerability report that gives no production use. Messages #3 and #4 add more cases found by testing, not by users. The CommitFest entry targets stable, and message #5 says existing indexes need REINDEX. The thread does not show anyone who stores NaN in cube and depends on the result, so the minor-release cost has no weighed benefit.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3,
+        4,
+        5
+      ],
+      "author_must_show": "Is there a user who stores NaN in cube columns, and does that justify an order change in back branches rather than a master-only fix?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "PG Bug reporting form",
+          "date": "2026-08-03T07:00:47Z",
+          "url": "https://www.postgresql.org/message-id/19603-7b1f783d5bbfe791%40postgresql.org"
+        },
+        {
+          "index": 3,
+          "from": "Aleksander Alekseev",
+          "date": "2026-11-04T09:05:27Z",
+          "url": "https://www.postgresql.org/message-id/CAJ7c6TM7CNrQShuPapof77A6SoP-qqjpQX2q1C3B0HT4749T6A%40mail.gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "Aleksander Alekseev",
+          "date": "2026-11-04T09:36:13Z",
+          "url": "https://www.postgresql.org/message-id/CAJ7c6TMLW8gdHcUe4s-THgUNpK7vb4X6YqLty5TfUwwVKRjrDw%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Ayush Tiwari",
+          "date": "2026-11-04T15:58:47Z",
+          "url": "https://www.postgresql.org/message-id/CAJTYsWWQhEA_FS8%3DeKbZ%2BcmuAHhHXBv%3DPaGQjExZu0VKQSm6yw%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "This is a fix for wrong results, and message #4 shows GiST scans over NaN cubes are already wrong, so the cost falls on the sites that gain. The back-branch question is a duplicate of standards-compat-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "Existing GiST and btree indexes on cube columns with NaN no longer match the new comparison and distance rules; pg_upgrade keeps index files."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": true,
+      "reason": "see objection standards-compat-1: Back-patching changes cube btree and GiST ordering in minor releases"
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The CommitFest entry targets stable, and the fix changes cube =, < and > and GiST distance results that existing indexes depend on."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Cube comparisons and GiST distance calls gain NaN handling through the float8 helpers; no measurement is shown."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Which index types and constraints on cube columns (btree, unique, GiST) must be rebuilt after the fix?",
+    "Is the comparison and ordering change meant for back branches, and if so, why is a REINDEX requirement in a minor release better than a master-only fix?",
+    "Could the distance fix go to back branches while the comparison and ordering change goes to master only?",
+    "How can a user find the cube indexes that hold NaN coordinates before updating?",
+    "Was rejecting NaN in cube input considered as an alternative, and why was it not chosen?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "Needs a committer who knows GiST opclass support functions and back-patch policy for changes to index ordering. The visible thread shows a reviewer but no committer.",
+    "liability": "The committer signs for the new NaN ordering in the cube btree and GiST opclasses, the REINDEX release note, and any later reports of wrong index scans, in every branch that gets the fix.",
+    "author_follow_up": "The author posted v2 to v4 in response to review, the latest within days of the reviewer's comments."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "low",
+    "review_cost": "medium",
+    "recommended_action": "proceed",
+    "reason": "Only users with NaN coordinates in cube values benefit, but the current results are wrong and the change stays inside contrib/cube with existing float8 helpers. Review cost is medium because the GiST key logic and the back-branch decision need care, and v4 was not read."
+  },
+  "self_advice": [],
+  "provisional_note": "Only the v1 commit message and 3 of 9 messages were visible, so the scope of v4, the GiST -Infinity lower bound logic and the cost of the added NaN checks could not be judged.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:2710",
+      "kind": "cf",
+      "title": "Fix behavior of geo_ops when NaN is involved",
+      "status": "Returned with feedback",
+      "date": "2022-08-01",
+      "first_date": "2020-06-24",
+      "url": "https://commitfest.postgresql.org/patch/2710/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGf+fX70rWFOk5cd00uMfa__0yP+vtQg5ck7c2Onb-Yczp0URA@mail.gmail.com"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti)",
+      "objectors": "",
+      "summary": "The patch makes the geometric functions in geo_ops.c handle NaN consistently: boolean operators no longer return true for NaN inputs, and distance functions return NaN. A later version adds tri-state geometric comparisons that return NULL when NaN is involved, with GiST treating NULL as false.",
+      "objection": "Tom Lane committed parts of the work in November 2020. The rest was rebased, and a reviewer was asked for comments in March 2021, but no reviewer answered that request or the expanded patch set posted in December 2021. Jacob Champion returned the entry in August 2022 for lack of reviewer interest, and said this was not a rejection.",
+      "touch_points": [],
+      "matched_queries": [
+        "cube NaN coordinates",
+        "contrib cube distance NaN",
+        "cube GiST NaN ordering",
+        "NaN comparison float8 sort order",
+        "GiST distance NaN KNN",
+        "reject NaN cube input",
+        "NaN handling geometric types"
+      ],
+      "from_hint": false,
+      "score": 0.824,
+      "enriched": true,
+      "key_quote": "Rather than code changes, what this patch needs is more community interest.",
+      "quote_message_url": "https://www.postgresql.org/message-id/f84318e2-2918-8c21-436f-a79823c9e097%40timescale.com",
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "revert:5c4c771dafefa7d0ee80a6bd6955b7a3940452a1",
+      "kind": "revert",
+      "title": "Revert \"Test conversion of NaN between float4 and float8.\"",
+      "status": "Reverted",
+      "date": "2018-05-05",
+      "first_date": "2018-04-20",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=5c4c771dafefa7d0ee80a6bd6955b7a3940452a1",
+      "thread_urls": [],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Test conversion of NaN between float4 and float8.\"\nReverted commit(s): Test conversion of NaN between float4 and float8.",
+      "objection": "This reverts commit 55e0e458170c76c1a0074cd550a13ec47e38a3fa.\nIt's served its purpose of demonstrating what was wrong on\nbuildfarm member opossum.  We could consider putting some kind\nof single-purpose hack into ftod() to make the test pass there;\nbut I don't think it's worth the trouble, since there are surely\nmany other places whether this platform bug could manifest.",
+      "touch_points": [],
+      "matched_queries": [
+        "cube NaN coordinates",
+        "contrib cube distance NaN",
+        "cube GiST NaN ordering",
+        "NaN comparison float8 sort order",
+        "GiST distance NaN KNN",
+        "reject NaN cube input",
+        "NaN handling geometric types"
+      ],
+      "from_hint": false,
+      "score": 0.72,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:138",
+      "kind": "cf",
+      "title": "Cube extension kNN support",
+      "status": "Returned with feedback",
+      "date": "2015-07-07",
+      "first_date": "2015-02-07",
+      "url": "https://commitfest.postgresql.org/patch/138/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/60A241A6-F639-4B9C-99AA-2E0F53793D34@gmail.com"
+      ],
+      "authors": "Stas Kelvich (kelvich)",
+      "objectors": "Alexander Korotkov",
+      "summary": "The patch adds kNN distance operators to the cube extension (<#> taxicab, <-> euclidean, <=> chebyshev) so that ORDER BY ... LIMIT queries can use the index. It also adds a \"->\" operator to read rows ordered by one coordinate directly from the index, with a minus sign for descending order.",
+      "objection": "The last review asked for an extension version bump to 1.1 with a cube--1.0--1.1.sql migration script, because the patch changes the extension interface. It also asked to keep the old C name behind cube_distance so an old extension definition works with the new binary. The visible messages show no reply to that review before the entry was returned with feedback.",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "cube NaN coordinates",
+        "contrib cube distance NaN",
+        "cube GiST NaN ordering",
+        "cube equality comparison fix",
+        "GiST distance NaN KNN",
+        "reject NaN cube input"
+      ],
+      "from_hint": false,
+      "score": 0.5,
+      "enriched": true,
+      "key_quote": "Since we change the interface of extension we have to change it version and\ncreate a migration script.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAPpHfdvQuyELW-6NapnvUwhbbQF3877ai6De6gepm8GoBVfffA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:1146",
+      "kind": "cf",
+      "title": "Index Only Scan support for cube",
+      "status": "Rejected",
+      "date": "2017-09-20",
+      "first_date": "2017-05-23",
+      "url": "https://commitfest.postgresql.org/patch/1146/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJEAwVEmONZo_h8Gv4JFeYTtuca1BTvxsQosz6HTaWJx_O0Q-w@mail.gmail.com"
+      ],
+      "authors": "Andrey Borodin (x4m)",
+      "objectors": "",
+      "summary": "The patch adds a GiST fetch function for the cube extension so that queries on cube columns can use Index Only Scans. It reuses g_cube_decompress() as the fetch function, since both only need to detoast the key.",
+      "objection": "The author withdrew it as obsolete after commit d3a4f89 (Allow no-op GiST support functions to be omitted). He said he would work on a broader patch for contrib modules to support GiST Index Only Scans and remove no-op support functions.",
+      "touch_points": [],
+      "matched_queries": [
+        "cube NaN coordinates",
+        "contrib cube distance NaN",
+        "cube GiST NaN ordering",
+        "cube equality comparison fix",
+        "reject NaN cube input"
+      ],
+      "from_hint": false,
+      "score": 0.496,
+      "enriched": true,
+      "key_quote": "Index Only Scan support for cube\" patch now is obsolete.",
+      "quote_message_url": "https://www.postgresql.org/message-id/355A43F4-46F2-49CC-B7E5-E5D4890C57A9%40yandex-team.ru",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:782",
+      "kind": "cf",
+      "title": "Cube extension GiST penalty function improvement",
+      "status": "Returned with feedback",
+      "date": "2016-10-03",
+      "first_date": "2016-08-29",
+      "url": "https://commitfest.postgresql.org/patch/782/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJEAwVFMo-FXaJ6Lkj8Wtb1br0MtBY48EGMVEJBOodROEGykKg@mail.gmail.com"
+      ],
+      "authors": "Andrey Borodin (x4m), Mikhail Bakhterev (mbakhterev)",
+      "objectors": "Tom Lane, Greg Stark, Heikki Linnakangas",
+      "summary": "The patch changes the cube extension's GiST penalty function to follow the RR*-tree choose-subtree rules, preferring entries that need no enlargement and using edge sum (margin) for zero-volume cases. It packs several ranked criteria into one float by reinterpreting its IEEE 754 bit pattern, and later versions fall back to the old penalty when __STDC_IEC_559__ is not defined.",
+      "objection": "Tom Lane and Greg Stark objected to the float bit-twiddling because project policy does not allow code to assume IEEE 754, and the author himself later called the technique controversial. Heikki Linnakangas then asked why the patch uses edge sums instead of the volume of the non-zero dimensions, and the thread stalled. Michael Paquier marked the patch returned with feedback, and the author said a planned GiST API and cube patch would make this one unnecessary.",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "cube NaN coordinates",
+        "contrib cube distance NaN",
+        "cube GiST NaN ordering",
+        "cube equality comparison fix",
+        "reject NaN cube input"
+      ],
+      "from_hint": false,
+      "score": 0.453,
+      "enriched": true,
+      "key_quote": "This thread has basically died, so marking as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAB7nPqTAe7RRajEx%3DMn0cUKj-jw5tTyqzQTbmWei8Dxb_4%2Byzg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:4111",
+      "kind": "cf",
+      "title": "basebackup: support zstd long distance matching",
+      "status": "Withdrawn",
+      "date": "2023-04-04",
+      "first_date": "2023-01-08",
+      "url": "https://commitfest.postgresql.org/patch/4111/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20230108202737.GB27637@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby)",
+      "objectors": "",
+      "summary": "The patch adds support for zstd long distance matching (zstd --long mode) to base backup compression. The author posted a rebased version and added it to the commitfest.",
+      "objection": "The visible messages do not show why. The only message is the author's rebase notice, and the entry was later withdrawn.",
+      "touch_points": [],
+      "matched_queries": [
+        "contrib cube distance NaN",
+        "GiST distance NaN KNN"
+      ],
+      "from_hint": false,
+      "score": 0.265,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:2824",
+      "kind": "cf",
+      "title": "Functions for sorting GiST build of gist_btree types",
+      "status": "Returned with feedback",
+      "date": "2022-04-08",
+      "first_date": "2020-11-05",
+      "url": "https://commitfest.postgresql.org/patch/2824/",
+      "thread_urls": [],
+      "authors": "Andrey Borodin (x4m)",
+      "objectors": "",
+      "summary": "Functions for sorting GiST build of gist_btree types",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "cube GiST NaN ordering",
+        "GiST distance NaN KNN"
+      ],
+      "from_hint": false,
+      "score": 0.17,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "revert:f4c7c410ee4a7baa06f51ebb8d5333c169691dd3",
+      "kind": "revert",
+      "title": "Revert \"Optimize order of GROUP BY keys\".",
+      "status": "Reverted",
+      "date": "2022-10-03",
+      "first_date": "2022-03-30",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=f4c7c410ee4a7baa06f51ebb8d5333c169691dd3",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/TYAPR01MB586665EB5FB2C3807E893941F5579@TYAPR01MB5866.jpnprd01.prod.outlook.com",
+        "https://www.postgresql.org/message-id/flat/7c79e6a5-8597-74e8-0671-1c39d124c9d6@sigaev.ru",
+        "https://www.postgresql.org/message-id/flat/CA+q6zcW_4o2NC0zutLkOJPsFt80megSpX_dVRo6GK9PC-Jx_Ag@mail.gmail.com"
+      ],
+      "authors": "Tomas Vondra",
+      "objectors": "",
+      "summary": "Revert \"Optimize order of GROUP BY keys\".\nReverted commit(s): Optimize order of GROUP BY keys",
+      "objection": "This reverts commit db0d67db2401eb6238ccc04c6407a4fd4f985832 and\nseveral follow-on fixes.  The idea of making a cost-based choice\nof the order of the sorting columns is not fundamentally unsound,\nbut it requires cost information and data statistics that we don't\nreally have.  For example, relying on procost to distinguish the\nrelative costs of different sort comparators is pretty pointless\nso long as most such comparator functions are labeled with cost 1.0.\nMoreover, estimating the number of comparisons done by Quicksort\nrequires more than just an estimate of the number of distinct values\nin the input: you also need some idea of the sizes of the larger\ngroups, if you want an estimate that's good to better than a factor of\nthree or so.  That's data that's often unknown or not very reliable.\nWorse, to arrive at estimates of the number of calls made to the\nlower-order-column comparison functions, the code needs to make\nestimates of the numbers of distinct values of multiple columns,\nwhich are necessarily even less trustworthy than per-column stats.\nEven if all the inputs are perfectly reliable, the cost algorithm\nas-implemented cannot offer useful information about how to order\nsorting columns beyond the point at which the average group size\nis estimated to drop to 1.\n\nClose inspection of the code added by db0d67db2 shows that there\nare also multiple small bugs.  These could have been fixed, but\nthere's not much point if we don't trust the estimates to be\naccurate in-principle.\n\nFinally, the changes in cost_sort's behavior made for very large\nchanges (often a factor of 2 or so) in the cost estimates for all\nsorting operations, not only those for multi-column GROUP BY.\nThat naturally changes plan choices in many situations, and there's\nprecious little evidence to show that the changes are for the better.\nGiven the above doubts about whether the new estimates are really\ntrustworthy, it's hard to summon much confidence that these changes\nare better on the average.\n\nSince we're hard up against the release deadline for v15, let's\nrevert these changes for now.  We can always try again later.\n\nNote: in v15, I left T_PathKeyInfo in place in nodes.h even though\nit's unreferenced.  Removing it would be an ABI break, and it seems\na bit late in the release cycle for that.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "NaN comparison float8 sort order"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:6187",
+      "kind": "cf",
+      "title": "Optimize SnapBuild by maintaining committed.xip in sorted order",
+      "status": "Withdrawn",
+      "date": "2026-04-29",
+      "first_date": "2025-11-07",
+      "url": "https://commitfest.postgresql.org/patch/6187/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABPTF7XiwbA38OZBj5Y2F-q+fZ=03YFN9iFnb_406F4SfE-f4w@mail.gmail.com"
+      ],
+      "authors": "Xuneng Zhou (dylanzhou)",
+      "objectors": "",
+      "summary": "Keep the committed.xip array in logical decoding's snapshot builder sorted, so that SnapBuildBuildSnapshot() no longer runs qsort over the whole array each time it builds a snapshot. Each commit sorts its own XIDs and merges them into the array; v2 does this only after the slot reaches the CONSISTENT state.",
+      "objection": "The author withdrew the patch. He cited a partial consensus in a related thread that this patch and a related one solve a relatively small problem in a rather complex way. The objections themselves are in that other thread, which is not shown here; the one review in this thread only said the patch looked good at a high level.",
+      "touch_points": [],
+      "matched_queries": [
+        "NaN comparison float8 sort order"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": true,
+      "key_quote": "It seems the community has reached a\nconsensus (maybe partially) on this and the related patch toward the\nend of the thread [1]: they try to solve a relatively small problem in\na rather complex way.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CABPTF7UsBxu5PFBiA9rKy2b74XMnOPA7kOxX3gXrfHQQkigb0g%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:976",
+      "kind": "cf",
+      "title": "KNN-spgist",
+      "status": "Returned with feedback",
+      "date": "2017-03-24",
+      "first_date": "2017-01-30",
+      "url": "https://commitfest.postgresql.org/patch/976/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/570825e8-47d0-4732-2bf6-88d67d2d51c8@postgrespro.ru"
+      ],
+      "authors": "Nikita Glukhov (n.glukhov)",
+      "objectors": "Alexander Korotkov",
+      "summary": "The patch series adds k-nearest-neighbour (ORDER BY distance) search to SP-GiST, using a pairing heap in place of the scan stack, and adds ordering operators to kd_point_ops and quad_point_ops. It also adds an spg_compress support function and new SP-GiST quad-tree opclasses for circles and polygons.",
+      "objection": "The author stopped responding after the first review. Alexander Korotkov found that the v02 patches did not apply or compile cleanly. He asked for benchmarks of non-kNN scans after the switch to a pairing heap and of kNN SP-GiST against kNN GiST, and asked that spg_compress and the new opclasses be posted separately. No new version followed, so the commitfest manager returned the entry at the deadline.",
+      "touch_points": [],
+      "matched_queries": [
+        "GiST distance NaN KNN"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": true,
+      "key_quote": "This thread has been idle for quite a while.",
+      "quote_message_url": "https://www.postgresql.org/message-id/ff239a3d-64e8-5046-6f24-5b19edb436b9%40pgmasters.net",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:679",
+      "kind": "cf",
+      "title": "Floating point comparison inconsistencies of the geometric types",
+      "status": "Returned with feedback",
+      "date": "2017-03-16",
+      "first_date": "2016-05-27",
+      "url": "https://commitfest.postgresql.org/patch/679/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAE2gYzwwxPWbzxY3mtN4WL7W0DCkWo8gnB2ThUHU2XQ9XwgHMg@mail.gmail.com"
+      ],
+      "authors": "Emre Hasegeli (hasegeli)",
+      "objectors": "Kyotaro HORIGUCHI, Robert Haas",
+      "summary": "The patches remove the EPSILON-based fuzzy comparison macros (FPeq, FPlt, and others) from most geometric operators and use exact floating point comparison, with fuzzy comparison kept only for some lseg operators. They also rewrite some line operators to avoid division and add overflow, underflow and NaN checks, to allow default btree and hash operator classes and more index support later.",
+      "objection": "There was no agreement to remove the tolerance. Kyotaro HORIGUCHI argued that geometric types need a tolerance for floating point error, and Robert Haas rejected the GUC that came out of that discussion because indexes built under one setting could be invalid under another. Robert Haas noted that only the author clearly favoured removal and that nothing could be committed without agreement. The thread then went idle, the patches no longer applied, and David Steele returned the entry.",
+      "touch_points": [],
+      "matched_queries": [
+        "NaN handling geometric types"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": true,
+      "key_quote": "Those problems boil down to \"let's get rid of the tolerance\ncompletely\", and there's no consensus on that being a good thing to\ndo.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoYSCSrve4gYDP4qcmdkyhyPW6vJKtx_cB1bx%3Diifxz22g%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:6422",
+      "kind": "cf",
+      "title": "ANALYZE: hash-accelerate MCV tracking for equality-only types",
+      "status": "Withdrawn",
+      "date": "2026-05-03",
+      "first_date": "2026-01-21",
+      "url": "https://commitfest.postgresql.org/patch/6422/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/C71ABD3E-93C7-41A5-99AC-77279557D36A@Outlook.com"
+      ],
+      "authors": "Chengpeng Yan (chengpeng.yan)",
+      "objectors": "",
+      "summary": "ANALYZE: hash-accelerate MCV tracking for equality-only types\nThreads: [PATCH] ANALYZE: hash-accelerate MCV tracking for equality-only types",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "cube equality comparison fix"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:3513",
+      "kind": "cf",
+      "title": "Consider incremental sort for fractional paths in generate_orderappend_paths",
+      "status": "Returned with feedback",
+      "date": "2022-04-07",
+      "first_date": "2021-04-16",
+      "url": "https://commitfest.postgresql.org/patch/3513/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/e8f9ec90-546d-e948-acce-0525f3e92773@enterprisedb.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "Consider incremental sort for fractional paths in generate_orderappend_paths\nThreads: PATCH: generate fractional cheapest paths in\ngenerate_orderedappend_path",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "NaN comparison float8 sort order"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:1491",
+      "kind": "cf",
+      "title": "Handling better supported channel binding types for SSL implementations",
+      "status": "Rejected",
+      "date": "2018-08-06",
+      "first_date": "2018-01-22",
+      "url": "https://commitfest.postgresql.org/patch/1491/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20180122072936.GB1772@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Handling better supported channel binding types for SSL implementations\nThreads: Handling better supported channel binding types for SSL\nimplementations",
+      "objection": "",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "NaN handling geometric types"
+      ],
+      "from_hint": false,
+      "score": 0.103,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "wiki:Data_Types:1",
+      "kind": "do_not_want",
+      "title": "Fix data types where equality comparison is not intuitive, e.g. box",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Data_Types",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Fix data types where equality comparison is not intuitive, e.g. box\nSection: Data Types",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "cube equality comparison fix"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:3568",
+      "kind": "cf",
+      "title": "doc: PQexecParams binary handling example for REAL data type",
+      "status": "Returned with feedback",
+      "date": "2023-07-26",
+      "first_date": "2022-02-24",
+      "url": "https://commitfest.postgresql.org/patch/3568/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/Yhf70G9OYIKueYZi@workstation-mark-wong"
+      ],
+      "authors": "Mark Wong (markwkm)",
+      "objectors": "",
+      "summary": "doc: PQexecParams binary handling example for REAL data type\nThreads: real/float example for testlibpq3",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "NaN handling geometric types"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "revert:0392fb900eb89f52988cccd33046443c39c70d1c",
+      "kind": "revert",
+      "title": "Revert \"Reject degenerate SPLIT PARTITION with DEFAULT partition\"",
+      "status": "Reverted",
+      "date": "2026-05-20",
+      "first_date": "2026-05-20",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=0392fb900eb89f52988cccd33046443c39c70d1c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/C18878AB-DEB2-4A61-9995-A035DD644B81@gmail.com"
+      ],
+      "authors": "Alexander Korotkov",
+      "objectors": "",
+      "summary": "Revert \"Reject degenerate SPLIT PARTITION with DEFAULT partition\"\nReverted commit(s): Reject degenerate SPLIT PARTITION with DEFAULT partition",
+      "objection": "This reverts commit d8af73010033cb8ad6c941942d6b03d74d7e4f7e.  Per buildfarm\nfailures.",
+      "touch_points": [],
+      "matched_queries": [
+        "reject NaN cube input"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "revert:dde9a87d4d02a67a5bd459045f03a6f467a00a80",
+      "kind": "revert",
+      "title": "Revert \"Reject concurrent sequence refreshes\".",
+      "status": "Reverted",
+      "date": "2026-07-18",
+      "first_date": "2026-07-15",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=dde9a87d4d02a67a5bd459045f03a6f467a00a80",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3614163.1784163070@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/20260710045217.f0.noahmisch@microsoft.com"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Revert \"Reject concurrent sequence refreshes\".\nReverted commit(s): Reject concurrent sequence refreshes.",
+      "objection": "This reverts commit f38afa4abb04e85530c94b88daf11c089375daca.\n\nThat commit fixed a race that could leave stale sequence values on the\nsubscriber after 'ALTER SUBSCRIPTION ... REFRESH SEQUENCES'. It did so by\nraising an ERROR during 'ALTER SUBSCRIPTION ... REFRESH SEQUENCES'\nwhenever a sequence synchronization worker was already running for the\nsubscription.\n\nThat approach caused intermittent buildfarm failures, because the existing\ntests did not ensure the sequencesync worker had stopped before executing\n'ALTER SUBSCRIPTION ... REFRESH SEQUENCES'. While discussing how to fix\nthe tests, we concluded that blocking the command while a sequencesync\nworker is running is inconvenient for users. So we will fix the original\nrace differently in a follow-up commit.",
+      "touch_points": [
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "reject NaN cube input"
+      ],
+      "from_hint": false,
+      "score": 0.094,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "wiki:XML:7",
+      "kind": "do_not_want",
+      "title": "better handling of XPath data types [3] [4]",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#XML",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "better handling of XPath data types [3] [4]\nSection: Data Types / XML\nLinked: [3]; [4]",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "NaN handling geometric types"
+      ],
+      "from_hint": false,
+      "score": 0.091,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:2731",
+      "kind": "cf",
+      "title": "_bt_binsrch* improvements - equal-prefix-skip binary search",
+      "status": "Withdrawn",
+      "date": "2020-09-15",
+      "first_date": "2020-09-11",
+      "url": "https://commitfest.postgresql.org/patch/2731/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2WjnrkzT9tfqFhSCPeH6LV-UUj5_oO5vX038dvfK7fDuyQ@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "_bt_binsrch* improvements - equal-prefix-skip binary search\nThreads: [patch] _bt_binsrch* improvements - equal-prefix-skip binary search",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "cube equality comparison fix"
+      ],
+      "from_hint": false,
+      "score": 0.087,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:2364",
+      "kind": "cf",
+      "title": "Autovacuum: vacuum tables in descending order of xid_age",
+      "status": "Returned with feedback",
+      "date": "2020-08-03",
+      "first_date": "2019-11-29",
+      "url": "https://commitfest.postgresql.org/patch/2364/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20191129180138.GD8731@fetter.org"
+      ],
+      "authors": "David Fetter (dfetter)",
+      "objectors": "",
+      "summary": "Autovacuum: vacuum tables in descending order of xid_age\nThreads: Make autovacuum sort tables in descending order of xid_age",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "NaN comparison float8 sort order"
+      ],
+      "from_hint": false,
+      "score": 0.087,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:1804",
+      "kind": "cf",
+      "title": "KNN for B-tree",
+      "status": "Returned with feedback",
+      "date": "2020-03-16",
+      "first_date": "2017-01-18",
+      "url": "https://commitfest.postgresql.org/patch/1804/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ce35e97b-cf34-3f5d-6b99-2c25bae49999@postgrespro.ru"
+      ],
+      "authors": "Nikita Glukhov (n.glukhov)",
+      "objectors": "",
+      "summary": "KNN for B-tree\nThreads: [PATCH] kNN for btree",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "GiST distance NaN KNN"
+      ],
+      "from_hint": false,
+      "score": 0.086,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:2322",
+      "kind": "cf",
+      "title": "Join Correlation Name",
+      "status": "Withdrawn",
+      "date": "2019-11-01",
+      "first_date": "2019-10-29",
+      "url": "https://commitfest.postgresql.org/patch/2322/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2aa57950-b1d7-e9b6-0770-fa592d565dda@2ndquadrant.com"
+      ],
+      "authors": "Vik Fearing (xocolatl)",
+      "objectors": "",
+      "summary": "Join Correlation Name\nThreads: Join Correlation Name",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "cube NaN coordinates"
+      ],
+      "from_hint": false,
+      "score": 0.085,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:966",
+      "kind": "cf",
+      "title": "KNN-btree",
+      "status": "Returned with feedback",
+      "date": "2017-03-09",
+      "first_date": "2017-01-18",
+      "url": "https://commitfest.postgresql.org/patch/966/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ce35e97b-cf34-3f5d-6b99-2c25bae49999@postgrespro.ru"
+      ],
+      "authors": "Nikita Glukhov (n.glukhov)",
+      "objectors": "",
+      "summary": "KNN-btree\nThreads: [PATCH] kNN for btree",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "GiST distance NaN KNN"
+      ],
+      "from_hint": false,
+      "score": 0.085,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 2,
+    "new_calls": 6,
+    "failed": 0,
+    "quotes_verified": 6,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 3
+  },
+  "precedent_cutoff": "2026-08-03",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 1,
+      "note": "[P1] stalled for lack of review, and that reason does not apply here: a bug report and an active reviewer exist. [P15] records no reason, so it supports no objection."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "Both objections concern rollout and compatibility. Making NaN propagate and sort as it does for float8 is consistent with existing practice, and I raise no objection to the semantics themselves."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 2,
+      "note": "The proposal has no WAL, catalog, wire protocol or ABI change. The objections above concern index contents that already exist on disk."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal has no privilege or exposure aspect. It changes the results of cube distance, comparison and GiST functions for NaN coordinates, and it adds no new object, privilege, function or setting. The \"Vuln\" label and CWE tag in message #1 describe wrong results, not any change in who can do or see what. The REINDEX need for btree and GiST indexes affects correctness and back-branch policy, which other angles cover. I could not check without the code whether any cube function is marked leakproof; if one is, its error behaviour on NaN should not change."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 1,
+      "note": "Beyond the back-branch question, the maintenance cost looks small. The change stays inside contrib/cube and uses existing float8 helpers. The extra NaN checks on comparisons and GiST distance calls should cost little, but no measurement was shown, and the v4 code is not visible."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "This is a correctness fix inside contrib/cube, and no existing feature, setting or extension makes cube distances, comparisons or GiST scans handle NaN correctly. The patch reuses the float8 comparison helpers, which follows existing practice and does not add a second mechanism."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "A wrong-results fix in master needs no demand case, so the one objection covers only the back-patch to stable."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 9,
+      "new_objections": 7,
+      "new_survived": 2,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 83,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 18,
+    "wall_ms": 132061,
+    "cost_usd": 1.9660444,
+    "dry_run": false
+  }
+}

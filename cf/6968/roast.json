@@ -1,0 +1,1974 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:11:30.428Z",
+  "input": {
+    "arg": "6968",
+    "cf": {
+      "id": 6968,
+      "url": "https://commitfest.postgresql.org/patch/6968/",
+      "title": "Tepid: extend the heap-only tuple (HOT) update optimization model such that only those indexes directly impacted by the update need be updated",
+      "status": "Needs review",
+      "authors": "Greg Burd (gregburd)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/af02b486-6adc-494c-a357-1dd72f655dcf%40app.fastmail.com",
+    "subject": "Tepid: selective index updates for heap relations",
+    "thread_start": "2026-06-30T17:21:07Z",
+    "messages_read": 16,
+    "messages_total": 16,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v63-0001-Add-tests-to-cover-a-variety-of-heap-HOT-update-.patch",
+      "v63-0002-Identify-modified-indexed-attributes-in-the-exec.patch",
+      "v63-0003-Add-the-HOT-indexed-on-disk-format-inline-attr-b.patch",
+      "v63-0004-Add-HOT-indexed-updates-selective-index-maintena.patch",
+      "v63-0005-Fix-a-BitmapAnd-BitmapOr-false-negative-on-HOT-i.patch",
+      "v63-0006-Collapse-dead-HOT-indexed-chains-to-xid-free-stu.patch",
+      "v63-0007-Teach-amcheck-to-recognize-HOT-indexed-chains-an.patch",
+      "v63-0008-Add-HOT-indexed-statistics-and-the-comprehensive.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "The goal is long-standing and no surviving objection is fatal, but the list has not agreed on the design. Fresh entries appear to keep stubs, and so pages, out of the visibility map while the row lives (replication-ondisk-1), and the feature is on for every table with no switch (demand-2). The bit 14 marker is not shown to survive GIN posting lists or to be safe for other table AMs (replication-ondisk-3, replication-ondisk-2). Message #1 itself asks for agreement on the format before freezing it.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Tepid: selective index updates on HOT chains for heap tables",
+    "problem": "An update that changes any indexed column today becomes a non-HOT update and inserts a new entry into every index, even indexes whose columns did not change. The author wants to cut the extra WAL, index bloat and VACUUM work this causes for tables with many secondary indexes.",
+    "proposed_design": "The new version stays a heap-only tuple on the same page, carries an inline bitmap of the indexed attributes changed at that hop, and only the changed indexes get a fresh entry pointing at it. Readers union the bitmaps of hops crossed and drop entries whose index columns overlap; prune collapses dead prefixes into xid-free stubs. Fresh entries set bit 14 of the stored TID offset so bitmap scans treat that page as lossy.",
+    "user_visible_surface": [
+      "On-disk format: new infomask2 bit HEAP_INDEXED_UPDATED (0x0800), a trailing modified-attrs bitmap, and xid-free stub tuples with natts = 0.",
+      "Index tuple TIDs: bit 14 of the offset marks a fresh entry as possibly stale.",
+      "Subscription option hot_indexed_on_apply (off, subset_only, always), with a pg_subscription column and psql \\dRs+ display.",
+      "Statistics: pg_stat_all_tables.n_tup_hot_indexed_upd, per-index n_tup_hot_indexed_upd_matched and _skipped, and function pg_relation_hot_indexed_stats(regclass).",
+      "pageinspect 1.14: bt_page_items gains a hot_indexed column and reports ctid/htid with the marker removed."
+    ],
+    "author_claims": [
+      "Throughput gains up to 76% and WAL per update cuts up to 59% on a 128-vCPU host when few of 17 indexes change.",
+      "Read-only index scans and the classic HOT control lose about 1 to 2%.",
+      "The bitmap avoids the duplicate rows a value recheck returns after an ABA cycle, and no index AM needs changes.",
+      "pg_upgrade is unaffected, since older clusters carry no such tuples.",
+      "It answers the WARM objections, with no per-chain update limit and no convert-back step."
+    ],
+    "thread_state": "Korotkov found a BitmapAnd false negative, which the author answered with the TID bit 14 marker, later fixes covered CLUSTER row loss and amcheck. Rupireddy asked to split the series, questioned moving modified-attribute detection into the executor, and asked about trade-offs; Chao Li asked for an opt-in table option and questioned the scan API change.",
+    "unclear": [
+      "The material does not measure heap growth, freeze or all-visible delays, VACUUM cost, or seqscan workloads.",
+      "The author does not say how often real workloads update indexed columns.",
+      "The material does not say whether the TID bit 14 marker is acceptable for the index AM contract; the author is himself unsure.",
+      "The thread does not answer whether the executor change opens a race between attribute comparison and the buffer lock.",
+      "The proposal offers no per-table switch to turn the feature off; it is on for all non-catalog tables.",
+      "The material does not say how out-of-core callers of index_getnext_slot learn to check the new stale flag."
+    ],
+    "search_queries": [
+      "WARM write amplification reduction",
+      "partial HOT updates indexed columns",
+      "HOT updates expression indexes",
+      "heap only tuple index update skip",
+      "bitmap scan false negative HOT chain",
+      "index entries pointing heap only tuple",
+      "selective index maintenance update",
+      "infomask2 bit tuple format change"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P12",
+      "source_id": "cf:775",
+      "title": "Write Amplification Reduction Method (WARM)",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/775/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABOikdMNy6yowA+wTGK9RVd8iw+CzqHeQSGpW7Yka_4RSZ_LOQ@mail.gmail.com"
+      ],
+      "date": "2017-10-02",
+      "first_date": "2016-08-31",
+      "who_objected": "Robert Haas, Peter Geoghegan",
+      "quote": "Looks like I'll be short on bandwidth to pursue this further, given other work commitments including upcoming Postgres-XL 10 release.",
+      "quote_url": "https://www.postgresql.org/message-id/CABOikdOm_R1NzYUqQQ85p04VxDJpvdp_V3feaKBY8ATMWTE%2BHw%40mail.gmail.com",
+      "enriched": true,
+      "reason": "In April 2017 the patch was moved out of the release cycle. Reviewers, as quoted in the author's replies, were concerned about on-disk format changes, the risk of data-corrupting bugs, and performance regressions found in testing (for example, recheck overhead) that they considered not fully addressed. In July 2017 the author said he no longer had time to pursue it, and Peter Geoghegan questioned whether WARM helps the worst case, such as long-running transactions. The CF manager returned it with feedback because more work was needed and the patch had not moved in the current commitfest.",
+      "relation": "same_idea",
+      "what_is_different": "This proposal uses a per-hop attribute bitmap in place of WARM's value recheck and per-AM amrecheck. It has no one-update-per-chain limit and no convert-back step, and it handles bitmap scans with a TID offset marker."
+    },
+    {
+      "precedent_id": "P3",
+      "source_id": "cf:2981",
+      "title": "partial heap only tuples",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/2981/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2ECBBCA0-4D8D-4841-8872-4A5BBDC063D2@amazon.com"
+      ],
+      "date": "2021-11-04",
+      "first_date": "2021-02-09",
+      "who_objected": "",
+      "quote": "As no update has been posted, the patch still doesn't apply.",
+      "quote_url": "https://www.postgresql.org/message-id/9417DBC8-0C3F-49FD-893D-1C833F8EA5F3%40yesql.se",
+      "enriched": true,
+      "reason": "The patch stopped applying to HEAD, and the entry was set to Waiting for Author in July 2021. No updated patch was posted, so the entry was returned with feedback in November 2021. The visible messages show design concerns, such as index create/drop handling and long-term heap fragmentation, but no objection that decided the outcome.",
+      "relation": "similar_idea",
+      "what_is_different": "Like PHOT, fresh entries point at the new heap-only tuple. This proposal adds crossed-attribute staleness, stub collapse in place of restricted pruning, and handling for index create and drop over live chains."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Collapsed chains can keep pages out of the visibility map indefinitely",
+      "level": "2",
+      "rubric_item": 14,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A table gets one SIU update on many rows and then becomes read-mostly. Fresh entries such as (11)->LP[2] stay live, so their stubs stay, and the pages are never set all-visible. Index-only scans keep fetching the heap, and every aggressive VACUUM rescans those pages until the rows are rewritten or the index is rebuilt.",
+      "argument": "Example 4a step 4 in message #1 reclaims stubs only \"once every entry into the chain has been swept\". While v4 lives, though, the fresh entries pointing at LP[2] and LP[3] are the only current entries for their indexes, and ambulkdelete removes only entries for LP_DEAD items. Commit 0006 keeps any page that holds a preserved stub non-all-visible, and message #15 concedes pages will be frozen less often. The proposal does not show that this state ends while the row is live.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        15
+      ],
+      "author_must_show": "What sequence of operations returns a page holding a live SIU row to all-visible, without updating that row again or rebuilding its indexes?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "\"Greg Burd\"",
+          "date": "2026-06-30T17:21:07Z",
+          "url": "https://www.postgresql.org/message-id/af02b486-6adc-494c-a357-1dd72f655dcf%40app.fastmail.com"
+        },
+        {
+          "index": 15,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-20T21:34:41Z",
+          "url": "https://www.postgresql.org/message-id/84a886d1-37af-4da2-ad1b-15cea9c7e965%40app.fastmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Example 4a step 4 frees LP[2] and LP[3] while v4 is live, but the fresh entries (11)->LP[2] and (21)->LP[3] are the only current entries for their indexes. The material does not say what removes or re-points them.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "The stale marker must survive every index path that re-encodes TIDs",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A GIN fresh entry is flushed from the pending list into a compressed posting list. If that encoding keeps only real offset bits, or reads the offset through the stripping accessor, the marker is lost. A BitmapAnd with a btree then returns zero rows for a matching row, the false negative from message #7 again.",
+      "argument": "Message #12 already found that nbtree deduplication copied flagged TIDs in a way the fix had not expected. GIN compresses item pointers into a fixed offset width sized for heap pages, and out-of-tree AMs may pack TIDs as well. Commit 0005 also calls the cost \"self-healing\" through collapse, but collapse rewrites only the heap. The flagged index tuple stays flagged until the entry is removed.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        7,
+        9,
+        12
+      ],
+      "author_must_show": "Which in-core and out-of-tree storage paths re-encode heap TIDs, and how is it guaranteed that each one keeps bit 14 on disk?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "Alexander Korotkov",
+          "date": "2026-07-09T11:26:44Z",
+          "url": "https://www.postgresql.org/message-id/CAPpHfdvOLrULXQn%2Bs%2BbEG4QiVrps%2B_3mg2EjUN39OYUKoBE20w%40mail.gmail.com"
+        },
+        {
+          "index": 9,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-11T17:37:19Z",
+          "url": "https://www.postgresql.org/message-id/b078fb42-cecb-4868-8a65-11f9ce484868%40app.fastmail.com"
+        },
+        {
+          "index": 12,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-13T21:06:49Z",
+          "url": "https://www.postgresql.org/message-id/efe30c88-cf01-4c48-b76e-777547babcea%40app.fastmail.com"
+        }
+      ],
+      "id": "replication-ondisk-3",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "GIN posting lists pack heap offsets into 11 bits, and commit 0005 touches no GIN file, so the claim that GIN needs no change is not shown for compressed lists. Message #12 shows nbtree deduplication already caused one such surprise.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Every future consumer of heap items must handle stubs, with no loud failure",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "on_disk_pg_upgrade",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch, or an extension, walks LP_NORMAL heap items or rewrites tuples the way CLUSTER does, and does not know about natts = 0 stubs or HEAP_INDEXED_UPDATED. It drops live rows or misreads the trailing bitmap. Nothing fails at build or test time, and users find out from missing query results.",
+      "argument": "Message #1 says every consumer of LP_NORMAL items must tolerate both new shapes. Messages #5, #10, #11 and #12 then report a series of silent failures found after posting: CLUSTER and VACUUM FULL losing rows, ordered GiST scans, pg_surgery, and amcheck false results. That pattern indicates future heap code will repeat it. WARM [P12] was set aside partly over on-disk format changes and the risk of data-corrupting bugs.",
+      "precedent_ids": [
+        "P12"
+      ],
+      "thread_message_refs": [
+        1,
+        5,
+        10,
+        11,
+        12
+      ],
+      "author_must_show": "What mechanism makes new or out-of-core code that reads heap items fail loudly, instead of silently, when it meets a stub or a HOT-indexed tuple?",
+      "precedents": [
+        {
+          "id": "P12",
+          "title": "Write Amplification Reduction Method (WARM)",
+          "url": "https://commitfest.postgresql.org/patch/775/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CABOikdMNy6yowA+wTGK9RVd8iw+CzqHeQSGpW7Yka_4RSZ_LOQ@mail.gmail.com"
+          ],
+          "date": "2017-10-02",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "\"Greg Burd\"",
+          "date": "2026-06-30T17:21:07Z",
+          "url": "https://www.postgresql.org/message-id/af02b486-6adc-494c-a357-1dd72f655dcf%40app.fastmail.com"
+        },
+        {
+          "index": 5,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-06T13:16:22Z",
+          "url": "https://www.postgresql.org/message-id/a35235bb-a3b4-45cc-8e4a-7e57556a9250%40app.fastmail.com"
+        },
+        {
+          "index": 10,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-11T22:04:34Z",
+          "url": "https://www.postgresql.org/message-id/3dc5d57e-6c77-4713-b97e-bf0a5a891226%40app.fastmail.com"
+        },
+        {
+          "index": 11,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-13T16:26:23Z",
+          "url": "https://www.postgresql.org/message-id/ed69804a-aa09-489b-af3f-6c804b2efd94%40app.fastmail.com"
+        },
+        {
+          "index": 12,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-13T21:06:49Z",
+          "url": "https://www.postgresql.org/message-id/efe30c88-cf01-4c48-b76e-777547babcea%40app.fastmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #1 says every consumer of LP_NORMAL items must tolerate both shapes, and messages #5 to #12 report several silent misses. A later version could add a loud check or a distinct item state, so this is fixable.",
+        "original_severity": "fatal"
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Global stripping of TID offset bit 14 affects every table AM",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An out-of-core table AM numbers rows with synthetic offsets above 16383 and stores those TIDs in btree indexes. After upgrade, ItemPointerGetOffsetNumber and ItemPointerCompare silently clear bit 14. Index scans then fetch or order the wrong row, and the user finds out from wrong query results.",
+      "argument": "Commit 0005 changes the shared ItemPointer accessors for all TIDs and exempts only the SpecToken and MovedPartitions sentinels. The stated reason, MaxOffsetNumber, is a heap limit. Message #9 itself points out that other table AMs already use synthetic TIDs. Existing indexes of such AMs carry these offsets on disk across pg_upgrade.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        9
+      ],
+      "author_must_show": "How does a table AM whose stored TIDs already use offset bit 14 keep correct index lookups and TID ordering after this change?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 9,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-11T17:37:19Z",
+          "url": "https://www.postgresql.org/message-id/b078fb42-cecb-4868-8a65-11f9ce484868%40app.fastmail.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Commit 0005 changes the shared ItemPointer accessors for all relations, and its justification, MaxOffsetNumber, is a page-layout limit that synthetic TIDs need not obey. The scenario names no existing AM, but message #15 shows the author is also unsure about bit 14.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Costs fall on all tables while gains reach only multi-index partial updates",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "desirability",
+      "touch_points": [
+        "hot_path_performance",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A reporting table that sometimes updates one indexed column starts taking HOT-indexed updates by default. Its pages stay non-all-visible while stubs remain, so index-only scans fetch from the heap, bitmap scans see lossy pages and freezing is delayed. The owner notices slower analytics and vacuum and has no switch to turn the feature off.",
+      "argument": "The feature is on for every non-catalog table, and message #16 asks for an opt-in table option with no answer in the material. Message #15 accepts that longer redirect chains and stub metadata will keep pages from being frozen. The 0005 commit message says any page with a live fresh entry becomes lossy for bitmap scans, and messages #1 and #3 show a 1 to 2% read-only loss, while heap growth, VACUUM and seqscan costs are not measured.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3,
+        15,
+        16
+      ],
+      "author_must_show": "What do heap-scan, index-only-scan and VACUUM workloads lose on tables that rarely benefit, and why should the feature not be opt-in per table?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "\"Greg Burd\"",
+          "date": "2026-06-30T17:21:07Z",
+          "url": "https://www.postgresql.org/message-id/af02b486-6adc-494c-a357-1dd72f655dcf%40app.fastmail.com"
+        },
+        {
+          "index": 3,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-02T16:40:51Z",
+          "url": "https://www.postgresql.org/message-id/57c9e23a-bb03-4d7c-81f5-551cd42f8b34%40app.fastmail.com"
+        },
+        {
+          "index": 15,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-20T21:34:41Z",
+          "url": "https://www.postgresql.org/message-id/84a886d1-37af-4da2-ad1b-15cea9c7e965%40app.fastmail.com"
+        },
+        {
+          "index": 16,
+          "from": "Chao Li",
+          "date": "2026-07-28T03:36:54Z",
+          "url": "https://www.postgresql.org/message-id/8736715E-C8F7-4D47-95C6-3B02ED4F699A%40gmail.com"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The feature is on for all non-catalog tables, commit 0005 accepts lossy bitmap pages, and message #15 concedes delayed freezing. The request for an opt-in table option in message #16 has no reply in the visible thread.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "Long-snapshot worst case raised against WARM is not measured here",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "prior_rejection",
+      "touch_points": [
+        "hot_path_performance",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site runs an hours-long reporting transaction while OLTP updates change indexed columns. Prune cannot reclaim stubs past the held horizon, so the pages stay non-all-visible and bitmap scans treat them as lossy. Index-only scans then turn into heap fetches, and the DBA learns this only from slower queries and delayed freezing.",
+      "argument": "The WARM row [P12] records a question on whether the design helps the worst case, such as long-running transactions (AI summary of its thread), and the PHOT row [P3] notes long-term heap fragmentation. In message #15 the author concedes that pages carry more metadata, that redirect chains are harder to collect, and that freezing is delayed. Message #14 asks for heap, VACUUM and seqscan numbers, and the thread has none. Every benchmark in messages #1 and #3 is a short pgbench run, which holds no old snapshot.",
+      "precedent_ids": [
+        "P12",
+        "P3"
+      ],
+      "thread_message_refs": [
+        1,
+        3,
+        14,
+        15
+      ],
+      "author_must_show": "With a snapshot held open for the whole run, how do heap size, all-visible pages, index-only scan heap fetches and VACUUM time compare against master?",
+      "precedents": [
+        {
+          "id": "P12",
+          "title": "Write Amplification Reduction Method (WARM)",
+          "url": "https://commitfest.postgresql.org/patch/775/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CABOikdMNy6yowA+wTGK9RVd8iw+CzqHeQSGpW7Yka_4RSZ_LOQ@mail.gmail.com"
+          ],
+          "date": "2017-10-02",
+          "status": "Returned with feedback"
+        },
+        {
+          "id": "P3",
+          "title": "partial heap only tuples",
+          "url": "https://commitfest.postgresql.org/patch/2981/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/2ECBBCA0-4D8D-4841-8872-4A5BBDC063D2@amazon.com"
+          ],
+          "date": "2021-11-04",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "\"Greg Burd\"",
+          "date": "2026-06-30T17:21:07Z",
+          "url": "https://www.postgresql.org/message-id/af02b486-6adc-494c-a357-1dd72f655dcf%40app.fastmail.com"
+        },
+        {
+          "index": 3,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-02T16:40:51Z",
+          "url": "https://www.postgresql.org/message-id/57c9e23a-bb03-4d7c-81f5-551cd42f8b34%40app.fastmail.com"
+        },
+        {
+          "index": 14,
+          "from": "Bharath Rupireddy",
+          "date": "2026-07-17T20:12:43Z",
+          "url": "https://www.postgresql.org/message-id/CALj2ACV3YaHh4zxaOFkNqKeQzkX0-uW1ghRd4LwdZsOjRB1T4Q%40mail.gmail.com"
+        },
+        {
+          "index": 15,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-20T21:34:41Z",
+          "url": "https://www.postgresql.org/message-id/84a886d1-37af-4da2-ad1b-15cea9c7e965%40app.fastmail.com"
+        }
+      ],
+      "id": "prior-attempts-1",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #15 concedes longer chains and delayed freezing, and every benchmark in messages #1 and #3 is a short pgbench run with no held snapshot. Message #14 asked for heap and VACUUM numbers, and the thread has none.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "CLUSTER USING a GiST index silently stops clustering on affected tables",
+      "level": "2",
+      "rubric_item": 13,
+      "category": "design",
+      "touch_points": [
+        "planner_behaviour",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user runs CLUSTER t USING t_geom_gist on an SIU table every night to keep spatial data ordered. After upgrade the heap AM falls back to a plain seqscan copy without telling anyone, so the table is no longer ordered. They find out weeks later when range and nearest-neighbour queries read many more pages than before.",
+      "argument": "Message #11 states that for a non-btree clusterable index the copy becomes a plain seqscan and the order is dropped. The btree path also changes, from an index-scan copy to seqscan plus sort. CLUSTER exists to give a physical order, so dropping that order silently changes the documented contract of an existing command. The proposal adds no warning, error, or documentation change.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        11
+      ],
+      "author_must_show": "How does CLUSTER USING a GiST index on an SIU table keep its documented ordering, or what error or notice tells the user it did not?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 11,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-13T16:26:23Z",
+          "url": "https://www.postgresql.org/message-id/ed69804a-aa09-489b-af3f-6c804b2efd94%40app.fastmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #11 states that a non-btree clustering index gets a plain seqscan copy with the order dropped. The material adds no notice, error or documentation change for that case.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "hot_indexed_on_apply exposes a storage internal as a subscription option",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "design",
+      "touch_points": [
+        "catalog",
+        "pg_dump_round_trip"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user reads that always gives better apply throughput and sets it on a subscriber. If the apply worker's replica identity lookup then meets a stale leaf it cannot handle, apply misses or doubles a row. The user learns this from a replication conflict or a diverged subscriber. A dump with the option set also fails to restore on an older server.",
+      "argument": "Message #1 says the apply RI lookup tolerates stale leaves only when the indexed attributes are a subset of the primary key, but the option still offers always. A user-level setting that selects between a safe mode and a mode whose safety depends on internals usually signals a design decision left open. The option name also binds a catalog column and the CREATE SUBSCRIPTION syntax to an internal name that message #14 asks to change.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3,
+        14
+      ],
+      "author_must_show": "Is always ever unsafe, and if not, why does the subscriber need any user-visible option instead of the apply path choosing the safe behaviour itself?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "\"Greg Burd\"",
+          "date": "2026-06-30T17:21:07Z",
+          "url": "https://www.postgresql.org/message-id/af02b486-6adc-494c-a357-1dd72f655dcf%40app.fastmail.com"
+        },
+        {
+          "index": 3,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-02T16:40:51Z",
+          "url": "https://www.postgresql.org/message-id/57c9e23a-bb03-4d7c-81f5-551cd42f8b34%40app.fastmail.com"
+        },
+        {
+          "index": 14,
+          "from": "Bharath Rupireddy",
+          "date": "2026-07-17T20:12:43Z",
+          "url": "https://www.postgresql.org/message-id/CALj2ACV3YaHh4zxaOFkNqKeQzkX0-uW1ghRd4LwdZsOjRB1T4Q%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #1 says the apply lookup tolerates stale leaves only when the indexed attributes are a subset of the primary key, yet the option offers `always`. The dump-restore point applies to any new option and should not count as support.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "Out-of-core index scan callers must learn a new stale flag",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension calls index_getnext_slot to look up rows by a secondary index and does not know about xs_hot_indexed_stale. After upgrade it gets the same live row twice, once from a stale entry and once from the fresh entry, or gets a row whose current key does not match. Users see wrong extension results with no error.",
+      "argument": "Message #16 points out that stale entries are returned to the caller with a flag set, not filtered inside the index access layer. In-core callers such as the executor, CLUSTER, IOS and apply lookups were patched, but the brief notes nothing tells out-of-core callers. The index_getnext_slot contract has always meant a returned tuple is a match, so this changes behaviour for existing code that compiles without error.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        16
+      ],
+      "author_must_show": "Why can stale entries not be filtered inside index_getnext_slot so that existing out-of-core callers keep working without changes?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 16,
+          "from": "Chao Li",
+          "date": "2026-07-28T03:36:54Z",
+          "url": "https://www.postgresql.org/message-id/8736715E-C8F7-4D47-95C6-3B02ED4F699A%40gmail.com"
+        }
+      ],
+      "id": "standards-compat-4",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #1 lists the callers that drop tuples on xs_hot_indexed_stale, and message #16 confirms the flag reaches callers of index_getnext_slot. The visible thread does not answer why the filter is not internal.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "Nothing tells VACUUM that stubs and stale leaves still need a pass",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Autovacuum runs on an SIU table, but it skips index vacuuming because few pages have LP_DEAD items, or because INDEX_CLEANUP is auto or off. Stale leaves and xid-free stubs remain, and the stubs are frozen, so they may never count toward the next autovacuum trigger. The bloat the feature targets accumulates silently.",
+      "argument": "The nbtree invariant says state that only a later VACUUM can reclaim must be recorded in the bookkeeping that decides whether the index is visited again (https://github.com/NikolayS/postgres/issues/101#issuecomment-6804288875). Commit 0006 leaves exactly that kind of state, stubs and stale leaves, for a later prune and index sweep. The material does not say how the dead-tuple counts, the index-vacuum bypass or INDEX_CLEANUP see that state. Message #8 notes that the tests depend on the xmin horizon, and the material shows no test of these autovacuum paths.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        8
+      ],
+      "author_must_show": "How do autovacuum thresholds and the index-vacuum bypass account for stubs and stale leaves, and which test covers INDEX_CLEANUP auto and off?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "\"Greg Burd\"",
+          "date": "2026-06-30T17:21:07Z",
+          "url": "https://www.postgresql.org/message-id/af02b486-6adc-494c-a357-1dd72f655dcf%40app.fastmail.com"
+        },
+        {
+          "index": 8,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-09T15:41:08Z",
+          "url": "https://www.postgresql.org/message-id/97d5e5a3-f8e2-49ec-bd52-5b43e5d2b30a%40app.fastmail.com"
+        }
+      ],
+      "id": "replication-ondisk-4",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Commit 0006 leaves stubs that only an index sweep plus a later prune can reclaim, so the invariant applies. The material does not say how the index-vacuum bypass or INDEX_CLEANUP off see that state, and message #5 shows tests with autovacuum disabled.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "Default execute privilege for pg_relation_hot_indexed_stats() is not stated",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An ordinary role with no SELECT on a table calls pg_relation_hot_indexed_stats() on it in a loop. Each call scans every page of the table, so the role learns how many rows recently had indexed columns changed and adds sustained I/O load. A DBA sees this only after a privilege audit or after a slowdown.",
+      "argument": "The 0008 documentation says the function reads every page under AccessShareLock, but it does not say who may execute it. A function added through pg_proc.dat is executable by PUBLIC unless the patch revokes it. Similar page-scanning diagnostics such as pgstattuple are revoked from PUBLIC and granted to pg_stat_scan_tables, so a committer would likely ask for the same here.",
+      "precedent_ids": [],
+      "thread_message_refs": [],
+      "author_must_show": "Is pg_relation_hot_indexed_stats() revoked from PUBLIC and limited to pg_stat_scan_tables or table owners, like pgstattuple?",
+      "precedents": [],
+      "thread_refs": [],
+      "id": "security-1",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The 0008 documentation describes a full-table scan under AccessShareLock and states no privilege rule. pgstattuple, the closest existing function, is restricted to pg_stat_scan_tables, so the consistency question stands until the patch says otherwise.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "No field evidence on how often workloads change only some indexed columns",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The project accepts a permanent heap format addition and a new TID marker bit on the strength of synthetic pgbench cells. If few production tables update a strict subset of several indexed columns, every Postgres release carries the format, the stub logic and the amcheck and pg_surgery special cases for a small group of users.",
+      "argument": "Every number in messages #1 and #3 comes from a custom harness with 3 or 17 secondary indexes. Message #14 asks for data points on how many users modify indexed columns, and the reply in message #15 does not answer it. Repeated attempts over many years suggest the problem is lasting, but they do not show how large the group is that this design helps. A committer would likely want that before freezing the format change that message #1 itself flags as permanent.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3,
+        14,
+        15
+      ],
+      "author_must_show": "Which real workloads, with numbers from production or from field reports, update some but not all indexed columns often enough to gain from this?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "\"Greg Burd\"",
+          "date": "2026-06-30T17:21:07Z",
+          "url": "https://www.postgresql.org/message-id/af02b486-6adc-494c-a357-1dd72f655dcf%40app.fastmail.com"
+        },
+        {
+          "index": 3,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-02T16:40:51Z",
+          "url": "https://www.postgresql.org/message-id/57c9e23a-bb03-4d7c-81f5-551cd42f8b34%40app.fastmail.com"
+        },
+        {
+          "index": 14,
+          "from": "Bharath Rupireddy",
+          "date": "2026-07-17T20:12:43Z",
+          "url": "https://www.postgresql.org/message-id/CALj2ACV3YaHh4zxaOFkNqKeQzkX0-uW1ghRd4LwdZsOjRB1T4Q%40mail.gmail.com"
+        },
+        {
+          "index": 15,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-20T21:34:41Z",
+          "url": "https://www.postgresql.org/message-id/84a886d1-37af-4da2-ad1b-15cea9c7e965%40app.fastmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "WARM, PHOT and this thread show the problem has drawn effort for ten years, which lowers the weight of this objection. Still, message #14 asked how often real workloads change some indexed columns, and message #15 gives no data.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Correctness risk that stalled WARM recurs, and the feature cannot be turned off",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "prior_rejection",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "wal_replication",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user upgrades, and every non-catalog table starts writing HOT-indexed chains. A remaining bug like the CLUSTER row loss then drops rows from query results, and the user has no per-table switch to stop new chains while waiting for a fix. Chains already on disk need a rewrite to clear.",
+      "argument": "Reviewers of WARM [P12] worried about on-disk format changes and data-corrupting bugs (AI summary of its thread). Within two weeks this thread found a BitmapAnd false negative (message #7), CLUSTER and VACUUM FULL row loss (messages #10 and #11), and a primary/standby divergence in prune WAL (message #5). The author found these through new review paths, which suggests other scan paths may still hide such bugs. Chao Li asked for an opt-in table option in message #16, and the thread does not answer that request.",
+      "precedent_ids": [
+        "P12"
+      ],
+      "thread_message_refs": [
+        5,
+        7,
+        10,
+        11,
+        16
+      ],
+      "author_must_show": "Why should the format be enabled for every table by default, and not behind a per-table option until the scan paths have been audited and field-tested?",
+      "precedents": [
+        {
+          "id": "P12",
+          "title": "Write Amplification Reduction Method (WARM)",
+          "url": "https://commitfest.postgresql.org/patch/775/",
+          "thread_urls": [
+            "https://www.postgresql.org/message-id/flat/CABOikdMNy6yowA+wTGK9RVd8iw+CzqHeQSGpW7Yka_4RSZ_LOQ@mail.gmail.com"
+          ],
+          "date": "2017-10-02",
+          "status": "Returned with feedback"
+        }
+      ],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-06T13:16:22Z",
+          "url": "https://www.postgresql.org/message-id/a35235bb-a3b4-45cc-8e4a-7e57556a9250%40app.fastmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Alexander Korotkov",
+          "date": "2026-07-09T11:26:44Z",
+          "url": "https://www.postgresql.org/message-id/CAPpHfdvOLrULXQn%2Bs%2BbEG4QiVrps%2B_3mg2EjUN39OYUKoBE20w%40mail.gmail.com"
+        },
+        {
+          "index": 10,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-11T22:04:34Z",
+          "url": "https://www.postgresql.org/message-id/3dc5d57e-6c77-4713-b97e-bf0a5a891226%40app.fastmail.com"
+        },
+        {
+          "index": 11,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-13T16:26:23Z",
+          "url": "https://www.postgresql.org/message-id/ed69804a-aa09-489b-af3f-6c804b2efd94%40app.fastmail.com"
+        },
+        {
+          "index": 16,
+          "from": "Chao Li",
+          "date": "2026-07-28T03:36:54Z",
+          "url": "https://www.postgresql.org/message-id/8736715E-C8F7-4D47-95C6-3B02ED4F699A%40gmail.com"
+        }
+      ],
+      "id": "prior-attempts-2",
+      "angle": "prior-attempts",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of demand-2 for the missing per-table switch. The rest infers future bugs from bugs already fixed and names no scan path that is still wrong.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Feature is on for every table with no per-table opt-out",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "design",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site upgrades, and its wide reporting tables start getting HOT-indexed chains, stubs and pages kept non-all-visible. Seqscans, freezing and index-only scans get slower. The DBA has no reloption or GUC to turn the path off for those tables, so the only option is to downgrade.",
+      "argument": "The brief lists no per-table switch; the path applies to all non-catalog tables. Chao Li asked for a table option in message #16. In message #15 the author accepts longer redirect chains and fewer frozen pages as a cost. Comparable heap behaviour such as fillfactor and vacuum settings is per table, so a cost that the author admits exists would normally come with a per-table control.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        15,
+        16
+      ],
+      "author_must_show": "Which per-table control lets a DBA turn off HOT-indexed updates on a table where the measured trade-off is negative, and what happens to existing chains when it is turned off?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 15,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-20T21:34:41Z",
+          "url": "https://www.postgresql.org/message-id/84a886d1-37af-4da2-ad1b-15cea9c7e965%40app.fastmail.com"
+        },
+        {
+          "index": 16,
+          "from": "Chao Li",
+          "date": "2026-07-28T03:36:54Z",
+          "url": "https://www.postgresql.org/message-id/8736715E-C8F7-4D47-95C6-3B02ED4F699A%40gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of demand-2, which makes the same request for a per-table opt-in with the costs listed more fully.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Stubs and stale leaves can outlive VACUUM when index cleanup is skipped",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A table runs only autovacuum, which bypasses index vacuuming when there are few LP_DEAD items, or it runs with INDEX_CLEANUP off. Stale leaves are never swept, so collapse stubs stay and the page is never set all-visible or all-frozen. Index-only scans and aggressive vacuums keep visiting those pages, and the cause appears only through monitoring.",
+      "argument": "Message #1 and the 0006 commit message say stubs are reclaimed only after ambulkdelete sweeps the stale leaves, and a page holding a stub stays non-all-visible. Stubs are LP_NORMAL and stale leaves point at a live redirect, so neither adds to the LP_DEAD count that decides whether indexes are visited. The nbtree invariant (Source: https://github.com/NikolayS/postgres/issues/101#issuecomment-6804288875) requires such state to be recorded where VACUUM decides to visit the index again. The material shows tests that use only plain manual VACUUM.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        8,
+        15
+      ],
+      "author_must_show": "What makes autovacuum, the index-vacuum bypass and INDEX_CLEANUP auto/off still sweep stale leaves, and which test exercises those paths?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "\"Greg Burd\"",
+          "date": "2026-06-30T17:21:07Z",
+          "url": "https://www.postgresql.org/message-id/af02b486-6adc-494c-a357-1dd72f655dcf%40app.fastmail.com"
+        },
+        {
+          "index": 8,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-09T15:41:08Z",
+          "url": "https://www.postgresql.org/message-id/97d5e5a3-f8e2-49ec-bd52-5b43e5d2b30a%40app.fastmail.com"
+        },
+        {
+          "index": 15,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-20T21:34:41Z",
+          "url": "https://www.postgresql.org/message-id/84a886d1-37af-4da2-ad1b-15cea9c7e965%40app.fastmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-4, which raises the same VACUUM bookkeeping gap and states the test coverage more carefully.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Index scan callers outside core must learn a new stale flag",
+      "level": "2",
+      "rubric_item": 11,
+      "category": "abi_extension_api",
+      "touch_points": [
+        "abi_extension_api",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension or out-of-core table AM calls index_getnext_slot and does not check xs_hot_indexed_stale. After upgrading to a release with this feature, it returns stale rows or the same row twice on any table with HOT-indexed chains. It compiles and runs, so users find out from wrong results.",
+      "argument": "Chao Li asked in message #16 why stale entries are passed to callers instead of filtered inside the index scan layer, and the visible thread has no answer. The design also makes bit 14 of every stored TID offset a permanent marker that ItemPointerGetOffsetNumber strips, and the author is unsure of it himself (message #15). Both change long-standing contracts that out-of-core code relies on.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        9,
+        15,
+        16
+      ],
+      "author_must_show": "Why can the stale test not run inside index_getnext_slot, so existing callers stay correct without change, and who besides tidbitmap.c may rely on raw TID offsets?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 9,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-11T17:37:19Z",
+          "url": "https://www.postgresql.org/message-id/b078fb42-cecb-4868-8a65-11f9ce484868%40app.fastmail.com"
+        },
+        {
+          "index": 15,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-20T21:34:41Z",
+          "url": "https://www.postgresql.org/message-id/84a886d1-37af-4da2-ad1b-15cea9c7e965%40app.fastmail.com"
+        },
+        {
+          "index": 16,
+          "from": "Chao Li",
+          "date": "2026-07-28T03:36:54Z",
+          "url": "https://www.postgresql.org/message-id/8736715E-C8F7-4D47-95C6-3B02ED4F699A%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-4 for the stale flag, and of replication-ondisk-2 for the bit 14 part.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Always on, with no per-table switch for workloads that lose",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "planner_behaviour"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user with a read-heavy or bitmap-scan workload upgrades and gets HOT-indexed chains on every non-catalog table. Index scans pay the chain-walk cost, and bitmap scans turn lossy on pages with fresh entries. Pages that stay non-all-visible also force heap fetches for index-only scans, and there is no setting that turns this off.",
+      "argument": "Message #3 shows a read-only index scan loss of about 1 to 2%. The 0005 commit message accepts lossy bitmap pages until collapse. Message #15 concedes heap growth and pages frozen less often, but the material does not measure seqscan, VACUUM or freeze cost. Chao Li asked for an opt-in table option in message #16, and the visible thread has no answer.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        15,
+        16
+      ],
+      "author_must_show": "What do bitmap-scan, index-only-scan and VACUUM workloads lose on tables with few indexes, and why should this not be a per-table opt-in?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-02T16:40:51Z",
+          "url": "https://www.postgresql.org/message-id/57c9e23a-bb03-4d7c-81f5-551cd42f8b34%40app.fastmail.com"
+        },
+        {
+          "index": 15,
+          "from": "\"Greg Burd\"",
+          "date": "2026-07-20T21:34:41Z",
+          "url": "https://www.postgresql.org/message-id/84a886d1-37af-4da2-ad1b-15cea9c7e965%40app.fastmail.com"
+        },
+        {
+          "index": 16,
+          "from": "Chao Li",
+          "date": "2026-07-28T03:36:54Z",
+          "url": "https://www.postgresql.org/message-id/8736715E-C8F7-4D47-95C6-3B02ED4F699A%40gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-4",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of demand-2, which cites the same messages and asks the same question.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "New infomask2 bit, trailing bitmap, natts = 0 stubs, and bit 14 in stored index TIDs."
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "Prune WAL gains a stub sub-record, and logical apply is gated per subscription."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "New pg_subscription column, new pg_proc entry and new columns in the statistics views."
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "Changes the table AM update contract, the ItemPointer accessors and what index_getnext_slot returns to callers."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": true,
+      "reason": "CREATE and ALTER SUBSCRIPTION gain the option hot_indexed_on_apply."
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": true,
+      "reason": "Bitmap scans turn lossy and index-only scans heap-fetch on affected pages; CLUSTER changes its copy path."
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": true,
+      "reason": "pg_dump must emit the new subscription option."
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": true,
+      "reason": "\\dRs+ shows the new subscription option."
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "pg_relation_hot_indexed_stats() scans a whole table and its execute privilege is not stated."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "Format bugs found after release need back-branch fixes with stubs and marked TIDs already on disk."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Every consumer of LP_NORMAL heap items and of stored TIDs must handle the new shapes for ever."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "heap_update, the index scan chain walk and the shared ItemPointer accessors all change."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "see objection demand-2: Costs fall on all tables while gains reach only multi-index partial updates"
+    }
+  ],
+  "questions": [
+    "What sequence of operations returns a page holding a live HOT-indexed row to all-visible, without updating that row again or rebuilding its indexes?",
+    "Why is the feature on for every non-catalog table, and what would a per-table option do to chains that already exist when it is turned off?",
+    "Which paths re-encode heap TIDs, such as GIN posting lists and nbtree deduplication, and how does each keep bit 14 on disk?",
+    "How do autovacuum thresholds, the index-vacuum bypass and INDEX_CLEANUP off account for stubs and stale leaves, and which test covers them?",
+    "Why can stale entries not be filtered inside index_getnext_slot, so that out-of-core callers stay correct without change?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "It needs someone who knows heap pruning, VACUUM, the visibility map and nbtree. Nathan Bossart co-authors the format and prune patches and Alexander Korotkov reviewed the bitmap scan path; nobody in the visible thread has offered to commit it.",
+    "liability": "A permanent heap tuple format, a marker bit in every stored index TID, and correctness of every scan, prune and rewrite path over them, with no way to remove the format later.",
+    "author_follow_up": "Strong sign: the author posted versions v48 to v63 with rebases, bug fixes and a second benchmark run within the thread."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "high",
+    "review_cost": "high",
+    "recommended_action": "fix design first",
+    "reason": "Tables with many secondary indexes gain up to 76% throughput in the author's runs, but the series changes the heap format, prune, VACUUM, tidbitmap.c and the index scan API. The open points on the visibility map, bit 14 and the opt-out should be settled before line-by-line review."
+  },
+  "self_advice": [],
+  "provisional_note": "Only 3 of 16 messages and no code were read. Whether GIN keeps the marker, how prune treats fresh entries on a live row, and what VACUUM counts could not be checked.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "revert:e3fcca0d0d2414f3a50d6fd40eddf48b7df81475",
+      "kind": "revert",
+      "title": "Revert changes in HOT handling of BRIN indexes",
+      "status": "Reverted",
+      "date": "2022-06-16",
+      "first_date": "2021-11-30",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e3fcca0d0d2414f3a50d6fd40eddf48b7df81475",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/05ebcb44-f383-86e3-4f31-0a97a55634cf@enterprisedb.com",
+        "https://www.postgresql.org/message-id/flat/CAFp7QwpMRGcDAQumN7onN9HjrJ3u4X3ZRXdGFT0K5G2JWvnbWg@mail.gmail.com"
+      ],
+      "authors": "Tomas Vondra",
+      "objectors": "",
+      "summary": "Revert changes in HOT handling of BRIN indexes\nReverted commit(s): Ignore BRIN indexes when checking for HOT udpates; Move test for BRIN HOT behavior to stats.sql",
+      "objection": "This reverts commits 5753d4ee32 and fe60b67250 that modified HOT to\nignore BRIN indexes. The commit message for 5753d4ee32 claims that:\n\n    When determining whether an index update may be skipped by using\n    HOT, we can ignore attributes indexed only by BRIN indexes. There\n    are no index pointers to individual tuples in BRIN, and the page\n    range summary will be updated anyway as it relies on visibility\n    info.\n\nThis is partially incorrect - it's true BRIN indexes don't point to\nindividual tuples, so HOT chains are not an issue, but the visibitlity\ninfo is not sufficient to keep the index up to date. This can easily\nresult in corrupted indexes, as demonstrated in the hackers thread.\n\nThis does not mean relaxing the HOT restrictions for BRIN is a lost\ncause, but it needs to handle the two aspects (allowing HOT chains and\nupdating the page range summaries) as separate. But that requires a\nmajor changes, and it's too late for that in the current dev cycle.",
+      "touch_points": [],
+      "matched_queries": [
+        "partial HOT updates indexed columns",
+        "HOT updates expression indexes",
+        "heap only tuple index update skip",
+        "bitmap scan false negative HOT chain"
+      ],
+      "from_hint": false,
+      "score": 0.478,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "revert:9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "kind": "revert",
+      "title": "Fix index-only scan plans, take 2.",
+      "status": "Partially reverted",
+      "date": "2022-01-03",
+      "first_date": "2022-01-01",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=9a3ddeb519e8d91b670fa923619b212a9670389c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/3179992.1641150853@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/17350-b5bdcf476e5badbb@postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Fix index-only scan plans, take 2.\nReverted commit(s): Fix index-only scan plans when not all index columns can be returned.",
+      "objection": "Commit 4ace45677 failed to fix the problem fully, because the\nsame issue of attempting to fetch a non-returnable index column\ncan occur when rechecking the indexqual after using a lossy index\noperator.  Moreover, it broke EXPLAIN for such indexquals (which\nindicates a gap in our test cases :-().\n\nRevert the code changes of 4ace45677 in favor of adding a new field\nto struct IndexOnlyScan, containing a version of the indexqual that\ncan be executed against the index-returned tuple without using any\nnon-returnable columns.  (The restrictions imposed by check_index_only\nguarantee this is possible, although we may have to recompute indexed\nexpressions.)  Support construction of that during setrefs.c\nprocessing by marking IndexOnlyScan.indextlist entries as resjunk\nif they can't be returned, rather than removing them entirely.\n(We could alternatively require setrefs.c to look up the IndexOptInfo\nagain, but abusing resjunk this way seems like a reasonably safe way\nto avoid needing to do that.)\n\nThis solution isn't great from an API-stability standpoint: if there\nare any extensions out there that build IndexOnlyScan structs directly,\nthey'll be broken in the next minor releases.  However, only a very\ninvasive extension would be likely to do such a thing.  There's no\nchange in the Path representation, so typical planner extensions\nshouldn't have a problem.\n\nAs before, back-patch to all supported branches.",
+      "touch_points": [
+        "planner",
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "HOT updates expression indexes",
+        "heap only tuple index update skip",
+        "index entries pointing heap only tuple"
+      ],
+      "from_hint": false,
+      "score": 0.296,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:2981",
+      "kind": "cf",
+      "title": "partial heap only tuples",
+      "status": "Returned with feedback",
+      "date": "2021-11-04",
+      "first_date": "2021-02-09",
+      "url": "https://commitfest.postgresql.org/patch/2981/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2ECBBCA0-4D8D-4841-8872-4A5BBDC063D2@amazon.com"
+      ],
+      "authors": "Nathan Bossart (bossartn)",
+      "objectors": "",
+      "summary": "The patch adds partial heap only tuples (PHOT), so an update creates new index tuples only for indexes whose columns changed, and those index tuples point to the new heap tuple. Index scans follow a PHOT chain only while their own indexed columns stay unchanged, and pruning of PHOT chains is restricted.",
+      "objection": "The patch stopped applying to HEAD, and the entry was set to Waiting for Author in July 2021. No updated patch was posted, so the entry was returned with feedback in November 2021. The visible messages show design concerns, such as index create/drop handling and long-term heap fragmentation, but no objection that decided the outcome.",
+      "touch_points": [],
+      "matched_queries": [
+        "heap only tuple index update skip",
+        "index entries pointing heap only tuple"
+      ],
+      "from_hint": false,
+      "score": 0.269,
+      "enriched": true,
+      "key_quote": "As no update has been posted, the patch still doesn't apply.",
+      "quote_message_url": "https://www.postgresql.org/message-id/9417DBC8-0C3F-49FD-893D-1C833F8EA5F3%40yesql.se",
+      "relevant": true
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:3163",
+      "kind": "cf",
+      "title": "Use tuple-level SIREAD locks for index-only scans",
+      "status": "Returned with feedback",
+      "date": "2021-12-02",
+      "first_date": "2018-05-13",
+      "url": "https://commitfest.postgresql.org/patch/3163/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEepm=2GK3FVdnt5V3d+h9njWipCv_fNL=wjxyUhzsF=0PcbNg@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Index-only scans that skip the heap would take tuple-level SIREAD locks instead of locking the whole heap page, with a fix to the outdated comment in nodeIndexonlyscan.c. A later experimental patch also skipped the btree page lock when the scan uses equality quals on all key columns of a unique index.",
+      "objection": "The patch stopped applying after a collision in the test files, and Daniel Gustafsson asked for a rebased version. No new version appears in the visible messages, so the entry was returned with feedback. Earlier, David Rowley found that deferrable unique constraints broke the btree lock skip, and Thomas Munro fixed that case in v4. Thomas Munro was still unsure the fix covered every case.",
+      "touch_points": [],
+      "matched_queries": [
+        "heap only tuple index update skip",
+        "index entries pointing heap only tuple"
+      ],
+      "from_hint": false,
+      "score": 0.245,
+      "enriched": true,
+      "key_quote": "This patch now fails to apply, probably due to a mostly trivial collision with fdd88571454e2b00dbe446e8609c6e4294ca89ae in the test files.",
+      "quote_message_url": "https://www.postgresql.org/message-id/09E64F5F-76E9-4AE4-9ACF-7C899F69358C%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:c096d19b74a637443109e528000342e896b150f3",
+      "kind": "revert",
+      "title": "Revert \"Prevent incorrect updates of pg_index while reindexing pg_index itself.\"",
+      "status": "Reverted",
+      "date": "2011-04-19",
+      "first_date": "2011-04-16",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=c096d19b74a637443109e528000342e896b150f3",
+      "thread_urls": [],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert \"Prevent incorrect updates of pg_index while reindexing pg_index itself.\"\nReverted commit(s): Prevent incorrect updates of pg_index while reindexing pg_index itself.",
+      "objection": "This reverts commit 4b6106ccfea21e86943f881edcf3cfc03661a415 of 2011-04-15.\nThere's a better way to do it, which will follow shortly.",
+      "touch_points": [],
+      "matched_queries": [
+        "partial HOT updates indexed columns",
+        "HOT updates expression indexes",
+        "selective index maintenance update"
+      ],
+      "from_hint": false,
+      "score": 0.226,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "revert:8ec8760fc87ecde0516e511f1c55aec627b01ea7",
+      "kind": "revert",
+      "title": "Revert misguided change to postgres_fdw FOR UPDATE/SHARE code.",
+      "status": "Reverted",
+      "date": "2014-12-12",
+      "first_date": "2014-12-12",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=8ec8760fc87ecde0516e511f1c55aec627b01ea7",
+      "thread_urls": [],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Revert misguided change to postgres_fdw FOR UPDATE/SHARE code.\nReverted commit(s): Fix planning of SELECT FOR UPDATE on child table with partial index.",
+      "objection": "In commit 462bd95705a0c23ba0b0ba60a78d32566a0384c1, I changed postgres_fdw\nto rely on get_plan_rowmark() instead of get_parse_rowmark().  I still\nthink that's a good idea in the long run, but as Etsuro Fujita pointed out,\nit doesn't work today because planner.c forces PlanRowMarks to have\nmarkType = ROW_MARK_COPY for all foreign tables.  There's no urgent reason\nto change this in the back branches, so let's just revert that part of\nyesterday's commit rather than trying to design a better solution under\ntime pressure.\n\nAlso, add a regression test case showing what postgres_fdw does with FOR\nUPDATE/SHARE.  I'd blithely assumed there was one already, else I'd have\nrealized yesterday that this code didn't work.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "partial HOT updates indexed columns",
+        "selective index maintenance update"
+      ],
+      "from_hint": false,
+      "score": 0.203,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "revert:810f64a01567610af7b92b0de930f16f3e20064e",
+      "kind": "revert",
+      "title": "Revert indexed and enlargable binary heap implementation.",
+      "status": "Reverted",
+      "date": "2024-04-11",
+      "first_date": "2024-04-03",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=810f64a01567610af7b92b0de930f16f3e20064e",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/12747c15811d94efcc5cda72d6b35c80d7bf3443.camel@j-davis.com",
+        "https://www.postgresql.org/message-id/flat/CAD21AoDffo37RC-eUuyHJKVEr017V2YYDLyn1xF_00ofptWbkg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAD21AoAfKTgrBrLq96GcTv9d6k97zaQcDM-rxfKEt4GSe0qnaQ@mail.gmail.com"
+      ],
+      "authors": "Masahiko Sawada",
+      "objectors": "",
+      "summary": "Revert indexed and enlargable binary heap implementation.\nReverted commit(s): Add functions to binaryheap for efficient key removal and update.; Make binaryheap enlargeable.; Improve eviction algorithm in ReorderBuffer using max-heap for many subtransactions.; Replace binaryheap + index with pairingheap in reorderbuffer.c",
+      "objection": "This reverts commit b840508644 and bcb14f4abc. These commits were made\nfor commit 5bec1d6bc5 (Improve eviction algorithm in ReorderBuffer\nusing max-heap for many subtransactions). However, per discussion,\ncommit efb8acc0d0 replaced binary heap + index with pairing heap, and\nmade these commits unnecessary.",
+      "touch_points": [],
+      "matched_queries": [
+        "heap only tuple index update skip",
+        "index entries pointing heap only tuple"
+      ],
+      "from_hint": false,
+      "score": 0.191,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "revert:26acb54a1368bf3706294400abca85b15c9233a6",
+      "kind": "revert",
+      "title": "Revert \"Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".\"",
+      "status": "Reverted",
+      "date": "2021-03-24",
+      "first_date": "2021-03-10",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=26acb54a1368bf3706294400abca85b15c9233a6",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/E1lMiB9-0001c3-SY@gemulon.postgresql.org",
+        "https://www.postgresql.org/message-id/flat/20210318025228.GE11765@telsasoft.com",
+        "https://www.postgresql.org/message-id/flat/CAA4eK1K-cW7svLC2D7DHoGHxdAdg3P37BLgebqBOC2ZLc9a6QQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAJcOf-cXnB5cnMKqWEp2E2z7Mvcd04iLVmV=qpFJrR3AcrTS3g@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/2309260.1615485644@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CAJcOf-fAdj=nDKMsRhQzndm-O13NY4dL6xGcEvdX5Xvbbi0V7g@mail.gmail.com"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Revert \"Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".\"\nReverted commit(s): Doc: Update description for parallel insert reloption.; Add a new GUC and a reloption to enable inserts in parallel-mode.; Improve FK trigger parallel-safety check added by 05c8482f7f.; Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".; Fix use of relcache TriggerDesc field introduced by commit 05c8482f7f.",
+      "objection": "To allow inserts in parallel-mode this feature has to ensure that all the\nconstraints, triggers, etc. are parallel-safe for the partition hierarchy\nwhich is costly and we need to find a better way to do that. Additionally,\nwe could have used existing cached information in some cases like indexes,\ndomains, etc. to determine the parallel-safety.\n\nList of commits reverted, in reverse chronological order:\n\ned62d3737c Doc: Update description for parallel insert reloption.\nc8f78b6161 Add a new GUC and a reloption to enable inserts in parallel-mode.\nc5be48f092 Improve FK trigger parallel-safety check added by 05c8482f7f.\ne2cda3c20a Fix use of relcache TriggerDesc field introduced by commit 05c8482f7f.\ne4e87a32cc Fix valgrind issue in commit 05c8482f7f.\n05c8482f7f Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "selective index maintenance update"
+      ],
+      "from_hint": false,
+      "score": 0.132,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:2644",
+      "kind": "cf",
+      "title": "avoid bitmapOR-ing indexes for scan conditions implied by partition constraint",
+      "status": "Returned with feedback",
+      "date": "2021-02-01",
+      "first_date": "2020-07-04",
+      "url": "https://commitfest.postgresql.org/patch/2644/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200704004503.GA23805@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby), Soumyadeep Chakraborty (soumyadeep2007), Soumyadeep Chakraborty (soumyadeepc)",
+      "objectors": "Tom Lane",
+      "summary": "The patch makes the planner skip bitmap index scans for arms of an OR clause that the partition constraint refutes, so each partition scans only the useful arms. The change lives in generate_bitmap_or_paths() in indxpath.c and targets queries with long OR lists over many partitions.",
+      "objection": "Tom Lane objected to fixing this in indxpath.c. The fix helps only bitmap scans, may repeat the same proof, cannot be turned off, leaves row estimates unchanged, and may break the loop that requires each OR arm to match an index. He proposed removing proven quals from baserestrictinfo instead, but measured about 2.5% slowdown on pgbench -S and left the direction open. The entry then sat in Waiting on Author for weeks, and Masahiko Sawada returned it with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "bitmap scan false negative HOT chain"
+      ],
+      "from_hint": false,
+      "score": 0.132,
+      "enriched": true,
+      "key_quote": "I really quite dislike solving\nthis via a kluge in indxpath.c.",
+      "quote_message_url": "https://www.postgresql.org/message-id/228337.1605212074%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:4324",
+      "kind": "cf",
+      "title": "XLog size reductions: smaller XLogRecordBlockHeader",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2023-05-18",
+      "url": "https://commitfest.postgresql.org/patch/4324/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2WjuJqVeB6EUZ1z75_ittk54H6Lk7WtwRskEeGtZubr4bQ@mail.gmail.com"
+      ],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "Heikki Linnakangas, Michael Paquier, Robert Haas",
+      "summary": "The patch shrinks XLogRecordBlockHeader by storing the size class of the block data length (0, 1 or 2 bytes) in the upper 2 bits of the block ID. Block IDs are limited to 6 bits, so registered blocks with little or no data take up to 2 fewer bytes of WAL.",
+      "objection": "Reviewers objected to a field-specific encoding. Heikki Linnakangas suggested generic varint functions, and Andres Freund (quoted) and Michael Paquier judged the added complexity not worth the savings. Robert Haas found no consensus on design, with two committers favoring a uniform varint encoding over ad-hoc bit packing, and saw no path forward for the patch in its current form. The author's own measurements showed no aligned record size savings in pgbench.",
+      "touch_points": [],
+      "matched_queries": [
+        "WARM write amplification reduction"
+      ],
+      "from_hint": false,
+      "score": 0.131,
+      "enriched": true,
+      "key_quote": "But the question for this thread is really more about whether we're OK with using ad-hoc bit swizzling to reduce the size of xlog records or whether we want to insist on the use of a uniform varint encoding.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoaNBhAB7fFx2rBe2PcYHpT96ho-AuKxYehKsPjXSBGfew%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "wiki:Features_We_Do_Not_Want:6",
+      "kind": "do_not_want",
+      "title": "On-disk bitmap indexes",
+      "status": "Not wanted",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Features_We_Do_Not_Want",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20130914181424.GA24448@toroid.org"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "On-disk bitmap indexes\nSection: Features We Do Not Want\nLinked: Re: Bitmap index AM; Bitmap index thoughts; Stream bitmaps; Re: Bitmapscan changes - Requesting further feedback; Updated bitmap index patch; Reviewing new index types (was Re: [PATCHES] Updated bitmap indexpatch); Bitmap Indexes: request for feedback; bitmap indexes - performance; [PATCH] bitmap indexes",
+      "objection": "The rigidity of on-disk bitmap indexes, and the existence of GIN and in-memory bitmaps make this undesirable.",
+      "touch_points": [
+        "on-disk format / pg_upgrade"
+      ],
+      "matched_queries": [
+        "bitmap scan false negative HOT chain",
+        "selective index maintenance update"
+      ],
+      "from_hint": false,
+      "score": 0.13,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:775",
+      "kind": "cf",
+      "title": "Write Amplification Reduction Method (WARM)",
+      "status": "Returned with feedback",
+      "date": "2017-10-02",
+      "first_date": "2016-08-31",
+      "url": "https://commitfest.postgresql.org/patch/775/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABOikdMNy6yowA+wTGK9RVd8iw+CzqHeQSGpW7Yka_4RSZ_LOQ@mail.gmail.com"
+      ],
+      "authors": "Pavan Deolasee (pavan)",
+      "objectors": "Robert Haas, Peter Geoghegan",
+      "summary": "WARM (Write Amplification Reduction Method) lets an UPDATE that changes an indexed column insert new index entries only into the indexes whose keys changed. Other indexes keep pointing to the existing HOT-like chain, and index scans recheck heap tuples against index keys. To keep this tractable, the first version allowed only one WARM update per chain, stored the root line pointer offset in t_ctid of the latest tuple, and required an amrecheck routine from each index AM.",
+      "objection": "In April 2017 the patch was moved out of the release cycle. Reviewers, as quoted in the author's replies, were concerned about on-disk format changes, the risk of data-corrupting bugs, and performance regressions found in testing (for example, recheck overhead) that they considered not fully addressed. In July 2017 the author said he no longer had time to pursue it, and Peter Geoghegan questioned whether WARM helps the worst case, such as long-running transactions. The CF manager returned it with feedback because more work was needed and the patch had not moved in the current commitfest.",
+      "touch_points": [],
+      "matched_queries": [
+        "WARM write amplification reduction"
+      ],
+      "from_hint": false,
+      "score": 0.121,
+      "enriched": true,
+      "key_quote": "Looks like I'll be short on bandwidth to pursue this further, given other work commitments including upcoming Postgres-XL 10 release.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CABOikdOm_R1NzYUqQQ85p04VxDJpvdp_V3feaKBY8ATMWTE%2BHw%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:4386",
+      "kind": "cf",
+      "title": "XLog size reductions: Reduced XLog record header size",
+      "status": "Returned with feedback",
+      "date": "2024-04-09",
+      "first_date": "2023-06-20",
+      "url": "https://commitfest.postgresql.org/patch/4386/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2WgcW5SkPO_TGTqirRcCS_FN0xEZqUsXDE6pPz2TYzXQBA@mail.gmail.com"
+      ],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "Michael Paquier, Pavel Borisov",
+      "summary": "The patchset makes the WAL record header variable-length, which shrinks it to 14-21 bytes, with about 4-5% less WAL estimated for pgbench. It varlength-encodes the record length, gives rmgrs their own info byte, includes the XID only when the record asks for it with XLOG_INCLUDE_XID, and adds an invalid rmgr ID 0 used to detect the end of WAL.",
+      "objection": "The author stopped responding after review. Michael Paquier objected to the opt-in XLOG_INCLUDE_XID interface and questioned the use of rmgr ID 0 as an end-of-WAL marker. Pavel Borisov then asked for benchmarks showing the gain was large enough, the benchmarking was still a todo, and a reminder from Andrey M. Borodin in April 2024 got no visible reply before the entry was returned.",
+      "touch_points": [],
+      "matched_queries": [
+        "WARM write amplification reduction"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": true,
+      "key_quote": "But at the second round, some doubt arises on whether this long\npatchset indeed introduces enough performance gain?",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALT9ZEFx4jJ47t-Vmz-jAVRrG%2B9TSP9uThDssbDHmWdsSjz5Fw%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:4440",
+      "kind": "cf",
+      "title": "Forcing new tuples of updates off the page",
+      "status": "Withdrawn",
+      "date": "2024-03-15",
+      "first_date": "2023-07-05",
+      "url": "https://commitfest.postgresql.org/patch/4440/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAA-aLv6sYZ5XnuYrytTjxZumBh3KrdyMRmasxHfgaKf-HJrNpw@mail.gmail.com"
+      ],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "Robert Haas, Andres Freund",
+      "summary": "The patch adds a table storage parameter, local_update_limit, that keeps an update from placing the new tuple on the old tuple's page when that page lies beyond a set size, so the tuple moves to an earlier page found through the FSM. Users could then shrink a bloated table through normal UPDATE traffic and vacuum truncation, without the exclusive locks of VACUUM FULL or CLUSTER.",
+      "objection": "Robert Haas and Andres Freund objected that users have no good way to pick a fixed page limit. A limit set too low or left in place as the table grows causes pointless non-HOT updates and index bloat. Andres Freund proposed basing the decision on relation size against free space known to the FSM, and Laurenz Albe agreed and set the entry to waiting for author. The author withdrew the patch because he lacked the time and expertise for that rewrite.",
+      "touch_points": [],
+      "matched_queries": [
+        "heap only tuple index update skip"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": true,
+      "key_quote": "If we can't, then I think we're asking the user to figure out a value that we don't have any idea how to compute ourselves.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoZ-QNvOB9BniBUK7gpB%3DjEG58-Z5nrwo3ctRCsMKa9erQ%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:2443",
+      "kind": "cf",
+      "title": "In bitmap scan explain node show how many relevant heap pages were not examined",
+      "status": "Returned with feedback",
+      "date": "2020-03-31",
+      "first_date": "2019-05-18",
+      "url": "https://commitfest.postgresql.org/patch/2443/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMkU=1xQcMJgMeNxatR60R+-Bv4TeeO1ZcWmrJS4McLvbBmoXg@mail.gmail.com"
+      ],
+      "authors": "Jeff Janes (jjanes)",
+      "objectors": "Tom Lane",
+      "summary": "The patch adds an \"unfetched\" count under \"Heap Blocks\" in EXPLAIN ANALYZE for Bitmap Heap Scan, next to \"exact\" and \"lossy\", for heap pages that the visibility map let the bitmap-only scan skip. The author also suggested renaming the node to \"Bitmap Only Heap Scan\" but did not implement it.",
+      "objection": "Tom Lane questioned the need for the counter, because index-only scans report only \"Heap Fetches: n\" and get no comparable data. He held that the two should be consistent and that the lack of complaints about index-only scans suggests users do not need the information. Amit Kapila marked the entry Returned with Feedback at the end of the commitfest, without further opinions.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "bitmap scan false negative HOT chain"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": true,
+      "key_quote": "Some of both: it seems like these ought to be consistent, and the\nlack of complaints so far about regular index-only scans suggests\nthat people don't need the info.",
+      "quote_message_url": "https://www.postgresql.org/message-id/25659.1585542569%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:5238",
+      "kind": "cf",
+      "title": "Add parallel columns for seq scan and index scan on pg_stat_all_tables and _indexes",
+      "status": "Returned with feedback",
+      "date": "2024-12-11",
+      "first_date": "2024-08-29",
+      "url": "https://commitfest.postgresql.org/patch/5238/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAECtzeXXuMkw-RVGTWvHGOJsmFdsRY+jK0ndQa80sw46y2uvVQ@mail.gmail.com"
+      ],
+      "authors": "Guillaume Lelarge (gleu)",
+      "objectors": "",
+      "summary": "Add parallel columns for seq scan and index scan on pg_stat_all_tables and _indexes\nThreads: Add parallel columns for seq scan and index scan on\npg_stat_all_tables and _indexes",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "partial HOT updates indexed columns"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:4531",
+      "kind": "cf",
+      "title": "Change tuple table slot for Unique node to \"virtual\"",
+      "status": "Withdrawn",
+      "date": "2024-03-28",
+      "first_date": "2023-08-30",
+      "url": "https://commitfest.postgresql.org/patch/4531/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/388BA879-CAEC-4930-A4EE-F06DC1F12C96@gmail.com"
+      ],
+      "authors": "Denis Smirnov (darthunix)",
+      "objectors": "",
+      "summary": "Change tuple table slot for Unique node to \"virtual\"\nThreads: Use virtual tuple slot for Unique node",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "infomask2 bit tuple format change"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "revert:099ca50bd41c1a72fe5a086bb095858ea74c88de",
+      "kind": "revert",
+      "title": "Revert \"Fix parallel-safety check of expressions and predicate for index builds\"",
+      "status": "Reverted",
+      "date": "2024-03-06",
+      "first_date": "2024-03-06",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=099ca50bd41c1a72fe5a086bb095858ea74c88de",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/162802.1709746091@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CAHewXN=UaAaNn9ruHDH3Os8kxLVmtWqbssnf=dZN_s9=evHUFA@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Fix parallel-safety check of expressions and predicate for index builds\"\nReverted commit(s): Fix parallel-safety check of expressions and predicate for index builds",
+      "objection": "This reverts commit eae7be600be7, following a discussion with Tom Lane,\ndue to concerns that this impacts the decisions made by the planner for\nthe number of workers spawned based on the inlining and const-folding of\nindex expressions and predicate for cases that would have worked until\nthis commit.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "HOT updates expression indexes"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "revert:20d3fe9009ddbbbb3da3a2da298f922054b43f8c",
+      "kind": "revert",
+      "title": "In INSERT/UPDATE, use the table's real tuple descriptor as target.",
+      "status": "Partially reverted",
+      "date": "2020-10-26",
+      "first_date": "2020-10-25",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=20d3fe9009ddbbbb3da3a2da298f922054b43f8c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/16644-5da7ef98a7ac4545@postgresql.org"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "In INSERT/UPDATE, use the table's real tuple descriptor as target.\nReverted commit(s): Fix corner case for a BEFORE ROW UPDATE trigger returning OLD.",
+      "objection": "Previously, ExecInitModifyTable relied on ExecInitJunkFilter,\nand thence ExecCleanTypeFromTL, to build the target descriptor from\nthe query tlist.  While we just checked (in ExecCheckPlanOutput)\nthat the tlist produces compatible output, this is not a great\nsubstitute for the relation's actual tuple descriptor that's\navailable from the relcache.  For one thing, dropped columns will\nnot be correctly marked attisdropped; it's a bit surprising that\nwe've gotten away with that this long.  But the real reason for\nbeing concerned with this is that using the table's descriptor means\nthat the slot will have correct attrmissing data, allowing us to\nrevert the klugy fix of commit ba9f18abd.  (This commit undoes\nthat one's changes in trigger.c, but keeps the new test case.)\nThus we can solve the bogus-trigger-tuple problem with fewer cycles\nrather than more.\n\nNo back-patch, since this doesn't fix any additional bug, and it\nseems somewhat more likely to have unforeseen side effects than\nba9f18abd's narrow fix.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "infomask2 bit tuple format change"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:4200",
+      "kind": "cf",
+      "title": "pg_upgrade data type check connection overhead reduction",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2023-02-17",
+      "url": "https://commitfest.postgresql.org/patch/4200/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/BBB4C76F-D416-4F9F-949E-DBE950D37787@yesql.se"
+      ],
+      "authors": "Daniel Gustafsson (d_gustafsson)",
+      "objectors": "",
+      "summary": "pg_upgrade data type check connection overhead reduction\nThreads: Reducing connection overhead in pg_upgrade compat check phase",
+      "objection": "",
+      "touch_points": [
+        "on-disk format / pg_upgrade"
+      ],
+      "matched_queries": [
+        "WARM write amplification reduction"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:4180",
+      "kind": "cf",
+      "title": "Support SK_SEARCHNULL / SK_SEARCHNOTNULL for heap-only scans",
+      "status": "Returned with feedback",
+      "date": "2023-12-02",
+      "first_date": "2023-02-13",
+      "url": "https://commitfest.postgresql.org/patch/4180/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJ7c6TPKeh7UwEN9ORqP_dmR8uxiFhxT8Pecq01zw1HKpTBMBg@mail.gmail.com"
+      ],
+      "authors": "Aleksander Alekseev (a.alekseev), Jacob Champion (jchampion)",
+      "objectors": "",
+      "summary": "Support SK_SEARCHNULL / SK_SEARCHNOTNULL for heap-only scans\nThreads: [PATCH] Support SK_SEARCHNULL / SK_SEARCHNOTNULL for heap-only scans",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "index entries pointing heap only tuple"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:738",
+      "kind": "cf",
+      "title": "Index Only Scan for index expressions",
+      "status": "Returned with feedback",
+      "date": "2016-09-28",
+      "first_date": "2016-08-15",
+      "url": "https://commitfest.postgresql.org/patch/738/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/57B23C4F.7000304@postgrespro.ru"
+      ],
+      "authors": "Ildar Musin (i.musin)",
+      "objectors": "",
+      "summary": "Index Only Scan for index expressions\nThreads: Index Onlys Scan for expressions",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "HOT updates expression indexes"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:3657",
+      "kind": "cf",
+      "title": "Fix the statistics gathering in case of commit and chain",
+      "status": "Returned with feedback",
+      "date": "2022-10-06",
+      "first_date": "2021-07-09",
+      "url": "https://commitfest.postgresql.org/patch/3657/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB_COditjdhpZ4j=mZ3YG-uG=bqNtXWcBSAkwEJu3cX1X5myOA@mail.gmail.com"
+      ],
+      "authors": "Lætitia AVROT (arkhena)",
+      "objectors": "",
+      "summary": "Fix the statistics gathering in case of commit and chain\nThreads: Statistics updates is delayed when using `commit and chain`",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "bitmap scan false negative HOT chain"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "revert:e9a31c0cc604b015363d0aa5b018e8cea9d1d9a7",
+      "kind": "revert",
+      "title": "Revert logical snapshot filename format change in SnapBuildSnapshotExists().",
+      "status": "Reverted",
+      "date": "2025-08-14",
+      "first_date": "2025-07-07",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e9a31c0cc604b015363d0aa5b018e8cea9d1d9a7",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHGQGwHuHPB-ucAk_Tq3uSs4Fdziu1Jp_AA_RD3m5Ycky7m48w@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/ME0P300MB0445CA53CA0E4B8C1879AF84B641A@ME0P300MB0445.AUSP300.PROD.OUTLOOK.COM"
+      ],
+      "authors": "Álvaro Herrera",
+      "objectors": "",
+      "summary": "Revert logical snapshot filename format change in SnapBuildSnapshotExists().\nReverted commit(s): Standardize LSN formatting by zero padding",
+      "objection": "Commit 2633dae2e48 standardized LSN formatting but mistakenly changed\nthe logical snapshot filename format in SnapBuildSnapshotExists() from\n\"%X-%X.snap\" to \"%08X-%08X.snap\". Other code still used the original\n\"%X-%X.snap\" format, causing the replication slot synchronization worker\nto fail to find existing snapshot files and produce excessive log messages.\n\nThis commit restores the original \"%X-%X.snap\" format\nin SnapBuildSnapshotExists() to resolve the issue.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "infomask2 bit tuple format change"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 6,
+    "new_calls": 2,
+    "failed": 0,
+    "quotes_verified": 2,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 4
+  },
+  "precedent_cutoff": "2026-06-30",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 2,
+      "note": "P1 (BRIN HOT revert) and P14 (local_update_limit) share the area, but their recorded reasons do not apply to this design."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 4,
+      "note": "Objections were found from the standards and compatibility angle."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 4,
+      "note": "Objections were found, so no note is needed. WAL replay on standbys and logical apply gating were reviewed, and the material addresses them well enough for this angle."
+    },
+    {
+      "angle": "security",
+      "objections": 1,
+      "note": "The core heap and index design does not change who can see which rows, because the staleness test only filters entries. pageinspect and pg_surgery stay superuser tools, and the new counters fit existing pg_stat views."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 4,
+      "note": "Objections were found."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing Postgres feature, setting or documented idiom skips maintenance of unchanged indexes when an indexed column changes. fillfactor and dropping indexes do not do this, and the closest workaround, a separate table access method, is a different storage engine rather than a modest-effort alternative. The feature changes the heap tuple format, heap_update, prune and tidbitmap.c, so no extension or hook can deliver it outside core. Earlier attempts at the same idea ([P12], [P3]) are prior designs, not existing features, and other angles cover them."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "Write amplification from non-HOT updates is a long-standing problem, and the material shows lasting interest across several designs. The objections ask for the size of the group helped and for the cost to non-users, not for proof that the problem exists."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 9,
+      "new_objections": 17,
+      "new_survived": 12,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [
+    "invariants/nbtree.md"
+  ],
+  "warnings": [
+    "CommitFest entry has 2 threads; only the earliest is read (https://www.postgresql.org/message-id/flat/af02b486-6adc-494c-a357-1dd72f655dcf%40app.fastmail.com). Others: https://www.postgresql.org/message-id/flat/3604ec98-147d-4ba5-b215-412fa2797633%40app.fastmail.com",
+    "attachment limit (8) reached; v63-0009-Gate-HOT-indexed-updates-on-the-logical-replicat.patch not read",
+    "attachment limit (8) reached; v63-0010-DO-NOT-MERGE-Add-a-HOT-SIU-benchmark-harness.patch not read",
+    "attachment limit (8) reached; v48-0001-Add-tests-to-cover-a-variety-of-heap-HOT-update-.patch not read",
+    "attachment limit (8) reached; v48-0002-Identify-modified-indexed-attributes-in-the-exec.patch not read",
+    "attachment limit (8) reached; v48-0003-Add-the-HOT-indexed-on-disk-format-inline-attr-b.patch not read",
+    "attachment limit (8) reached; v48-0004-Add-HOT-indexed-updates-selective-index-maintena.patch not read",
+    "attachment limit (8) reached; v48-0005-Collapse-dead-HOT-indexed-chains-to-xid-free-stu.patch not read",
+    "attachment limit (8) reached; v48-0006-Teach-amcheck-to-recognize-HOT-indexed-chains-an.patch not read",
+    "attachment limit (8) reached; v48-0007-Add-HOT-indexed-statistics-and-the-comprehensive.patch not read",
+    "attachment limit (8) reached; v48-0008-Gate-HOT-indexed-updates-on-the-logical-replicat.patch not read",
+    "attachment limit (8) reached; v48-0009-DO-NOT-MERGE-Add-a-HOT-SIU-benchmark-harness.patch not read"
+  ],
+  "tone_lint": {
+    "fields_checked": 144,
+    "hits_found": 2,
+    "sentences_rewritten": 2,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 15,
+    "wall_ms": 273113,
+    "cost_usd": 6.7197346,
+    "dry_run": false
+  }
+}

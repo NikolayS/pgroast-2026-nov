@@ -1,0 +1,1628 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:26:21.997Z",
+  "input": {
+    "arg": "7188",
+    "cf": {
+      "id": 7188,
+      "url": "https://commitfest.postgresql.org/patch/7188/",
+      "title": "Logical replication row filter loses unchanged toasted columns",
+      "status": "Needs review",
+      "authors": "Zhijie Hou (houzj)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAOzEurQaGBrDu8hFw%2Bp16_uf_%2Bb94A276fYgzwUOK5X-bSX%2Bjg%40mail.gmail.com",
+    "subject": "Logical replication row filter loses unchanged toasted columns",
+    "thread_start": "2026-08-12T03:22:33Z",
+    "messages_read": 41,
+    "messages_total": 41,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "0001-Refuse-a-logical-replication-INSERT-that-is-m-master.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "The proposal fixes reproducible silent data loss in a released feature, and no surviving objection disputes the goal or the logging approach on master. The surviving objections are fixable design points, and most concern back-patching: the wider PANIC path (replication-ondisk-1), the PublicationDesc change (maintenance-fit-2) and the changed old-key tuple content (standards-compat-1). A committer who knows heap WAL logging and logical decoding has to decide those. Confidence is medium because the material shows no patch prose for v3 to v6.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Log unchanged out-of-line columns when a row filter turns an update into an insert",
+    "problem": "When a publication row filter turns an UPDATE into an INSERT, an unchanged out-of-line column outside the replica identity reaches the subscriber as NULL. On a NOT NULL column the apply worker fails with a constraint violation instead. The bug affects logical replication users on 15 and later who use row filters.",
+    "proposed_design": "The current patch (v6) changes heap_update() to add unchanged out-of-line values outside the replica identity to the logged old tuple. This happens only when a publication has a row filter for UPDATE and the update changes the replica identity key. pgoutput's existing copy loop then finds the values and sends a complete INSERT.",
+    "user_visible_surface": [
+      "UPDATE WAL records for row-filtered tables can carry unchanged out-of-line values outside the replica identity in the old tuple, which increases WAL volume.",
+      "New documented limit: an UPDATE or DELETE fails if the logged old row image exceeds about 1 GB, covering REPLICA IDENTITY FULL and this new case.",
+      "New PublicationDesc field rf_exists_for_update and a new relcache accessor, RelationHasPubRowFilterForUpdate().",
+      "ExtractReplicaIdentity() is renamed BuildOldKeyTuple() and also collects unchanged out-of-line columns."
+    ],
+    "author_claims": [
+      "The bug exists since row filters were added in commit 52e4f0cd472 and affects 15 and later.",
+      "Extra WAL is written only in a narrow case: row filter present, key changed, and old tuple holds external values.",
+      "The fix needs no change to the output plugin, the protocol or the subscriber.",
+      "The fix adds no WAL record type and keeps the WAL format, so Sawada argues it can be back-patched.",
+      "Hou found no extensions that depend on the size of PublicationDesc, so he argues the ABI change is safe to back-patch."
+    ],
+    "thread_state": "Amit, Sawada, Kuroda, Shinya and vignesh agreed on the logging approach and moved the 1 GB limit, the concurrent ALTER PUBLICATION race and the XLogRecordMaxSize PANIC to separate threads. The last message (2026-09-08) proposes new documentation wording, and v6 has not been revised since.",
+    "unclear": [
+      "The material shows patch prose only for Nikhil's subscriber-side patch, not for v3 to v6, which hold the current design.",
+      "The thread does not say whether the subscriber-side apply_handle_insert() check is still planned, either for back branches or as a guard against older publishers.",
+      "No branch list for back-patching v6 is given, and nobody says how the ABI and function-signature changes are handled there.",
+      "Nobody posted performance or WAL volume numbers for the narrow case.",
+      "Matthias objected that publication state should not reach into heap_update(), and nobody answered for decoders that do not use publications."
+    ],
+    "search_queries": [
+      "row filter unchanged toast column",
+      "logical replication toasted column null",
+      "update transformed into insert row filter",
+      "log unchanged toast values WAL",
+      "replica identity include columns",
+      "REPLICA IDENTITY FULL WAL overhead",
+      "publication row filter replica identity",
+      "logical decoding unchanged toast datum"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "New path extends the XLogRecordMaxSize PANIC to tables without REPLICA IDENTITY FULL",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A table with the default replica identity is in a row-filtered publication. A user changes the key of a row whose unchanged toasted columns total about 1021 MB. The flattened old tuple fits MaxAllocSize but exceeds XLogRecordMaxSize, XLogInsert() fails inside the critical section, and the whole server restarts.",
+      "argument": "Message #36 shows that this size window PANICs today with REPLICA IDENTITY FULL, a setting the user chose. v6 sends the same flattening path to tables whose owners never chose FULL, only because some publication has a row filter. The PANIC fix moved to a separate HEAD-only thread (messages #35, #36), so v6 widens the exposure, and on back branches it would do so with no fix in sight.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        33,
+        35,
+        36
+      ],
+      "author_must_show": "Does v6 check the old-key size against XLogRecordMaxSize before the critical section, so this case raises an ERROR instead of a PANIC?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 33,
+          "from": "Amit Kapila",
+          "date": "2026-09-01T11:55:29Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1%2BTx4D%2BkN15AH2%3DvHVGNtdtU%2BP7oFuvk4TXEvwRGA0xbw%40mail.gmail.com"
+        },
+        {
+          "index": 35,
+          "from": "Masahiko Sawada",
+          "date": "2026-09-02T00:35:03Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoDEunP%2BdNNRYeKuE4RR5nzw0P43Mceybu4zDrxZoNxDtQ%40mail.gmail.com"
+        },
+        {
+          "index": 36,
+          "from": "Amit Kapila",
+          "date": "2026-09-02T04:03:39Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1J1mBaAgnmycYT3-fk%3D8q2E6QOb__Df5yRtA-YLSN1pJA%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #36 reproduces the PANIC with REPLICA IDENTITY FULL, and v6 uses the same flattening for row-filtered tables. The thread moved the fix to a separate HEAD-only effort and does not say that v6 checks the size before the critical section.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Back-patching changes an exposed struct and a function name",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An extension built against 15.x declares PublicationDesc on the stack and calls RelationBuildPublicationDesc(). After a minor upgrade, the new backend writes rf_exists_for_update past the end of the smaller struct and corrupts the extension's stack. Users find out from crashes or wrong values after a routine update.",
+      "argument": "Amit described this exact out-of-bounds write in message #14. Placing the field last (message #24) keeps the existing offsets but does not prevent that write. The only evidence of safety is a GitHub and Debian code search (message #18), which cannot see private extensions. v6 also renames ExtractReplicaIdentity() to BuildOldKeyTuple(), and no branch list or back-branch variant of v3 to v6 is in the material.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        14,
+        18,
+        24
+      ],
+      "author_must_show": "Which branches get v6, and does the back-branch version leave PublicationDesc and existing function names untouched?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 14,
+          "from": "Amit Kapila",
+          "date": "2026-08-17T05:52:04Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1%2BEFf7k2cKuzhLd6mq%3DFb2qRKR6YZ59k0cytYwwU5z1vA%40mail.gmail.com"
+        },
+        {
+          "index": 18,
+          "from": "\"Zhijie Hou (Fujitsu)\"",
+          "date": "2026-08-17T15:28:04Z",
+          "url": "https://www.postgresql.org/message-id/TY4PR01MB17718D001102126DA402F622994A72%40TY4PR01MB17718.jpnprd01.prod.outlook.com"
+        },
+        {
+          "index": 24,
+          "from": "Amit Kapila",
+          "date": "2026-08-20T09:30:56Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1LMLnZsZLEoHFDQODqUzECj-UUm74nMt0tKDZCJ0pWy3g%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Amit described the out-of-bounds stack write in message #14, and a public code search cannot rule it out. The rename must not be used as support, because ExtractReplicaIdentity() is a static function in heapam.c.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Back-patched old-key tuples change what existing decoders emit",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "wal_replication",
+        "wire_protocol"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A table is in a row-filtered publication and is also decoded by test_decoding, wal2json or a CDC tool that reads pgoutput. After a minor upgrade, an UPDATE that changes the key logs the unchanged large column in the old tuple. Those consumers start emitting a full multi-MiB value in their 'old key' or 'before' image, and nothing in the release says why.",
+      "argument": "Message #25 makes BuildOldKeyTuple() put non-replica-identity columns into the old-key tuple, but pgoutput still flags it 'K'. The claim of no protocol change covers message format only, and the content of a key tuple is part of the contract that consumers depend on. Decoders that do not use publications receive this extra data without gaining anything from it, a side of Matthias's message #10 that the thread did not answer. Nobody in the thread checked what test_decoding or pgoutput's 'K' tuple now carries.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        10,
+        21,
+        25
+      ],
+      "author_must_show": "What do test_decoding, pgoutput 'K' tuples and third-party plugins emit for the old key after v6, and why is that acceptable in a minor release?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 10,
+          "from": "Matthias van de Meent",
+          "date": "2026-08-13T19:23:50Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WjBem2Lbh%3Dizi8SaPMCqJG5uozMC-rkM0E4HPGEJaogxQ%40mail.gmail.com"
+        },
+        {
+          "index": 21,
+          "from": "Masahiko Sawada",
+          "date": "2026-08-19T23:23:53Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoBE2kS%3DL%3DV7zoWF7Qs39aRSKm%2BzbLoETVRt6mofWZOBzA%40mail.gmail.com"
+        },
+        {
+          "index": 25,
+          "from": "\"Zhijie Hou (Fujitsu)\"",
+          "date": "2026-08-20T15:56:43Z",
+          "url": "https://www.postgresql.org/message-id/TY4PR01MB1771882DEFAD86486CB2C700F94A42%40TY4PR01MB17718.jpnprd01.prod.outlook.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "v6 puts non-identity values into the old-key tuple, and every output plugin sees that tuple. The thread does not say what test_decoding or pgoutput then emit, and Matthias's point in message #10 has no answer.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Dropping the subscriber-side check leaves silent NULLs across versions and races",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A patched subscriber replicates from an unpatched publisher, or from a patched one where ALTER PUBLICATION ... ADD TABLE ... WHERE commits during the UPDATE (message #34). The transformed INSERT still arrives with the column marked unchanged, and the subscriber stores NULL without any error.",
+      "argument": "Message #13 argued that the apply-time check is needed on master even with a publisher-side fix, because subscribers receive changes from older publishers. Message #34 shows a race in which v6 still loses the value, and that race moved to a separate thread. The thread does not say whether the check in apply_handle_insert() is still planned.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        6,
+        13,
+        34,
+        37,
+        38
+      ],
+      "author_must_show": "Will the check in apply_handle_insert() go in with v6, so that cases v6 cannot cover fail loudly on the subscriber?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 6,
+          "from": "Nikhil Sontakke",
+          "date": "2026-08-13T07:42:10Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BUBoq0jv0BafwSFYDd680SxEwGYUTSjrPW0iQyZdqKFfRZokw%40mail.gmail.com"
+        },
+        {
+          "index": 13,
+          "from": "Shinya Kato",
+          "date": "2026-08-15T08:32:15Z",
+          "url": "https://www.postgresql.org/message-id/CAOzEurQ41MNd39No%3Dy-JNkz1viNS7SziQ09M_ag7ajZ-KOjw5A%40mail.gmail.com"
+        },
+        {
+          "index": 34,
+          "from": "vignesh C",
+          "date": "2026-09-01T13:43:42Z",
+          "url": "https://www.postgresql.org/message-id/CALDaNm2MF18JPUz_rwMzbgeqy1PUwxVKwEU8E1cWPObq-yqxrg%40mail.gmail.com"
+        },
+        {
+          "index": 37,
+          "from": "vignesh C",
+          "date": "2026-09-02T06:10:34Z",
+          "url": "https://www.postgresql.org/message-id/CALDaNm2_ViEtbt8c_iPg3wXg773PLX4em-fOEfhkgdUFkjF53A%40mail.gmail.com"
+        },
+        {
+          "index": 38,
+          "from": "Amit Kapila",
+          "date": "2026-09-02T10:31:58Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1KQysGW-f_%3D-E_2WFvPVZL_X7E1DY6W_J679qHrtA9e6Q%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-4",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #13 gave the older-publisher case as the reason to keep the apply-time check, and nothing after message #21 says whether it stays. The race in message #34 went to another thread, but the cross-version case does not depend on it.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No measurements of extra WAL in a minor-release change",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "wal_replication",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site with a row-filtered table of large documents updates keys often, and most rows never enter the filter. After a minor upgrade, each such UPDATE detoasts and logs every unchanged out-of-line value. WAL volume, archive storage and replication lag grow without any configuration change, and the cause is hard to find.",
+      "argument": "The trigger cannot tell whether the filter result changes between the old and new row, so extra logging happens even when no transformation follows (message #22). Message #3 called this kind of WAL regression a reason not to back-patch option B. Message #14 promised performance tests, but no WAL or CPU numbers appear in the thread. The cost falls only on row-filter users, which lowers the concern for master but not for a minor release.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        14,
+        22
+      ],
+      "author_must_show": "What extra WAL and CPU does v6 add for key-changing updates on a row-filtered table with large out-of-line columns, measured where most updates do not cross the filter?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Nikhil Sontakke",
+          "date": "2026-08-12T11:02:34Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BUBoq0bj_b1QXeqTGXqdD9Tw1mvCxaxcBs4makOO%3DuLaOJobg%40mail.gmail.com"
+        },
+        {
+          "index": 14,
+          "from": "Amit Kapila",
+          "date": "2026-08-17T05:52:04Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1%2BEFf7k2cKuzhLd6mq%3DFb2qRKR6YZ59k0cytYwwU5z1vA%40mail.gmail.com"
+        },
+        {
+          "index": 22,
+          "from": "Amit Kapila",
+          "date": "2026-08-20T05:54:54Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1LrrgE5AbHcRPSSK49D-K2jAbc930KzveQH%3Db_1Ls0Fgw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #14 promised performance tests and message #22 named the false-positive cost, but the thread has no WAL or CPU numbers. The cost falls only on row-filter users, which lowers the concern for master but does not settle a back-patch.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [
+    {
+      "title": "Minor release makes some UPDATEs fail that worked before",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user on 15 with a row-filtered publication applies the minor release. An UPDATE that changes the key of a row holding more than 1 GiB of out-of-line data now fails with \"invalid memory alloc request size\". It succeeded before the upgrade, and the user finds out when production statements start erroring.",
+      "argument": "Message #31 shows this failure appearing only when the row-filtered publication exists. Message #36 accepts it as a documented limitation shared with REPLICA IDENTITY FULL, but users of REPLICA IDENTITY FULL chose that setting, and these users did not. Message #36 also puts the near-1 GiB XLogRecordMaxSize PANIC on this same path and defers it to another thread, so v6 widens that exposure on back branches. Message #20 objected to new UPDATE failures in minor releases.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        20,
+        31,
+        35,
+        36
+      ],
+      "author_must_show": "Will v6 be back-patched before the XLogRecordMaxSize PANIC fix lands, and how are existing users with very wide rows told about the new failure?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 20,
+          "from": "Shinya Kato",
+          "date": "2026-08-18T05:10:18Z",
+          "url": "https://www.postgresql.org/message-id/CAOzEurTjhUxx04NHvDbW%2BOwzMa%2BBfWUPO%2BCBUjJ_uzTOXSa33w%40mail.gmail.com"
+        },
+        {
+          "index": 31,
+          "from": "vignesh C",
+          "date": "2026-09-01T06:06:04Z",
+          "url": "https://www.postgresql.org/message-id/CALDaNm1841L9w9By0OBHBZsqV%3Dio63XG3nOdNKrRtQ818BwkGg%40mail.gmail.com"
+        },
+        {
+          "index": 35,
+          "from": "Masahiko Sawada",
+          "date": "2026-09-02T00:35:03Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoDEunP%2BdNNRYeKuE4RR5nzw0P43Mceybu4zDrxZoNxDtQ%40mail.gmail.com"
+        },
+        {
+          "index": 36,
+          "from": "Amit Kapila",
+          "date": "2026-09-02T04:03:39Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1J1mBaAgnmycYT3-fk%3D8q2E6QOb__Df5yRtA-YLSN1pJA%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #33 and #36 accept the 1 GB limit as a documented limitation, but they do not discuss it as a new failure in a minor release. The PANIC part belongs to replication-ondisk-1.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    },
+    {
+      "title": "Heap WAL content now depends on publication row filters",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "wal_replication",
+        "abi_extension_api",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A CDC user decodes with an output plugin that filters rows itself and does not use publications. That plugin still gets unchanged out-of-line values as missing pointers. Later, the INCLUDE-style replica identity of messages #7 and #22 lands, and heap_update() carries two mechanisms for one job, one of them tied to pg_publication.",
+      "argument": "v6 makes heap_update() consult publication state through a new relcache accessor, so a layer below decoding now knows about one output plugin's catalog. Matthias objected in message #10 that this breaks layering and does nothing for decoders that do not use publications. Nobody in the thread answered that point. Message #22 already names INCLUDE-style logging as the likely general mechanism, so this special case may be superseded but still has to be kept in every branch it reaches.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        7,
+        10,
+        22
+      ],
+      "author_must_show": "Why should heap_update() read publication catalogs rather than a relation-level setting that any decoder can use, and how does v6 relate to the planned INCLUDE-style replica identity?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 7,
+          "from": "Amit Kapila",
+          "date": "2026-08-13T11:38:47Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1JqUQQOKHaC8%2BgsFZq-W_yb6rhG__ruHozFTx9AApvgAQ%40mail.gmail.com"
+        },
+        {
+          "index": 10,
+          "from": "Matthias van de Meent",
+          "date": "2026-08-13T19:23:50Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WjBem2Lbh%3Dizi8SaPMCqJG5uozMC-rkM0E4HPGEJaogxQ%40mail.gmail.com"
+        },
+        {
+          "index": 22,
+          "from": "Amit Kapila",
+          "date": "2026-08-20T05:54:54Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1LrrgE5AbHcRPSSK49D-K2jAbc930KzveQH%3Db_1Ls0Fgw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Nobody answered Matthias's layering point (messages #10, #16) for decoders that do not use publications. The failure scenario is weak, since those decoders lose nothing they have today, but the relation to INCLUDE-style logging is an open design question.",
+        "original_severity": null
+      },
+      "not_ranked_reason": "not among the strongest objections"
+    }
+  ],
+  "refuted": [
+    {
+      "title": "Newer subscribers still store NULL silently from unpatched publishers",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "wal_replication",
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user replicates from an older publisher that lacks the fix into a newer subscriber, for example during a version upgrade. The transformed INSERT arrives with an unchanged-column marker, and the subscriber still stores NULL. The user discovers the missing data only when an application reads it.",
+      "argument": "Message #13 argued the apply-time check in apply_handle_insert() is needed on all branches even after a publisher-side fix, because subscribers replicate from older publishers. Messages #21 to #41 move to the publisher-side fix and do not say whether Nikhil's check (message #6) stays. A publisher-side fix cannot protect a subscriber from a publisher that does not have it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        6,
+        13,
+        21
+      ],
+      "author_must_show": "Will the subscriber-side apply_handle_insert() check go in alongside v6, so that an INSERT with an unchanged column is refused instead of stored as NULL?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 6,
+          "from": "Nikhil Sontakke",
+          "date": "2026-08-13T07:42:10Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BUBoq0jv0BafwSFYDd680SxEwGYUTSjrPW0iQyZdqKFfRZokw%40mail.gmail.com"
+        },
+        {
+          "index": 13,
+          "from": "Shinya Kato",
+          "date": "2026-08-15T08:32:15Z",
+          "url": "https://www.postgresql.org/message-id/CAOzEurQ41MNd39No%3Dy-JNkz1viNS7SziQ09M_ag7ajZ-KOjw5A%40mail.gmail.com"
+        },
+        {
+          "index": 21,
+          "from": "Masahiko Sawada",
+          "date": "2026-08-19T23:23:53Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoBE2kS%3DL%3DV7zoWF7Qs39aRSKm%2BzbLoETVRt6mofWZOBzA%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-4, which also covers the concurrent ALTER PUBLICATION case.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Back-patching changes WAL content, WAL volume and failure modes in a minor release",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "backpatchability",
+      "touch_points": [
+        "backpatchability",
+        "wal_replication",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "After a minor update, an UPDATE that changes the key on a row-filtered table with more than 1 GB of toasted data fails, where it succeeded the day before. Other sites see WAL and replication lag grow with no configuration change.",
+      "argument": "Message #21 argues for back-patching because the WAL format does not change. The record contents and size do change, and messages #3 and #4 gave that as the reason a back-patch was not acceptable. v6 also adds a PublicationDesc field and a new failure documented in message #41. The thread gives no branch list and no WAL volume numbers.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3,
+        4,
+        14,
+        21,
+        24,
+        41
+      ],
+      "author_must_show": "Which branches would get v6, and what WAL volume numbers support adding extra WAL and a new UPDATE failure in a minor release?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Nikhil Sontakke",
+          "date": "2026-08-12T11:02:34Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BUBoq0bj_b1QXeqTGXqdD9Tw1mvCxaxcBs4makOO%3DuLaOJobg%40mail.gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "Nikhil Sontakke",
+          "date": "2026-08-12T12:56:09Z",
+          "url": "https://www.postgresql.org/message-id/CA%2BUBoq14JpCzk0pQuc9Tb1YArmNG_-dL31zmrNhgLcn46iVNnQ%40mail.gmail.com"
+        },
+        {
+          "index": 14,
+          "from": "Amit Kapila",
+          "date": "2026-08-17T05:52:04Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1%2BEFf7k2cKuzhLd6mq%3DFb2qRKR6YZ59k0cytYwwU5z1vA%40mail.gmail.com"
+        },
+        {
+          "index": 21,
+          "from": "Masahiko Sawada",
+          "date": "2026-08-19T23:23:53Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoBE2kS%3DL%3DV7zoWF7Qs39aRSKm%2BzbLoETVRt6mofWZOBzA%40mail.gmail.com"
+        },
+        {
+          "index": 24,
+          "from": "Amit Kapila",
+          "date": "2026-08-20T09:30:56Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1LMLnZsZLEoHFDQODqUzECj-UUm74nMt0tKDZCJ0pWy3g%40mail.gmail.com"
+        },
+        {
+          "index": 41,
+          "from": "\"Zhijie Hou (Fujitsu)\"",
+          "date": "2026-09-08T03:45:38Z",
+          "url": "https://www.postgresql.org/message-id/TY4PR01MB177185DD031A7705FC6C0FA8F94B12%40TY4PR01MB17718.jpnprd01.prod.outlook.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-2 (new failure), maintenance-fit-2 (struct change) and maintenance-fit-3 (WAL volume). Messages #3 and #4 are about the wider option B, so they do not support the objection against v6's narrower condition.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Old-key tuple now carries non-identity columns for every logical decoder",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication",
+        "abi_extension_api"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A CDC tool decodes the same database through its own plugin, which does not use publications. After the patch, the old key of a key-changing UPDATE includes a large non-identity text column. A consumer that builds its match condition from the non-null old-key columns then fails to match the row, or sends the full value downstream.",
+      "argument": "Today a non-FULL old-key tuple holds only replica identity columns, and plugins may rely on that. v6 decides what goes into it from publication state, which Matthias raised in message #10 as reaching across the decoding layer, and nobody answered. The proposal does not say how a decoder can tell an identity column from an added non-identity column, or how test_decoding output changes.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        10,
+        16
+      ],
+      "author_must_show": "How does a decoder that does not use publications distinguish replica identity columns from the added non-identity columns in the old-key tuple?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 10,
+          "from": "Matthias van de Meent",
+          "date": "2026-08-13T19:23:50Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2WjBem2Lbh%3Dizi8SaPMCqJG5uozMC-rkM0E4HPGEJaogxQ%40mail.gmail.com"
+        },
+        {
+          "index": 16,
+          "from": "Matthias van de Meent",
+          "date": "2026-08-17T12:15:22Z",
+          "url": "https://www.postgresql.org/message-id/CAEze2Wg6fQo1fqr4oFTe6d_q8shPhOdHrvjsKaz7gB4zS%2B3T6A%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-3",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1. The row-match failure it adds is not tied to any named plugin.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "New logging path widens a PANIC reachable by any user with UPDATE",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges",
+        "backpatchability",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A role with only UPDATE privilege on a row-filtered table changes the key of a row whose unchanged out-of-line columns add up to slightly under 1 GB. The flattened old tuple passes the allocation but exceeds XLogRecordMaxSize inside the critical section, so the server PANICs. Every session is cut off, and the DBA finds out from the crash restart.",
+      "argument": "Message #36 shows this PANIC on REPLICA IDENTITY FULL, a setting the table owner chose. v6 adds a second route to it on tables that have only a row filter and a primary key. Message #36 leaves the size problem to a later HEAD-only thread, and message #35 says the crash should be fixed in any case. If v6 is back-patched as message #21 proposes, minor releases gain a new route to this crash before any fix lands.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        21,
+        35,
+        36,
+        39
+      ],
+      "author_must_show": "Can v6 check the old-key tuple size before the critical section and raise an ERROR, so that the new path cannot PANIC on any branch it reaches?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 21,
+          "from": "Masahiko Sawada",
+          "date": "2026-08-19T23:23:53Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoBE2kS%3DL%3DV7zoWF7Qs39aRSKm%2BzbLoETVRt6mofWZOBzA%40mail.gmail.com"
+        },
+        {
+          "index": 35,
+          "from": "Masahiko Sawada",
+          "date": "2026-09-02T00:35:03Z",
+          "url": "https://www.postgresql.org/message-id/CAD21AoDEunP%2BdNNRYeKuE4RR5nzw0P43Mceybu4zDrxZoNxDtQ%40mail.gmail.com"
+        },
+        {
+          "index": 36,
+          "from": "Amit Kapila",
+          "date": "2026-09-02T04:03:39Z",
+          "url": "https://www.postgresql.org/message-id/CAA4eK1J1mBaAgnmycYT3-fk%3D8q2E6QOb__Df5yRtA-YLSN1pJA%40mail.gmail.com"
+        },
+        {
+          "index": 39,
+          "from": "vignesh C",
+          "date": "2026-09-03T10:38:38Z",
+          "url": "https://www.postgresql.org/message-id/CALDaNm0bSmQqaybnx1VXLGk_Tsk-B8Tqe5%3D4A3XrZe7BM%3DdBiA%40mail.gmail.com"
+        }
+      ],
+      "id": "security-1",
+      "angle": "security",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1. The privilege angle adds no new mechanism, because the same size window and the same critical section are involved.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "heap_update() logs unchanged out-of-line values outside the replica identity in the old tuple of UPDATE records."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": true,
+      "reason": "The message format is unchanged, but the old-key tuple that output plugins receive can now carry columns outside the replica identity."
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "PublicationDesc gains the field rf_exists_for_update, and relcache gains RelationHasPubRowFilterForUpdate()."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "A role with only UPDATE privilege on a row-filtered table can reach the XLogRecordMaxSize PANIC through the new logging path."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "The bug affects 15 and later, and the thread argues for back-patching a change to WAL content and to an exposed struct."
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "heap_update() now depends on publication row filter state, and an INCLUDE-style replica identity may later overlap with it."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Key-changing UPDATEs on row-filtered tables detoast and log unchanged out-of-line values, even when no transformation follows."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Does v6 check the old-key tuple size against XLogRecordMaxSize before the critical section, so that the new path raises an ERROR instead of a PANIC?",
+    "Which branches would get v6, and does the back-branch version leave the size of PublicationDesc unchanged?",
+    "What do test_decoding and pgoutput 'K' tuples emit for the old key after v6, and why is that acceptable in a minor release?",
+    "Will the check in apply_handle_insert() go in alongside v6, so that an INSERT from an unpatched publisher fails instead of storing NULL?",
+    "How much extra WAL and CPU does v6 add for key-changing updates on a row-filtered table when most updates do not cross the filter?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "It needs someone who knows heap WAL logging and logical decoding. Amit and Sawada take part in the thread and agreed on the logging approach.",
+    "liability": "The owner signs for a change to heap_update() WAL logging on every branch that gets it, including the wider PANIC path and the PublicationDesc change. That lasts for the life of those branches.",
+    "author_follow_up": "The patch reached v6 within a month of the report, which suggests active follow-up. No new version has appeared since the documentation proposal of 2026-09-08."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "proceed",
+    "reason": "The bug loses data silently, but only for row-filter users whose UPDATE changes the key of a row with out-of-line columns. The fix touches heap_update(), relcache and decoding. No patch prose for v6 was read, so the review cost is an estimate."
+  },
+  "self_advice": [],
+  "provisional_note": "The material has no patch prose or code for v3 to v6. The exact content of the old tuple, any size check before the critical section and the relcache invalidation of rf_exists_for_update could not be judged.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:3926",
+      "kind": "cf",
+      "title": "Use indexes on the subscriber when REPLICA IDENTITY is full on the publisher",
+      "status": "Returned with feedback",
+      "date": "2022-10-20",
+      "first_date": "2022-10-03",
+      "url": "https://commitfest.postgresql.org/patch/3926/",
+      "thread_urls": [],
+      "authors": "Onder Kalaci (onderkalaci)",
+      "objectors": "",
+      "summary": "Use indexes on the subscriber when REPLICA IDENTITY is full on the publisher",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "replica identity include columns",
+        "REPLICA IDENTITY FULL WAL overhead",
+        "publication row filter replica identity"
+      ],
+      "from_hint": false,
+      "score": 0.387,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:2044",
+      "kind": "cf",
+      "title": "propagating replica identity to partitions",
+      "status": "Returned with feedback",
+      "date": "2019-09-11",
+      "first_date": "2019-02-04",
+      "url": "https://commitfest.postgresql.org/patch/2044/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/201902041630.gpadougzab7v@alvherre.pgsql"
+      ],
+      "authors": "Álvaro Herrera (alvherre)",
+      "objectors": "",
+      "summary": "Make alter table ... replica identity on a partitioned table recurse to all partitions, and make new partitions take the parent's replica identity, mapping an index-based identity to the matching partition index. psql would also show the replica identity of partitioned tables.",
+      "objection": "The author withdrew it for lack of time, with work still left in the patch. pg_dump had to emit the replica identity only after the index exists in all partitions, and a bug reported by Dmitry Dolgov was still open. Reviewers agreed with the recursion; the author planned to resubmit for November.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "replica identity include columns",
+        "REPLICA IDENTITY FULL WAL overhead",
+        "publication row filter replica identity"
+      ],
+      "from_hint": false,
+      "score": 0.369,
+      "enriched": true,
+      "key_quote": "I've not had time to work on this issue, and there are a few remaining problems in the patch; mostly that I will need to change the way pg_dump represents the replica identity so that it is only defined when the index is dumped in all partitions rather than immediately after creating the index.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20190911174423.GA28675%40alvherre.pgsql",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:1710",
+      "kind": "cf",
+      "title": "Row filtering for logical replication",
+      "status": "Returned with feedback",
+      "date": "2018-10-02",
+      "first_date": "2018-02-28",
+      "url": "https://commitfest.postgresql.org/patch/1710/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHE3wggb715X+mK_DitLXF25B=jE6xyNCH4YOwM860JR7HarGQ@mail.gmail.com"
+      ],
+      "authors": "Euler Taveira (eulerto)",
+      "objectors": "Michael Paquier",
+      "summary": "Add an optional WHERE clause to tables in CREATE PUBLICATION so that the logical replication output plugin sends only rows matching the filter to subscribers. Initial table synchronization was not covered by the filter in this version.",
+      "objection": "The patch was waiting on the author for several months after reviewers reported bugs and open issues (restricting the filter expression to the current tuple and immutable functions, a reproducible bug in cascaded replication), and it no longer applied. It was returned with feedback for that reason, with an invitation to rebase and resubmit.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "row filter unchanged toast column",
+        "update transformed into insert row filter",
+        "publication row filter replica identity"
+      ],
+      "from_hint": false,
+      "score": 0.322,
+      "enriched": true,
+      "key_quote": "This patch has been waiting on author for a couple of months and does\nnot apply anymore, so I am marking as returned with feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20181002050315.GV11712%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:1862",
+      "kind": "cf",
+      "title": "Row filtering for logical replication",
+      "status": "Returned with feedback",
+      "date": "2019-02-03",
+      "first_date": "2018-02-28",
+      "url": "https://commitfest.postgresql.org/patch/1862/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHE3wggb715X+mK_DitLXF25B=jE6xyNCH4YOwM860JR7HarGQ@mail.gmail.com"
+      ],
+      "authors": "Euler Taveira (eulerto)",
+      "objectors": "Andres Freund",
+      "summary": "The patch adds an optional WHERE clause per table in CREATE PUBLICATION, for example `FOR TABLE departments WHERE (id > 2000 AND id <= 3000)`. The output plugin on the publisher then skips rows that do not match, but the initial table synchronization is not filtered.",
+      "objection": "Andres Freund returned the patch with feedback because the author had not posted a new version after November 2018. In that month the author said he was fixing the bug Hironobu SUZUKI reported, where ALTER PUBLICATION ... SET TABLE ... WHERE kept the old filter. Design questions were still open at the close: which functions a filter may call, and what happens to the slot and subscription when a filter fails during decoding.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "row filter unchanged toast column",
+        "update transformed into insert row filter",
+        "publication row filter replica identity"
+      ],
+      "from_hint": false,
+      "score": 0.299,
+      "enriched": true,
+      "key_quote": "As far as I can tell, the patch has not been refreshed since. So I'm marking this as returned with feedback for now.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20190203101439.26xgw5sv7vhgdcz2%40alap3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:2270",
+      "kind": "cf",
+      "title": "Row filtering for logical replication",
+      "status": "Returned with feedback",
+      "date": "2020-03-16",
+      "first_date": "2018-02-28",
+      "url": "https://commitfest.postgresql.org/patch/2270/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHE3wggb715X+mK_DitLXF25B=jE6xyNCH4YOwM860JR7HarGQ@mail.gmail.com"
+      ],
+      "authors": "Euler Taveira (eulerto)",
+      "objectors": "",
+      "summary": "The patch adds an optional WHERE clause per table to CREATE PUBLICATION, so the publisher's output plugin sends only rows that match the filter to subscribers. Initial table synchronization did not apply the filter in the first version.",
+      "objection": "Amit Langote's November 2019 review left the patch waiting on author, and no new version was posted before the last PG13 commitfest. David Steele marked it Returned with Feedback for that reason. Open points included restricting filters to catalog access, handling unlogged TOASTed attributes, recovering from filter errors under a historic snapshot, and wrong results with inheritance and updates.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "row filter unchanged toast column",
+        "update transformed into insert row filter",
+        "publication row filter replica identity"
+      ],
+      "from_hint": false,
+      "score": 0.285,
+      "enriched": true,
+      "key_quote": "I have marked this patch Returned with Feedback since no new patch has\nbeen posted.",
+      "quote_message_url": "https://www.postgresql.org/message-id/8cf1ea71-b609-00e8-b8f0-c85ba61b7312%40pgmasters.net",
+      "relevant": true
+    },
+    {
+      "id": "P6",
+      "source_id": "revert:c4762886539b06da682045e19ba73dcee3789638",
+      "kind": "revert",
+      "title": "Revert \"Fix bug in checking of IDENTIFY_SYSTEM result.\"",
+      "status": "Reverted",
+      "date": "2014-08-19",
+      "first_date": "2014-08-19",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=c4762886539b06da682045e19ba73dcee3789638",
+      "thread_urls": [],
+      "authors": "Fujii Masao",
+      "objectors": "",
+      "summary": "Revert \"Fix bug in checking of IDENTIFY_SYSTEM result.\"\nReverted commit(s): Fix bug in checking of IDENTIFY_SYSTEM result.",
+      "objection": "This reverts commit 083d29c65b7897f90c70e6dc0a4240a5fa75c8f2.\n\nThe commit changed the code so that it causes an errors when\nIDENTIFY_SYSTEM returns three columns. But which prevents us\nfrom using the replication-related utilities against the server\nwith older version. This is not what we want. For that\ncompatibility, we allow the utilities to receive three columns\nas the result of IDENTIFY_SYSTEM eventhough it actually returns\nfour columns in 9.4 or later.\n\nPointed out by Andres Freund.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "replica identity include columns",
+        "REPLICA IDENTITY FULL WAL overhead",
+        "publication row filter replica identity"
+      ],
+      "from_hint": false,
+      "score": 0.244,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:4352",
+      "kind": "cf",
+      "title": "Index-only filters without IOS",
+      "status": "Withdrawn",
+      "date": "2024-06-21",
+      "first_date": "2023-02-15",
+      "url": "https://commitfest.postgresql.org/patch/4352/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/N1xaIrU29uk5YxLyW55MGk5fz9s6V2FNtj54JRaVlFbPixD5z8sJ07Ite5CvbWwik8ZvDG07oSTN-usENLVMq2UAcizVTEd5b-o16ZGDIIU=@yamlcoder.me"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "",
+      "summary": "The patch lets a plain index scan evaluate clauses that are not index quals as \"index filters\" on the index tuple, including INCLUDE columns, before it fetches the heap tuple. Like an index-only scan, it checks the visibility map first and fetches the heap tuple for pages that are not all-visible.",
+      "objection": "The visible messages do not show why. In the last visible messages (December 2023) the author still listed open problems: the costing changes could make a worse plan, such as an index scan instead of a bitmap index scan, look cheaper; promoting clauses to index filters could reorder them against order_qual_clauses() by procost; and the index scan code still needed changes. Peter Geoghegan said he had no objections to moving ahead.",
+      "touch_points": [],
+      "matched_queries": [
+        "row filter unchanged toast column",
+        "publication row filter replica identity"
+      ],
+      "from_hint": false,
+      "score": 0.199,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:5830",
+      "kind": "cf",
+      "title": "Support for 8-byte TOAST values (aka the TOAST infinite loop problem)",
+      "status": "Returned with feedback",
+      "date": "2026-02-10",
+      "first_date": "2025-06-19",
+      "url": "https://commitfest.postgresql.org/patch/5830/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/aFOnKHG7Wn-Srnpv@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "Tom Lane",
+      "summary": "The patch set lets TOAST tables use 8-byte value IDs (a new oid8 type, a wider OID counter, a reloption and a new on-disk vartag) so that TOAST tables are no longer limited to about 4 billion values. It also adds a toast_external layer that converts on-disk external TOAST pointers to an in-memory struct through per-vartag callbacks, so that more vartags, such as for zstd, can be added later.",
+      "objection": "The toast_external layer with function pointer redirection got no support. Tom Lane questioned its run-time cost and called it overdesigned, and the author later said the design had not received a single +1. Only the oid8 data type was committed. The author then dropped the rest from the v19 cycle, planning a v20 rework without the redirections.",
+      "touch_points": [],
+      "matched_queries": [
+        "log unchanged toast values WAL"
+      ],
+      "from_hint": false,
+      "score": 0.148,
+      "enriched": true,
+      "key_quote": "Anyway, as far as things stand today on this thread, I have not been able to get even a single +1 for this design.",
+      "quote_message_url": "https://www.postgresql.org/message-id/aTn4aS32O4lmaPnj%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:5590",
+      "kind": "cf",
+      "title": "DOCS - Generated Column Logical Replication Examples",
+      "status": "Withdrawn",
+      "date": "2025-02-21",
+      "first_date": "2025-02-02",
+      "url": "https://commitfest.postgresql.org/patch/5590/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHut+Pt_7GV8eHSW4XQsC6rF13TWrz-SrGeeiV71=SE14DC4Jg@mail.gmail.com"
+      ],
+      "authors": "Peter Smith (smithpb2250)",
+      "objectors": "",
+      "summary": "The patch adds an \"Examples\" subsection to the new \"Generated Column Replication\" documentation section. The examples are self-contained publication, subscription and table setups that show subtle rules, such as publication column lists overriding publish_generated_columns.",
+      "objection": "The visible messages do not show why. Only the opening message is shown, and the entry was later withdrawn without any visible reply or objection.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical replication toasted column null"
+      ],
+      "from_hint": false,
+      "score": 0.145,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:4296",
+      "kind": "cf",
+      "title": "64-bit TOAST value ID",
+      "status": "Returned with feedback",
+      "date": "2023-09-01",
+      "first_date": "2022-11-28",
+      "url": "https://commitfest.postgresql.org/patch/4296/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAN-LCVPRvRzxeUdYdDCZ7UwZQs1NmZpqBUCd=+RdMPFTyt-bRQ@mail.gmail.com"
+      ],
+      "authors": "Nikita Malakhov (nmalakh)",
+      "objectors": "Aleksander Alekseev",
+      "summary": "The patch makes TOAST value IDs 64-bit, stored in varatt_external as two 32-bit fields, and assigns them from a counter per TOAST table, not from the global OID counter. The aim is to stop the endless loop in GetNewOidWithIndex when a TOAST table runs out of free OIDs.",
+      "objection": "The patch no longer applied by the July 2023 commitfest, and a reviewer asked for a rebased version. The author promised one, but the thread ends with no new version before the entry was closed. The author also said the patch was limited in compatibility with old TOAST pointers. A reviewer proposed making wide pointers a table option as part of a larger redesign of TOAST pointers.",
+      "touch_points": [],
+      "matched_queries": [
+        "log unchanged toast values WAL"
+      ],
+      "from_hint": false,
+      "score": 0.127,
+      "enriched": true,
+      "key_quote": "Unfortunately the patch rotted a bit. Could you please submit an updated/rebased patch so that it could be reviewed in the scope of July commitfest?",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAJ7c6TOOrR2xBUnhqNDP932-e%3DmdjWU0huuP%2B%3Dm_kN9hY-o1cA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:4142",
+      "kind": "cf",
+      "title": "Allow self-conflicting INSERT INTO .. ON CONFLICT DO UPDATEs",
+      "status": "Returned with feedback",
+      "date": "2023-03-01",
+      "first_date": "2023-01-25",
+      "url": "https://commitfest.postgresql.org/patch/4142/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJ7c6TPQJNFETz9H_qPpA3x7ybz2D1QMDtBku_iK33gT3UR34Q@mail.gmail.com"
+      ],
+      "authors": "Aleksander Alekseev (a.alekseev)",
+      "objectors": "",
+      "summary": "Allow self-conflicting INSERT INTO .. ON CONFLICT DO UPDATEs\nThreads: [PATCH] Make ON CONFLICT DO NOTHING and ON CONFLICT DO UPDATE consistent",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "update transformed into insert row filter"
+      ],
+      "from_hint": false,
+      "score": 0.126,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "revert:4f0b3afab4da87255ee159b96ba531157ee5af3b",
+      "kind": "revert",
+      "title": "Revert \"Change default value of default_toast_compression to \"lz4\"\"",
+      "status": "Reverted",
+      "date": "2026-03-04",
+      "first_date": "2026-03-04",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=4f0b3afab4da87255ee159b96ba531157ee5af3b",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOYmi+meTT0NbLbnVqOJD5OKwCtHL86PQ+RZZTrn6umfmHyWaw@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Change default value of default_toast_compression to \"lz4\"\"\nReverted commit(s): Change default value of default_toast_compression to \"lz4\", when available",
+      "objection": "This reverts commit 7c1849311e49, due to the fact that more than 60% of\nthe buildfarm members do not have lz4 installed.  As we are in the last\ncommit fest of the development cycle, and that it could take a couple\nof weeks to stabilize things, this change is reverted for now.\n\nThis commit will be reworked in a lighter version, as\ndefault_toast_compression's default can be changed to \"lz4\" without the\nswitch from --with-lz4 to --without-lz4.  This approach will keep the\nbuildfarm at bay, and still allow builds to take advantage of LZ4 in\nTOAST by default, as long as the code is compiled with LZ4 support.\n\nA harder requirement based on LZ4 should be achievable at some point,\nbut it is going to require some work from the buildfarm owners first.\nPerhaps this part could be revisited at the beginning of the next\ndevelopment cycle.",
+      "touch_points": [],
+      "matched_queries": [
+        "log unchanged toast values WAL"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:3503",
+      "kind": "cf",
+      "title": "pg_receivewal fail to streams when the partial file to write is not fully initialized present in the wal receiver directory",
+      "status": "Returned with feedback",
+      "date": "2024-01-22",
+      "first_date": "2022-01-03",
+      "url": "https://commitfest.postgresql.org/patch/3503/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHg+QDcVUss6ocOmbLbV5f4YeGLhOCt+1x2yLNfG2H_eDwU8tw@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy), SATYANARAYANA NARLAPURAM (satyanarayanan)",
+      "objectors": "",
+      "summary": "pg_receivewal fail to streams when the partial file to write is not fully initialized present in the wal receiver directory\nThreads: pg_receivewal fail to streams when the partial file to write is not\nfully initialized present in the wal receiver directory",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "REPLICA IDENTITY FULL WAL overhead"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:2699",
+      "kind": "cf",
+      "title": "Optimizing NULL check on pkey column",
+      "status": "Returned with feedback",
+      "date": "2021-09-27",
+      "first_date": "2020-08-27",
+      "url": "https://commitfest.postgresql.org/patch/2699/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALAY4q_Wazcha2f0kpd=zVh7bwfC=txF_n2XVdvmRmGCS+pWeQ@mail.gmail.com"
+      ],
+      "authors": "Surafel Temesgen (surafel)",
+      "objectors": "",
+      "summary": "Optimizing NULL check on pkey column\nThreads: Evaluate expression at planning time for two more cases",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "logical replication toasted column null"
+      ],
+      "from_hint": false,
+      "score": 0.111,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "revert:26acb54a1368bf3706294400abca85b15c9233a6",
+      "kind": "revert",
+      "title": "Revert \"Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".\"",
+      "status": "Reverted",
+      "date": "2021-03-24",
+      "first_date": "2021-03-10",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=26acb54a1368bf3706294400abca85b15c9233a6",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/E1lMiB9-0001c3-SY@gemulon.postgresql.org",
+        "https://www.postgresql.org/message-id/flat/20210318025228.GE11765@telsasoft.com",
+        "https://www.postgresql.org/message-id/flat/CAA4eK1K-cW7svLC2D7DHoGHxdAdg3P37BLgebqBOC2ZLc9a6QQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAJcOf-cXnB5cnMKqWEp2E2z7Mvcd04iLVmV=qpFJrR3AcrTS3g@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/2309260.1615485644@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CAJcOf-fAdj=nDKMsRhQzndm-O13NY4dL6xGcEvdX5Xvbbi0V7g@mail.gmail.com"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Revert \"Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".\"\nReverted commit(s): Doc: Update description for parallel insert reloption.; Add a new GUC and a reloption to enable inserts in parallel-mode.; Improve FK trigger parallel-safety check added by 05c8482f7f.; Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".; Fix use of relcache TriggerDesc field introduced by commit 05c8482f7f.",
+      "objection": "To allow inserts in parallel-mode this feature has to ensure that all the\nconstraints, triggers, etc. are parallel-safe for the partition hierarchy\nwhich is costly and we need to find a better way to do that. Additionally,\nwe could have used existing cached information in some cases like indexes,\ndomains, etc. to determine the parallel-safety.\n\nList of commits reverted, in reverse chronological order:\n\ned62d3737c Doc: Update description for parallel insert reloption.\nc8f78b6161 Add a new GUC and a reloption to enable inserts in parallel-mode.\nc5be48f092 Improve FK trigger parallel-safety check added by 05c8482f7f.\ne2cda3c20a Fix use of relcache TriggerDesc field introduced by commit 05c8482f7f.\ne4e87a32cc Fix valgrind issue in commit 05c8482f7f.\n05c8482f7f Enable parallel SELECT for \"INSERT INTO ... SELECT ...\".",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "update transformed into insert row filter"
+      ],
+      "from_hint": false,
+      "score": 0.11,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:3784",
+      "kind": "cf",
+      "title": "Reuse Workers and Replication Slots during Logical Replication",
+      "status": "Returned with feedback",
+      "date": "2024-01-10",
+      "first_date": "2022-07-05",
+      "url": "https://commitfest.postgresql.org/patch/3784/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGPVpCTq=rUDd4JUdaRc1XUWf4BrH2gdSNf3rtOMUGj9rPpfzQ@mail.gmail.com"
+      ],
+      "authors": "Melih Mutlu (melihmutlu)",
+      "objectors": "",
+      "summary": "Reuse Workers and Replication Slots during Logical Replication\nThreads: [PATCH] Reuse Workers and Replication Slots during Logical Replication",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical replication toasted column null"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:646",
+      "kind": "cf",
+      "title": "Prevent ALTER TABLE DROP NOT NULL on child tables if parent column has it",
+      "status": "Rejected",
+      "date": "2016-06-16",
+      "first_date": "2016-06-15",
+      "url": "https://commitfest.postgresql.org/patch/646/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB7nPqTPXgX9HiyhhtAgpW7jbA1iskMCSoqXPEEB_KYXYy1E1Q@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Prevent ALTER TABLE DROP NOT NULL on child tables if parent column has it\nThreads: Prevent ALTER TABLE DROP NOT NULL on child tables if parent column\nhas it",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "logical replication toasted column null"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:3668",
+      "kind": "cf",
+      "title": "pg_receivewal fail to streams when the partial file to write is not fully initialized present in the wal receiver directory",
+      "status": "Withdrawn",
+      "date": "2022-07-20",
+      "first_date": "2022-01-03",
+      "url": "https://commitfest.postgresql.org/patch/3668/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHg+QDcVUss6ocOmbLbV5f4YeGLhOCt+1x2yLNfG2H_eDwU8tw@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy), SATYANARAYANA NARLAPURAM (satyanarayanan)",
+      "objectors": "",
+      "summary": "pg_receivewal fail to streams when the partial file to write is not fully initialized present in the wal receiver directory\nThreads: pg_receivewal fail to streams when the partial file to write is not\nfully initialized present in the wal receiver directory",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "REPLICA IDENTITY FULL WAL overhead"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:3591",
+      "kind": "cf",
+      "title": "Change the csv log to 'key:value' to facilitate the user to understanding and processing of log",
+      "status": "Rejected",
+      "date": "2022-04-07",
+      "first_date": "2022-03-15",
+      "url": "https://commitfest.postgresql.org/patch/3591/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/tencent_FBE545A88B47F4FCC04F936C1EA43C2F8A0A@qq.com"
+      ],
+      "authors": "lu peng (lupeng89)",
+      "objectors": "",
+      "summary": "Change the csv log to 'key:value' to facilitate the user to understanding and processing of log\nThreads: Change the csv log to 'key:value' to facilitate the user to understanding and processing of logs",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "log unchanged toast values WAL"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "revert:2c7ea57e56ca5f668c32d4266e0a3e45b455bef5",
+      "kind": "revert",
+      "title": "Revert \"Logical decoding of sequences\"",
+      "status": "Reverted",
+      "date": "2022-04-07",
+      "first_date": "2022-02-10",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=2c7ea57e56ca5f668c32d4266e0a3e45b455bef5",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/95345a19-d508-63d1-860a-f5c2f41e8d40@enterprisedb.com",
+        "https://www.postgresql.org/message-id/flat/d045f3c2-6cfb-06d3-5540-e63c320df8bc@enterprisedb.com",
+        "https://www.postgresql.org/message-id/flat/1710ed7e13b.cd7177461430746.3372264562543607781@highgo.ca",
+        "https://www.postgresql.org/message-id/flat/20220212220413.b25amklo7t4xb7ni@alap3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/CAA4eK1KGn6cQqJEsubOOENwQOANsExiV2sKL52r4U10J8NJEMQ@mail.gmail.com"
+      ],
+      "authors": "Tomas Vondra",
+      "objectors": "",
+      "summary": "Revert \"Logical decoding of sequences\"\nReverted commit(s): Logical decoding of sequences; Add decoding of sequences to test_decoding; Fix skip-empty-xacts with sequences in test_decoding; Call ReorderBufferProcessXid from sequence_decode; Stabilize test_decoding touching with sequences",
+      "objection": "This reverts a sequence of commits, implementing features related to\nlogical decoding and replication of sequences:\n\n - 0da92dc530c9251735fc70b20cd004d9630a1266\n - 80901b32913ffa59bf157a4d88284b2b3a7511d9\n - b779d7d8fdae088d70da5ed9fcd8205035676df3\n - d5ed9da41d96988d905b49bebb273a9b2d6e2915\n - a180c2b34de0989269fdb819bff241a249bf5380\n - 75b1521dae1ff1fde17fda2e30e591f2e5d64b6a\n - 2d2232933b02d9396113662e44dca5f120d6830e\n - 002c9dd97a0c874fd1693a570383e2dd38cd40d5\n - 05843b1aa49df2ecc9b97c693b755bd1b6f856a9\n\nThe implementation has issues, mostly due to combining transactional and\nnon-transactional behavior of sequences. It's not clear how this could\nbe fixed, but it'll require reworking significant part of the patch.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical decoding unchanged toast datum"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:5466",
+      "kind": "cf",
+      "title": "WAL-logging facility for pgstats kinds",
+      "status": "Withdrawn",
+      "date": "2025-02-12",
+      "first_date": "2024-12-27",
+      "url": "https://commitfest.postgresql.org/patch/5466/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/Z24fyb3ipXKR38oS@paquier.xyz"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "WAL-logging facility for pgstats kinds\nThreads: WAL-logging facility for pgstats kinds",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "log unchanged toast values WAL"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:47",
+      "kind": "cf",
+      "title": "Logical Decoding with timelines",
+      "status": "Returned with feedback",
+      "date": "2015-05-03",
+      "first_date": "2014-12-15",
+      "url": "https://commitfest.postgresql.org/patch/47/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+U5nMKHqQbNNOAMFJ6pmqkDJ5A6xCowsjG8eA468EAzs7yHUQ@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon)",
+      "objectors": "",
+      "summary": "Logical Decoding with timelines\nThreads: Logical Decoding follows timelines",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical decoding unchanged toast datum"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:788",
+      "kind": "cf",
+      "title": "Logical decoding on standby",
+      "status": "Returned with feedback",
+      "date": "2017-11-24",
+      "first_date": "2016-09-05",
+      "url": "https://commitfest.postgresql.org/patch/788/",
+      "thread_urls": [],
+      "authors": "Craig Ringer (ringerc)",
+      "objectors": "",
+      "summary": "Logical decoding on standby",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "logical decoding unchanged toast datum"
+      ],
+      "from_hint": false,
+      "score": 0.101,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "revert:229bffedbc52f12aadb95ca2ee24d5bef36b7c7d",
+      "kind": "revert",
+      "title": "Revert the default toast compression strategy to the former behavior where there's no limit on the size of datum we'll try to compress.",
+      "status": "Reverted",
+      "date": "2009-01-06",
+      "first_date": "2009-01-06",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=229bffedbc52f12aadb95ca2ee24d5bef36b7c7d",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert the default toast compression strategy to the former behavior where there's no limit on the size of datum we'll try to compress. Other 8.4 tweaks to the behavior remain in place.  Per discussion.",
+      "objection": "Revert the default toast compression strategy to the former behavior\nwhere there's no limit on the size of datum we'll try to compress.\nOther 8.4 tweaks to the behavior remain in place.  Per discussion.",
+      "touch_points": [],
+      "matched_queries": [
+        "logical decoding unchanged toast datum"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 7,
+    "new_calls": 1,
+    "failed": 0,
+    "quotes_verified": 1,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2026-08-12",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found. [P5] was the original row filter feature, returned only because no new version was posted, and its thread summary lists TOAST handling as an open point. Message #1 cites an earlier discussion on LOGICALREP_COLUMN_UNCHANGED for the fact that unchanged out-of-line values are not in WAL; v6 addresses that fact directly."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "Three fixable objections. The thread never shows v3 to v6 patch prose, so the exact contents of the old tuple come from the thread messages alone."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 4,
+      "note": "Objections are given above."
+    },
+    {
+      "angle": "security",
+      "objections": 1,
+      "note": "The extra old-tuple data goes only to readers who can already decode full new rows, and pgoutput still applies the filters and column lists, so I see no new data exposure."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "Three fixable design objections from the maintenance angle. The 1 GB limit, the PANIC path and the ALTER PUBLICATION race were moved to separate threads, so they are not raised here."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "The only existing alternative is REPLICA IDENTITY FULL. Message #23 shows it cannot be combined with a publication column list and logs the whole old row on every UPDATE, and no extension, contrib module or hook solves this inside the WAL record. The INCLUDE-style replica identity option (messages #5, #7) does not exist yet and cannot be back-patched, so the bug fix does not duplicate it."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "The proposal fixes silent data loss in a released feature, row filters on 15 and later, and message #1 gives a reproducible case, so a correctness fix needs no further demand evidence. The extra WAL falls only on tables with a row filter whose update changes the replica identity key, so users of the feature pay for it, and committers and reviewers from several companies are engaged."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 11,
+      "new_survived": 7,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 104,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 12,
+    "wall_ms": 167917,
+    "cost_usd": 3.544179,
+    "dry_run": false
+  }
+}

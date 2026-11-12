@@ -1,0 +1,1523 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:27:07.097Z",
+  "input": {
+    "arg": "7190",
+    "cf": {
+      "id": 7190,
+      "url": "https://commitfest.postgresql.org/patch/7190/",
+      "title": "aio: Async fsyncs for crash recovery and checkpointer",
+      "status": "Needs review",
+      "authors": "Nazir Bilal Yavuz (nbyavuz)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAN55FZ0vLWJQNB%3DHuHXG2wabFjXJd6OWTa3%3DkRzwObdZD9poHQ%40mail.gmail.com",
+    "subject": "aio: Async fsyncs for crash recovery and checkpointer",
+    "thread_start": "2026-08-25T12:48:15Z",
+    "messages_read": 9,
+    "messages_total": 9,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v3-0001-ci-Temporarily-enable-fsync-everywhere.patch",
+      "v3-0002-aio-Add-fsync-support.patch",
+      "v3-0003-aio-worker-Bound-SMGR-cache-growth.patch",
+      "v3-0004-aio-Issue-SyncDataDirectory-fsyncs-through-AIO.patch",
+      "v3-0005-aio-Allow-AIO-reopen-callbacks-to-return-errors.patch",
+      "v3-0006-aio-Issue-checkpointer-fsyncs-asynchronously.patch",
+      "v3-0007-aio-Allow-IO-workers-to-execute-SLRU-fsyncs.patch",
+      "v3-0008-aio-doc-Document-AIO-fsync.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection questions the goal of overlapping checkpoint fsyncs, and all four are fixable. The largest risk is replication-ondisk-1: the new concurrent error path must still PANIC on any fsync failure, and no test injects one. already-exists-2 and maintenance-fit-2 ask for measurements at default checkpoint_flush_after and of foreground latency. already-exists-1 affects only the SyncDataDirectory() patch. Only 3 of 9 messages were visible.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Async fsyncs through AIO for checkpointer and crash recovery",
+    "problem": "The checkpointer's ProcessSyncRequests() and the startup process's SyncDataDirectory() fsync files one at a time, so checkpoints and crash-recovery startup wait on each sync in turn. Storage could run these syncs concurrently. This matters most for clusters with many dirty files at checkpoint.",
+    "proposed_design": "The patch adds PGAIO_OP_FSYNC to the AIO subsystem and converts SyncDataDirectory(), checkpointer sync requests and SLRU syncs to keep a bounded set of fsyncs in flight. Relation and SLRU files can be reopened by I/O workers through the smgr target and a new FileTag target. Data-directory files are path-only, so the worker method runs them synchronously and only io_uring overlaps them.",
+    "user_visible_surface": [
+      "pg_aios: new operation value fsync, with off and length NULL for it.",
+      "pg_aios: new target values sync and sync_filetag.",
+      "New wait event DATA_DIR_SYNC; SLRU_FLUSH_SYNC is now reported by the I/O worker, not the checkpointer.",
+      "pg_stat_io fsync_time now counts submission plus wait time for async fsyncs.",
+      "Sync handler API (SyncOps) reshaped so handlers open the file, assign an AIO target and start the fsync."
+    ],
+    "author_claims": [
+      "Checkpoint with 4000 dirty relation files: about 2.7x to 3.5x faster with worker, about 3.9x with io_uring.",
+      "SyncDataDirectory() with 4000 relations: about 4.2x to 4.5x faster with io_uring, little gain with worker.",
+      "SLRU checkpoint: about 1.4x to 2.6x faster.",
+      "Author agrees recovery_init_sync_method=syncfs is better than or on par with AIO fsync for crash recovery, so the checkpoint is the main benefit.",
+      "Concurrent fsyncs competing with reads in the worker pool can be helped by adding more I/O workers."
+    ],
+    "thread_state": "Nitin Jadhav and Yuhang Qiu reviewed; v3 addresses fsync_time accounting, reopen errno handling, the descriptor cap and the fsync=off to on reload race. Open items are missing tests, including worker-side SLRU coverage, and Yuhang's concern about storage bandwidth contention, on which the author asked for detail.",
+    "unclear": [
+      "No tests are included yet, including for the worker-side SLRU FileTag target.",
+      "The patch does not measure the effect of concurrent fsync bursts on foreground query latency.",
+      "Benchmarks use one workload size with checkpoint_flush_after = 0; the patch does not show results on default flush settings or slower storage.",
+      "The patch does not say whether the fixed limit of 1024 SMGR entries per I/O worker is tunable or how it was chosen.",
+      "Reordered or concurrent fsyncs may change fsync error and PANIC behaviour; the thread does not test those error paths."
+    ],
+    "search_queries": [
+      "asynchronous fsync checkpointer",
+      "AIO fsync support",
+      "parallel fsync checkpoint",
+      "SyncDataDirectory crash recovery fsync",
+      "ProcessSyncRequests concurrent fsync",
+      "io_uring fsync",
+      "sync request queue checkpoint performance",
+      "recovery_init_sync_method syncfs"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Checkpoint gain is measured with checkpoint_flush_after disabled",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "desirability",
+      "touch_points": [
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A Linux user runs the default checkpoint_flush_after, so writeback starts during the write phase and the final fsyncs find little dirty data. They upgrade and see a much smaller checkpoint speedup than the 2.7x to 3.9x reported. Meanwhile they take on new behaviour in sync.c and its error paths.",
+      "argument": "checkpoint_flush_after already exists to make the checkpoint's final fsyncs cheap. It does this by asking the kernel to start writeback early. Every checkpoint benchmark in message #1 sets checkpoint_flush_after = 0, which turns off that feature. So the numbers compare the patch against a configuration that most Linux installations do not use, and they do not show what the patch adds beyond the existing setting.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1
+      ],
+      "author_must_show": "What checkpoint speedup does the patch give over the default checkpoint_flush_after setting on Linux, for the same 4000-file workload?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-08-25T12:48:15Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ0vLWJQNB%3DHuHXG2wabFjXJd6OWTa3%3DkRzwObdZD9poHQ%40mail.gmail.com"
+        }
+      ],
+      "id": "already-exists-2",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "All checkpoint benchmarks in message #1 set checkpoint_flush_after = 0, while the Linux default starts writeback during the write phase. The thread has no result at the default setting, so the gain most Linux users would see is not shown.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Async SyncDataDirectory() duplicates recovery_init_sync_method=syncfs on Linux",
+      "level": "1b",
+      "rubric_item": 12,
+      "category": "does_not_fit",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A Linux user with slow crash-recovery startup sets io_method=io_uring and gets about the speed that recovery_init_sync_method=syncfs already gives. The project now keeps a new AIO path in fd.c, a PGAIO_TID_SYNC target, a new wait event and a doc paragraph, all for one case where an existing setting matches it.",
+      "argument": "io_uring is Linux-only, and syncfs is available on Linux. In message #5 the author measured syncfs as better than or equal to the AIO path, and in messages #6 and #8 both sides agreed the main benefit is the checkpoint. Under the worker method, patch 0004 runs these fsyncs synchronously anyway. The case it still helps is a data directory on a filesystem shared with other busy data, where syncfs also flushes unrelated files, and the thread has no measurement of that case.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        5,
+        6,
+        8
+      ],
+      "author_must_show": "On which Linux setups is syncfs unsuitable but io_uring AIO fsync faster, and could patch 0004 be dropped from the series without hurting the checkpoint work?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-09-18T10:54:45Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ2WnU9pMtjKP-%3DV%2B41gzPABuY6hXB_xO3CnOuMvhTVJvg%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Yuhang Qiu",
+          "date": "2026-09-22T04:03:17Z",
+          "url": "https://www.postgresql.org/message-id/C24C12AB-DE89-4EC8-AF08-6157CDA9A8CA%40gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-09-30T08:42:11Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ2NT6529QhB_dcrZ5LaSL20aayhP33ZisZVFSg2hOqLXg%40mail.gmail.com"
+        }
+      ],
+      "id": "already-exists-1",
+      "angle": "already-exists",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #5 shows syncfs equal to or faster than io_uring fsync, and the author agrees in message #8 that the checkpoint is the main benefit. Since fsync is the default method, some users gain, but the thread does not show how many.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Concurrent fsync error paths change PANIC handling but are untested",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "During a checkpoint, one in-flight fsync fails with a non-PANIC error and the cleanup drains the others, one of which returns EIO. If that EIO is classed as a retryable failure, the next checkpoint's fsync succeeds on clean pages. The redo pointer then moves past WAL that the lost writes still need, and nothing reports it.",
+      "argument": "The v3-0006 commit message replaces the serial loop with new rules: preserve the first error that requires PANIC, leave other errors to the next checkpoint, and skip reinterpreting handled deletions during cleanup. A wrong outcome here repeats the loss case that made Postgres PANIC on fsync failure. The worker path adds a reopen-and-fsync in another process plus -errno passing (v3-0005), so the error reaches the checkpointer by a new route. Message #9 and the brief say no tests exist yet, and the thread runs no failing fsync, so the invariant is argued but not shown.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        5,
+        8,
+        9
+      ],
+      "author_must_show": "Which fault-injection tests show that EIO from any in-flight fsync, under worker and io_uring, during a checkpoint or restartpoint, still leads to PANIC?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-09-18T10:54:45Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ2WnU9pMtjKP-%3DV%2B41gzPABuY6hXB_xO3CnOuMvhTVJvg%40mail.gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-09-30T08:42:11Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ2NT6529QhB_dcrZ5LaSL20aayhP33ZisZVFSg2hOqLXg%40mail.gmail.com"
+        },
+        {
+          "index": 9,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-09-30T08:43:42Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ2i-%3D87NWg8v66hbbm18o%2BkBmCjyLyX4fE7s49c9JbEBw%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The 0006 commit message states the PANIC rule, but message #5 says the -errno route loses error information and is unfinished. No failing fsync has been run under worker or io_uring, so the invariant is stated and not yet shown.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Checkpoint fsync bursts share the default worker pool with reads",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An OLTP cluster runs the default io_method=worker. At each checkpoint's sync phase, up to io_max_concurrency fsyncs fill the worker queue and the device, and foreground reads queue behind them. Users see read latency spikes at every checkpoint and have no setting that caps fsync concurrency separately.",
+      "argument": "Yuhang raised storage bandwidth contention in message #4 and again in message #6. The author's answer in message #5 is to add more I/O workers, and message #6 replies that this does not address device bandwidth. The benchmarks run on an otherwise idle system with checkpoint_flush_after = 0. That setting moves writeback into the fsyncs and makes serial fsync look worst, so the cost to non-users and the gain under default flush settings both go unmeasured.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4,
+        5,
+        6,
+        8
+      ],
+      "author_must_show": "What happens to foreground read latency during a checkpoint with default checkpoint_flush_after and io_method=worker, and how can an operator limit fsync concurrency?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "Yuhang Qiu",
+          "date": "2026-09-03T13:15:15Z",
+          "url": "https://www.postgresql.org/message-id/D707392D-96FF-4867-943D-564DAD6644B3%40gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-09-18T10:54:45Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ2WnU9pMtjKP-%3DV%2B41gzPABuY6hXB_xO3CnOuMvhTVJvg%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Yuhang Qiu",
+          "date": "2026-09-22T04:03:17Z",
+          "url": "https://www.postgresql.org/message-id/C24C12AB-DE89-4EC8-AF08-6157CDA9A8CA%40gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-09-30T08:42:11Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ2NT6529QhB_dcrZ5LaSL20aayhP33ZisZVFSg2hOqLXg%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Yuhang's bandwidth point in message #6 is unanswered: the author asked for detail in message #8, and no benchmark measures foreground latency. io_max_concurrency is the only cap, and it also limits reads.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Concurrent checkpoint fsyncs become default with no opt-out short of io_method=sync",
+      "level": "2",
+      "rubric_item": 8,
+      "category": "design",
+      "touch_points": [
+        "hot_path_performance",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site on shared SAN or network storage upgrades with the default io_method=worker. At each checkpoint the checkpointer now issues up to io_max_concurrency fsyncs at once instead of one at a time, and foreground query latency spikes during the sync phase. The only way back to serial syncs is io_method=sync, which also changes every read path.",
+      "argument": "Under the default io_method the new behaviour applies to every cluster, and nothing in the proposal lets a user cap fsync concurrency apart from io_max_concurrency, which also limits reads. Yuhang raised storage bandwidth contention in message #4 and message #6. The author answered that more I/O workers would help (message #5), but that answer covers worker availability and not device bandwidth, and in message #8 the author asked what was meant, so the point is still open. The benchmarks use checkpoint_flush_after = 0 on one storage type and do not measure foreground latency.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        4,
+        5,
+        6,
+        8
+      ],
+      "author_must_show": "What happens to foreground latency on slower or shared storage with default flush settings, and what setting lets an operator limit checkpoint fsync concurrency without changing io_method?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 4,
+          "from": "Yuhang Qiu",
+          "date": "2026-09-03T13:15:15Z",
+          "url": "https://www.postgresql.org/message-id/D707392D-96FF-4867-943D-564DAD6644B3%40gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-09-18T10:54:45Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ2WnU9pMtjKP-%3DV%2B41gzPABuY6hXB_xO3CnOuMvhTVJvg%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Yuhang Qiu",
+          "date": "2026-09-22T04:03:17Z",
+          "url": "https://www.postgresql.org/message-id/C24C12AB-DE89-4EC8-AF08-6157CDA9A8CA%40gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-09-30T08:42:11Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ2NT6529QhB_dcrZ5LaSL20aayhP33ZisZVFSg2hOqLXg%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of maintenance-fit-2, which states the same storage contention concern and also covers the shared worker pool and the missing latency measurement.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Checkpointer fsync wait events move to I/O workers or generic AIO events",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA, or a monitoring tool, samples pg_stat_activity for the checkpointer during a slow checkpoint and looks for DATA_FILE_SYNC or SLRU_FLUSH_SYNC. After upgrade those events show on I/O worker rows, or under io_uring as generic AIO wait events. The checkpointer row no longer shows which kind of file it is waiting on, and existing dashboards stop attributing checkpoint stalls.",
+      "argument": "Commit 0007 states that SLRU_FLUSH_SYNC is now reported by the I/O worker, \"as for relation fsyncs\", and commit 0002 states that io_uring uses the generic AIO wait events. This changes where and how a long-standing diagnostic signal appears, and the documentation hunks only cover pg_aios and recovery_init_sync_method. A reader of the release notes would find no description of how to see per-kind checkpoint sync waits under each io_method.",
+      "precedent_ids": [],
+      "thread_message_refs": [],
+      "author_must_show": "Under each io_method, how does a user see from pg_stat_activity or pg_aios that the checkpointer is blocked on relation or SLRU fsyncs, and where is this change documented?",
+      "precedents": [],
+      "thread_refs": [],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "AIO reads already report their wait events from the I/O worker, or as generic AIO events under io_uring, so the patch follows existing practice. The missing documentation is a level 4 matter.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Rewritten fsync error and PANIC path has no committer engaged",
+      "level": "2",
+      "rubric_item": 16,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later change to sync.c or to a reopen callback misroutes one fsync failure among many reaped out of order. The checkpoint completes and the redo pointer advances while a file was never made durable. The loss shows only after the next crash, and the checkpoint logs no error.",
+      "argument": "Patch 0006 is about 60 KiB and reshapes SyncOps. It moves error, retry, cancellation and pendingOps bookkeeping into in-flight AIO handling, which adds deferred completion rules and first-PANIC-wins logic. Durability correctness in this code relies on reasoning that no test exercises, and the thread has no tests (messages #5, #9). None of the visible reviewers are committers, so no qualified owner has signed on for this area yet.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        5,
+        7,
+        9
+      ],
+      "author_must_show": "Which committer familiar with sync.c and AIO will own this, and which tests inject fsync and reopen failures under concurrency to prove no failure is lost?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 5,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-09-18T10:54:45Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ2WnU9pMtjKP-%3DV%2B41gzPABuY6hXB_xO3CnOuMvhTVJvg%40mail.gmail.com"
+        },
+        {
+          "index": 7,
+          "from": "Nitin Jadhav",
+          "date": "2026-09-22T15:20:43Z",
+          "url": "https://www.postgresql.org/message-id/CAMm1aWbjGH2YL_vsKA%2B9%3DSH%2B9dYBf2OS4gbEPaeuynL9jYn7UA%40mail.gmail.com"
+        },
+        {
+          "index": 9,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-09-30T08:43:42Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ2i-%3D87NWg8v66hbbm18o%2BkBmCjyLyX4fE7s49c9JbEBw%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of replication-ondisk-1 for the untested error path. The lack of an engaged committer belongs in the committability field and does not count against the design.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Crash-recovery conversion adds a target and docs for little gain",
+      "level": "1b",
+      "rubric_item": 5,
+      "category": "does_not_fit",
+      "touch_points": [
+        "maintenance_burden",
+        "does_not_fit"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The project commits 0004 and keeps PGAIO_TID_SYNC, DATA_DIR_SYNC and a new method-dependent doc paragraph indefinitely. Most users run the default worker method and get no overlap. Linux users already get equal or better results from recovery_init_sync_method=syncfs.",
+      "argument": "Message #5 shows syncfs on par with or better than io_uring AIO fsync, and the author agrees in message #8 that the checkpoint is the main benefit. With the worker method, 0004 runs the fsyncs synchronously, as its commit message and docs state. The path-only target exists mainly for this startup-only case, so it adds per-method behaviour that future AIO changes must preserve.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        5,
+        6,
+        8
+      ],
+      "author_must_show": "Which users run fsync-based crash recovery with io_uring and cannot use syncfs, and is 0004 still worth carrying if it is dropped from the series?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-08-25T12:48:15Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ0vLWJQNB%3DHuHXG2wabFjXJd6OWTa3%3DkRzwObdZD9poHQ%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-09-18T10:54:45Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ2WnU9pMtjKP-%3DV%2B41gzPABuY6hXB_xO3CnOuMvhTVJvg%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Yuhang Qiu",
+          "date": "2026-09-22T04:03:17Z",
+          "url": "https://www.postgresql.org/message-id/C24C12AB-DE89-4EC8-AF08-6157CDA9A8CA%40gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-09-30T08:42:11Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ2NT6529QhB_dcrZ5LaSL20aayhP33ZisZVFSg2hOqLXg%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of already-exists-1. Its claim that the path-only target exists mainly for startup is also weak, because SLRUs not registered with sync.c use PGAIO_TID_SYNC too.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Data-directory fsync path helps only where syncfs already does as well",
+      "level": "1b",
+      "rubric_item": 3,
+      "category": "demand",
+      "touch_points": [
+        "does_not_fit",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A Linux operator with slow crash-recovery startup already sets recovery_init_sync_method=syncfs and sees no change from the patch. On the default worker method, startup also stays serial. The project still carries a new AIO target, a new wait event and a new docs paragraph for this path, with almost no one gaining from them.",
+      "argument": "Under worker the SyncDataDirectory() conversion gives about 1.0x to 1.17x (messages #1 and #5). It helps only with io_uring, which is Linux-only, and on Linux syncfs is as fast or faster (message #5). The author and Yuhang agree the main benefit is the checkpoint (messages #6 and #8). No user in the thread asks for faster per-file fsync at startup when syncfs is available.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        5,
+        6,
+        8
+      ],
+      "author_must_show": "Which users run crash recovery with io_uring but cannot use syncfs, and is that group large enough to justify v3-0004 and the path-only target?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-08-25T12:48:15Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ0vLWJQNB%3DHuHXG2wabFjXJd6OWTa3%3DkRzwObdZD9poHQ%40mail.gmail.com"
+        },
+        {
+          "index": 5,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-09-18T10:54:45Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ2WnU9pMtjKP-%3DV%2B41gzPABuY6hXB_xO3CnOuMvhTVJvg%40mail.gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Yuhang Qiu",
+          "date": "2026-09-22T04:03:17Z",
+          "url": "https://www.postgresql.org/message-id/C24C12AB-DE89-4EC8-AF08-6157CDA9A8CA%40gmail.com"
+        },
+        {
+          "index": 8,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-09-30T08:42:11Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ2NT6529QhB_dcrZ5LaSL20aayhP33ZisZVFSg2hOqLXg%40mail.gmail.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of already-exists-1, which makes the same syncfs comparison and also names the case where syncfs is unsuitable.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Checkpoint gain shown only with checkpoint_flush_after = 0",
+      "level": "1b",
+      "rubric_item": 2,
+      "category": "demand",
+      "touch_points": [
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A Linux user on default settings already has writeback started by checkpoint_flush_after during the write phase. Their final fsyncs may then be short, so the 2.7x to 3.9x sync-phase gain may shrink or vanish. Nobody would find this out until after commit, when the reshaped SyncOps API is already in place.",
+      "argument": "Every checkpoint benchmark in message #1 disables checkpoint_flush_after and dirties 4000 small relation files on one storage setup. The thread has no field report of a slow sync phase at default settings, and no report from a production cluster. Without that, the size of the group that gains is not shown, while the sync handler reshaping affects every checkpoint.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        4,
+        6
+      ],
+      "author_must_show": "How much faster is the checkpoint sync phase with default checkpoint_flush_after, on slower storage, and in any production workload that reports a slow sync phase today?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Nazir Bilal Yavuz",
+          "date": "2026-08-25T12:48:15Z",
+          "url": "https://www.postgresql.org/message-id/CAN55FZ0vLWJQNB%3DHuHXG2wabFjXJd6OWTa3%3DkRzwObdZD9poHQ%40mail.gmail.com"
+        },
+        {
+          "index": 4,
+          "from": "Yuhang Qiu",
+          "date": "2026-09-03T13:15:15Z",
+          "url": "https://www.postgresql.org/message-id/D707392D-96FF-4867-943D-564DAD6644B3%40gmail.com"
+        },
+        {
+          "index": 6,
+          "from": "Yuhang Qiu",
+          "date": "2026-09-22T04:03:17Z",
+          "url": "https://www.postgresql.org/message-id/C24C12AB-DE89-4EC8-AF08-6157CDA9A8CA%40gmail.com"
+        }
+      ],
+      "id": "demand-2",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of already-exists-2, which asks for the same default-setting measurement more concretely.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "see objection replication-ondisk-1: Concurrent fsync error paths change PANIC handling but are untested"
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "Checkpoints and restartpoints advance the redo pointer only after these fsyncs succeed, and the patch rewrites that error path."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The patch reshapes SyncOps, adds PGAIO_OP_FSYNC and two AIO targets, and lets reopen callbacks return -errno."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "sync.c gains in-flight bookkeeping, deferred completion and first-PANIC-wins rules that later changes must keep correct."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Under the default io_method=worker, checkpoint fsyncs share the I/O worker pool and the device with foreground reads."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": true,
+      "reason": "The SyncDataDirectory() conversion overlaps with recovery_init_sync_method=syncfs, which the author measured as equal or faster."
+    }
+  ],
+  "questions": [
+    "What checkpoint speedup does the patch give with the default checkpoint_flush_after on Linux, for the same 4000-file workload?",
+    "Which fault-injection tests show that EIO from any in-flight fsync, under worker and io_uring, in a checkpoint or restartpoint, still leads to PANIC?",
+    "What happens to foreground read latency during a checkpoint with io_method=worker and default flush settings, on slower or shared storage?",
+    "How can an operator limit checkpoint fsync concurrency without also lowering io_max_concurrency for reads?",
+    "On which Linux setups is syncfs unsuitable but io_uring fsync faster, and can the SyncDataDirectory() patch be dropped without hurting the checkpoint work?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "It needs a committer who knows both the AIO subsystem and the checkpointer's sync.c fsync error handling. The visible thread and the CommitFest entry show no committer taking part.",
+    "liability": "The owner signs for fsync failure handling in every checkpoint and restartpoint, under all three io_method values, with no time limit. A lost fsync error shows only after a later crash.",
+    "author_follow_up": "The author answered each review point in message #3 and posted v3 with fixes in message #8, so he is active during review. The thread has no sign either way about post-commit fixes."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "high",
+    "review_cost": "high",
+    "recommended_action": "proceed",
+    "reason": "Clusters with many dirty files per checkpoint gain, but the size of the gain at default flush settings is not shown. The series is about 125 KiB across AIO, sync.c, smgr, SLRU and fd.c, and it changes durability error paths, so review and upkeep are costly. The thread is active and the open points are fixable."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read, so the PANIC and retry rules in the 0006 commit message, completion ordering and restartpoint behaviour on standbys are unchecked. Messages #4 to #9 were seen only through the objections that cite them.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:1613",
+      "kind": "cf",
+      "title": "Fsync queue forgets requests on failure",
+      "status": "Rejected",
+      "date": "2018-07-13",
+      "first_date": "2018-04-05",
+      "url": "https://commitfest.postgresql.org/patch/1613/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/87y3i1ia4w.fsf@news-spur.riddles.org.uk"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "Thomas Munro",
+      "summary": "Fix the checkpointer so that when an fsync of a relation segment fails during a checkpoint, the pending fsync request is kept for the next checkpoint instead of being dropped. The patch stops the pending-ops bitmapset from being lost when it is unlinked from the hashtable entry, merges unprocessed requests back on failure, and removes segments that succeeded as it goes.",
+      "objection": "The author withdrew it as redundant with work in another thread (by Craig and Andres) that turns fsync I/O errors into PANICs and overhauls the request queue, because retrying fsync after a failure is useless on Linux. He noted that the other patch still left the retry path for errnos other than EIO and ENOSPC, but rejected this entry on the grounds that the issue would be resolved in that other thread.",
+      "touch_points": [],
+      "matched_queries": [
+        "asynchronous fsync checkpointer",
+        "AIO fsync support",
+        "parallel fsync checkpoint",
+        "SyncDataDirectory crash recovery fsync",
+        "ProcessSyncRequests concurrent fsync",
+        "io_uring fsync",
+        "sync request queue checkpoint performance"
+      ],
+      "from_hint": false,
+      "score": 0.801,
+      "enriched": true,
+      "key_quote": "Rejected, since this will have to be dealt with one way or another in\nthat other thread.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAEepm%3D0v3UX3vOgyK4zL_bJK%3DPTDf5mWLOSU%2B3zJ99T%2BEOmwWQ%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:4517",
+      "kind": "cf",
+      "title": "Unlogged relation copy is not fsync'd",
+      "status": "Returned with feedback",
+      "date": "2024-01-05",
+      "first_date": "2023-08-25",
+      "url": "https://commitfest.postgresql.org/patch/4517/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/65e94fc8-ce1d-dd02-3be3-fda0fe8f2965@iki.fi"
+      ],
+      "authors": "Heikki Linnakangas (heikki)",
+      "objectors": "Robert Haas",
+      "summary": "The patch fixes the condition in RelationCopyStorage() so that the main and other non-init forks of an unlogged relation are fsync'd after copying, for example during alter table ... set tablespace. Without the fix, a checkpoint during the copy followed by a clean shutdown and power loss can lose part of the copied file.",
+      "objection": "The author found that the posted patch was still incomplete and proposed a broader backpatchable fix that calls smgrimmedsync() for all but temporary relations, with similar changes in nbtsort.c, gistbuild.c and rewriteheap.c. Noah Misch questioned part of that analysis, and no revised patch followed. After about three months with no new version, Robert Haas marked the entry Returned with feedback as waiting on the author.",
+      "touch_points": [],
+      "matched_queries": [
+        "asynchronous fsync checkpointer",
+        "AIO fsync support",
+        "parallel fsync checkpoint",
+        "SyncDataDirectory crash recovery fsync",
+        "ProcessSyncRequests concurrent fsync",
+        "io_uring fsync"
+      ],
+      "from_hint": false,
+      "score": 0.743,
+      "enriched": true,
+      "key_quote": "So it seems this has been waiting for\nHeikki or someone else to have time to work it for the last 3 months.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoYxtORZEUwM%3DGzZXPogaNCi0dvYPndJMoPkd5spJQXLtg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:2990",
+      "kind": "cf",
+      "title": "speed up pg_rewind by using copy_file_range() and skipping some fsync",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-01-27",
+      "url": "https://commitfest.postgresql.org/patch/2990/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/7C1703E7-F3F3-43FA-86EB-177C671BF33C@vmware.com"
+      ],
+      "authors": "Paul Guo (paulguo-vmware)",
+      "objectors": "Michael Paquier",
+      "summary": "Two pg_rewind patches: one syncs only the files pg_rewind changed instead of the whole target data directory, and one uses copy_file_range() in place of read()+write() for local rewinds. The second adds a configure check and HAVE_COPY_FILE_RANGE and falls back to read()+write() on EXDEV or ENOTSUP.",
+      "objection": "Michael Paquier asked for pg_rewind benchmarks: many small files for the fsync patch, and large and small file sets on XFS with reflink for copy_file_range(). He also asked to drop the copy_file_range_support flag, because one EXDEV failure would turn copy_file_range() off for all other tablespaces and mount points, and to fix double-counted progress on fallback. The fsync patch skips files such as configuration files included from postgresql.conf. The visible messages do not show a reply after his last review.",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "asynchronous fsync checkpointer",
+        "AIO fsync support",
+        "parallel fsync checkpoint",
+        "SyncDataDirectory crash recovery fsync",
+        "ProcessSyncRequests concurrent fsync",
+        "io_uring fsync"
+      ],
+      "from_hint": false,
+      "score": 0.61,
+      "enriched": true,
+      "key_quote": "Anyway, I think that it would be good to do more benchmarking for this\npatch first, and the patch you are proposing is enough for that.",
+      "quote_message_url": "https://www.postgresql.org/message-id/YR88OzOxILlDtLVd%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:4416",
+      "kind": "cf",
+      "title": "Show WAL stats on pg_stat_io",
+      "status": "Returned with feedback",
+      "date": "2024-01-18",
+      "first_date": "2023-06-28",
+      "url": "https://commitfest.postgresql.org/patch/4416/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAN55FZ3AiQ+ZMxUuXnBpd0Rrh1YhwJ5FudkHg=JU0P+-W8T4Vg@mail.gmail.com"
+      ],
+      "authors": "Nazir Bilal Yavuz (nbyavuz)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch adds WAL I/O (writes, fsyncs, reads during recovery, and WAL segment initialization in a new IOCONTEXT_INIT) to the pg_stat_io view as IOOBJECT_WAL. Timings use track_wal_io_timing, and pg_stat_wal timings would come from pg_stat_io.",
+      "objection": "pg_stat_io ties op_bytes to a fixed block size per object and context, but some WAL reads, such as those by the WAL receiver, have a variable size. Reviewers did not agree whether to set op_bytes to 1, to NULL, or to add per-operation byte columns. Michael Paquier proposed to set the patch aside until WAL reads and writes, async I/O and cached reads are settled, so that the meaning of pg_stat_io does not change between releases. The author agreed, and the patch was marked Returned with feedback.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "AIO fsync support",
+        "io_uring fsync"
+      ],
+      "from_hint": false,
+      "score": 0.25,
+      "enriched": true,
+      "key_quote": "IMHO, perhaps we'd better put this patch aside until we are absolutely\n*sure* of what we want to achieve when it comes to WAL, and I am\nafraid that this cannot happen until we're happy with the way we\nhandle WAL reads *and* writes, including WAL receiver or anything that\nhas the idea of pulling its own page callback with\nXLogReaderAllocate() in the backend.",
+      "quote_message_url": "https://www.postgresql.org/message-id/ZaTQSOVpwekhOXx-%40paquier.xyz",
+      "relevant": true
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:3239",
+      "kind": "cf",
+      "title": "Warn if initdb's --sync-only option is mixed with other options",
+      "status": "Returned with feedback",
+      "date": "2021-10-01",
+      "first_date": "2021-07-07",
+      "url": "https://commitfest.postgresql.org/patch/3239/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABwTF4VJW1m4Vg5NzMcfbhWUfs4Vz0yZdF1xseJ_QhE-J-O8MA@mail.gmail.com"
+      ],
+      "authors": "Gurjeet Singh (gurjeet)",
+      "objectors": "Daniel Gustafsson",
+      "summary": "Make initdb warn, or possibly error, when --sync-only is given together with other options, because initdb ignores every option except -D/--pgdata in that mode. The author preferred an error but suggested a warning to avoid breaking existing scripts.",
+      "objection": "Daniel Gustafsson asked for a real case where mixing the options causes harm, and said initdb errors out on incompatible arguments rather than warning. The thread then stalled. He closed the entry because the updated docs and help output already cover the option and nobody has complained about this long-standing behaviour.",
+      "touch_points": [],
+      "matched_queries": [
+        "sync request queue checkpoint performance",
+        "recovery_init_sync_method syncfs"
+      ],
+      "from_hint": false,
+      "score": 0.229,
+      "enriched": true,
+      "key_quote": "This thread has stalled, and with the updated docs/help output done for this\noption I don't think this is worth pursuing (especially given the lack of\ncomplaints over behavior which has existed for a very long time).",
+      "quote_message_url": "https://www.postgresql.org/message-id/8EF47EEB-5AF9-453C-9DFE-9F0D17DC66E0%40yesql.se",
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "cf:3316",
+      "kind": "cf",
+      "title": "Asynchronous and \"direct\" IO support for PostgreSQL",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2021-02-23",
+      "url": "https://commitfest.postgresql.org/patch/3316/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210223100344.llw5an2aklengrmn@alap3.anarazel.de"
+      ],
+      "authors": "Andres Freund (andresfreund), David Rowley (davidrowley), Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Andres Freund proposed an asynchronous IO (AIO) subsystem for Postgres, with several backends (worker processes, io_uring, posix AIO, Windows) and helpers for streaming reads and writes. The same work adds optional direct IO, so data moves between storage and shared buffers without the kernel page cache.",
+      "objection": "The entry died of inactivity. The patch set stopped applying in January 2022 and no rebased version followed. In May 2022 Aleksander Alekseev asked for a rebase and said a set of 39 patches was too large to review, and that it should be split. Michael Paquier marked it Returned with feedback after five months without activity.",
+      "touch_points": [],
+      "matched_queries": [
+        "asynchronous fsync checkpointer",
+        "io_uring fsync"
+      ],
+      "from_hint": false,
+      "score": 0.172,
+      "enriched": true,
+      "key_quote": "I don't know what's the exact status here, but as there has been no\nactivity for the past five months, I have just marked the entry as RwF\nfor now.",
+      "quote_message_url": "https://www.postgresql.org/message-id/Y0ZUdhaqe1%2BxIttA%40paquier.xyz",
+      "relevant": true
+    },
+    {
+      "id": "P7",
+      "source_id": "revert:25d1ed04a2c4d176f6428b9eed57344e50f44d77",
+      "kind": "revert",
+      "title": "Revert initdb --sync-only patch that had incorrect commit messages.",
+      "status": "Reverted",
+      "date": "2012-12-04",
+      "first_date": "2012-12-04",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=25d1ed04a2c4d176f6428b9eed57344e50f44d77",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert initdb --sync-only patch that had incorrect commit messages.",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "sync request queue checkpoint performance",
+        "recovery_init_sync_method syncfs"
+      ],
+      "from_hint": false,
+      "score": 0.16,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:3583",
+      "kind": "cf",
+      "title": "Fix checkpointer sync request queue problems",
+      "status": "Withdrawn",
+      "date": "2022-11-07",
+      "first_date": "2022-03-01",
+      "url": "https://commitfest.postgresql.org/patch/3583/",
+      "thread_urls": [],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "Fix checkpointer sync request queue problems",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "sync request queue checkpoint performance"
+      ],
+      "from_hint": false,
+      "score": 0.137,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:6611",
+      "kind": "cf",
+      "title": "This adds a new GUC parameter that automatically rolls back prepared transactions that have remained unresolved beyond the configured timeout. The cleanup is performed by the checkpointer process.",
+      "status": "Rejected",
+      "date": "2026-07-01",
+      "first_date": "2026-03-23",
+      "url": "https://commitfest.postgresql.org/patch/6611/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAXajwDOvTwLQ=rO5hOKsR_VTikST1rN-moO46YhYEgsO00dqg@mail.gmail.com"
+      ],
+      "authors": "Nikhil Chawla (nchawla)",
+      "objectors": "Andrey Borodin, Artur Zakirov, Greg Sabino Mullane",
+      "summary": "The patch adds a GUC, prepared_orphaned_transaction_timeout, that makes the checkpointer roll back prepared transactions older than the timeout. It is disabled by default (0) and is modelled on idle_in_transaction_session_timeout and similar timeouts.",
+      "objection": "Reviewers said a silent rollback breaks the 2PC protocol: after all participants PREPARE, COMMIT must succeed on a healthy database, and only the transaction manager knows whether a dangling prepared transaction should be committed or rolled back. An orphaned prepared transaction signals a serious malfunction that needs monitoring, and a DBA who wants a timeout can use a cron job. Users who enable 2PC are expected to have their own monitoring and handling.",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "sync request queue checkpoint performance"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": true,
+      "key_quote": "Silent rollback in any scenario I can imagine is a disaster.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2DCDBFFC-4B03-4EBC-88A3-06AD29933F17%40yandex-team.ru",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:3983",
+      "kind": "cf",
+      "title": "Lockless queue of waiters based on atomic operations for LWLock",
+      "status": "Returned with feedback",
+      "date": "2024-01-26",
+      "first_date": "2022-10-31",
+      "url": "https://commitfest.postgresql.org/patch/3983/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALT9ZEEz+=Nepc5eti6x531q64Z6+DxtP3h-h_8O5HDdtkJcPw@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov (smagen), Pavel Borisov (pborisov)",
+      "objectors": "",
+      "summary": "Store the head and tail of the LWLock wait queue in a 64-bit atomic lock state, so that waiters are added and removed with CAS operations and LWLockWaitListLock is no longer needed. The patch builds on ideas from OrioleDB and showed gains with about 1000 pgbench connections, with a small regression near 20 connections.",
+      "objection": "The thread went idle for more than a year after v6 in November 2022, and no reviewer took the patch forward. vignesh C returned it in the commitfest for lack of interest. Earlier, Andres Freund noted that the approach needs O(waiters) atomic operations instead of O(1), which may explain the regression, but the visible messages do not show this point deciding the outcome.",
+      "touch_points": [],
+      "matched_queries": [
+        "sync request queue checkpoint performance"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": true,
+      "key_quote": "I have returned this patch in commitfest as nobody had shown any\ninterest in pursuing it.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALDaNm2vk_NkwtNdUZNHi9wcfOb9xTBcTCVGdtXCgiPgKgzzGg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "revert:ebf6de8692766177a36e7f5fb7545a52a0d5d881",
+      "kind": "revert",
+      "title": "Add more TAP coverage for archive status with crash recovery of standbys",
+      "status": "Partially reverted",
+      "date": "2020-04-27",
+      "first_date": "2020-04-24",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=ebf6de8692766177a36e7f5fb7545a52a0d5d881",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20200424034248.GL33034@paquier.xyz",
+        "https://www.postgresql.org/message-id/flat/20200424005929.GK33034@paquier.xyz"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Add more TAP coverage for archive status with crash recovery of standbys\nReverted commit(s): Remove some unstable parts from new TAP test for archive status check",
+      "objection": "This part of the test was included originally in 4e87c48, but got\nreverted as of f9c1b8d because of timing issues in the test, where,\nafter more analysis, we found that the standbys may not have recovered\nfrom the archives all the segments needed by the test.  This stabilizes\nthe test by making sure that standbys replay up to the position returned\nby pg_switch_wal(), meaning that all segments are recovered before the\nmanual checkpoint that tests WAL segment recycling and its interactions\nwith archive status files.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "SyncDataDirectory crash recovery fsync"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:3545",
+      "kind": "cf",
+      "title": "Report checkpoint progress with pg_stat_progress_checkpoint",
+      "status": "Returned with feedback",
+      "date": "2023-01-31",
+      "first_date": "2021-12-29",
+      "url": "https://commitfest.postgresql.org/patch/3545/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACV-F+K+z+XW8fnK4MV71qz2gzAMxFnYziRgZURMB5ycAQ@mail.gmail.com"
+      ],
+      "authors": "Nitin Jadhav (nitinjadhav11)",
+      "objectors": "",
+      "summary": "Report checkpoint progress with pg_stat_progress_checkpoint\nThreads: Report checkpoint progress in server logs",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel fsync checkpoint"
+      ],
+      "from_hint": false,
+      "score": 0.106,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:1866",
+      "kind": "cf",
+      "title": "Avoid duplicate XIDs at recovery when building initial snapshot - take 2",
+      "status": "Returned with feedback",
+      "date": "2018-12-03",
+      "first_date": "2018-10-14",
+      "url": "https://commitfest.postgresql.org/patch/1866/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/E1gBgPY-0006hw-HN@gemulon.postgresql.org"
+      ],
+      "authors": "Michael Paquier (michael-kun)",
+      "objectors": "",
+      "summary": "Avoid duplicate XIDs at recovery when building initial snapshot - take 2\nThreads: pgsql: Avoid duplicate XIDs at recovery when building initial snapshot",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "recovery_init_sync_method syncfs"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:4928",
+      "kind": "cf",
+      "title": "s/shm_mq_iovec/struct iovec/",
+      "status": "Returned with feedback",
+      "date": "2024-07-15",
+      "first_date": "2024-04-15",
+      "url": "https://commitfest.postgresql.org/patch/4928/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGLMs6O14yJDxv6TF7DPuBdMfDvRj6OQEZZ_CqdJei0+hg@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "s/shm_mq_iovec/struct iovec/\nThreads: s/shm_mq_iovec/struct iovec/",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "io_uring fsync"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "revert:c2dc19342e05e081dc13b296787baa38352681ef",
+      "kind": "revert",
+      "title": "Revert recovery prefetching feature.",
+      "status": "Reverted",
+      "date": "2021-05-10",
+      "first_date": "2021-04-08",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=c2dc19342e05e081dc13b296787baa38352681ef",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAOuzzgrn7iKnFRsB4MHp3UisEQAGgZMbk_ViTN4HV4-Ksq8zCg@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20210409033703.GP6592@telsasoft.com",
+        "https://www.postgresql.org/message-id/flat/CA+hUKGJ4VJN8ttxScUFM8dOKX0BrBiboo5uz1cq=AovOddfHpA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20190418.210257.43726183.horiguchi.kyotaro@lab.ntt.co.jp",
+        "https://www.postgresql.org/message-id/flat/16997-ff16127f6e0d1390@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/20210413123139.GE6091@telsasoft.com"
+      ],
+      "authors": "Thomas Munro, Tom Lane",
+      "objectors": "",
+      "summary": "Revert recovery prefetching feature.\nReverted commit(s): Doc: Review for \"Optionally prefetch referenced data in recovery.\"; Optionally prefetch referenced data in recovery.; Add circular WAL decoding buffer.; Remove read_page callback from XLogReader.; Sync guc.c and postgresql.conf.sample with the SGML docs.",
+      "objection": "This set of commits has some bugs with known fixes, but at this late\nstage in the release cycle it seems best to revert and resubmit next\ntime, along with some new automated test coverage for this whole area.\n\nCommits reverted:\n\ndc88460c: Doc: Review for \"Optionally prefetch referenced data in recovery.\"\n1d257577: Optionally prefetch referenced data in recovery.\nf003d9f8: Add circular WAL decoding buffer.\n323cbe7c: Remove read_page callback from XLogReader.\n\nRemove the new GUC group WAL_RECOVERY recently added by a55a9847, as the\ncorresponding section of config.sgml is now reverted.",
+      "touch_points": [
+        "new GUC",
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "recovery_init_sync_method syncfs"
+      ],
+      "from_hint": false,
+      "score": 0.102,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "revert:6cb1b632b354518a595f1b23bfbac28a798f7f1c",
+      "kind": "revert",
+      "title": "Revert \"Add basic TAP tests for the low-level backup method\"",
+      "status": "Reverted",
+      "date": "2024-03-14",
+      "first_date": "2024-03-14",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6cb1b632b354518a595f1b23bfbac28a798f7f1c",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/f20fcc82-dadb-478d-beb4-1e2ffb0ace76@pgmasters.net"
+      ],
+      "authors": "Michael Paquier",
+      "objectors": "",
+      "summary": "Revert \"Add basic TAP tests for the low-level backup method\"\nReverted commit(s): Add basic TAP tests for the low-level backup method",
+      "objection": "This reverts commit 99b4a63bef94.  The test is proving to be unstable,\nso revert it for now.\n\nOne of the failures seen involves the cluster started without the\nbackup_label, where the archives of the primary are overwritten, causing\nrecovery failures on Windows.  This is simple to fix, but there is\nanother issue that's creeping behind in the form of an \"invalid data in\nfile\" ERROR when parsing the backup_label for the second recovery case,\nas an effect of the backup_label data written after retrieving its\ncontents from pg_backup_stop().\n_\nPer buildfarm member sidewinder.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "recovery_init_sync_method syncfs"
+      ],
+      "from_hint": false,
+      "score": 0.101,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "revert:54685b1c2b356b4b9c0938f6b8dcc52e173c0400",
+      "kind": "revert",
+      "title": "Revert the patch to check if we've reached end-of-backup also when doing crash recovery, and throw an error if not.",
+      "status": "Reverted",
+      "date": "2011-04-13",
+      "first_date": "2011-04-13",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=54685b1c2b356b4b9c0938f6b8dcc52e173c0400",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert the patch to check if we've reached end-of-backup also when doing crash recovery, and throw an error if not. hubert depesz lubaczewski pointed out that that situation also happens in the crash recovery following a system crash that happens during an online backup.",
+      "objection": "Revert the patch to check if we've reached end-of-backup also when doing\ncrash recovery, and throw an error if not. hubert depesz lubaczewski pointed\nout that that situation also happens in the crash recovery following a\nsystem crash that happens during an online backup.\n\nWe might want to do something smarter in 9.1, like put the check back for\nbackups taken with pg_basebackup, but that's for another patch.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "SyncDataDirectory crash recovery fsync"
+      ],
+      "from_hint": false,
+      "score": 0.1,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:751",
+      "kind": "cf",
+      "title": "Asynchronous execution of ForeignScans",
+      "status": "Returned with feedback",
+      "date": "2016-12-02",
+      "first_date": "2016-08-29",
+      "url": "https://commitfest.postgresql.org/patch/751/",
+      "thread_urls": [],
+      "authors": "Kyotaro Horiguchi (horiguti)",
+      "objectors": "",
+      "summary": "Asynchronous execution of ForeignScans",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "asynchronous fsync checkpointer"
+      ],
+      "from_hint": false,
+      "score": 0.098,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:3873",
+      "kind": "cf",
+      "title": "Report checkpoint progress with pg_stat_progress_checkpoint",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2021-12-29",
+      "url": "https://commitfest.postgresql.org/patch/3873/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACV-F+K+z+XW8fnK4MV71qz2gzAMxFnYziRgZURMB5ycAQ@mail.gmail.com"
+      ],
+      "authors": "Nitin Jadhav (nitinjadhav11)",
+      "objectors": "",
+      "summary": "Report checkpoint progress with pg_stat_progress_checkpoint\nThreads: Report checkpoint progress in server logs",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "parallel fsync checkpoint"
+      ],
+      "from_hint": false,
+      "score": 0.098,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:5004",
+      "kind": "cf",
+      "title": "CREATE INDEX CONCURRENTLY for partitioned tables",
+      "status": "Withdrawn",
+      "date": "2025-04-08",
+      "first_date": "2020-10-31",
+      "url": "https://commitfest.postgresql.org/patch/5004/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20201031063117.GF3080@telsasoft.com"
+      ],
+      "authors": "Justin Pryzby (justinpryzby), Ilya Gladyshev (qoops)",
+      "objectors": "",
+      "summary": "CREATE INDEX CONCURRENTLY for partitioned tables\nThreads: CREATE INDEX CONCURRENTLY on partitioned index",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "ProcessSyncRequests concurrent fsync"
+      ],
+      "from_hint": false,
+      "score": 0.097,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "revert:1bd42cd70abdbc946ad64c3c8eaefed4bb8b1145",
+      "kind": "revert",
+      "title": "Better fix for \"unarchived WAL files get deleted on crash recovery\" bug.",
+      "status": "Partially reverted",
+      "date": "2013-02-15",
+      "first_date": "2013-02-15",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1bd42cd70abdbc946ad64c3c8eaefed4bb8b1145",
+      "thread_urls": [],
+      "authors": "Heikki Linnakangas",
+      "objectors": "",
+      "summary": "Better fix for \"unarchived WAL files get deleted on crash recovery\" bug.\nReverted commit(s): Don't delete unarchived WAL files during crash recovery.",
+      "objection": "Revert my earlier fix for the bug that unarchived WAL files get deleted on\ncrash recovery, commit c9cc7e05c6d82a9781883a016c70d95aa4923122. We create\na .done file for files streamed or restored from archive, so the WAL file\nrecycling logic used during normal operation works just as well during\narchive recovery.\n\nPer Fujii Masao's suggestion.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "SyncDataDirectory crash recovery fsync"
+      ],
+      "from_hint": false,
+      "score": 0.095,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:3813",
+      "kind": "cf",
+      "title": "asynchronous execution support for Custom Scan",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2022-08-13",
+      "url": "https://commitfest.postgresql.org/patch/3813/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJuF6cOMdvHSe+_7eHxzHGB3CVC9a890gBLLbpZTvi2pGgnB2g@mail.gmail.com"
+      ],
+      "authors": "KaiGai Kohei (kaigai), kazutaka onishi (onishi)",
+      "objectors": "",
+      "summary": "asynchronous execution support for Custom Scan\nThreads: Asynchronous execution support for Custom Scan",
+      "objection": "",
+      "touch_points": [
+        "ABI / extension API"
+      ],
+      "matched_queries": [
+        "asynchronous fsync checkpointer"
+      ],
+      "from_hint": false,
+      "score": 0.094,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:4329",
+      "kind": "cf",
+      "title": "Issue in postgres_fdw causing unnecessary wait for cancel request reply",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2023-04-11",
+      "url": "https://commitfest.postgresql.org/patch/4329/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/e587761c-eef3-1f83-bf16-6dadba0acaab@oss.nttdata.com"
+      ],
+      "authors": "Fujii Masao (masaofujii)",
+      "objectors": "",
+      "summary": "Issue in postgres_fdw causing unnecessary wait for cancel request reply\nThreads: Issue in postgres_fdw causing unnecessary wait for cancel request\nreply",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "sync request queue checkpoint performance"
+      ],
+      "from_hint": false,
+      "score": 0.094,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:1060",
+      "kind": "cf",
+      "title": "REINDEX CONCURRENTLY",
+      "status": "Returned with feedback",
+      "date": "2017-04-03",
+      "first_date": "2013-11-15",
+      "url": "https://commitfest.postgresql.org/patch/1060/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAB7nPqSTFkuc7dZxCDX4HOTU63YXHRroNv2aoUzyD-Zz_8Z_Zg@mail.gmail.com"
+      ],
+      "authors": "Michael Paquier (michael-kun), Andreas Karlsson (kandreas)",
+      "objectors": "",
+      "summary": "REINDEX CONCURRENTLY\nThreads: REINDEX CONCURRENTLY 2.0",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "ProcessSyncRequests concurrent fsync"
+      ],
+      "from_hint": false,
+      "score": 0.091,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 8,
+    "new_calls": 0,
+    "failed": 0,
+    "quotes_verified": 0,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 3
+  },
+  "precedent_cutoff": "2026-08-25",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found with the same idea. [P6] built the AIO subsystem and lapsed from inactivity, [P1] was withdrawn as redundant, and [P4] concerned WAL rows in pg_stat_io; none of these reasons applies here. Message #1 says the idea comes from Andres Freund's earlier branch work, and the thread reports no rejection of it."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 2,
+      "note": "The pg_stat_io fsync_time semantics were settled in messages #2 to #7 by following the async-read accounting. The NULL off and length values in pg_aios follow the existing view. The SyncOps reshape is internal because sync handlers are a fixed table."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 1,
+      "note": "The proposal changes no on-disk format, WAL record, catalog or wire protocol, and the SyncOps and AIO target changes are internal to a major release. The fsync=off to on reload race was settled in v3 (messages #7 and #8). Checkpoint completion ordering and standby restartpoints share the same path and cannot be checked without the code."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal has no privilege or exposure aspect. The new fsyncs run only in the checkpointer, the startup process and I/O workers, on files these processes already sync, and users gain no new command, function or default. The one new user-visible data is the SLRU name and segment number shown in pg_aios, which is not sensitive. The fsync=off to on reload race was a durability issue, and v3 fixed it by capturing the issuer's setting. Foreground latency during fsync bursts is a performance question for another angle."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "Objections listed; the code was not reviewed, so struct size and per-handle cost of the FileTag target could not be checked."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 2,
+      "note": "No extension or contrib module overlaps the checkpoint part. The objections cover the SyncDataDirectory() overlap with syncfs and the existing checkpoint_flush_after mechanism."
+    },
+    {
+      "angle": "demand",
+      "objections": 2,
+      "note": "The checkpoint part addresses a known serial bottleneck, and two reviewers support the direction. The objections ask for evidence about the startup path and about default settings. They do not reject the idea."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 10,
+      "new_survived": 4,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "attachment limit (8) reached; v1-0001-aio-Add-fsync-support.patch not read",
+    "attachment limit (8) reached; v1-0002-Issue-SyncDataDirectory-fsyncs-through-AIO.patch not read",
+    "attachment limit (8) reached; v1-0003-Issue-checkpointer-fsyncs-asynchronously.patch not read",
+    "attachment limit (8) reached; v1-0004-Allow-IO-workers-to-execute-SLRU-fsyncs.patch not read",
+    "synthesis said NEEDS-COMMITTER-EYES but listed a level 1b objection (already-exists-2); changed to NEEDS-DESIGN-DISCUSSION"
+  ],
+  "tone_lint": {
+    "fields_checked": 98,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 12,
+    "wall_ms": 151885,
+    "cost_usd": 2.4979322,
+    "dry_run": false
+  }
+}

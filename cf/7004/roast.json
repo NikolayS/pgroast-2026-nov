@@ -1,0 +1,1360 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:13:15.727Z",
+  "input": {
+    "arg": "7004",
+    "cf": {
+      "id": 7004,
+      "url": "https://commitfest.postgresql.org/patch/7004/",
+      "title": "pg_xmin_horizon system view",
+      "status": "Needs review",
+      "authors": "Scott Ray (scottray)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/AT-erSWn0vFw8TYLb84jqyfxgTV21gjwEo4YJDcses8qWtDkQK_pS6g2OIfVh4-L1PPn94w8-tE1mHZactVAgxPJ8vL96MXsyAnUg2Xz-Ks%3D%40scottray.io",
+    "subject": "pg_xmin_horizon: a system view of everything pinning the xmin horizon",
+    "thread_start": "2026-07-12T00:22:00Z",
+    "messages_read": 30,
+    "messages_total": 30,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v10-0001-Add-pg_xmin_horizon-view-showing-per-input-horiz.patch",
+      "v1-0001-Add-pg_xmin_horizon-view-showing-per-input-horizo.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection questions the problem or the demand, and the three that survived are fixable level 2 points. The shape and name of the view (standards-compat-1) and the unguarded second copy of the horizon rules (maintenance-fit-1) need a decision from a committer who knows procarray.c. The v8 standby support (maintenance-fit-2) has no visible review. No committer has replied in 30 messages.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "pg_xmin_horizon view listing every input that pins the xmin horizons",
+    "problem": "Finding what holds back the xmin horizon means joining pg_stat_activity, pg_replication_slots, pg_prepared_xacts and pg_stat_replication, and even that join is only approximate. Slot effective xmins and the proc flags that make ComputeXidHorizons() skip a backend are not visible from SQL. DBAs who do not know all the sources may miss the holder, or terminate a plain VACUUM that pins nothing.",
+    "proposed_design": "A new SRF, pg_get_xmin_horizon(), and a view on top of it return one row per horizon input with its contribution to the shared, catalog and data horizons. The SRF reads procs in one ProcArrayLock pass and slots in a separate pass, so rows are not guaranteed consistent with each other. The view does no ranking, and it includes inputs that pin nothing.",
+    "user_visible_surface": [
+      "New system view pg_xmin_horizon with columns kind, pid, slot_name, gid, datid, datname, xid, shared_xmin, catalog_xmin, data_xmin, xact_start.",
+      "New function pg_get_xmin_horizon(), restricted to pg_read_all_stats like the view.",
+      "kind values: backend, replication_slot, prepared_xact, standby_feedback, and primary_xacts during recovery.",
+      "maintenance.sgml wraparound steps now point to pg_xmin_horizon and no longer to pg_stat_activity, pg_prepared_xacts and pg_replication_slots.",
+      "maintenance.sgml now says datfrozenxid is no newer than, and normally equal to, the minimum relfrozenxid."
+    ],
+    "author_claims": [
+      "A UNION over existing views can only approximate the answer, because slot effective xmins and horizon classification are not exposed.",
+      "The existing wraparound doc steps are wrong, since pg_stat_activity shows backend_xmin for backends the horizons skip.",
+      "Commercial tools and Andres's wishlist show demand for this view.",
+      "A per-horizon summary can be built from per-source rows, but per-source rows cannot be rebuilt from a summary.",
+      "Keeping the logic in C, next to ComputeXidHorizons(), makes it easier to review and keep in sync."
+    ],
+    "thread_state": "Solai, Surya and Bharath reviewed several versions, and Bharath and Surya accepted the C-function approach. Sami proposed a per-horizon base function, Surya suggested providing both shapes, and Scott declined; v10 is posted and no committer has replied.",
+    "unclear": [
+      "No committer has said which shape is wanted, per-source rows or per-horizon rows; earlier committer messages cited in the thread ask for both.",
+      "How the view will stay correct when ComputeXidHorizons() changes, beyond keep-in-sync comments and a shared macro.",
+      "The material shows no review of the v8 standby support and primary_xacts row.",
+      "Whether to split the 1400-line patch, as Bharath asked; the author declined.",
+      "Whether the view should apply HAS_PGSTAT_PERMISSIONS per row; the author says only pg_read_all_stats is needed."
+    ],
+    "search_queries": [
+      "xmin horizon view",
+      "oldest xmin source vacuum",
+      "expose oldest xmin function monitoring",
+      "vacuum blockers view",
+      "replication slot effective xmin",
+      "prepared transaction holding back vacuum",
+      "ComputeXidHorizons sql function",
+      "pg_stat_activity backend_xmin vacuum flag"
+    ]
+  },
+  "prior_attempts": [],
+  "objections": [
+    {
+      "title": "Second copy of the horizon rules has no test that catches drift",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch changes which procs or slot xmins ComputeXidHorizons() counts, for example a new status flag or a new kind of horizon input, and does not touch procarrayfuncs.c. pg_xmin_horizon keeps showing the old classification. A DBA then terminates a backend the horizon already ignores and misses the real holder, and nobody notices until a field report arrives.",
+      "argument": "Message #1 (note 7) says the view loses fidelity if the two copies diverge. The only guards are comments, one shared macro (message #23, item 17) and a remaining keep-in-sync comment on slot xmins (message #24). Sami proposed a shared ComputeXidHorizonsData() collector so the SQL side would not reinterpret procarray rules (message #25), and message #27 declined it. Master having other keep-in-sync comments is a fair point, but those mostly guard code paths that tests cover, and the tests here only cover today's kinds.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        20,
+        23,
+        24,
+        25,
+        27
+      ],
+      "author_must_show": "Which test or assertion fails when ComputeXidHorizons() and pg_get_xmin_horizon() classify the same proc or slot differently?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Scott Ray",
+          "date": "2026-07-12T00:22:00Z",
+          "url": "https://www.postgresql.org/message-id/AT-erSWn0vFw8TYLb84jqyfxgTV21gjwEo4YJDcses8qWtDkQK_pS6g2OIfVh4-L1PPn94w8-tE1mHZactVAgxPJ8vL96MXsyAnUg2Xz-Ks%3D%40scottray.io"
+        },
+        {
+          "index": 20,
+          "from": "Sami Imseih",
+          "date": "2026-09-18T01:59:57Z",
+          "url": "https://www.postgresql.org/message-id/CAN12%2BYLWDpmYh4ndVa02Uyi1EPG%2Bd8s4PL-S8oBNYojYQxT35w%40mail.gmail.com"
+        },
+        {
+          "index": 23,
+          "from": "Scott Ray",
+          "date": "2026-09-27T20:58:56Z",
+          "url": "https://www.postgresql.org/message-id/qhODUcdKmqtOtwF4bW03SxPfKHda4EC7CEO2Ddj2jThrGRa8F1pDMA7LtG0R5JRo-2GK5RStXVP7tPP7WAUvfb_GCSN_I_YG7khDW859Fxg%3D%40scottray.io"
+        },
+        {
+          "index": 24,
+          "from": "Scott Ray",
+          "date": "2026-09-27T21:06:48Z",
+          "url": "https://www.postgresql.org/message-id/5x8VRERZxSIJ7thPBHMfEnE01ak_VVoMlCewFS2mhRB7q8Iy_3LP7qCtI_KVjd_bCMZ8_HDBmlabKuADPaic1KDJHAJMl3mSCaT4DgumPdE%3D%40scottray.io"
+        },
+        {
+          "index": 25,
+          "from": "Sami Imseih",
+          "date": "2026-09-28T19:36:24Z",
+          "url": "https://www.postgresql.org/message-id/CAN12%2BYLOLcsePG8r9m9gTomXHbJ6ynd%2B-eLHmoN4eoBBQMSVKw%40mail.gmail.com"
+        },
+        {
+          "index": 27,
+          "from": "Scott Ray",
+          "date": "2026-10-05T01:41:56Z",
+          "url": "https://www.postgresql.org/message-id/i2q1k7cXS05oPhU_tBZfXKJ0tgqQ6unlVDrB8EhjjazAHmGhX3Qk9AAhybbf59b0yA_BH66GWzTc1hwvnnJb5WFApD1apw6DTrhAZSHqL3E%3D%40scottray.io"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #1 note 7 states the drift risk, and the guards shown are one macro and comments. The material names no test or assertion that fails when the two classifications diverge.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "View name and row shape fixed before the per-horizon question is settled",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "sql_standard_syntax",
+      "touch_points": [
+        "sql_standard_syntax",
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "Monitoring tools and runbooks adopt pg_xmin_horizon with per-source rows in v20. A later release adds the per-horizon summary that was also asked for. That summary cannot use the natural name, so users get two views whose names do not say which one holds horizons and which holds inputs.",
+      "argument": "Message #26 shows that two earlier committer messages ask for different shapes, and message #28 keeps per-source rows as the only interface. The singular name \"pg_xmin_horizon\" reads as the horizon values, but no row is a horizon: there are three horizons per database. The author rejected pg_vacuum_blockers in message #15 because names must describe contents, and the same rule applies to this name. No committer has picked a shape, and a system view name is hard to take back once tools depend on it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        14,
+        15,
+        20,
+        25,
+        26,
+        27,
+        28
+      ],
+      "author_must_show": "If a per-horizon view is added later, what would it be called, and why does pg_xmin_horizon describe per-source rows better than a name such as pg_xmin_horizon_sources?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 14,
+          "from": "Bharath Rupireddy",
+          "date": "2026-09-01T03:15:00Z",
+          "url": "https://www.postgresql.org/message-id/CALj2ACWiuAh0BmePj1J7U_KtK1KE8rY89kN5BvWD%2BqUjmzAsAg%40mail.gmail.com"
+        },
+        {
+          "index": 15,
+          "from": "Scott Ray",
+          "date": "2026-09-05T03:25:05Z",
+          "url": "https://www.postgresql.org/message-id/3TmV7r48RekS9lI-goS5ZDrVOfRrrNwFY1nnghf05L3Ays6_km2Qu0LWqCg_-LhUJrUbKjhpm9VI6pjB7aZTpIMEe_9kAkpL_j4Dj08KazY%3D%40scottray.io"
+        },
+        {
+          "index": 20,
+          "from": "Sami Imseih",
+          "date": "2026-09-18T01:59:57Z",
+          "url": "https://www.postgresql.org/message-id/CAN12%2BYLWDpmYh4ndVa02Uyi1EPG%2Bd8s4PL-S8oBNYojYQxT35w%40mail.gmail.com"
+        },
+        {
+          "index": 25,
+          "from": "Sami Imseih",
+          "date": "2026-09-28T19:36:24Z",
+          "url": "https://www.postgresql.org/message-id/CAN12%2BYLOLcsePG8r9m9gTomXHbJ6ynd%2B-eLHmoN4eoBBQMSVKw%40mail.gmail.com"
+        },
+        {
+          "index": 26,
+          "from": "surya poondla",
+          "date": "2026-09-29T18:28:03Z",
+          "url": "https://www.postgresql.org/message-id/CAOVWO5pALh%3DMiP-RtEcy91K3t%2BOJKXkoTjCF1U9_uva28r3b_g%40mail.gmail.com"
+        },
+        {
+          "index": 27,
+          "from": "Scott Ray",
+          "date": "2026-10-05T01:41:56Z",
+          "url": "https://www.postgresql.org/message-id/i2q1k7cXS05oPhU_tBZfXKJ0tgqQ6unlVDrB8EhjjazAHmGhX3Qk9AAhybbf59b0yA_BH66GWzTc1hwvnnJb5WFApD1apw6DTrhAZSHqL3E%3D%40scottray.io"
+        },
+        {
+          "index": 28,
+          "from": "Scott Ray",
+          "date": "2026-10-05T01:46:33Z",
+          "url": "https://www.postgresql.org/message-id/dQhNr2KEwosovTvtTZYLEiW8XP-aTKRpBwtXyGO6hctiD9MPiV3e5RF3WiWndu-farqbW1NLJU-aL9lZ5qn1IKi-A9dKD-hjaY71xqC6UBs%3D%40scottray.io"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #25 and #26 show two shapes were asked for, and no committer has chosen. The author's own rule in message #15, that names denote contents, leaves open why a singular horizon name fits per-source rows.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Standby support enlarged an all-or-nothing patch that no committer has reviewed",
+      "level": "2",
+      "rubric_item": 16,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "The patch goes in with the v8 primary_xacts row that reads KnownAssignedXids under ProcArrayLock. A standby then reports a wrong or missing primary_xacts row after promotion or during a snapshot overflow. The committer who must fix it reviewed none of the recovery path, and the thread shows no review of it.",
+      "argument": "Message #1 planned standby support as a follow-up, and v8 folded it in (message #27), so the patch grew past the 1400 lines Bharath already found hard to review (message #14). The author declined to split it (message #15), and the brief notes the v8 standby code has no visible review. No committer has posted in 30 messages, although the patch reaches into procarray.c and backend_status.c, where errors are hard to see. A primary-only first commit, with standby support afterwards, matches the original plan.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        14,
+        15,
+        27
+      ],
+      "author_must_show": "Can the primary-only view be committed first, with the KnownAssignedXids and primary_xacts support as a separately reviewed second patch?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "Scott Ray",
+          "date": "2026-07-12T00:22:00Z",
+          "url": "https://www.postgresql.org/message-id/AT-erSWn0vFw8TYLb84jqyfxgTV21gjwEo4YJDcses8qWtDkQK_pS6g2OIfVh4-L1PPn94w8-tE1mHZactVAgxPJ8vL96MXsyAnUg2Xz-Ks%3D%40scottray.io"
+        },
+        {
+          "index": 14,
+          "from": "Bharath Rupireddy",
+          "date": "2026-09-01T03:15:00Z",
+          "url": "https://www.postgresql.org/message-id/CALj2ACWiuAh0BmePj1J7U_KtK1KE8rY89kN5BvWD%2BqUjmzAsAg%40mail.gmail.com"
+        },
+        {
+          "index": 15,
+          "from": "Scott Ray",
+          "date": "2026-09-05T03:25:05Z",
+          "url": "https://www.postgresql.org/message-id/3TmV7r48RekS9lI-goS5ZDrVOfRrrNwFY1nnghf05L3Ays6_km2Qu0LWqCg_-LhUJrUbKjhpm9VI6pjB7aZTpIMEe_9kAkpL_j4Dj08KazY%3D%40scottray.io"
+        },
+        {
+          "index": 27,
+          "from": "Scott Ray",
+          "date": "2026-10-05T01:41:56Z",
+          "url": "https://www.postgresql.org/message-id/i2q1k7cXS05oPhU_tBZfXKJ0tgqQ6unlVDrB8EhjjazAHmGhX3Qk9AAhybbf59b0yA_BH66GWzTc1hwvnnJb5WFApD1apw6DTrhAZSHqL3E%3D%40scottray.io"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The reply in message #15 answers a per-kind split, but a primary-only first patch is separately committable, as v1 to v7 were. The promotion and overflow scenario is speculative, so the objection rests on patch shape and the unreviewed v8 standby code.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "All-or-nothing access differs from the per-row model of session views",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "security_privileges",
+      "touch_points": [
+        "security_privileges",
+        "psql_ux"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An application role without pg_read_all_stats holds a long idle-in-transaction session. Today it can see its own backend_xmin in pg_stat_activity. When it queries the new view that the wraparound docs now point to, it gets permission denied and cannot see even its own row.",
+      "argument": "Message #22 justifies the model with pg_shmem_allocations, pg_backend_memory_contexts, pg_dsm_registry_allocations and pg_aios. Those views describe server memory and I/O. pg_xmin_horizon reports sessions, their pids and their transactions, which is what pg_stat_activity reports with HAS_PGSTAT_PERMISSIONS per row. Messages #16 and #17 raise this asymmetry, and the thread does not settle it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        14,
+        16,
+        17,
+        22
+      ],
+      "author_must_show": "Why should a view about sessions follow the memory-view access model instead of pg_stat_activity's model, where owners see their own rows?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 14,
+          "from": "Bharath Rupireddy",
+          "date": "2026-09-01T03:15:00Z",
+          "url": "https://www.postgresql.org/message-id/CALj2ACWiuAh0BmePj1J7U_KtK1KE8rY89kN5BvWD%2BqUjmzAsAg%40mail.gmail.com"
+        },
+        {
+          "index": 16,
+          "from": "Bharath Rupireddy",
+          "date": "2026-09-12T00:40:41Z",
+          "url": "https://www.postgresql.org/message-id/CALj2ACXrPZA3VYzbP7tMag3E4CCo3Uv0D%2BqNgtGRdLi%3DYJWSgg%40mail.gmail.com"
+        },
+        {
+          "index": 17,
+          "from": "surya poondla",
+          "date": "2026-09-15T18:48:49Z",
+          "url": "https://www.postgresql.org/message-id/CAOVWO5qUeLqodn1mxCQtdPKuHXVdLKD1oiaYZuXUKzu4VepVVw%40mail.gmail.com"
+        },
+        {
+          "index": 22,
+          "from": "Scott Ray",
+          "date": "2026-09-27T19:20:02Z",
+          "url": "https://www.postgresql.org/message-id/4U4e3pJ5KQ-tMTpmBNHbrWptLVZb2m3DJoryggEAnGJKGhrcYoiDzE-ZvuTpUBHiX5EREnX1Ni-aqolFYkwCQaJnEBCfik589NXNcaOnhdc%3D%40scottray.io"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The role in the scenario still sees its own backend_xmin in pg_stat_activity, so it loses nothing. A restrictive default can be loosened later with a grant, and Bharath called the asymmetry \"probably okay\" in message #16.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "datid means something different during recovery",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "design",
+      "touch_points": [
+        "wal_replication",
+        "psql_ux"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA writes a check that filters backend rows by datid, following the docs, and runs it fleet-wide. On a standby the same filter gives a misleading answer, because the docs say datid scopes pins only outside recovery. The DBA finds out only when the standby's horizon does not move after the expected fix.",
+      "argument": "The v10 docs say \"Except during recovery, datid scopes what a row pins\", so one column has two meanings depending on server state. The v8 standby support and the primary_xacts row have no review shown in the thread. Existing views keep a column's meaning the same on primary and standby.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        27,
+        30
+      ],
+      "author_must_show": "How does a query written against pg_xmin_horizon on a primary give a correct answer on a standby without checking pg_is_in_recovery()?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 27,
+          "from": "Scott Ray",
+          "date": "2026-10-05T01:41:56Z",
+          "url": "https://www.postgresql.org/message-id/i2q1k7cXS05oPhU_tBZfXKJ0tgqQ6unlVDrB8EhjjazAHmGhX3Qk9AAhybbf59b0yA_BH66GWzTc1hwvnnJb5WFApD1apw6DTrhAZSHqL3E%3D%40scottray.io"
+        },
+        {
+          "index": 30,
+          "from": "Scott Ray",
+          "date": "2026-10-19T02:02:18Z",
+          "url": "https://www.postgresql.org/message-id/IE-7Lw7h84_wAjPoUvRN4uyYBjjXWjxWXRtFFQyo5oMyG2buvI6S8xZLiVbHryVXkvbNah1agwdUn00PzAfu04sjcE8iulT4h6YdKpgyFe0%3D%40scottray.io"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "already_handled",
+        "reasoning": "datid names the same database on primary and standby. The scoping differs because ComputeXidHorizons() counts backends of all databases during recovery, and the v10 docs say so. The missing review of standby support is covered by maintenance-fit-2.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "View columns freeze the internal shared, catalog and data split",
+      "level": "2",
+      "rubric_item": 6,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden",
+        "catalog"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A future release changes how horizons are grouped, for example by adding or merging a class. pg_xmin_horizon then has to rename or drop shared_xmin, catalog_xmin or data_xmin, or report values that no longer match what VACUUM uses. Monitoring queries written against the documented wraparound steps then break, or quietly return wrong answers.",
+      "argument": "The author argues that proc flags and the cached slot xmins are implementation details that should stay out of public views (messages #12 and #28). The three horizon classes are internal to ComputeXidHorizons() in the same way, and the view turns them into column names that maintenance.sgml tells users to sort on. The thread has not settled the shape: Sami and Surya point to committer messages asking for per-source rows and for per-horizon rows (messages #25 and #26), and no committer has chosen between them.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        12,
+        25,
+        26,
+        28
+      ],
+      "author_must_show": "Why are the three horizon classes stable enough to publish as permanent column names when the proc flags and the cached slot xmins are not?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 12,
+          "from": "Scott Ray",
+          "date": "2026-09-01T01:47:19Z",
+          "url": "https://www.postgresql.org/message-id/_v-TXkivtfKDQiGSqD554fcsG2mFRvO20t4g2Msycyd-ruyWwO0NrIetxDISwd-o1vWi3zbwht90cnZWeUAa4KlM6kDFUylyNik9irEIap0%3D%40scottray.io"
+        },
+        {
+          "index": 25,
+          "from": "Sami Imseih",
+          "date": "2026-09-28T19:36:24Z",
+          "url": "https://www.postgresql.org/message-id/CAN12%2BYLOLcsePG8r9m9gTomXHbJ6ynd%2B-eLHmoN4eoBBQMSVKw%40mail.gmail.com"
+        },
+        {
+          "index": 26,
+          "from": "surya poondla",
+          "date": "2026-09-29T18:28:03Z",
+          "url": "https://www.postgresql.org/message-id/CAOVWO5pALh%3DMiP-RtEcy91K3t%2BOJKXkoTjCF1U9_uva28r3b_g%40mail.gmail.com"
+        },
+        {
+          "index": 28,
+          "from": "Scott Ray",
+          "date": "2026-10-05T01:46:33Z",
+          "url": "https://www.postgresql.org/message-id/dQhNr2KEwosovTvtTZYLEiW8XP-aTKRpBwtXyGO6hctiD9MPiV3e5RF3WiWndu-farqbW1NLJU-aL9lZ5qn1IKi-A9dKD-hjaY71xqC6UBs%3D%40scottray.io"
+        }
+      ],
+      "id": "maintenance-fit-3",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "no_failure_scenario",
+        "reasoning": "The scenario depends on an unnamed future regrouping of horizons. pg_replication_slots already publishes the xmin and catalog_xmin split, and the per-horizon shape in message #25 exposes the same three classes, so the cost is not specific to this design.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "The SRF reads replication slot effective xmins and, during recovery, KnownAssignedXids for the primary_xacts row."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": true,
+      "reason": "The patch adds the pg_xmin_horizon system view and a pg_proc entry for pg_get_xmin_horizon()."
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The patch changes proc.h, procarray.h and backend_status.h, which extensions include."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": true,
+      "reason": "see objection standards-compat-1: View name and row shape fixed before the per-horizon question is settled"
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": true,
+      "reason": "The view and function are revoked from PUBLIC and granted to pg_read_all_stats, with no per-row check."
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "procarrayfuncs.c repeats the classification rules of ComputeXidHorizons(), guarded by comments and one shared macro."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "The patch touches procarray.c near ComputeXidHorizons(), and each call takes ProcArrayLock in shared mode."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Which test or assertion fails when ComputeXidHorizons() and pg_get_xmin_horizon() classify the same proc or slot differently?",
+    "If a per-horizon view is added later, what would it be called, and why does pg_xmin_horizon fit per-source rows better than a name such as pg_xmin_horizon_sources?",
+    "Can the primary-only view be committed first, with the KnownAssignedXids and primary_xacts support as a separately reviewed second patch?",
+    "Who has reviewed the v8 recovery path, and which tests cover the primary_xacts row?",
+    "Why was the shared collector proposed in message #25 declined, given that it would remove the second copy of the classification rules?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "It needs a committer who knows procarray.c, snapshot horizons and replication slot xmin handling. None has posted in the visible thread.",
+    "liability": "The owner signs for a permanent system view whose rows must match ComputeXidHorizons() in every later release, on primaries and on standbys, and for wraparound documentation that now sends users to it.",
+    "author_follow_up": "The author posted ten versions in four months, answered each reviewer and kept the patch rebased. That is a good sign for post-commit fixes."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "a sizeable minority",
+    "maintenance_burden": "medium",
+    "review_cost": "medium",
+    "recommended_action": "needs champion",
+    "reason": "Demand is shown by a field report, commercial tools and earlier committer requests, and three reviewers have gone through the patch. It is waiting for a committer to choose the row shape and to accept a 1400-line patch that touches procarray.c."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read. Whether the v8 recovery path reads KnownAssignedXids correctly, and whether the classification matches ComputeXidHorizons() today, can only be judged from the patch.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "revert:e28bb885196916b0a3d898ae4f2be0e38108d81b",
+      "kind": "revert",
+      "title": "Revert changes to CONCURRENTLY that \"sped up\" Xmin advance",
+      "status": "Reverted",
+      "date": "2022-05-31",
+      "first_date": "2021-02-23",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e28bb885196916b0a3d898ae4f2be0e38108d81b",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/17485-396609c6925b982d@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/20210115133858.GA18931@alvherre.pgsql"
+      ],
+      "authors": "Alvaro Herrera",
+      "objectors": "",
+      "summary": "Revert changes to CONCURRENTLY that \"sped up\" Xmin advance\nReverted commit(s): VACUUM: ignore indexing operations with CONCURRENTLY",
+      "objection": "This reverts commit d9d076222f5b \"VACUUM: ignore indexing operations\nwith CONCURRENTLY\".\n\nThese changes caused indexes created with the CONCURRENTLY option to\nmiss heap tuples that were HOT-updated and HOT-pruned during the index\ncreation.  Before these changes, HOT pruning would have been prevented\nby the Xmin of the transaction creating the index, but because this\nchange was precisely to allow the Xmin to move forward ignoring that\nbackend, now other backends scanning the table can prune them.  This is\nnot a problem for VACUUM (which requires a lock that conflicts with a\nCREATE INDEX CONCURRENTLY operation), but HOT-prune can definitely\noccur.  In other words, Xmin advancement was sped up, but at the cost of\ncorrupting the resulting index.\n\nRegrettably, this means that the new feature in PG14 that RIC/CIC on\nvery large tables no longer force VACUUM to retain very old tuples goes\naway.  We might try to implement it again in a later release, but for\nnow the risk of indexes missing tuples is too high and there's no easy\nfix.\n\nBackpatch to 14, where this change appeared.\n\nDiagnosys-by: Andrey Borodin <x4mmm@yandex-team.ru>\nDiagnosys-by: Michael Paquier <michael@paquier.xyz>\nDiagnosys-by: Andres Freund <andres@anarazel.de>",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "xmin horizon view",
+        "oldest xmin source vacuum",
+        "expose oldest xmin function monitoring"
+      ],
+      "from_hint": false,
+      "score": 0.396,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "revert:efcbb76efe406d59c2ba8b4a09e04c01158ba575",
+      "kind": "revert",
+      "title": "Revert \"Test that vacuum removes tuples older than OldestXmin\"",
+      "status": "Reverted",
+      "date": "2024-07-22",
+      "first_date": "2024-07-19",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=efcbb76efe406d59c2ba8b4a09e04c01158ba575",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/614152.1721580711@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/CAAKRu_apNU2MPBK96V+bXjTq0RiZ-=A4ZTaysakpx9jxbq1dbQ@mail.gmail.com"
+      ],
+      "authors": "Melanie Plageman",
+      "objectors": "",
+      "summary": "Revert \"Test that vacuum removes tuples older than OldestXmin\"\nReverted commit(s): Test that vacuum removes tuples older than OldestXmin",
+      "objection": "This reverts commit aa607980aee08416211f003ab41aa750f5559712.\n\nThis test proved to be unstable on the buildfarm, timing out before the\nstandby could catch up on 32-bit machines where more rows were required\nand failing to reliably trigger multiple index vacuum rounds on 64-bit\nmachines where fewer rows should be required.\n\nBecause the instability is only known to be present on versions of\nPostgres with TIDStore used for dead TID storage by vacuum, this is only\nbeing reverted on master and REL_17_STABLE.\n\nAs having this coverage may be valuable, there is a discussion on the\nthread of possible ways to stabilize the test. If that happens, a fixed\ntest can be committed again.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "oldest xmin source vacuum",
+        "expose oldest xmin function monitoring"
+      ],
+      "from_hint": false,
+      "score": 0.228,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:4210",
+      "kind": "cf",
+      "title": "Track Oldest Initialized WAL Buffer Page",
+      "status": "Returned with feedback",
+      "date": "2023-08-03",
+      "first_date": "2023-02-07",
+      "url": "https://commitfest.postgresql.org/patch/4210/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACVgi6LirgLDZh=FdfdvGvKAD==WTOSWcQy=AtNgPDVnKw@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "Heikki Linnakangas",
+      "summary": "The patch adds an OldestInitializedPage field to XLogCtl that tracks the start address of the oldest initialized WAL buffer page, updated under WALBufMappingLock. Its purpose is to let callers check quickly, without a lock, whether a WAL record is still in the WAL buffers, and to walk the buffers from oldest to newest.",
+      "objection": "Heikki Linnakangas showed that a caller can already check whether a record is in WAL buffers by comparing xlblocks[idx] with the expected page end pointer, with an atomic read if stale results are fine. He saw no need to track OldestInitializedPage. The author did not reply, and the entry was returned with feedback after the thread stalled.",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "oldest xmin source vacuum",
+        "expose oldest xmin function monitoring"
+      ],
+      "from_hint": false,
+      "score": 0.21,
+      "enriched": true,
+      "key_quote": "But I don't see the point of tracking OldestInitializedPage. It\nseems cheap enough that we could, if there's a need for it, but I don't\nsee the need.",
+      "quote_message_url": "https://www.postgresql.org/message-id/82dad3ca-035c-c5f3-d230-ff7d11b6e573%40iki.fi",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:1334",
+      "kind": "cf",
+      "title": "Lockable views",
+      "status": "Returned with feedback",
+      "date": "2017-11-29",
+      "first_date": "2017-10-11",
+      "url": "https://commitfest.postgresql.org/patch/1334/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20171011183629.eb2817b3.nagata@sraoss.co.jp"
+      ],
+      "authors": "Yugo Nagata (yugo.nagata)",
+      "objectors": "Robert Haas, Michael Paquier",
+      "summary": "The patch lets LOCK TABLE work on automatically updatable views without INSTEAD OF rules or triggers. Locking such a view also locks its base relation, recursively through nested views.",
+      "objection": "Robert Haas questioned the core behavior and expected LOCK TABLE on a view to lock only the view, pointing to earlier discussion. Michael Paquier agreed and returned the patch because the author had not replied to that objection for one month.",
+      "touch_points": [],
+      "matched_queries": [
+        "xmin horizon view",
+        "vacuum blockers view"
+      ],
+      "from_hint": false,
+      "score": 0.202,
+      "enriched": true,
+      "key_quote": "I would have expected LOCK TABLE v to lock the view and nothing else.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoa2ywTctLxnzq4QPpJQeAuGCSam6Y4Q52vFEbcf2KvF4Q%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:1948",
+      "kind": "cf",
+      "title": "Triggers on Materialized Views",
+      "status": "Returned with feedback",
+      "date": "2019-04-01",
+      "first_date": "2018-12-25",
+      "url": "https://commitfest.postgresql.org/patch/1948/",
+      "thread_urls": [],
+      "authors": "Mi Tar (mitar)",
+      "objectors": "",
+      "summary": "Triggers on Materialized Views",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "xmin horizon view",
+        "vacuum blockers view"
+      ],
+      "from_hint": false,
+      "score": 0.193,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "wiki:Views_and_Rules:1",
+      "kind": "do_not_want",
+      "title": "Allow VIEW/RULE recompilation when the underlying tables change",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Views_and_Rules",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/87mwe4k46y.fsf@commandprompt.com"
+      ],
+      "authors": "",
+      "objectors": "Tom Lane",
+      "summary": "Have ALTER TABLE ALTER COLUMN ... TYPE automatically re-create or rewrite views that depend on the altered column, instead of failing. Participants suggested making this explicit (e.g. a CASCADE option) and discussed whether the stored view rule should be manipulated directly or deparsed and reparsed.",
+      "objection": "Tom Lane argued that the command should keep failing. He said any automatic fix inside ALTER TABLE would often do the wrong thing, and that the real need is a client-side tool that shows users the semantic changes for approval. He also pointed out that the change is already possible by temporarily redefining the view inside a transaction, so this work belongs in an external tool, not in the backend. Robert Haas disagreed and wanted the operation to be easy, but the visible messages end without that being resolved.",
+      "touch_points": [],
+      "matched_queries": [
+        "xmin horizon view",
+        "vacuum blockers view"
+      ],
+      "from_hint": false,
+      "score": 0.182,
+      "enriched": true,
+      "key_quote": "It is not the backend's task to fix this case, and any\nsmarts you try to put into ALTER TABLE to make it work are certain\nto do the wrong thing a distressingly high percentage of the time.",
+      "quote_message_url": "https://www.postgresql.org/message-id/29188.1401760829%40sss.pgh.pa.us",
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:1953",
+      "kind": "cf",
+      "title": "Triggers on materialized views",
+      "status": "Withdrawn",
+      "date": "2019-01-04",
+      "first_date": "2018-12-28",
+      "url": "https://commitfest.postgresql.org/patch/1953/",
+      "thread_urls": [],
+      "authors": "Mi Tar (mitar)",
+      "objectors": "",
+      "summary": "Triggers on materialized views",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "xmin horizon view",
+        "vacuum blockers view"
+      ],
+      "from_hint": false,
+      "score": 0.178,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:1573",
+      "kind": "cf",
+      "title": "Changing the autovacuum launcher scheduling; oldest table first algorithm",
+      "status": "Returned with feedback",
+      "date": "2018-11-30",
+      "first_date": "2018-02-28",
+      "url": "https://commitfest.postgresql.org/patch/1573/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAD21AoBUaSRBypA6pd9ZD=U-2TJCHtbyZRmrS91Nq0eVQ0B3BA@mail.gmail.com"
+      ],
+      "authors": "Masahiko Sawada (masahikosawada)",
+      "objectors": "Michael Paquier",
+      "summary": "The patch changes how the autovacuum launcher picks a database when one is at risk of wraparound, so that it picks the database holding the oldest table in the cluster. Running autovacuum workers advertise in shared memory the datfrozenxid that each database will have after their work, and the launcher uses this to choose.",
+      "objection": "The patch stopped applying, and the author did not rebase it after Michael Paquier asked for one. Few reviewers took it up, and the author agreed the design needs to be reconsidered after the discussion. That discussion included Alvaro Herrera's older prioritisation patch and the author's later idea that workers report their progress to the launcher.",
+      "touch_points": [],
+      "matched_queries": [
+        "oldest xmin source vacuum",
+        "expose oldest xmin function monitoring"
+      ],
+      "from_hint": false,
+      "score": 0.174,
+      "enriched": true,
+      "key_quote": "I would have suggested to mark the patch as returned with feedback\ninstead as the thing does not apply for some time now, and the author\nhas been notified about a rebase.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20181130014800.GC2267%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:2138",
+      "kind": "cf",
+      "title": "Incremental Materialized View Maintenance",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2018-12-27",
+      "url": "https://commitfest.postgresql.org/patch/2138/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20181227215726.4d166b4874f8983a641123f5@sraoss.co.jp"
+      ],
+      "authors": "Yugo Nagata (yugo.nagata), takuma hoshiai (hoshiai)",
+      "objectors": "Michael Paquier, huyajun",
+      "summary": "Add incremental materialized views (CREATE INCREMENTAL MATERIALIZED VIEW) that Postgres keeps current in the same transaction as base table changes, using AFTER triggers and transition tables. The patch computes deltas from the view definition and applies them to the view, with support for joins, some built-in aggregates, EXISTS subqueries and outer joins.",
+      "objection": "Michael Paquier marked the entry Returned with Feedback after a month with no update. In July 2022 huyajun had reported bugs: a deadlock between TRUNCATE and concurrent INSERT, wrong counts after concurrent DELETEs, crashes on mismatched column lists, and an unwanted unique index on cross joins. The author said he was still working on them. Paquier also noted little design discussion in three years, and Greg Stark had earlier called the patch hard to review.",
+      "touch_points": [],
+      "matched_queries": [
+        "xmin horizon view",
+        "vacuum blockers view"
+      ],
+      "from_hint": false,
+      "score": 0.162,
+      "enriched": true,
+      "key_quote": "There has been some feedback sent lately and no update\nfor one month, so I am marking it as RwF for now.",
+      "quote_message_url": "https://www.postgresql.org/message-id/Y0ZyiXIEVa9i39ng%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:1951",
+      "kind": "cf",
+      "title": "Temporary materialized views",
+      "status": "Returned with feedback",
+      "date": "2019-03-15",
+      "first_date": "2018-12-27",
+      "url": "https://commitfest.postgresql.org/patch/1951/",
+      "thread_urls": [],
+      "authors": "Mi Tar (mitar)",
+      "objectors": "",
+      "summary": "Temporary materialized views",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "xmin horizon view",
+        "vacuum blockers view"
+      ],
+      "from_hint": false,
+      "score": 0.157,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:6611",
+      "kind": "cf",
+      "title": "This adds a new GUC parameter that automatically rolls back prepared transactions that have remained unresolved beyond the configured timeout. The cleanup is performed by the checkpointer process.",
+      "status": "Rejected",
+      "date": "2026-07-01",
+      "first_date": "2026-03-23",
+      "url": "https://commitfest.postgresql.org/patch/6611/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAAXajwDOvTwLQ=rO5hOKsR_VTikST1rN-moO46YhYEgsO00dqg@mail.gmail.com"
+      ],
+      "authors": "Nikhil Chawla (nchawla)",
+      "objectors": "Andrey Borodin, Artur Zakirov, Greg Sabino Mullane",
+      "summary": "The patch adds a GUC, prepared_orphaned_transaction_timeout, that makes the checkpointer roll back prepared transactions older than the timeout. It is disabled by default (0) and is modelled on idle_in_transaction_session_timeout and similar timeouts.",
+      "objection": "Reviewers said a silent rollback breaks the 2PC protocol: after all participants PREPARE, COMMIT must succeed on a healthy database, and only the transaction manager knows whether a dangling prepared transaction should be committed or rolled back. An orphaned prepared transaction signals a serious malfunction that needs monitoring, and a DBA who wants a timeout can use a cron job. Users who enable 2PC are expected to have their own monitoring and handling.",
+      "touch_points": [
+        "new GUC"
+      ],
+      "matched_queries": [
+        "prepared transaction holding back vacuum"
+      ],
+      "from_hint": false,
+      "score": 0.15,
+      "enriched": true,
+      "key_quote": "Silent rollback in any scenario I can imagine is a disaster.",
+      "quote_message_url": "https://www.postgresql.org/message-id/2DCDBFFC-4B03-4EBC-88A3-06AD29933F17%40yandex-team.ru",
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "revert:6ae701b4378db2284c77314560e95a93d0ba9484",
+      "kind": "revert",
+      "title": "Track invalidation_reason in pg_replication_slots.",
+      "status": "Partially reverted",
+      "date": "2024-03-22",
+      "first_date": "2024-01-04",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6ae701b4378db2284c77314560e95a93d0ba9484",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ZfR7HuzFEswakt%2Fa@ip-10-97-1-34.eu-west-3.compute.internal",
+        "https://www.postgresql.org/message-id/flat/CALj2ACW4aUe-_uFQOjdWCEN-xXoLGhmvRFnL8SNw_TZ5nJe+aw@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/ZYOE8IguqTbp-seF@paquier.xyz"
+      ],
+      "authors": "Amit Kapila",
+      "objectors": "",
+      "summary": "Track invalidation_reason in pg_replication_slots.\nReverted commit(s): Track conflict_reason in pg_replication_slots.",
+      "objection": "Till now, the reason for replication slot invalidation is not tracked\ndirectly in pg_replication_slots. A recent commit 007693f2a3 added\n'conflict_reason' to show the reasons for slot conflict/invalidation, but\nonly for logical slots.\n\nThis commit adds a new column 'invalidation_reason' to show invalidation\nreasons for both physical and logical slots. And, this commit also turns\n'conflict_reason' text column to 'conflicting' boolean column (effectively\nreverting commit 007693f2a3). The 'conflicting' column is true for\ninvalidation reasons 'rows_removed' and 'wal_level_insufficient' because\nthose make the slot conflict with recovery. When 'conflicting' is true,\none can now look at the new 'invalidation_reason' column for the reason\nfor the logical slot's conflict with recovery.\n\nThe new 'invalidation_reason' column will also be useful to track other\ninvalidation reasons in the future commit.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "replication slot effective xmin"
+      ],
+      "from_hint": false,
+      "score": 0.142,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:3865",
+      "kind": "cf",
+      "title": "Add tracking of backend memory allocated to pg_stat_activity",
+      "status": "Withdrawn",
+      "date": "2023-01-05",
+      "first_date": "2022-08-31",
+      "url": "https://commitfest.postgresql.org/patch/3865/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/67bb5c15c0489cb499723b0340f16e10c22485ec.camel@crunchydata.com"
+      ],
+      "authors": "Reid Thompson (jreidthompsoncd)",
+      "objectors": "",
+      "summary": "The patch adds a column to pg_stat_activity that shows the bytes of memory each backend has allocated, updated on every malloc and free in the memory context code. Dynamic shared memory counts only for the backend that created it.",
+      "objection": "The author withdrew the entry and moved the patch, as 0001, into the thread \"Add the ability to limit the amount of memory that can be allocated to backends\", where review continued. It was not rejected on its merits. Open points at that time included concerns about widening pg_stat_activity and Andres Freund's view that the number will not show real memory usage.",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_activity backend_xmin vacuum flag"
+      ],
+      "from_hint": false,
+      "score": 0.138,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "revert:5fe3da927b2857761f9206d9fc597cf5321d9638",
+      "kind": "revert",
+      "title": "Revert updatable views",
+      "status": "Reverted",
+      "date": "2009-01-27",
+      "first_date": "2009-01-27",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=5fe3da927b2857761f9206d9fc597cf5321d9638",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert updatable views",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "xmin horizon view",
+        "vacuum blockers view"
+      ],
+      "from_hint": false,
+      "score": 0.133,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:2576",
+      "kind": "cf",
+      "title": "Add LWLock blocker(s) information",
+      "status": "Returned with feedback",
+      "date": "2020-11-18",
+      "first_date": "2020-06-02",
+      "url": "https://commitfest.postgresql.org/patch/2576/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/71779d05-3a9b-b897-f54d-16ffedcc896b@amazon.com"
+      ],
+      "authors": "Bertrand Drouvot (bdrouvot)",
+      "objectors": "Robert Haas, Andres Freund",
+      "summary": "The patch adds the last holder PID, the last holder mode and the number of holders to each LWLock, and copies this data into the waiting backend's PGPROC. A new function, pg_lwlock_blocking_pid, shows this blocker information for a backend that waits on an LWLock.",
+      "objection": "Robert Haas and Andres Freund objected to making LWLock bigger; the patch adds about 12 bytes, which works against past effort to fit BufferDesc into one cache line. Both doubted that the patch has no cost under heavy LWLock contention. Robert Haas also asked how much it adds over sampling wait events, and Andres Freund said such cases need stack information, which an external script can collect. Heikki Linnakangas closed the entry, citing this consensus.",
+      "touch_points": [],
+      "matched_queries": [
+        "vacuum blockers view"
+      ],
+      "from_hint": false,
+      "score": 0.131,
+      "enriched": true,
+      "key_quote": "There's been significant work done over the years to get the size of\nan LWLock down; I'm not very enthusiastic about making it bigger\nagain.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmobjva3roo5tO16ii_D_9VnPxWWhiW%3DK_WakbKcQ0yqkdA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:1472",
+      "kind": "cf",
+      "title": "SQL/JSON: functions",
+      "status": "Returned with feedback",
+      "date": "2020-09-17",
+      "first_date": "2018-01-10",
+      "url": "https://commitfest.postgresql.org/patch/1472/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/cd0bb935-0158-78a7-08b5-904886deac4b@postgrespro.ru"
+      ],
+      "authors": "Fedor Sigaev (sigaev), Alexander Korotkov (smagen), Nikita Glukhov (n.glukhov), Oleg Bartunov (oleg)",
+      "objectors": "",
+      "summary": "SQL/JSON: functions\nThreads: SQL/JSON: functions",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "ComputeXidHorizons sql function"
+      ],
+      "from_hint": false,
+      "score": 0.131,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:3784",
+      "kind": "cf",
+      "title": "Reuse Workers and Replication Slots during Logical Replication",
+      "status": "Returned with feedback",
+      "date": "2024-01-10",
+      "first_date": "2022-07-05",
+      "url": "https://commitfest.postgresql.org/patch/3784/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAGPVpCTq=rUDd4JUdaRc1XUWf4BrH2gdSNf3rtOMUGj9rPpfzQ@mail.gmail.com"
+      ],
+      "authors": "Melih Mutlu (melihmutlu)",
+      "objectors": "",
+      "summary": "Reuse Workers and Replication Slots during Logical Replication\nThreads: [PATCH] Reuse Workers and Replication Slots during Logical Replication",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "replication slot effective xmin"
+      ],
+      "from_hint": false,
+      "score": 0.129,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:3760",
+      "kind": "cf",
+      "title": "pg_stat_activity: avoid showing state=active with wait_event=ClientRead",
+      "status": "Returned with feedback",
+      "date": "2022-11-30",
+      "first_date": "2022-06-30",
+      "url": "https://commitfest.postgresql.org/patch/3760/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/ab1c0a7d-e789-5ef5-1180-42708ac6fe2d@postgrespro.ru"
+      ],
+      "authors": "Yura Sokolov (funny_falcon), Mikhail Zhilin (mizhka-at-pgpro)",
+      "objectors": "",
+      "summary": "pg_stat_activity: avoid showing state=active with wait_event=ClientRead\nThreads: [PATCH] fix wait_event of pg_stat_activity in case of high amount of\nconnections",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_activity backend_xmin vacuum flag"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:4769",
+      "kind": "cf",
+      "title": "System username in pg_stat_activity",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2024-01-10",
+      "url": "https://commitfest.postgresql.org/patch/4769/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABUevEy8vkHLn2v0P3gkLhfDPCV9SFdtOqni9Oay3gB=APTkXg@mail.gmail.com"
+      ],
+      "authors": "Magnus Hagander (mha)",
+      "objectors": "",
+      "summary": "System username in pg_stat_activity\nThreads: System username in pg_stat_activity",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "pg_stat_activity backend_xmin vacuum flag"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:3445",
+      "kind": "cf",
+      "title": "Error \"initial slot snapshot too large\" in create replication slot",
+      "status": "Withdrawn",
+      "date": "2024-01-16",
+      "first_date": "2021-10-11",
+      "url": "https://commitfest.postgresql.org/patch/3445/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFiTN-tqopqpfS6HHug2nnOGieJJ_nm-Nvy0WBZ=Zpo-LqtSJA@mail.gmail.com"
+      ],
+      "authors": "Kyotaro Horiguchi (horiguti), Dilip Kumar (dilip.kumar)",
+      "objectors": "",
+      "summary": "Error \"initial slot snapshot too large\" in create replication slot\nThreads: Error \"initial slot snapshot too large\" in create replication slot",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "replication slot effective xmin"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:2505",
+      "kind": "cf",
+      "title": "Patch to warn about any potential orphaned prepared transactions",
+      "status": "Withdrawn",
+      "date": "2020-04-17",
+      "first_date": "2020-01-22",
+      "url": "https://commitfest.postgresql.org/patch/2505/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANugjhsnEt2qmhRh7zpNYUbhjsEyorb-pX-eb1fD4K9qeTybbQ@mail.gmail.com"
+      ],
+      "authors": "Hamid Akhtar (hamidakhtar)",
+      "objectors": "",
+      "summary": "Patch to warn about any potential orphaned prepared transactions\nThreads: Do we need to handle orphaned prepared transactions in the server?",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "prepared transaction holding back vacuum"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:5620",
+      "kind": "cf",
+      "title": "Improve monitoring of shared memory allocations",
+      "status": "Rejected",
+      "date": "2026-04-07",
+      "first_date": "2025-03-01",
+      "url": "https://commitfest.postgresql.org/patch/5620/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAH2L28vHzRankszhqz7deXURxKncxfirnuW68zD7+hVAqaS5GQ@mail.gmail.com"
+      ],
+      "authors": "Rahila Syed (rahila)",
+      "objectors": "",
+      "summary": "Improve monitoring of shared memory allocations\nThreads: Improve monitoring of shared memory allocations",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "expose oldest xmin function monitoring"
+      ],
+      "from_hint": false,
+      "score": 0.115,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:1669",
+      "kind": "cf",
+      "title": "Add function to release an allocated SQLDA",
+      "status": "Returned with feedback",
+      "date": "2018-11-30",
+      "first_date": "2018-06-13",
+      "url": "https://commitfest.postgresql.org/patch/1669/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/25C1C6B2E7BE044889E4FE8643A58BA963A71BB2@G01JPEXMBKW03"
+      ],
+      "authors": "sho kato (kato-sho)",
+      "objectors": "",
+      "summary": "Add function to release an allocated SQLDA\nThreads: Add function to release an allocated SQLDA",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "ComputeXidHorizons sql function"
+      ],
+      "from_hint": false,
+      "score": 0.113,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:6590",
+      "kind": "cf",
+      "title": "SQL/JSON json_table() function PLAN clause",
+      "status": "Withdrawn",
+      "date": "2026-05-19",
+      "first_date": "2024-12-17",
+      "url": "https://commitfest.postgresql.org/patch/6590/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAN-LCVP7HXmGu-WcinsHvdKqMGEdv=1Y67H4U58F6Y=Q0M5GyQ@mail.gmail.com"
+      ],
+      "authors": "Nikita Malakhov (nmalakh)",
+      "objectors": "",
+      "summary": "SQL/JSON json_table() function PLAN clause\nThreads: SQL/JSON json_table plan clause",
+      "objection": "",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "ComputeXidHorizons sql function"
+      ],
+      "from_hint": false,
+      "score": 0.107,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 6,
+    "new_calls": 2,
+    "failed": 0,
+    "quotes_verified": 1,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 0
+  },
+  "precedent_cutoff": "2026-07-12",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "No precedent found, and no earlier thread in the material records a rejection reason that applies here. Message #26 reports two earlier committer sketches, one per-source and one per-horizon; the proposal follows the per-source one, and the open shape question belongs to the design angle."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "Objections listed; no precedent was retrieved, so none is cited."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The proposal adds a read-only view and SRF over shared memory, with no WAL records, no on-disk format change and no new persistent state; the only catalog change is a new pg_proc entry and view, which pg_upgrade and pg_dump handle normally. No reviewer has yet looked at the v8 recovery path that reads KnownAssignedXids and emits the primary_xacts row, and only the code can show whether it is correct."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "No security objection. The view and pg_get_xmin_horizon() are revoked from PUBLIC and need pg_read_all_stats, which already sees the same pids, xids, xmins, xact_start values, slot xmins and gids through pg_stat_activity, pg_replication_slots and pg_prepared_xacts. The SRF takes ProcArrayLock in shared mode once per call, and only privileged roles can call it. The missing per-row HAS_PGSTAT_PERMISSIONS check (message #17) matters only if a DBA grants EXECUTE directly, and that exposes only xact_start, following the pg_shmem_allocations convention (message #22)."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 3,
+      "note": "The precedent search found no related proposal. Hot-path cost looks negligible, since the patch only shares a macro with ComputeXidHorizons(), but that cannot be confirmed without the code."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "Existing views cannot do this job: pg_stat_activity shows backend_xmin for backends the horizons skip, slot effective xmins are not exposed, and the standby primary_xacts input has no SQL surface. Message #10 proposed adding columns to existing views instead, and the reviewer accepted the author's answer in message #14, so no core feature, contrib module or extension covers the need."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "The material shows real, independent demand: a field report (message #1), commercial tools from several vendors (messages #1, #27), and committer requests for such a view in 2020 and 2023 (message #26). The open question is the view's shape, which is a design matter for other angles."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 6,
+      "new_survived": 3,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [],
+  "tone_lint": {
+    "fields_checked": 78,
+    "hits_found": 1,
+    "sentences_rewritten": 1,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 14,
+    "wall_ms": 141846,
+    "cost_usd": 3.9773553999999995,
+    "dry_run": false
+  }
+}

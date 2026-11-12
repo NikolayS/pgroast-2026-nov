@@ -1,0 +1,1381 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:25:03.590Z",
+  "input": {
+    "arg": "7171",
+    "cf": {
+      "id": 7171,
+      "url": "https://commitfest.postgresql.org/patch/7171/",
+      "title": "Write Combining",
+      "status": "Needs review",
+      "authors": "Melanie Plageman (melanieplageman)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/CAAKRu_bcWRvRwZUop_d9vzF9nHAiT%2B-uPzkJ%3DS3ShZ1GqeAYOw%40mail.gmail.com",
+    "subject": "Checkpointer write combining",
+    "thread_start": "2025-09-02T21:10:43Z",
+    "messages_read": 43,
+    "messages_total": 43,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v16-0001-Allow-PinBuffer-to-skip-increasing-usage-count.patch",
+      "v16-0002-Add-database-Oid-to-CkptSortItem.patch",
+      "v16-0003-Inline-BufferSync-into-CheckPointBuffers.patch",
+      "v16-0004-Write-combining-for-checkpointer.patch",
+      "v16-0005-Add-checkpointer-write-combining-test.patch",
+      "v16-0006-Remove-SyncOneBuffer-and-refactor-BgBufferSync.patch",
+      "v16-0007-pg_stat_io-Count-buffer-eviction-after-invalidat.patch",
+      "v16-0008-Call-BufferLockUnlock-directly-where-the-buffer-.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-COMMITTER-EYES",
+  "confidence": "medium",
+  "verdict_reasoning": "The problem is stated and demand is shown, and no surviving objection is fatal. Level 2 is not yet settled. replication-ondisk-1 (in-place batch checksums under share-locked hint-bit updates) and replication-ondisk-2 (the recovery assert failure and untraced invalid-page warnings) are open safety points. standards-compat-1 and standards-compat-2 change the measured behaviour of checkpoint_completion_target and bgwriter_lru_maxpages. All are fixable inside this design, and they need someone who knows the buffer manager and recovery.",
+  "failing_level": "2",
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "failed"
+    }
+  ],
+  "brief": {
+    "title": "Write combining for checkpointer, bgwriter, backends and bulkwrite",
+    "problem": "Postgres writes dirty shared buffers one block at a time, so checkpoints and buffer cleaning use many small write IOs. This limits write throughput, most of all on IOPS-limited storage. The author also says all writers will need write combining before Postgres can use direct IO.",
+    "proposed_design": "The checkpointer, bgwriter, client backends and the bulkwrite strategy ring write runs of contiguous dirty blocks as one vectored write of up to io_combine_limit. Backends and bgwriter look for dirty blocks before and after the victim block. The series also refactors victim buffer selection and adds a WriteBuffersOperation object shaped for later AIO writes.",
+    "user_visible_surface": [
+      "dtrace probe buffer__sync__written renamed to buffers__sync__written; it now reports buffers per combined IO, not a buffer ID.",
+      "pg_stat_io: evictions and reuses counted once when invalidating a victim buffer fails; backends and bgwriter now show larger writes.",
+      "io_combine_limit now also caps write size, not only read size.",
+      "test_aio module gains functions to dirty, flush and invalidate specific relation blocks."
+    ],
+    "author_claims": [
+      "Immediate checkpoints are at least 20% faster (about 6.5 s to 5 s, 16 GiB shared_buffers, local SSD).",
+      "pgbench scale 500 on IOPS-limited storage: about 30% more TPS and 75% better p99 latency; almost 70% more TPS with synchronous_commit off.",
+      "Most of the gain comes from client backends combining their own writes; checkpointer combining adds little there because the kernel already combines its writes.",
+      "The API shape will carry over to AIO writes with separate start, completion and wait phases."
+    ],
+    "thread_state": "Andrey Borodin, Chao Li, Haibo Yan and shihao zhong have reviewed v16; open items include spread checkpoints finishing early, bgwriter_lru_maxpages being exceeded, and an assert failure during recovery from a base backup. The checksum race with hint bits waits on separate work by Andres, and the author reported an intermittent invalid-page warning in v14.",
+    "unclear": [
+      "No v16 benchmark results for spread checkpoints, which reviewers say now finish much too early.",
+      "The material does not say whether the checksum-on-shared-lock race is fixed in v16 or still waits for the hint-bit lock work.",
+      "No answer yet on how neighbors should count against bgwriter_lru_maxpages.",
+      "The material does not say whether the intermittent invalid-page warning from v14 was found and fixed.",
+      "Vacuum and bulkread write combining are not enabled or benchmarked."
+    ],
+    "search_queries": [
+      "checkpointer write combining",
+      "combine contiguous dirty buffer writes",
+      "vectored writes shared buffers",
+      "bgwriter write combining",
+      "BufferSync batch writes",
+      "eager flush strategy ring",
+      "writeback batching checkpoint",
+      "sort checkpoint writes io size"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P2",
+      "source_id": "cf:4891",
+      "title": "Vectored I/O in bulk_write.c",
+      "kind": "cf",
+      "status": "Returned with feedback",
+      "url": "https://commitfest.postgresql.org/patch/4891/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGLx5bLwezZKAYB2O_qHj=ov10RpgRVY7e8TSJVE74oVjg@mail.gmail.com"
+      ],
+      "date": "2024-10-07",
+      "first_date": "2024-03-10",
+      "who_objected": "",
+      "quote": "I'd like to try something more ambitious that streamifies this and also the \"main\" writeback paths.",
+      "quote_url": "https://www.postgresql.org/message-id/CA%2BhUKGJRJk06OnLPV2GHmJg2vRx%2B4OXKr_5pFX3Dk%3DqMGXWtPw%40mail.gmail.com",
+      "enriched": true,
+      "reason": "The author decided not to commit it for v17. He chose to try a broader design that would use streaming writes for this path and for the main writeback paths. Andres Freund's objection to merging smgrzeroextend() into the same interface was settled by dropping that part, so it did not decide the outcome. Noah Misch later asked whether the CF entry was obsolete, and the visible messages show no reply.",
+      "relation": "similar_idea",
+      "what_is_different": "P2 combined writes only in bulk_write.c, and its author set it aside to try a broader design that also covers the main writeback paths. This proposal covers those paths (checkpointer, bgwriter, backends, bulkwrite ring), with synchronous writes and without streams."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Batch checksum on shared lock can write pages with stale checksums",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "on_disk_pg_upgrade",
+      "touch_points": [
+        "on_disk_pg_upgrade",
+        "wal_replication"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "On a cluster with data checksums, a query sets a hint bit under a share lock while a combined write holds the batch. The page reaches disk with a checksum computed before the hint change. A later read, pg_basebackup verification or a standby reports a checksum failure on a page that is not corrupt.",
+      "argument": "Message #24 says the batch path checksums pages in place, unlike master's PageSetChecksumCopy(), and calls the series uncommittable until separate hint-bit lock work lands. The material does not show that the v16 write path has removed this dependency. Every combined write in checkpointer, bgwriter and backends would then depend on work outside this proposal.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        24
+      ],
+      "author_must_show": "Does v16 copy pages before checksumming them, and if not, which committed lock change makes in-place batch checksums safe under share-locked hint-bit updates?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 24,
+          "from": "Melanie Plageman",
+          "date": "2025-11-20T22:11:34Z",
+          "url": "https://www.postgresql.org/message-id/CAAKRu_ZiEpE_EHww3S3-E3iznybdnX8mXSO7Wsuru7%3DP9Y%3DczQ%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-1",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #24 says in-place batch checksums are not committable until the hint-bit lock work lands. Nothing in the visible v16 prose says that the dependency is met or that pages are copied before checksumming.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "WAL-before-data rule for combined writes during recovery is not stated",
+      "level": "2",
+      "rubric_item": 7,
+      "category": "wal_replication",
+      "touch_points": [
+        "wal_replication",
+        "on_disk_pg_upgrade"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A user restores a base backup and starts recovery with checksums off. The startup process writes a combined batch whose neighbor LSN is past what XLogFlush() can satisfy. An assert build crashes, and a production build writes the batch with only a warning, so nothing checks the rule there.",
+      "argument": "Message #43 shows the new WriteBuffers() assert failing in recovery, because XLogFlush() only updates minRecoveryPoint and warns there. Message #40 confirms that neighbors can raise max_lsn above what the required victim needs. Messages #27 and #30 report intermittent invalid-page errors in 027_stream_regress and a zeroed FSM page with no root cause found. The proposal does not state which invariant a combined write keeps on a standby, during crash recovery and at a restartpoint.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        27,
+        30,
+        40,
+        43
+      ],
+      "author_must_show": "What rule ties a combined batch's max_lsn to minRecoveryPoint on a standby and in crash recovery, and have the invalid-page failures from v13 and v14 been traced to a cause?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 27,
+          "from": "Melanie Plageman",
+          "date": "2026-01-14T23:35:54Z",
+          "url": "https://www.postgresql.org/message-id/CAAKRu_b_e96kWChReBPNjsD7GJuGKoM%2BexdyodP%2B8Oa%3D-T%3DpZA%40mail.gmail.com"
+        },
+        {
+          "index": 30,
+          "from": "Melanie Plageman",
+          "date": "2026-02-19T23:41:43Z",
+          "url": "https://www.postgresql.org/message-id/CAAKRu_Ygia_e2aVJcnkSksy85wuYwk_WattzwKJSJvcVj72Tuw%40mail.gmail.com"
+        },
+        {
+          "index": 40,
+          "from": "Haibo Yan",
+          "date": "2026-08-21T21:46:01Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29EvZS4tC8K9stk8fcwhhC7Zy_ND0jDvreMuvepKntNiwg%40mail.gmail.com"
+        },
+        {
+          "index": 43,
+          "from": "shihao zhong",
+          "date": "2026-10-04T05:07:07Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqRqJq%2B_wmyzbD5%2BHOQ4C4DPQ6f68d00qaVJzXHq5%2BiEbQ%40mail.gmail.com"
+        }
+      ],
+      "id": "replication-ondisk-2",
+      "angle": "replication-ondisk",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The assert failure in message #43 and the untraced invalid-page warnings in messages #27 and #30 are open. The production-build part is overstated, because master also only warns in that case.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Spread checkpoints no longer follow checkpoint_completion_target",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "backpatchability"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA sets checkpoint_completion_target = 0.9 to spread checkpoint writes over the interval. After upgrade, the write phase finishes in about a quarter of the expected time, so the I/O lands in a burst. The DBA sees foreground latency spikes at each checkpoint and has no setting to restore the old pacing.",
+      "argument": "CheckpointWriteDelay() is now called once per combined write and still sleeps at most 100 ms per call. In message #42 a 26.9 s write phase drops to 7.1 s, and message #43 reports 26.3 s dropping to 11.2 s. The documented meaning of checkpoint_completion_target changes for everyone who uses spread checkpoints, the default case, while the measured gains in message #33 come from immediate checkpoints and backend writes. Message #43 attaches a fix, but v16 has not adopted one.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        33,
+        42,
+        43
+      ],
+      "author_must_show": "With combining on, does a spread checkpoint keep the write-phase duration that checkpoint_completion_target asks for, on the setups in messages #42 and #43?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 33,
+          "from": "Melanie Plageman",
+          "date": "2026-06-19T22:13:17Z",
+          "url": "https://www.postgresql.org/message-id/CAAKRu_ZoKTpnmQ3MmmQXTpG7msHrP3jNWC68sf8R82-8cgb7Kw%40mail.gmail.com"
+        },
+        {
+          "index": 42,
+          "from": "Andrey Borodin",
+          "date": "2026-09-14T18:29:36Z",
+          "url": "https://www.postgresql.org/message-id/201425E8-D617-4971-BE7E-E94DDAF8356F%40yandex-team.ru"
+        },
+        {
+          "index": 43,
+          "from": "shihao zhong",
+          "date": "2026-10-04T05:07:07Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqRqJq%2B_wmyzbD5%2BHOQ4C4DPQ6f68d00qaVJzXHq5%2BiEbQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Messages #42 and #43 each measure the shorter write phase, and v16 has not adopted a fix. One detail is wrong: message #42 shows io_combine_limit = 8kB restores the old pacing, so a setting does exist.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "bgwriter_lru_maxpages stops being a hard per-round write limit",
+      "level": "2",
+      "rubric_item": 12,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "An operator lowers bgwriter_lru_maxpages to cap background writes on shared or IOPS-limited storage. After upgrade, each round can write a whole combined run of up to io_combine_limit blocks, so the bgwriter exceeds the cap. The operator only finds out from pg_stat_io or storage throttling.",
+      "argument": "Message #42 shows that one call to run_bgwriter_cleaner(1) writes six contiguous buffers, and asks for the remaining budget to be passed into GatherContiguousDirtyBuffers(). Message #43 shows a second effect: neighbors use up the budget, so clock-hand cleaning in 60 s fell from 28000 to 20218 buffers. The proposal does not yet say whether the documented limit counts buffers or IOs. It also does not say whether neighbor writes count against it.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        42,
+        43
+      ],
+      "author_must_show": "Will bgwriter_lru_maxpages stay a strict per-round buffer limit, and if not, what wording and release note replace its documented meaning?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 42,
+          "from": "Andrey Borodin",
+          "date": "2026-09-14T18:29:36Z",
+          "url": "https://www.postgresql.org/message-id/201425E8-D617-4971-BE7E-E94DDAF8356F%40yandex-team.ru"
+        },
+        {
+          "index": 43,
+          "from": "shihao zhong",
+          "date": "2026-10-04T05:07:07Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqRqJq%2B_wmyzbD5%2BHOQ4C4DPQ6f68d00qaVJzXHq5%2BiEbQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-2",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #42 shows one cleaner round writing six buffers past the limit, and message #43 shows fewer clock-hand buffers cleaned. The thread has no reply yet on how neighbors count against bgwriter_lru_maxpages.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "No separate control for foreground neighbor writes",
+      "level": "2",
+      "rubric_item": 4,
+      "category": "hot_path_performance",
+      "touch_points": [
+        "hot_path_performance",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A latency-sensitive OLTP site keeps a hot set resident and continuously redirtied while VACUUM cycles colder blocks. Each backend that needs a clean buffer also writes up to io_combine_limit of hot neighbors that are dirtied again soon. To stop this, the DBA can only lower io_combine_limit, which also shrinks read combining for sequential scans.",
+      "argument": "Message #41 describes this adverse case and has no answer yet. Message #37 removed eager_clean_max_batch_size, and message #39 confirms io_combine_limit now caps both reads and writes. The benchmarks in message #33 cover IOPS-limited storage, and message #40 covers WAL-flush cost on local NVMe. Neither measures redundant foreground writes of hot pages, so every backend carries the extra work and no setting turns it off without also losing read combining.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        33,
+        37,
+        39,
+        40,
+        41
+      ],
+      "author_must_show": "How much write amplification does the hot-set-plus-VACUUM workload from message #41 show, and how would a DBA limit backend neighbor writes without changing read combining?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 33,
+          "from": "Melanie Plageman",
+          "date": "2026-06-19T22:13:17Z",
+          "url": "https://www.postgresql.org/message-id/CAAKRu_ZoKTpnmQ3MmmQXTpG7msHrP3jNWC68sf8R82-8cgb7Kw%40mail.gmail.com"
+        },
+        {
+          "index": 37,
+          "from": "Melanie Plageman",
+          "date": "2026-08-19T22:18:39Z",
+          "url": "https://www.postgresql.org/message-id/CAAKRu_Z%2BGEgkHqQPajsy0ApDWYTvfmR5G6AjnE7mVcy1_00kxQ%40mail.gmail.com"
+        },
+        {
+          "index": 39,
+          "from": "Melanie Plageman",
+          "date": "2026-08-19T22:54:55Z",
+          "url": "https://www.postgresql.org/message-id/CAAKRu_b%3DroA_nntHxV3POk06b0JPhT5N3HDDSNRBV%2B2FgLcUBQ%40mail.gmail.com"
+        },
+        {
+          "index": 40,
+          "from": "Haibo Yan",
+          "date": "2026-08-21T21:46:01Z",
+          "url": "https://www.postgresql.org/message-id/CABXr29EvZS4tC8K9stk8fcwhhC7Zy_ND0jDvreMuvepKntNiwg%40mail.gmail.com"
+        },
+        {
+          "index": 41,
+          "from": "Andrey Borodin",
+          "date": "2026-08-24T06:05:04Z",
+          "url": "https://www.postgresql.org/message-id/9FB15BAB-BD87-419E-B327-B63E6E443E08%40yandex-team.ru"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #41 describes the hot-set case and the visible thread has no measurement of it; the pgbench runs in message #33 do not model a resident hot set. The request for a measurement stands even if a separate setting is not the right fix.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Renamed dtrace probe silently breaks existing tracing scripts",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "design",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A site traces checkpoint progress with a bpftrace or SystemTap script on buffer__sync__written, keyed by buffer ID. After upgrade the probe is gone and buffers__sync__written reports a count per combined write. The script either fails to attach or gives wrong per-buffer totals, and the user finds out only when the dashboards go blank.",
+      "argument": "Message #43 notes that monitoring.sgml still documents the old probe name in 0004. The probes are a documented monitoring interface. v16 renames the probe and changes what its argument means, but the commit message does not mention a release note or migration path. Renaming is safer than changing the meaning under the old name, but users still need the change documented together with 0004.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        43
+      ],
+      "author_must_show": "Will 0004 update the documented probe table and add a release note telling users how the probe's name and argument changed?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 43,
+          "from": "shihao zhong",
+          "date": "2026-10-04T05:07:07Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqRqJq%2B_wmyzbD5%2BHOQ4C4DPQ6f68d00qaVJzXHq5%2BiEbQ%40mail.gmail.com"
+        }
+      ],
+      "id": "standards-compat-3",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "The commit message for 0004 states the rename and gives the reason for the new argument. What remains is a monitoring.sgml update, already raised in message #43, and a release note; both are documentation work outside levels 1-2 and apply to any user-visible change.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Buffer-counted limits silently change meaning under combined writes",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden",
+        "new_guc"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A DBA sets checkpoint_completion_target = 0.9 and bgwriter_lru_maxpages to smooth I/O. After upgrade, spread checkpoints finish in about a quarter of the planned time, and bgwriter rounds write more pages than the limit allows. Nothing logs this. The DBA finds out from I/O latency spikes during checkpoints.",
+      "argument": "The series changes the unit of work in checkpointer, bgwriter and backends from one buffer to one combined IO. Existing pacing and limits still count buffers or calls. Two such mismatches stayed unnoticed until reviewers measured them: spread checkpoint pacing (message #42, #43, about 27 s down to 7-11 s) and bgwriter_lru_maxpages being exceeded (message #42, #43). No test or assert fails when a limit and the IO unit drift apart, so later patches that add a write path or a write limit can repeat this.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        42,
+        43
+      ],
+      "author_must_show": "Which write-path settings count buffers versus IOs after this series, and what check would catch a future path that ignores one of them?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 42,
+          "from": "Andrey Borodin",
+          "date": "2026-09-14T18:29:36Z",
+          "url": "https://www.postgresql.org/message-id/201425E8-D617-4971-BE7E-E94DDAF8356F%40yandex-team.ru"
+        },
+        {
+          "index": 43,
+          "from": "shihao zhong",
+          "date": "2026-10-04T05:07:07Z",
+          "url": "https://www.postgresql.org/message-id/CAGRkXqRqJq%2B_wmyzbD5%2BHOQ4C4DPQ6f68d00qaVJzXHq5%2BiEbQ%40mail.gmail.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of standards-compat-1 and standards-compat-2, which cover the same two measured mismatches. The added point about future write paths names no concrete case.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": true,
+      "reason": "see objection replication-ondisk-1: Batch checksum on shared lock can write pages with stale checksums"
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": true,
+      "reason": "Combined writes flush WAL up to the batch's highest LSN, including in recovery, where message #43 reports an assert failure."
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": true,
+      "reason": "The series changes PinBuffer(), removes SyncOneBuffer() and BufferSync(), and edits bufpage.h and buf_internals.h."
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": true,
+      "reason": "No new GUC, but io_combine_limit now also caps writes, and bgwriter_lru_maxpages and checkpoint_completion_target behave differently."
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": true,
+      "reason": "see objection standards-compat-1: Spread checkpoints no longer follow checkpoint_completion_target"
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Checkpointer, bgwriter and backend write paths move to a batch write API; a documented dtrace probe is renamed."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "Backends that need a victim buffer now also look for and write dirty neighbor blocks."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Does v16 copy pages before checksumming them, and if not, which committed lock change makes in-place batch checksums safe against hint-bit updates under a share lock?",
+    "What rule ties a combined batch's highest LSN to minRecoveryPoint in recovery, and what caused the invalid-page warnings reported in messages #27 and #30?",
+    "With combining on, does a spread checkpoint keep the write-phase duration that checkpoint_completion_target asks for, on the setups in messages #42 and #43?",
+    "Does bgwriter_lru_maxpages stay a strict per-round buffer limit, and do neighbor writes count against it?",
+    "How much extra writing does the hot-set-plus-VACUUM workload from message #41 show, and can a DBA limit backend neighbor writes without lowering read combining?"
+  ],
+  "committability": {
+    "owner": "qualified committer engaged",
+    "owner_note": "The panel notes that the author is an active committer in the buffer manager area. The owner must also know recovery, minRecoveryPoint handling and data checksums.",
+    "liability": "The owner signs for the WAL-before-data rule and checksum correctness on every data write path, in normal running and in recovery, with no end date. The owner also signs for changed pacing of spread checkpoints and bgwriter rounds on existing installations.",
+    "author_follow_up": "Strong sign. The series reached v16 over about 14 months, and the author posted rebases and revisions in response to reviews."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "most users",
+    "maintenance_burden": "medium",
+    "review_cost": "high",
+    "recommended_action": "fix design first",
+    "reason": "Message #33 reports about 30% more TPS on IOPS-limited storage, and direct IO needs combined writes, so the gain is broad. The series rewrites core write paths in bufmgr.c and the checkpointer, and four reviewer-measured design points are still open in v16."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read, so the v16 checksum path, the LSN handling of neighbor blocks in recovery and the cost of the neighbor search on the backend path could not be checked. Only 3 of 43 messages were visible; later messages are known through the objections.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:4951",
+      "kind": "cf",
+      "title": "teach pg_combinebackup to detect deleted files where possible",
+      "status": "Withdrawn",
+      "date": "2024-08-21",
+      "first_date": "2024-04-11",
+      "url": "https://commitfest.postgresql.org/patch/4951/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/9badd24d-5bd9-4c35-ba85-4c38a2feb73e@pgmasters.net"
+      ],
+      "authors": "Robert Haas (rhaas)",
+      "objectors": "Robert Haas",
+      "summary": "pg_combinebackup would look up every file of the final input backup in its backup_manifest and warn about manifest entries that are missing on disk. This catches files deleted from the most recent backup, without reading or checksumming file contents.",
+      "objection": "Robert Haas withdrew the patch because no one besides David Steele asked for it. He had mixed feelings about it: the check covers only missing files in the final backup and may give users a false sense of security, and pg_verifybackup already does full verification. Amul Sul reviewed the code but took no position on the idea.",
+      "touch_points": [],
+      "matched_queries": [
+        "checkpointer write combining",
+        "combine contiguous dirty buffer writes",
+        "bgwriter write combining"
+      ],
+      "from_hint": false,
+      "score": 0.349,
+      "enriched": true,
+      "key_quote": "Nobody else has responded. Hence, I'm withdrawing this patch.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoaK0i2%2B%2BsXsi_xqNpPDFa8Rg_v_z-kBpV20L4Ez_oDqYQ%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:4891",
+      "kind": "cf",
+      "title": "Vectored I/O in bulk_write.c",
+      "status": "Returned with feedback",
+      "date": "2024-10-07",
+      "first_date": "2024-03-10",
+      "url": "https://commitfest.postgresql.org/patch/4891/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGLx5bLwezZKAYB2O_qHj=ov10RpgRVY7e8TSJVE74oVjg@mail.gmail.com"
+      ],
+      "authors": "Thomas Munro (macdice)",
+      "objectors": "",
+      "summary": "The patch makes bulk_write.c issue vectored writes, so CREATE INDEX writes 128kB pwritev() calls instead of 8kB pwrite() calls. It also merges smgrextend() into smgrwritev() with flags such as _EXTEND and _SKIP_FSYNC, so no separate smgrextendv() is needed.",
+      "objection": "The author decided not to commit it for v17. He chose to try a broader design that would use streaming writes for this path and for the main writeback paths. Andres Freund's objection to merging smgrzeroextend() into the same interface was settled by dropping that part, so it did not decide the outcome. Noah Misch later asked whether the CF entry was obsolete, and the visible messages show no reply.",
+      "touch_points": [],
+      "matched_queries": [
+        "vectored writes shared buffers",
+        "bgwriter write combining",
+        "BufferSync batch writes"
+      ],
+      "from_hint": false,
+      "score": 0.331,
+      "enriched": true,
+      "key_quote": "I'd like to try something more ambitious that streamifies this and also the \"main\" writeback paths.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BhUKGJRJk06OnLPV2GHmJg2vRx%2B4OXKr_5pFX3Dk%3DqMGXWtPw%40mail.gmail.com",
+      "relevant": true
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:131",
+      "kind": "cf",
+      "title": "Aggregate State Combine Support",
+      "status": "Returned with feedback",
+      "date": "2015-07-27",
+      "first_date": "2015-01-30",
+      "url": "https://commitfest.postgresql.org/patch/131/",
+      "thread_urls": [],
+      "authors": "Simon Riggs (simon), David Rowley (davidrowley)",
+      "objectors": "",
+      "summary": "Aggregate State Combine Support",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "checkpointer write combining",
+        "combine contiguous dirty buffer writes",
+        "bgwriter write combining"
+      ],
+      "from_hint": false,
+      "score": 0.301,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "cf:2219",
+      "kind": "cf",
+      "title": "document that psql's FETCH_COUNT does not work with combined (\\;) queries",
+      "status": "Returned with feedback",
+      "date": "2020-09-30",
+      "first_date": "2019-07-26",
+      "url": "https://commitfest.postgresql.org/patch/2219/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/alpine.DEB.2.21.1907260837150.13195@lancre"
+      ],
+      "authors": "Fabien Coelho (calvin)",
+      "objectors": "Tomas Vondra, David Johnston, Alvaro Herrera",
+      "summary": "Document in the psql manual that the FETCH_COUNT variable does not work correctly with combined (multi-statement, \\;) queries, since ExecQueryUsingCursor prefixes only the first statement with a cursor declaration and the result shown depends on the last statement. The patch turns the long-standing bug into a documented limitation; fixing the behaviour itself (for example through lexer changes) was left aside.",
+      "objection": "Reviewers asked for changes to the documentation wording. Tomas Vondra found it too brief and asked for the term \"multi-query string\". David Johnston proposed different wording plus regression tests showing the broken behaviour. Alvaro Herrera objected to documenting the failure in a way that rules out a future fix. After this review the patch stayed in Waiting on Author for two months with no new version, and Michael Paquier marked it Returned with Feedback.",
+      "touch_points": [
+        "psql"
+      ],
+      "matched_queries": [
+        "checkpointer write combining",
+        "combine contiguous dirty buffer writes",
+        "bgwriter write combining"
+      ],
+      "from_hint": false,
+      "score": 0.295,
+      "enriched": true,
+      "key_quote": "This has been waiting on author for two months now, so I have marked\nthe patch as RwF in the CF app.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20200930062752.GF1996%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "revert:faa189c932d51945b2285e277128b0f26b96afdd",
+      "kind": "revert",
+      "title": "Move libpq's write_failed mechanism down to pqsecure_raw_write().",
+      "status": "Partially reverted",
+      "date": "2022-02-12",
+      "first_date": "2019-03-19",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=faa189c932d51945b2285e277128b0f26b96afdd",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/17391-304f81bcf724b58b@postgresql.org",
+        "https://www.postgresql.org/message-id/flat/CAEepm=2n6Nv+5tFfe8YnkUm1fXgvxR0Mm1FoD+QKG-vLNGLyKg@mail.gmail.com"
+      ],
+      "authors": "Tom Lane",
+      "objectors": "",
+      "summary": "Move libpq's write_failed mechanism down to pqsecure_raw_write().\nReverted commit(s): Restructure libpq's handling of send failures.",
+      "objection": "Commit 1f39a1c06 implemented write-failure postponement in pqSendSome,\nwhich is above SSL/GSS processing.  However, we've now seen failures\nindicating that (some versions of?) OpenSSL have a tendency to report\nwrite failures prematurely too.  Hence, move the primary responsibility\nfor postponing write failures down to pqsecure_raw_write(), below\nSSL/GSS processing.  pqSendSome now sets write_failed only in corner\ncases where we'd lost the connection already.\n\nA side-effect of this change is that errors detected in the SSL/GSS\nlayer itself will be reported immediately (as if they were read\nerrors) rather than being postponed like write errors.  That's\nreverting an effect of 1f39a1c06, and I think it's fine: if there's\nnot a socket-level error, it's hard to be sure whether an OpenSSL\nerror ought to be considered a read or write failure anyway.\n\nAnother important point is that write-failure postponement is now\neffective during connection setup.  OpenSSL's misbehavior of this\nsort occurs during SSL_connect(), so that's a change we want.\n\nPer bug #17391 from Nazir Bilal Yavuz.  Possibly this should be\nback-patched, but I think it prudent to let it age awhile in HEAD\nfirst.",
+      "touch_points": [
+        "wire protocol / libpq",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "bgwriter write combining",
+        "BufferSync batch writes",
+        "sort checkpoint writes io size"
+      ],
+      "from_hint": false,
+      "score": 0.29,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P6",
+      "source_id": "revert:1563ecbc1be8b8e5c57651cf5c87f90dea9aea8f",
+      "kind": "revert",
+      "title": "Revert \"Rename unicode_combining_table to unicode_width_table\"",
+      "status": "Reverted",
+      "date": "2021-08-26",
+      "first_date": "2021-08-25",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=1563ecbc1be8b8e5c57651cf5c87f90dea9aea8f",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFBsxsH5ejH4-1xaTLpSK8vWoK1m6fA1JBtTM6jmBsLfmDki1g@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAFBsxsGOCpzV7c-f3a8ADsA1n4uZ=8puCctQp+x7W0vgkv=w+g@mail.gmail.com"
+      ],
+      "authors": "John Naylor",
+      "objectors": "",
+      "summary": "Revert \"Rename unicode_combining_table to unicode_width_table\"\nReverted commit(s): Rename unicode_combining_table to unicode_width_table; Change mbbisearch to return the character range",
+      "objection": "This reverts commit eb0d0d2c7300c9c5c22b35975c11265aa4becc84.\n\nAfter I had committed eb0d0d2c7 and 78ab944cd, I decided to add\na sanity check for a \"can't happen\" scenario just to be cautious.\nIt turned out that it already happened in the official Unicode source\ndata, namely that a character can be both wide and a combining\ncharacter. This fact renders the aforementioned commits unnecessary,\nso revert both of them.",
+      "touch_points": [],
+      "matched_queries": [
+        "checkpointer write combining",
+        "combine contiguous dirty buffer writes",
+        "bgwriter write combining"
+      ],
+      "from_hint": false,
+      "score": 0.281,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "cf:283",
+      "kind": "cf",
+      "title": "Compensate for full_page_writes when spreading checkpoint I/O",
+      "status": "Returned with feedback",
+      "date": "2015-08-25",
+      "first_date": "2015-06-26",
+      "url": "https://commitfest.postgresql.org/patch/283/",
+      "thread_urls": [],
+      "authors": "Heikki Linnakangas (heikki)",
+      "objectors": "",
+      "summary": "Compensate for full_page_writes when spreading checkpoint I/O",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "checkpointer write combining",
+        "sort checkpoint writes io size"
+      ],
+      "from_hint": false,
+      "score": 0.233,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": true
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:634",
+      "kind": "cf",
+      "title": "Batch (pipelined) mode for libpq",
+      "status": "Returned with feedback",
+      "date": "2016-11-22",
+      "first_date": "2016-05-23",
+      "url": "https://commitfest.postgresql.org/patch/634/",
+      "thread_urls": [],
+      "authors": "Craig Ringer (ringerc)",
+      "objectors": "",
+      "summary": "Batch (pipelined) mode for libpq",
+      "objection": "",
+      "touch_points": [
+        "wire protocol / libpq"
+      ],
+      "matched_queries": [
+        "BufferSync batch writes",
+        "writeback batching checkpoint"
+      ],
+      "from_hint": false,
+      "score": 0.231,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "cf:446",
+      "kind": "cf",
+      "title": "bloom filter in hash joins with batching",
+      "status": "Returned with feedback",
+      "date": "2016-02-08",
+      "first_date": "2015-12-15",
+      "url": "https://commitfest.postgresql.org/patch/446/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/5670946E.8070705@2ndquadrant.com"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "Alvaro Herrera",
+      "summary": "The patch builds a bloom filter on the 32-bit hash values of the whole inner relation when a hash join uses batching. Outer tuples with no possible match are then discarded (inner join) or emitted at once (outer join) instead of being written to and read back from batch temp files.",
+      "objection": "Alvaro Herrera returned it with feedback because even the last version was still at research stage. The author listed open gaps: the filter was not counted in work_mem, outer joins probably did not work, and there was no selectivity-based rule for turning the filter on or off. Peter Geoghegan also pointed to unsolved worst cases, such as high selectivity and skewed outer data.",
+      "touch_points": [],
+      "matched_queries": [
+        "BufferSync batch writes",
+        "writeback batching checkpoint"
+      ],
+      "from_hint": false,
+      "score": 0.225,
+      "enriched": true,
+      "key_quote": "I'm closing this as returned-with-feedback; AFAICS even the last version submitted is still in research stage.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20160208200236.GA323222%40alvherre.pgsql",
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:2581",
+      "kind": "cf",
+      "title": "Batch processing of RI checks",
+      "status": "Returned with feedback",
+      "date": "2020-09-30",
+      "first_date": "2020-04-08",
+      "url": "https://commitfest.postgresql.org/patch/2581/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/1813.1586363881@antos"
+      ],
+      "authors": "Antonin Houska (a.houska), Corey Huinker (coreyh)",
+      "objectors": "Andres Freund",
+      "summary": "The patch keeps RI triggers as row-level triggers but passes all queued events of the same kind to the trigger function in one call, so one check query covers many rows. A later version keeps the existing simple queries when only one row needs checking.",
+      "objection": "Michael Paquier returned the entry because it had been waiting on author for weeks after Andres Freund's June review. That review found the main patch too large, with too little explanation of the new design, and objected to the new infrastructure it adds to trigger.c, including a third copy of the tuples. Earlier, the slower single-row checks and the need for FOR KEY SHARE row locking cast doubt on how much a planned bulk check gains.",
+      "touch_points": [],
+      "matched_queries": [
+        "BufferSync batch writes",
+        "writeback batching checkpoint"
+      ],
+      "from_hint": false,
+      "score": 0.214,
+      "enriched": true,
+      "key_quote": "I'm pretty unhappy about the amount of new infrastructure this adds to trigger.c.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20200630011729.mr25bmmbvsattxe2%40alap3.anarazel.de",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "revert:7f7f25f15edb6eacec58179ef5285e874aa4435b",
+      "kind": "revert",
+      "title": "Revert \"Fix race in Parallel Hash Join batch cleanup.\"",
+      "status": "Reverted",
+      "date": "2021-03-17",
+      "first_date": "2021-03-17",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=7f7f25f15edb6eacec58179ef5285e874aa4435b",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CA+hUKGJmcqAE3MZeDCLLXa62cWM0AJbKmp2JrJYaJ86bz36LFA@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CA+hUKG+MDpwF2Eo2LAvzd=pOh81wUTsrwU1uAwR-v6OGBB6+7g@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/20200929061142.GA29096@paquier.xyz"
+      ],
+      "authors": "Thomas Munro",
+      "objectors": "",
+      "summary": "Revert \"Fix race in Parallel Hash Join batch cleanup.\"\nReverted commit(s): Update the names of Parallel Hash Join phases.; Fix race in Parallel Hash Join batch cleanup.",
+      "objection": "This reverts commit 378802e3713c6c0fce31d2390c134cd5d7c30157.\nThis reverts commit 3b8981b6e1a2aea0f18384c803e21e9391de669a.",
+      "touch_points": [
+        "planner"
+      ],
+      "matched_queries": [
+        "BufferSync batch writes",
+        "writeback batching checkpoint"
+      ],
+      "from_hint": false,
+      "score": 0.193,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "wiki:Vacuum:1",
+      "kind": "do_not_want",
+      "title": "Auto-fill the free space map by scanning the buffer cache or by checking pages written by the background writer",
+      "status": "Not worth doing",
+      "date": null,
+      "first_date": null,
+      "url": "https://wiki.postgresql.org/wiki/Not_Worth_Doing#Vacuum",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Auto-fill the free space map by scanning the buffer cache or by checking pages written by the background writer\nSection: Vacuum\nLinked: Dead Space Map; Re: Automatic free space map filling",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "combine contiguous dirty buffer writes",
+        "vectored writes shared buffers"
+      ],
+      "from_hint": false,
+      "score": 0.191,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:3545",
+      "kind": "cf",
+      "title": "Report checkpoint progress with pg_stat_progress_checkpoint",
+      "status": "Returned with feedback",
+      "date": "2023-01-31",
+      "first_date": "2021-12-29",
+      "url": "https://commitfest.postgresql.org/patch/3545/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACV-F+K+z+XW8fnK4MV71qz2gzAMxFnYziRgZURMB5ycAQ@mail.gmail.com"
+      ],
+      "authors": "Nitin Jadhav (nitinjadhav11)",
+      "objectors": "Michael Paquier, Andres Freund, Julien Rouhaud",
+      "summary": "The thread started as a proposal to log checkpoint progress in the server log. After objections it became a pg_stat_progress_checkpoint view that reports the checkpoint phase, flags, start LSN, start time and per-phase counters.",
+      "objection": "The final close came because the author stopped responding after Andres Freund marked the patch waiting on author for a docs build failure and noted that the architectural feedback had not reached a conclusion. Earlier, Michael Paquier returned it because the view was too complex and carried fields of little use, such as next_flags, start LSN and most flag values. Julien Rouhaud objected that the view showed the initial checkpoint flags instead of how the checkpoint was behaving now. Andres Freund measured progress-update overhead in BufferSync() on large shared_buffers.",
+      "touch_points": [],
+      "matched_queries": [
+        "checkpointer write combining",
+        "writeback batching checkpoint"
+      ],
+      "from_hint": false,
+      "score": 0.189,
+      "enriched": true,
+      "key_quote": "There has been no updates on this thread for some time, so this has been switched as Returned with Feedback.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALDaNm2Y9ksaFEu6zxM_YrVXXZCsZ55mFWrTLEFXQpHxAm6Dyg%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:28",
+      "kind": "cf",
+      "title": "hashjoin - gracefully increasing NTUP_PER_BUCKET instead of batching",
+      "status": "Rejected",
+      "date": "2015-02-13",
+      "first_date": "2014-12-07",
+      "url": "https://commitfest.postgresql.org/patch/28/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/5483C4AC.5060107@fuzzy.cz"
+      ],
+      "authors": "Tomas Vondra (fuzzycz)",
+      "objectors": "Kevin Grittner, Tomas Vondra",
+      "summary": "When the hash table for a hash join does not fit in work_mem at the initial NTUP_PER_BUCKET load factor of 1, the patch tries load factors of 2, 4 and 8 before falling back to batching. If batching becomes necessary at run time, it switches back to the default load factor, and explain shows the load factor.",
+      "objection": "The author's own tests showed that even a load factor of 2 was slower than going to two batches when temp files stay in the page cache; only an outer table large enough to cause real I/O favoured the higher load factor. Kevin Grittner could not build a case where the change won and judged that detecting the cases where it would help would be hard and add cost to every hash join. No one found a reliable way to detect those cases, so the author asked to mark it rejected.",
+      "touch_points": [],
+      "matched_queries": [
+        "BufferSync batch writes",
+        "writeback batching checkpoint"
+      ],
+      "from_hint": false,
+      "score": 0.184,
+      "enriched": true,
+      "key_quote": "The patch was meant as an attempt to implement Robert's idea\nfrom the hashjoin patch, but apparently we have no clear idea how to do\nit without hurting performance for many existing users.",
+      "quote_message_url": "https://www.postgresql.org/message-id/54B6CB73.8020906%402ndquadrant.com",
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:3873",
+      "kind": "cf",
+      "title": "Report checkpoint progress with pg_stat_progress_checkpoint",
+      "status": "Returned with feedback",
+      "date": "2022-10-12",
+      "first_date": "2021-12-29",
+      "url": "https://commitfest.postgresql.org/patch/3873/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACV-F+K+z+XW8fnK4MV71qz2gzAMxFnYziRgZURMB5ycAQ@mail.gmail.com"
+      ],
+      "authors": "Nitin Jadhav (nitinjadhav11)",
+      "objectors": "Michael Paquier, Andres Freund",
+      "summary": "The patch adds a pg_stat_progress_checkpoint view that reports the phase, flags, start LSN and other details of the running checkpoint or restartpoint. It started as a proposal to log checkpoint progress in the server log, but reviewers asked for a progress view instead.",
+      "objection": "Michael Paquier marked the entry Returned with Feedback because the view needed simplification: several fields and flags were of little use for monitoring, and the phase names were too long. Andres Freund objected that the view definition makes pg_rewrite bigger, and he asked for proof that the progress counters do not slow down checkpoints with many dirty buffers. The last measurement shown, a manual checkpoint taking 2.457 s with the patch against 2.334 s without, got no reply.",
+      "touch_points": [],
+      "matched_queries": [
+        "checkpointer write combining",
+        "writeback batching checkpoint"
+      ],
+      "from_hint": false,
+      "score": 0.175,
+      "enriched": true,
+      "key_quote": "I think that what's proposed could be simplified, and we had better remove the fields that are not that useful.",
+      "quote_message_url": "https://www.postgresql.org/message-id/YkwPyAoTq%2FKmTX2B%40paquier.xyz",
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:3505",
+      "kind": "cf",
+      "title": "Emit \"checkpoint skipped because system is idle\" message at LOG level if log_checkpoints is set",
+      "status": "Withdrawn",
+      "date": "2022-01-07",
+      "first_date": "2022-01-05",
+      "url": "https://commitfest.postgresql.org/patch/3505/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACX9LPadCNACDZ3JykDT-6sfPrPchXTLyNHP3cbwyJYjsg@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "",
+      "summary": "Emit \"checkpoint skipped because system is idle\" message at LOG level if log_checkpoints is set\nThreads: Emit \"checkpoint skipped because system is idle\" message at LOG level\nif log_checkpoints is set",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "checkpointer write combining",
+        "writeback batching checkpoint"
+      ],
+      "from_hint": false,
+      "score": 0.162,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:2273",
+      "kind": "cf",
+      "title": "Write visibility map during CLUSTER/VACUUM FULL",
+      "status": "Returned with feedback",
+      "date": "2019-11-29",
+      "first_date": "2019-09-01",
+      "url": "https://commitfest.postgresql.org/patch/2273/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAPpHfdtcxUVys6r6JqX2s+5CowXDKMOnfcJoJWHyjWDe=hwHMw@mail.gmail.com"
+      ],
+      "authors": "Alexander Korotkov (smagen)",
+      "objectors": "",
+      "summary": "Write visibility map during CLUSTER/VACUUM FULL\nThreads: Write visibility map during CLUSTER/VACUUM FULL",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "bgwriter write combining",
+        "BufferSync batch writes"
+      ],
+      "from_hint": false,
+      "score": 0.154,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:4029",
+      "kind": "cf",
+      "title": "Reduce wakeup on idle for bgwriter & walwriter for >5s",
+      "status": "Withdrawn",
+      "date": "2023-03-30",
+      "first_date": "2022-02-19",
+      "url": "https://commitfest.postgresql.org/patch/4029/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANbhV-HK8yvO_g4vwbmz__vZu_VZ4_jJWsTwmaNMXieTdzQCzQ@mail.gmail.com"
+      ],
+      "authors": "Simon Riggs (simon), Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "",
+      "summary": "Reduce wakeup on idle for bgwriter & walwriter for >5s\nThreads: Reducing power consumption on idle servers",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "bgwriter write combining"
+      ],
+      "from_hint": false,
+      "score": 0.142,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "revert:6c6b4972664491de408670354fdbccc7c83a1c89",
+      "kind": "revert",
+      "title": "Revert \"Add eager and lazy freezing strategies to VACUUM.\"",
+      "status": "Reverted",
+      "date": "2023-01-26",
+      "first_date": "2023-01-25",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6c6b4972664491de408670354fdbccc7c83a1c89",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20230126004347.gepcmyenk2csxrri@awork3.anarazel.de",
+        "https://www.postgresql.org/message-id/flat/CAH2-WzkFok_6EAHuK39GaW4FjEFQsY=3J0AAd6FXk93u-Xq3Fg@mail.gmail.com"
+      ],
+      "authors": "Peter Geoghegan",
+      "objectors": "",
+      "summary": "Revert \"Add eager and lazy freezing strategies to VACUUM.\"\nReverted commit(s): Add eager and lazy freezing strategies to VACUUM.",
+      "objection": "This reverts commit 4d417992613949af35530b4e8e83670c4e67e1b2.  Broad\nconcerns about regressions caused by eager freezing strategy have been\nraised.  Whether or not these concerns can be worked through in any time\nframe is far from certain.",
+      "touch_points": [],
+      "matched_queries": [
+        "eager flush strategy ring"
+      ],
+      "from_hint": false,
+      "score": 0.141,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:3376",
+      "kind": "cf",
+      "title": "Start WAL receiver eagerly",
+      "status": "Returned with feedback",
+      "date": "2022-02-07",
+      "first_date": "2020-01-17",
+      "url": "https://commitfest.postgresql.org/patch/3376/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CANXE4Tc3FNvZ_xAimempJWv_RH9pCvsZH7Yq93o1VuNLjUT-mQ@mail.gmail.com"
+      ],
+      "authors": "Konstantin Knizhnik (knizhnik), Asim Rama Praveen (apraveen), Ashwin Agrawal (ashwinstar), Soumyadeep Chakraborty (soumyadeepc)",
+      "objectors": "",
+      "summary": "Start WAL receiver eagerly\nThreads: Unnecessary delay in streaming replication due to replay lag",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "eager flush strategy ring"
+      ],
+      "from_hint": false,
+      "score": 0.126,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:5516",
+      "kind": "cf",
+      "title": "quick and dirty fix: Quadratic planning time for ordered paths over partitioned tables",
+      "status": "Rejected",
+      "date": "2025-02-03",
+      "first_date": "2025-01-22",
+      "url": "https://commitfest.postgresql.org/patch/5516/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALzhyqzmZ6b9Sbp4jCORJV48t4kz2a1EqR3z4DUxX4RfRYR2xA@mail.gmail.com"
+      ],
+      "authors": "",
+      "objectors": "",
+      "summary": "quick and dirty fix: Quadratic planning time for ordered paths over partitioned tables\nThreads: Quadratic planning time for ordered paths over partitioned tables",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "combine contiguous dirty buffer writes"
+      ],
+      "from_hint": false,
+      "score": 0.123,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:4416",
+      "kind": "cf",
+      "title": "Show WAL stats on pg_stat_io",
+      "status": "Returned with feedback",
+      "date": "2024-01-18",
+      "first_date": "2023-06-28",
+      "url": "https://commitfest.postgresql.org/patch/4416/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAN55FZ3AiQ+ZMxUuXnBpd0Rrh1YhwJ5FudkHg=JU0P+-W8T4Vg@mail.gmail.com"
+      ],
+      "authors": "Nazir Bilal Yavuz (nbyavuz)",
+      "objectors": "",
+      "summary": "Show WAL stats on pg_stat_io\nThreads: Show WAL write and fsync stats in pg_stat_io",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "sort checkpoint writes io size"
+      ],
+      "from_hint": false,
+      "score": 0.12,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:2188",
+      "kind": "cf",
+      "title": "psql - sort by size",
+      "status": "Withdrawn",
+      "date": "2019-09-13",
+      "first_date": "2019-06-28",
+      "url": "https://commitfest.postgresql.org/patch/2188/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAFj8pRBQnKOtRFLgARNN_vsVjQ5QBLjZW6G_xPm-1=mBQx+jCA@mail.gmail.com"
+      ],
+      "authors": "Pavel Stehule (okbobcz)",
+      "objectors": "",
+      "summary": "psql - sort by size\nThreads: proposal - patch: psql - sort_by_size",
+      "objection": "",
+      "touch_points": [
+        "psql"
+      ],
+      "matched_queries": [
+        "sort checkpoint writes io size"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "cf:4095",
+      "kind": "cf",
+      "title": "Make VACUUM remove MultiXacts with updater XIDs more eagerly",
+      "status": "Withdrawn",
+      "date": "2023-01-26",
+      "first_date": "2022-12-28",
+      "url": "https://commitfest.postgresql.org/patch/4095/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAH2-Wzk+JsrntB5065f48O2cSBdd3HiTrij67FxwFZX09xTD_g@mail.gmail.com"
+      ],
+      "authors": "Peter Geoghegan (pgeoghegan)",
+      "objectors": "",
+      "summary": "Make VACUUM remove MultiXacts with updater XIDs more eagerly\nThreads: Avoiding unnecessary clog lookups while freezing",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "eager flush strategy ring"
+      ],
+      "from_hint": false,
+      "score": 0.118,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 4,
+    "new_calls": 4,
+    "failed": 0,
+    "quotes_verified": 4,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 2
+  },
+  "precedent_cutoff": "2025-09-02",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "The only close precedent, P2, was set aside in favour of a broader design that would also cover the main writeback paths. This proposal is that broader scope, so the P2 reason does not count against it. P7 is about checkpoint pacing under full_page_writes and has no recorded reason, so it is not used here. The open problems in the thread, such as spread checkpoint pacing (messages #42, #43) and bgwriter_lru_maxpages, are new design issues for other angles."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 3,
+      "note": "No SQL syntax, catalog or pg_dump changes are proposed. The objections cover changed meaning of existing settings and of a documented probe."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 2,
+      "note": "There is no on-disk format, catalog, WAL record or protocol change, so pg_upgrade and mixed-version replication are not affected. Both objections concern write-path invariants only."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal has no privilege or exposure aspect. It changes how the checkpointer, bgwriter and backends write dirty shared buffers. It adds no SQL-callable function, privilege, role or GUC, and no new monitoring output beyond larger pg_stat_io write counts. The test_aio functions that dirty, flush and invalidate blocks are in a test module, not an installed extension. Data-integrity risks such as the hint-bit checksum race, the recovery assert and the invalid-page warning belong to the safety angle, not this one."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "Not applicable. Fit and ownership look sound: an active committer in the bufmgr area wrote the series, several reviewers are engaged, and the preparatory patches can be committed on their own."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing feature, setting or extension does this job. The *_flush_after settings only send writeback hints for writes already issued one block at a time, and kernel merging does not apply under direct IO. The proposal extends io_combine_limit, the existing read-combining limit, so it adds no second mechanism, and buffer manager internals cannot be replaced from an extension."
+    },
+    {
+      "angle": "demand",
+      "objections": 0,
+      "note": "Demand is shown in the material. Write throughput on IOPS-limited storage is a broad, common problem, and the author reports about 30% more TPS and 75% better p99 latency in pgbench (message #33). Independent testers saw faster checkpoints (messages #3, #28), and direct IO, a project-wide goal, needs combined writes. The benefit goes to all write-heavy users. The open costs (spread checkpoint pacing, bgwriter_lru_maxpages) are design questions for other angles."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 8,
+      "new_objections": 7,
+      "new_survived": 5,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "attachment limit (8) reached; v16-0009-Make-StrategyRejectBuffer-encapsulate-more-logic.patch not read",
+    "attachment limit (8) reached; v16-0010-Split-StrategyGetBuffer-into-source-specific-hel.patch not read",
+    "attachment limit (8) reached; v16-0011-Introduce-ClaimVictimBuffer-helper.patch not read",
+    "attachment limit (8) reached; v16-0012-Don-t-retry-the-strategy-ring-after-a-failed-clo.patch not read",
+    "attachment limit (8) reached; v16-0013-Write-combining-for-client-backends.patch not read",
+    "attachment limit (8) reached; v16-0014-Add-client-backend-write-combining-test.patch not read",
+    "attachment limit (8) reached; v16-0015-Add-COPY-FROM-write-combining-test.patch not read",
+    "attachment limit (8) reached; v16-0016-Add-VACUUM-write-combining-test.patch not read",
+    "attachment limit (8) reached; v16-0017-Add-bgwriter-helper-to-write-buffers.patch not read",
+    "attachment limit (8) reached; v16-0018-Write-combining-for-background-writer.patch not read",
+    "attachment limit (8) reached; v16-0019-Add-bgwriter-write-combining-test.patch not read",
+    "attachment limit (8) reached; v1-0005-Fix-XLogNeedsFlush-for-checkpointer.patch not read",
+    "attachment limit (8) reached; v1-0001-Refactor-goto-into-for-loop-in-GetVictimBuffer.patch not read",
+    "attachment limit (8) reached; v1-0004-Write-combining-for-BAS_BULKWRITE.patch not read",
+    "attachment limit (8) reached; v1-0003-Eagerly-flush-bulkwrite-strategy-ring.patch not read",
+    "attachment limit (8) reached; v1-0002-Split-FlushBuffer-into-two-parts.patch not read",
+    "attachment limit (8) reached; v1-0006-Add-database-Oid-to-CkptSortItem.patch not read",
+    "attachment limit (8) reached; v1-0007-Implement-checkpointer-data-write-combining.patch not read"
+  ],
+  "tone_lint": {
+    "fields_checked": 83,
+    "hits_found": 0,
+    "sentences_rewritten": 0,
+    "repair_call": "not needed",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 15,
+    "wall_ms": 143186,
+    "cost_usd": 5.4342384,
+    "dry_run": false
+  }
+}

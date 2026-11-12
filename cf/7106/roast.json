@@ -1,0 +1,1168 @@
+{
+  "schema_version": 1,
+  "tool": "pgroast/0.1",
+  "generated_at": "2026-11-12T03:20:20.983Z",
+  "input": {
+    "arg": "7106",
+    "cf": {
+      "id": 7106,
+      "url": "https://commitfest.postgresql.org/patch/7106/",
+      "title": "Avoid building stderr message if possible",
+      "status": "Needs review",
+      "authors": "ChangAo Chen (chenchangao)",
+      "redacted": false
+    },
+    "thread_url": "https://www.postgresql.org/message-id/flat/tencent_A00A556AC153E46588F0680E34ED4C43EF09%40qq.com",
+    "subject": "Avoid building stderr message if possible",
+    "thread_start": "2026-08-02T15:51:28Z",
+    "messages_read": 3,
+    "messages_total": 3,
+    "blind": null,
+    "before": null,
+    "hint": null,
+    "attachments_read": [
+      "v1-0001-Avoid-building-stderr-message-if-possible.patch"
+    ]
+  },
+  "mode": "review",
+  "backend": "claude",
+  "models": {
+    "roaster": "opus",
+    "critic": "claude-mythos-5-2",
+    "synth": "claude-mythos-5-2",
+    "brief": "opus"
+  },
+  "verdict": "NEEDS-DESIGN-DISCUSSION",
+  "confidence": "medium",
+  "verdict_reasoning": "No surviving objection is fatal, and no level fails. Message #3 confirms that csvlog and jsonlog never read the buffer, and the default stderr setup pays one boolean test. Three fixable points are open: the check repeated at four sites (maintenance-fit-1), the unannounced '%l' change (standards-compat-1), and a benchmark limited to one 32MB statement (demand-1). The author has not answered message #3.",
+  "failing_level": null,
+  "levels": [
+    {
+      "level": "1a",
+      "name": "Level 1a: understandability",
+      "status": "passed"
+    },
+    {
+      "level": "1b",
+      "name": "Level 1b: desirability",
+      "status": "passed"
+    },
+    {
+      "level": "2",
+      "name": "Level 2: architecture and design",
+      "status": "passed"
+    }
+  ],
+  "brief": {
+    "title": "Skip building the stderr-format log buffer when no destination uses it",
+    "problem": "send_message_to_server_log() always builds a stderr-format message buffer, even when log_destination needs none, such as 'csvlog' or 'jsonlog' alone. The wasted formatting costs time on servers that log a lot, for example with log_min_duration_statement = 0 and large statements.",
+    "proposed_design": "The patch moves the stderr-format buffer construction into a new function, build_stderr_message(), and calls it lazily behind a flag at each of the four sites that read the buffer: syslog, eventlog, stderr and the syslogger_setup_done path. With csvlog or jsonlog alone, the buffer is never built. Only src/backend/utils/error/elog.c changes.",
+    "user_visible_surface": [
+      "log_line_prefix '%l' now counts only messages for which the stderr format was built, per a reviewer's test; the author does not mention it."
+    ],
+    "author_claims": [
+      "With csvlog only and log_min_duration_statement = 0, a pgbench run of a 32MB statement went from about 3.41 to 3.80 tps.",
+      "The patch avoids building the buffer \"if possible\"; the author claims no other effect."
+    ],
+    "thread_state": "Chao Li liked the idea and suggested renaming build_stderr_message() and has_stderr_message, since syslog and eventlog also use the buffer. Diego tested five log_destination setups, found identical output, and raised the '%l' change and the repeated deferred-build check at four sites; his message is cut off and the author has not replied.",
+    "unclear": [
+      "The author does not say whether the '%l' counter change is intended or should be documented.",
+      "The patch has no answer yet to the concern that a future destination could read an uninitialized buffer.",
+      "The syslog path was not tested, only read.",
+      "The benchmark is one 60-second run with one client and one extreme 32MB statement; there are no numbers for typical workloads."
+    ],
+    "search_queries": [
+      "avoid building log message csvlog",
+      "send_message_to_server_log performance",
+      "lazy log line prefix formatting",
+      "log_destination csvlog jsonlog overhead",
+      "elog.c logging performance improvement",
+      "skip unused log formatting",
+      "log_line_prefix %l line number"
+    ]
+  },
+  "prior_attempts": [
+    {
+      "precedent_id": "P5",
+      "source_id": "cf:3404",
+      "title": "Skip vacuum log report code in lazy_scan_heap() if possible",
+      "kind": "cf",
+      "status": "Rejected",
+      "url": "https://commitfest.postgresql.org/patch/3404/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJcOf-fH5FGsF3mpPL1m5yHLeR0HdXWQp9RA=LnHu0Qd=eq9DA@mail.gmail.com"
+      ],
+      "date": "2021-12-04",
+      "first_date": "2021-10-29",
+      "who_objected": "Andres Freund, Peter Geoghegan",
+      "quote": "I think this mostly reduces the coverage of the relevant code without any measurable speed gain.",
+      "quote_url": "https://www.postgresql.org/message-id/20211203011344.lkxqyzhnm6jopubh%40alap3.anarazel.de",
+      "enriched": true,
+      "reason": "lazy_scan_heap() runs once per relation, so the code path is not hot and the change saves no measurable time. Andres Freund also said the skip reduces test coverage of the report code, and Michael Paquier accepted that argument. Peter Geoghegan noted that his patch to unite VACUUM VERBOSE and autovacuum logging would remove the issue, so the entry was rejected in favour of that patch.",
+      "relation": "similar_idea",
+      "what_is_different": "This patch skips formatting on a path that runs for every logged message, and message #1 shows a measured gain for csvlog-only logging. The moved code stays covered because the default stderr setup still runs it."
+    }
+  ],
+  "objections": [
+    {
+      "title": "Deferred build at four sites turns a structural invariant into a convention",
+      "level": "2",
+      "rubric_item": 9,
+      "category": "maintenance_burden",
+      "touch_points": [
+        "maintenance_burden"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A later patch adds a log destination, or a new branch in an existing one, that reads buf without repeating the flag check. With csvlog-only or jsonlog-only configurations, that branch formats uninitialized stack memory inside the error reporting path. Normal stderr setups and regression tests never hit it, so a user finds it as corrupt output or a crash.",
+      "argument": "Today initStringInfo(&buf) runs at the top of send_message_to_server_log(), so no destination can read an unbuilt buffer. The patch copies the check-and-build block to four sites, and nothing fails at compile time or in tests if a fifth site leaves it out (message #3). The author has not replied to this point. The defect would land in elog.c, the code that must work while other things fail.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3
+      ],
+      "author_must_show": "Can the build decision live in one place, such as an accessor that owns the flag or a predicate computed up front, so that a new consumer cannot skip it?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Diego",
+          "date": "2026-09-11T13:17:18Z",
+          "url": "https://www.postgresql.org/message-id/6aa3ff5e.749efa0d.1234b.4ae7%40mx.google.com"
+        }
+      ],
+      "id": "maintenance-fit-1",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #3 raises this point and the thread has no answer. The patch is correct today, and the reviewer names two shapes that restore the invariant, so it stays fixable.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Log line number %l changes meaning without documentation",
+      "level": "2",
+      "rubric_item": 10,
+      "category": "design",
+      "touch_points": [],
+      "severity": "fixable",
+      "failure_scenario": "An administrator runs with log_destination = 'csvlog', then switches to 'stderr' with ALTER SYSTEM and pg_reload_conf(). After upgrade, '%l' in log_line_prefix restarts near 1 instead of continuing the per-session count. Log-correlation scripts that rely on that count see gaps or reuse they did not expect, and nothing in the release notes explains why.",
+      "argument": "Message #3 showed the effect: unpatched gives LINE=11, patched gives LINE=1. '%l' is documented as the \"number of the log line for each session or process, starting at 1\", and the patch makes it count only messages formatted for stderr, syslog or eventlog. The commit message claims no behaviour change, and the author has not answered the question in message #3. The new behaviour may be the better one, but a committer would likely want it chosen on purpose and documented, not left as a side effect.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        3
+      ],
+      "author_must_show": "Is the new '%l' counting intended, and will the docs or the commit message say that it counts only lines rendered in the stderr format?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 3,
+          "from": "Diego",
+          "date": "2026-09-11T13:17:18Z",
+          "url": "https://www.postgresql.org/message-id/6aa3ff5e.749efa0d.1234b.4ae7%40mx.google.com"
+        }
+      ],
+      "id": "standards-compat-1",
+      "angle": "standards-compat",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "Message #3 shows LINE=11 unpatched and LINE=1 patched, and the author has not replied. The effect is narrow, since it needs a run-time change of log_destination, so fixable is the right severity.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    },
+    {
+      "title": "Gain shown only for one extreme 32MB statement",
+      "level": "1b",
+      "rubric_item": 4,
+      "category": "demand",
+      "touch_points": [
+        "maintenance_burden",
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer pushes the patch on the strength of an 11% gain measured with a 32MB statement. Typical csvlog-only servers log statements of a few KiB and may see no measurable change. Meanwhile, everyone who later edits send_message_to_server_log() must remember the deferred-build check at each consumer of buf.",
+      "argument": "The only evidence is one 60-second, one-client pgbench run of a 32MB statement with log_min_duration_statement = 0 (message #1). No user report, field case or typical-workload number shows that csvlog-only or jsonlog-only servers lose real time to this buffer. The new rule that each consumer must build buf first applies to everyone who edits elog.c (message #3). For that trade to be worth it, the gain should show up beyond the worst case.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3
+      ],
+      "author_must_show": "What is the measured gain with csvlog or jsonlog alone on a realistic logging-heavy workload, for example many clients running ordinary-sized statements with log_min_duration_statement = 0?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "cca5507",
+          "date": "2026-08-02T15:51:28Z",
+          "url": "https://www.postgresql.org/message-id/tencent_A00A556AC153E46588F0680E34ED4C43EF09%40qq.com"
+        },
+        {
+          "index": 3,
+          "from": "Diego",
+          "date": "2026-09-11T13:17:18Z",
+          "url": "https://www.postgresql.org/message-id/6aa3ff5e.749efa0d.1234b.4ae7%40mx.google.com"
+        }
+      ],
+      "id": "demand-1",
+      "angle": "demand",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "survived",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "none",
+        "reasoning": "The waste is real, and the default configuration pays one boolean test, per message #3. But the only number is one 60-second, one-client run of a 32MB statement, so the gain for ordinary statement sizes is not shown.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "other_surviving": [],
+  "refuted": [
+    {
+      "title": "Gain shown only for one 32MB statement, not for common logging loads",
+      "level": "1b",
+      "rubric_item": 5,
+      "category": "demand",
+      "touch_points": [
+        "maintenance_burden",
+        "hot_path_performance"
+      ],
+      "severity": "fixable",
+      "failure_scenario": "A committer takes on a new invariant in elog.c plus a change in '%l' behaviour. The only evidence is one 60-second, one-client run with a 32MB statement and log_min_duration_statement = 0, about 11% faster. For csvlog or jsonlog servers that log many ordinary short statements, the patch may save too little time to measure.",
+      "argument": "The benchmark in message #1 shows only the case where formatting a huge statement dominates. No other user reports this cost. Ten micro-optimizations of this kind per release, each adding a check-before-use rule in error paths, would add up. A run with many clients and ordinary statement sizes would show whether the gain justifies the maintenance cost.",
+      "precedent_ids": [],
+      "thread_message_refs": [
+        1,
+        3
+      ],
+      "author_must_show": "What is the measured gain for csvlog-only or jsonlog-only servers with log_min_duration_statement = 0 under a pgbench-like workload of ordinary statement sizes?",
+      "precedents": [],
+      "thread_refs": [
+        {
+          "index": 1,
+          "from": "cca5507",
+          "date": "2026-08-02T15:51:28Z",
+          "url": "https://www.postgresql.org/message-id/tencent_A00A556AC153E46588F0680E34ED4C43EF09%40qq.com"
+        },
+        {
+          "index": 3,
+          "from": "Diego",
+          "date": "2026-09-11T13:17:18Z",
+          "url": "https://www.postgresql.org/message-id/6aa3ff5e.749efa0d.1234b.4ae7%40mx.google.com"
+        }
+      ],
+      "id": "maintenance-fit-2",
+      "angle": "maintenance-fit",
+      "round": 0,
+      "revised_in_round": null,
+      "status": "refuted",
+      "withdrawal": null,
+      "critic": {
+        "refutation_kind": "not_specific",
+        "reasoning": "Duplicate of demand-1. Both ask for numbers beyond the single 32MB run, and demand-1 states the trade more directly.",
+        "original_severity": null
+      },
+      "not_ranked_reason": null
+    }
+  ],
+  "withdrawn": [],
+  "touch_points": [
+    {
+      "id": "on_disk_pg_upgrade",
+      "label": "on-disk format / pg_upgrade",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wal_replication",
+      "label": "WAL / replication / standby",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "wire_protocol",
+      "label": "wire protocol",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "catalog",
+      "label": "catalog changes",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "abi_extension_api",
+      "label": "ABI / extension API",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "sql_standard_syntax",
+      "label": "SQL-standard conflict or non-standard syntax",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "new_guc",
+      "label": "new GUC",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "planner_behaviour",
+      "label": "planner behaviour change",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "pg_dump_round_trip",
+      "label": "pg_dump / restore round-trip",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "psql_ux",
+      "label": "psql UX conventions",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "security_privileges",
+      "label": "security / privileges",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "backpatchability",
+      "label": "backpatchability",
+      "hit": false,
+      "reason": ""
+    },
+    {
+      "id": "maintenance_burden",
+      "label": "maintenance burden (\"who maintains this in 10 years\")",
+      "hit": true,
+      "reason": "Each of the four consumers of buf in send_message_to_server_log() must now run the deferred-build check first."
+    },
+    {
+      "id": "hot_path_performance",
+      "label": "performance on the hot path",
+      "hit": true,
+      "reason": "The patch changes send_message_to_server_log(), which runs for every logged message."
+    },
+    {
+      "id": "does_not_fit",
+      "label": "doesn't fit what Postgres is about (extension / external tool / already solved)",
+      "hit": false,
+      "reason": ""
+    }
+  ],
+  "questions": [
+    "Can the build decision live in one place, such as an accessor that owns the flag or a predicate computed up front, so a new consumer cannot skip it?",
+    "Is the new '%l' counting intended, and will the docs or the commit message say that it counts only lines rendered in the stderr format?",
+    "What is the measured gain with csvlog or jsonlog alone when many clients run ordinary-sized statements with log_min_duration_statement = 0?",
+    "Has anyone run the patched code with log_destination = 'syslog' and compared the output with master?"
+  ],
+  "committability": {
+    "owner": "silent",
+    "owner_note": "A committer who knows the error reporting code in elog.c and the syslogger paths would have to own it. None has spoken in the thread.",
+    "liability": "The owner signs for correct behaviour of send_message_to_server_log() in every log_destination combination, including the untested syslog path, and for the '%l' change. The check-before-use rule lasts as long as the deferred build does.",
+    "author_follow_up": "The author has not replied to message #2 or message #3; no sign either way."
+  },
+  "not_now": {
+    "applies": false,
+    "evidence_that_would_change_it": ""
+  },
+  "priority": {
+    "audience": "niche",
+    "maintenance_burden": "low",
+    "review_cost": "low",
+    "recommended_action": "fix design first",
+    "reason": "The patch touches only elog.c, and the shown gain is for csvlog-only logging of a 32MB statement. A reply to message #3 and a single-place build decision would make it a short review."
+  },
+  "self_advice": [],
+  "provisional_note": "The code was not read. The claim that all four consumers build the buffer first, and that the final pfree is guarded, rests on message #3. The syslog and eventlog paths were not run.",
+  "disclosure": "Prepared by an AI harness; treat as a devil's advocate, not a verdict.",
+  "precedents_retrieved": [
+    {
+      "id": "P1",
+      "source_id": "cf:3505",
+      "kind": "cf",
+      "title": "Emit \"checkpoint skipped because system is idle\" message at LOG level if log_checkpoints is set",
+      "status": "Withdrawn",
+      "date": "2022-01-07",
+      "first_date": "2022-01-05",
+      "url": "https://commitfest.postgresql.org/patch/3505/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACX9LPadCNACDZ3JykDT-6sfPrPchXTLyNHP3cbwyJYjsg@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "Justin Pryzby, Kyotaro Horiguchi, Julien Rouhaud",
+      "summary": "The patch raises the \"checkpoint skipped because system is idle\" message from DEBUG1 to LOG when log_checkpoints is set. The goal is to show in the server log that no checkpoints happened during idle periods.",
+      "objection": "Justin Pryzby argued that a message about doing nothing is a debug message, and that writing it can wake idle disks, for example through syslog fsync. He also noted that log_checkpoints became the default partly so that an idle instance would not write logs every 5 minutes. Kyotaro Horiguchi and Julien Rouhaud also voted -1 and suggested other ways to see skipped checkpoints, such as emit_log_hook or a counter in pg_stat_bgwriter. With no agreement, Justin Pryzby asked the author to close the CF entry, and it was withdrawn.",
+      "touch_points": [],
+      "matched_queries": [
+        "avoid building log message csvlog",
+        "send_message_to_server_log performance",
+        "skip unused log formatting"
+      ],
+      "from_hint": false,
+      "score": 0.342,
+      "enriched": true,
+      "key_quote": "I think it would be odd to write logs of increased severity, for the case where\nwe did not do anything.  I think it really is a debug log.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20220105231806.GQ14051%40telsasoft.com",
+      "relevant": false
+    },
+    {
+      "id": "P2",
+      "source_id": "cf:3547",
+      "kind": "cf",
+      "title": "Issue a log message when the backtrace logged is cut off",
+      "status": "Returned with feedback",
+      "date": "2022-04-07",
+      "first_date": "2022-02-01",
+      "url": "https://commitfest.postgresql.org/patch/3547/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/0f0ed9f3-3892-e8a3-51c9-ed268dff6bdd@oss.nttdata.com"
+      ],
+      "authors": "Fujii Masao (masaofujii)",
+      "objectors": "Peter Eisentraut, Yugo NAGATA",
+      "summary": "The patch makes set_backtrace() in elog.c, and the backtrace code in assert.c, add a line such as \"(backtrace limited to 100 frames)\" when the backtrace reaches the buffer limit. It began as a documentation note about the 100-frame limit of backtrace_functions and changed to a log message at Peter Eisentraut's suggestion.",
+      "objection": "Reviewers supported the idea, but the last patch had open review points. On FreeBSD, backtrace() returned 99 frames, so the message never appeared. Yugo NAGATA noted that num_skip makes the reported count wrong, and Peter Eisentraut asked to print nframes and to test against lengthof(buf) - 1. No updated patch appears in the visible messages before the entry was returned.",
+      "touch_points": [],
+      "matched_queries": [
+        "avoid building log message csvlog",
+        "send_message_to_server_log performance",
+        "log_line_prefix %l line number"
+      ],
+      "from_hint": false,
+      "score": 0.323,
+      "enriched": true,
+      "key_quote": "I think this should actually print nframes, because that's the actual number of frames returned.",
+      "quote_message_url": "https://www.postgresql.org/message-id/3eafd5c6-f69f-2592-34a1-63cbd39d323b%40enterprisedb.com",
+      "relevant": false
+    },
+    {
+      "id": "P3",
+      "source_id": "cf:4606",
+      "kind": "cf",
+      "title": "Fix log_line_prefix to display the transaction id (%x) for statements not in a transaction block",
+      "status": "Withdrawn",
+      "date": "2024-05-18",
+      "first_date": "2023-10-08",
+      "url": "https://commitfest.postgresql.org/patch/4606/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/12fa0c9a-2189-ed7a-016a-3f1b99bd756c@yeah.net"
+      ],
+      "authors": "Zongliang Quan (quanzl)",
+      "objectors": "Robert Haas, jian he",
+      "summary": "The patch makes log_statement output show the real XID in the %x escape of log_line_prefix for statements outside a transaction block. When no XID is assigned yet, it holds back the statement log line and writes it before finish_xact_command, once the XID is known.",
+      "objection": "Robert Haas argued that log_statement should keep logging a statement before it runs, as it has long done. With the patch the log line comes sometimes before and sometimes after execution, so users can no longer assume a running statement has already been logged. jian he showed that with auto_explain the plan and statement lines come out in the wrong order. The author found no simpler design, withdrew the entry, and Bruce Momjian removed the TODO item.",
+      "touch_points": [],
+      "matched_queries": [
+        "lazy log line prefix formatting",
+        "log_line_prefix %l line number"
+      ],
+      "from_hint": false,
+      "score": 0.285,
+      "enriched": true,
+      "key_quote": "I don't think it's reasonable at all. We can't log the XID before it's\nassigned, and we can't log the statement after the XID is assigned\nwithout completely changing how the parameter works.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoZMLA6G3ZknhDuC02evgU6Dc5GGb%2B-7YaonR-Qc%3DTcUXA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P4",
+      "source_id": "revert:e9a31c0cc604b015363d0aa5b018e8cea9d1d9a7",
+      "kind": "revert",
+      "title": "Revert logical snapshot filename format change in SnapBuildSnapshotExists().",
+      "status": "Reverted",
+      "date": "2025-08-14",
+      "first_date": "2025-07-07",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=e9a31c0cc604b015363d0aa5b018e8cea9d1d9a7",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHGQGwHuHPB-ucAk_Tq3uSs4Fdziu1Jp_AA_RD3m5Ycky7m48w@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/ME0P300MB0445CA53CA0E4B8C1879AF84B641A@ME0P300MB0445.AUSP300.PROD.OUTLOOK.COM"
+      ],
+      "authors": "Álvaro Herrera",
+      "objectors": "",
+      "summary": "Revert logical snapshot filename format change in SnapBuildSnapshotExists().\nReverted commit(s): Standardize LSN formatting by zero padding",
+      "objection": "Commit 2633dae2e48 standardized LSN formatting but mistakenly changed\nthe logical snapshot filename format in SnapBuildSnapshotExists() from\n\"%X-%X.snap\" to \"%08X-%08X.snap\". Other code still used the original\n\"%X-%X.snap\" format, causing the replication slot synchronization worker\nto fail to find existing snapshot files and produce excessive log messages.\n\nThis commit restores the original \"%X-%X.snap\" format\nin SnapBuildSnapshotExists() to resolve the issue.",
+      "touch_points": [
+        "WAL / replication / standby",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "lazy log line prefix formatting",
+        "skip unused log formatting"
+      ],
+      "from_hint": false,
+      "score": 0.218,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P5",
+      "source_id": "cf:3404",
+      "kind": "cf",
+      "title": "Skip vacuum log report code in lazy_scan_heap() if possible",
+      "status": "Rejected",
+      "date": "2021-12-04",
+      "first_date": "2021-10-29",
+      "url": "https://commitfest.postgresql.org/patch/3404/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAJcOf-fH5FGsF3mpPL1m5yHLeR0HdXWQp9RA=LnHu0Qd=eq9DA@mail.gmail.com"
+      ],
+      "authors": "Greg Nancarrow (gregn1234)",
+      "objectors": "Andres Freund, Peter Geoghegan",
+      "summary": "The patch makes lazy_scan_heap() skip the formatting of its end-of-scan vacuum log report when nothing would be logged. Without VERBOSE that report is logged at DEBUG2, so the work usually produces no output.",
+      "objection": "lazy_scan_heap() runs once per relation, so the code path is not hot and the change saves no measurable time. Andres Freund also said the skip reduces test coverage of the report code, and Michael Paquier accepted that argument. Peter Geoghegan noted that his patch to unite VACUUM VERBOSE and autovacuum logging would remove the issue, so the entry was rejected in favour of that patch.",
+      "touch_points": [],
+      "matched_queries": [
+        "lazy log line prefix formatting",
+        "skip unused log formatting"
+      ],
+      "from_hint": false,
+      "score": 0.215,
+      "enriched": true,
+      "key_quote": "I think this mostly reduces the coverage of the relevant code without any\nmeasurable speed gain.",
+      "quote_message_url": "https://www.postgresql.org/message-id/20211203011344.lkxqyzhnm6jopubh%40alap3.anarazel.de",
+      "relevant": true
+    },
+    {
+      "id": "P6",
+      "source_id": "revert:7ca548f23a60887541493b2da47f2b2720c35ee3",
+      "kind": "revert",
+      "title": "Revert non-text output formats for pg_dumpall",
+      "status": "Reverted",
+      "date": "2026-06-18",
+      "first_date": "2026-02-26",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=7ca548f23a60887541493b2da47f2b2720c35ee3",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20260607000218.96.noahmisch@microsoft.com",
+        "https://www.postgresql.org/message-id/flat/cb103623-8ee6-4ba5-a2c9-f32e3a4933fa@dunslane.net",
+        "https://www.postgresql.org/message-id/flat/740033.1772142754@sss.pgh.pa.us",
+        "https://www.postgresql.org/message-id/flat/016819c0-666e-42a8-bfc8-2b93fd8d0176@eisentraut.org",
+        "https://www.postgresql.org/message-id/flat/CAKYtNArdcc5kx1MdTtTKFNYiauo3=zCA-NB0LmBCW-RU_kSb3A@mail.gmail.com"
+      ],
+      "authors": "Andrew Dunstan",
+      "objectors": "",
+      "summary": "Revert non-text output formats for pg_dumpall\nReverted commit(s): Add non-text output formats to pg_dumpall; Clean up nodes that  are no longer of use in 007_pgdumpall.pl; Fix casting away const-ness in pg_restore.c; Improve writing map.dat preamble; pg_restore: add --no-globals option to skip globals",
+      "objection": "This reverts the non-text (custom/directory/tar) output format support\nfor pg_dumpall added by 763aaa06f03 and its feature-specific follow-ups,\nin line with Noah Misch's post-commit review which recommends reverting\nand finishing the work through the commitfest.\n\nScope is deliberately minimal: only the feature itself is removed.\nIndependent improvements that merely touched the same files, or that were\ncommitted alongside the feature but do not depend on its design, are\npreserved.\n\nReverted (the feature):\n\n  763aaa06f03  Add non-text output formats to pg_dumpall\n  d6d9b96b404  Clean up nodes that are no longer of use in 007_pgdumpall.pl\n  01c729e0c7a  Fix casting away const-ness in pg_restore.c\n  c7572cd48d3  Improve writing map.dat preamble\n  3c19983cc08  pg_restore: add --no-globals option to skip globals\n  abff4492d02  Fix options listing of pg_restore --no-globals\n  bb53b8d359d  Fix small memory leak in get_dbname_oid_list_from_mfile()\n  a793677e57b  pg_restore: Remove dead code in restore_all_databases()\n  a198c26dede  pg_dumpall: simplify coding of dropDBs()\n  ec80215c033  pg_restore: Remove unnecessary strlen() calls in options parsing\n\nPreserved (independent of the feature):\n\n  b2898baaf7e  the check_mut_excl_opts() helper in src/fe_utils/option_utils.c\n               and its use in pg_dump\n  7c8280eeb58  pg_dump's conflicting-option refactor (and tests 002/005)\n  be0d0b457cb  pg_dumpall's rejection of --clean together with --data-only\n               (re-expressed directly, since pg_dumpall.c is otherwise\n               returned to its pre-feature state)\n  74b4438a70b  the dangling-grantor-OID GRANT fix (back-patched through 16)\n  273d26b75e7, d4cb9c37765  independent pg_restore.sgml clarifications\n\nBecause the feature restructured pg_dumpall.c and pg_restore.c (pg_restore's\nmain() was split into restore_one_database() plus a dispatcher) and\ninterleaved its option checks with the conflicting-option refactor in the\nsame regions, the cosmetic check_mut_excl_opts() reflow of those two files'\noption blocks is inseparable from the feature and comes out with it; the\nbehavior is unchanged.  The reusable helper and pg_dump's use of it are\nunaffected.",
+      "touch_points": [
+        "pg_dump / restore",
+        "security / privileges"
+      ],
+      "matched_queries": [
+        "lazy log line prefix formatting",
+        "skip unused log formatting"
+      ],
+      "from_hint": false,
+      "score": 0.2,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P7",
+      "source_id": "revert:8b06e6aba8773df8040b357a1cb058879ed2d94f",
+      "kind": "revert",
+      "title": "Revert idea of zer-padding padding session id in log_line_prefix",
+      "status": "Reverted",
+      "date": "2013-05-06",
+      "first_date": "2013-05-06",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=8b06e6aba8773df8040b357a1cb058879ed2d94f",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert idea of zer-padding padding session id in log_line_prefix",
+      "objection": "Removal of doc adjustment and release note mention as well.",
+      "touch_points": [],
+      "matched_queries": [
+        "lazy log line prefix formatting",
+        "log_line_prefix %l line number"
+      ],
+      "from_hint": false,
+      "score": 0.192,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P8",
+      "source_id": "cf:6546",
+      "kind": "cf",
+      "title": "Fix slotsync worker busy loop causing repeated log messages",
+      "status": "Withdrawn",
+      "date": "2026-05-01",
+      "first_date": "2026-02-27",
+      "url": "https://commitfest.postgresql.org/patch/6546/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHGQGwF6zG9Z8ws1yb3hY1VqV-WT7hR0qyXCn2HdbjvZQKufDw@mail.gmail.com"
+      ],
+      "authors": "Fujii Masao (masaofujii)",
+      "objectors": "",
+      "summary": "The patch fixes a slotsync worker loop that logs four logical decoding messages every 200 ms when confirmed_flush_lsn matches the primary but restart_lsn does not. update_local_synced_slot() would report \"no update\" in that case so the worker uses the normal sleep interval, and a second patch lowered the logical decoding messages from LOG to DEBUG1.",
+      "objection": "The visible messages do not show why. Amit Kapila questioned how 0001 detected an update and opposed the log-level change in 0002. The thread then settled on a simpler patch by Zhijie Hou that compares the slot's old and new LSN/xmin, and Hou posted it for HEAD and back branches.",
+      "touch_points": [],
+      "matched_queries": [
+        "avoid building log message csvlog",
+        "send_message_to_server_log performance"
+      ],
+      "from_hint": false,
+      "score": 0.186,
+      "enriched": true,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P9",
+      "source_id": "revert:45a7faf130176ae7c152413967c7c90068476a94",
+      "kind": "revert",
+      "title": "Revert \"pg_createsubscriber: Add log message when no publications exist to drop.\"",
+      "status": "Reverted",
+      "date": "2025-10-15",
+      "first_date": "2025-10-14",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=45a7faf130176ae7c152413967c7c90068476a94",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHut+Pu7xz1LqNvyQyvSHrV0Sw6D=e6T-Jm=gh1MRJrkuWGyBQ@mail.gmail.com",
+        "https://www.postgresql.org/message-id/flat/CAHut+Ptm+WJwbbYXhC0s6FP_98KzZCR=5CPu8F8N5uV8P7BpqA@mail.gmail.com"
+      ],
+      "authors": "Masahiko Sawada",
+      "objectors": "",
+      "summary": "Revert \"pg_createsubscriber: Add log message when no publications exist to drop.\"\nReverted commit(s): pg_createsubscriber: Add log message when no publications exist to drop.",
+      "objection": "This reverts commit 74ac377d75135e02064fc4427bec401277b4f60c.\n\nThe previous change contained a misconception about how publications\nare cleaned up on the subscriber. The newly added log message could\nconfuse users, particularly when running pg_createsubscriber with\n--dry-run - users would see a \"dropping publication\" message\nimmediately followed by a \"no publications found\" message.",
+      "touch_points": [],
+      "matched_queries": [
+        "avoid building log message csvlog",
+        "send_message_to_server_log performance"
+      ],
+      "from_hint": false,
+      "score": 0.185,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P10",
+      "source_id": "cf:314",
+      "kind": "cf",
+      "title": "SQL function to report log message",
+      "status": "Returned with feedback",
+      "date": "2015-12-22",
+      "first_date": "2015-07-13",
+      "url": "https://commitfest.postgresql.org/patch/314/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALnrH7ocp-v5Zvs03_z-PMZgs8N1bB9t=AK_WkPenFK7NA_WBw@mail.gmail.com"
+      ],
+      "authors": "Dinesh Kumar (dineshkumar)",
+      "objectors": "Robert Haas, Michael Paquier",
+      "summary": "Add an SQL-callable function (pg_report_log) that writes a caller-supplied message to the server log/client at a chosen error level, independent of PL/pgSQL RAISE. During review it grew optional parameters for detail, hint, SQLSTATE and statement hiding, with debate over how NULL arguments and naming should be handled.",
+      "objection": "Michael Paquier initially questioned the use case, and the thread then stalled on unresolved design questions: how NULL arguments should be treated, how closely the function should mirror RAISE, and what it should be called. Robert Haas maintained that the patch was a solution in search of a problem, and Peter Eisentraut said he had lost track of what the problem was. The author's final message asked what remained to be done, and no visible reply resolved this before the entry was returned with feedback.",
+      "touch_points": [],
+      "matched_queries": [
+        "avoid building log message csvlog",
+        "send_message_to_server_log performance"
+      ],
+      "from_hint": false,
+      "score": 0.158,
+      "enriched": true,
+      "key_quote": "I am still of the opinion that this patch is a solution in search of a problem.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CA%2BTgmoYWehEUF6cQmG8Tme7J%2ByunOxNSLhDxOMWYoasjYhPCGA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P11",
+      "source_id": "cf:4524",
+      "kind": "cf",
+      "title": "Improving the heapgetpage function improves performance in common scenarios",
+      "status": "Withdrawn",
+      "date": "2023-09-06",
+      "first_date": "2023-08-24",
+      "url": "https://commitfest.postgresql.org/patch/4524/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/a9f40066-3d25-a240-4229-ec2fbe94e7a5@yeah.net"
+      ],
+      "authors": "Zongliang Quan (quanzl)",
+      "objectors": "John Naylor",
+      "summary": "The patch split the tuple loop in heapgetpage into two paths so that all-visible pages skip the loctup assignment, the \"valid\" variable and the per-tuple serializable conflict check. The author showed vtune profiles from a seq scan of the TPC-H orders table.",
+      "objection": "An earlier patch from Andres Freund specialized heapgetpage for all paths without duplicating the loop. The author's own tests on master showed no gain over that code when compiled with optimization; a difference appeared only at -O0. John Naylor concluded that the broader specialization had no downside, and the author withdrew the patch.",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "elog.c logging performance improvement"
+      ],
+      "from_hint": false,
+      "score": 0.14,
+      "enriched": true,
+      "key_quote": "So as we might expect, more specialization (Andres' patch) has no apparent downsides in this workload.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CAFBsxsEsd-UtnvyCXWB3rEOxB17TJvdVMYgSB%3D3OWk3zOYi5FA%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P12",
+      "source_id": "cf:4509",
+      "kind": "cf",
+      "title": "Improve pg_restore toc file parsing and format for better performances",
+      "status": "Returned with feedback",
+      "date": "2024-01-14",
+      "first_date": "2023-07-27",
+      "url": "https://commitfest.postgresql.org/patch/4509/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/2656000.KRxA6XjA2N@peanuts2"
+      ],
+      "authors": "Pierre Ducroquet (pinaraf)",
+      "objectors": "Nathan Bossart, vignesh C",
+      "summary": "The patch set shrinks toc.dat and speeds up pg_restore -l by dropping the unused has-oids field, replacing sscanf with strtoul, and storing integers in binary form. A fourth patch stores owners, tablespaces, table access methods and schemas once in string tables and replaces the per-entry strings with indexes.",
+      "objection": "The author stopped responding after review. Nathan Bossart and vignesh C left comments on 0002 to 0004: OIDs need InvalidOid as the list terminator, debug printf calls and palloc in a client tool must go, and the repeated code needs a common function. No new version followed, and Nathan Bossart's request for a revision got no reply, so vignesh C returned the entry because the comments were not resolved.",
+      "touch_points": [
+        "pg_dump / restore"
+      ],
+      "matched_queries": [
+        "elog.c logging performance improvement"
+      ],
+      "from_hint": false,
+      "score": 0.129,
+      "enriched": true,
+      "key_quote": "I have changed the status of commitfest entry to \"Returned with\nFeedback\" as the comments have not yet been resolved.",
+      "quote_message_url": "https://www.postgresql.org/message-id/CALDaNm3eqhF7WDKuqf4bHa0P78bGVP9uQZqwQzqLjBMn1AYh3Q%40mail.gmail.com",
+      "relevant": false
+    },
+    {
+      "id": "P13",
+      "source_id": "cf:3443",
+      "kind": "cf",
+      "title": "Add WAL recovery info such as current WAL file and WAL source to server logs",
+      "status": "Withdrawn",
+      "date": "2022-10-26",
+      "first_date": "2021-11-10",
+      "url": "https://commitfest.postgresql.org/patch/3443/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALj2ACUfMU=ahxivfy+ZmpVZccd5PASG-_10mLpM55_Y_h4-VA@mail.gmail.com"
+      ],
+      "authors": "Bharath Rupireddy (bharathrupireddy)",
+      "objectors": "",
+      "summary": "Add WAL recovery info such as current WAL file and WAL source to server logs\nThreads: add recovery, backup, archive, streaming etc. activity messages to\nserver logs along with ps display",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "send_message_to_server_log performance"
+      ],
+      "from_hint": false,
+      "score": 0.125,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P14",
+      "source_id": "cf:3508",
+      "kind": "cf",
+      "title": "Avoid smgrimmedsync() during index build and add unbuffered IO API",
+      "status": "Returned with feedback",
+      "date": "2022-08-02",
+      "first_date": "2021-01-21",
+      "url": "https://commitfest.postgresql.org/patch/3508/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/20210121203656.tc7kqildbqnyihog@alap3.anarazel.de"
+      ],
+      "authors": "Melanie Plageman (melanieplageman)",
+      "objectors": "",
+      "summary": "Avoid smgrimmedsync() during index build and add unbuffered IO API\nThreads: Avoiding smgrimmedsync() during nbtree index builds",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "avoid building log message csvlog"
+      ],
+      "from_hint": false,
+      "score": 0.124,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P15",
+      "source_id": "cf:1274",
+      "kind": "cf",
+      "title": "log_destination=file",
+      "status": "Returned with feedback",
+      "date": "2018-03-02",
+      "first_date": "2017-08-31",
+      "url": "https://commitfest.postgresql.org/patch/1274/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CABUevExztL0GORyWM9S4tR_Ft3FmJbRaxQdxj+BQZjpvmRurdw@mail.gmail.com"
+      ],
+      "authors": "Magnus Hagander (mha)",
+      "objectors": "",
+      "summary": "log_destination=file\nThreads: log_destination=file",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "log_destination csvlog jsonlog overhead"
+      ],
+      "from_hint": false,
+      "score": 0.122,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P16",
+      "source_id": "cf:4619",
+      "kind": "cf",
+      "title": "Force the old transactions logs cleanup even if checkpoint is skipped",
+      "status": "Returned with feedback",
+      "date": "2024-04-09",
+      "first_date": "2023-10-17",
+      "url": "https://commitfest.postgresql.org/patch/4619/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/AM9P190MB12346310F38B3FAF9287D1FFB5D6A@AM9P190MB1234.EURP190.PROD.OUTLOOK.COM"
+      ],
+      "authors": "Daniil Zakhlystov (daniil.zakhlystov)",
+      "objectors": "",
+      "summary": "Force the old transactions logs cleanup even if checkpoint is skipped\nThreads: Force the old transactions logs cleanup even if checkpoint is skipped",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "skip unused log formatting"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P17",
+      "source_id": "cf:2384",
+      "kind": "cf",
+      "title": "skip empty transactions for logical replication",
+      "status": "Returned with feedback",
+      "date": "2020-09-17",
+      "first_date": "2019-10-22",
+      "url": "https://commitfest.postgresql.org/patch/2384/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMkU=1yohp9-dv48FLoSPrMqYEyyS5ZWkaZGD41RJr10xiNo_Q@mail.gmail.com"
+      ],
+      "authors": "Euler Taveira (eulerto)",
+      "objectors": "",
+      "summary": "skip empty transactions for logical replication\nThreads: logical replication empty transactions",
+      "objection": "",
+      "touch_points": [
+        "WAL / replication / standby"
+      ],
+      "matched_queries": [
+        "skip unused log formatting"
+      ],
+      "from_hint": false,
+      "score": 0.119,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P18",
+      "source_id": "cf:752",
+      "kind": "cf",
+      "title": "Send numeric version to clients (server_version_num GUC_REPORT)",
+      "status": "Rejected",
+      "date": "2016-08-30",
+      "first_date": "2016-08-29",
+      "url": "https://commitfest.postgresql.org/patch/752/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAMsr+YGtwgpa-MZH1suehvTxDXOZB7U+DC0=qyCG9j02je1pWQ@mail.gmail.com"
+      ],
+      "authors": "Craig Ringer (ringerc)",
+      "objectors": "",
+      "summary": "Send numeric version to clients (server_version_num GUC_REPORT)\nThreads: [PATCH] Send numeric version to clients",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "send_message_to_server_log performance"
+      ],
+      "from_hint": false,
+      "score": 0.117,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P19",
+      "source_id": "cf:4200",
+      "kind": "cf",
+      "title": "pg_upgrade data type check connection overhead reduction",
+      "status": "Returned with feedback",
+      "date": "2024-02-01",
+      "first_date": "2023-02-17",
+      "url": "https://commitfest.postgresql.org/patch/4200/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/BBB4C76F-D416-4F9F-949E-DBE950D37787@yesql.se"
+      ],
+      "authors": "Daniel Gustafsson (d_gustafsson)",
+      "objectors": "",
+      "summary": "pg_upgrade data type check connection overhead reduction\nThreads: Reducing connection overhead in pg_upgrade compat check phase",
+      "objection": "",
+      "touch_points": [
+        "on-disk format / pg_upgrade"
+      ],
+      "matched_queries": [
+        "log_destination csvlog jsonlog overhead"
+      ],
+      "from_hint": false,
+      "score": 0.109,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P20",
+      "source_id": "cf:4253",
+      "kind": "cf",
+      "title": "Improve the performance of nested loop join in the case of partitioned inner table",
+      "status": "Returned with feedback",
+      "date": "2023-08-01",
+      "first_date": "2023-03-23",
+      "url": "https://commitfest.postgresql.org/patch/4253/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAHdr9ueefdCCCq1mXAYfLmRgEKfhWQDCU7=XmureEAzJcOwfag@mail.gmail.com"
+      ],
+      "authors": "Alexandr Nikulin (anikulin)",
+      "objectors": "",
+      "summary": "Improve the performance of nested loop join in the case of partitioned inner table\nThreads: Improve the performance of nested loop join in the case of\npartitioned inner table",
+      "objection": "",
+      "touch_points": [
+        "planner",
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "elog.c logging performance improvement"
+      ],
+      "from_hint": false,
+      "score": 0.108,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P21",
+      "source_id": "cf:2092",
+      "kind": "cf",
+      "title": "minimizing pg_stat_statements.track='none' performance overhead",
+      "status": "Withdrawn",
+      "date": "2019-04-15",
+      "first_date": "2019-03-27",
+      "url": "https://commitfest.postgresql.org/patch/2092/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/BN8PR21MB1217B003C4F79DE230AA36B9B1580@BN8PR21MB1217.namprd21.prod.outlook.com"
+      ],
+      "authors": "Raymond Martin (ramarti)",
+      "objectors": "",
+      "summary": "minimizing pg_stat_statements.track='none' performance overhead\nThreads: minimizing pg_stat_statements performance overhead",
+      "objection": "",
+      "touch_points": [
+        "performance on the hot path"
+      ],
+      "matched_queries": [
+        "log_destination csvlog jsonlog overhead"
+      ],
+      "from_hint": false,
+      "score": 0.105,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P22",
+      "source_id": "cf:1940",
+      "kind": "cf",
+      "title": "START/END line number for COPY FROM",
+      "status": "Rejected",
+      "date": "2019-01-30",
+      "first_date": "2018-12-20",
+      "url": "https://commitfest.postgresql.org/patch/1940/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CALAY4q8nGSXp0P5uf56vn-mD7reWqZP5k6PS1CGUm26X4FsYJA@mail.gmail.com"
+      ],
+      "authors": "Surafel Temesgen (surafel)",
+      "objectors": "",
+      "summary": "START/END line number for COPY FROM\nThreads: START/END line number for COPY FROM",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "log_line_prefix %l line number"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P23",
+      "source_id": "cf:3078",
+      "kind": "cf",
+      "title": "Iterating on IndexTuple attributes and nbtree page-level dynamic prefix truncation",
+      "status": "Returned with feedback",
+      "date": "2022-02-07",
+      "first_date": "2021-04-15",
+      "url": "https://commitfest.postgresql.org/patch/3078/",
+      "thread_urls": [
+        "https://www.postgresql.org/message-id/flat/CAEze2Whwvr8aYcBf0BeBuPy8mJGtwxGvQYA9OGR5eLFh6Q_ZvA@mail.gmail.com"
+      ],
+      "authors": "Matthias van de Meent (mmeent)",
+      "objectors": "",
+      "summary": "Iterating on IndexTuple attributes and nbtree page-level dynamic prefix truncation\nThreads: Iterating on IndexTuple attributes and nbtree page-level dynamic\nprefix truncation",
+      "objection": "",
+      "touch_points": [],
+      "matched_queries": [
+        "log_line_prefix %l line number"
+      ],
+      "from_hint": false,
+      "score": 0.104,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    },
+    {
+      "id": "P24",
+      "source_id": "revert:de479e2ed28925ddd2907cad3e2d5dddd3b97199",
+      "kind": "revert",
+      "title": "Revert part of the previous patch that avoided using PLy_elog().",
+      "status": "Reverted",
+      "date": "2012-07-05",
+      "first_date": "2012-07-05",
+      "url": "https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=de479e2ed28925ddd2907cad3e2d5dddd3b97199",
+      "thread_urls": [],
+      "authors": "",
+      "objectors": "",
+      "summary": "Revert part of the previous patch that avoided using PLy_elog().",
+      "objection": "That caused the plpython_unicode regression test to fail on SQL_ASCII\nencoding, as evidenced by the buildfarm. The reason is that with the patch,\nyou don't get the detail in the error message that you got before. That\ndetail is actually very informative, so rather than just adjust the expected\noutput, let's revert that part of the patch for now to make the buildfarm\ngreen again, and figure out some other way to avoid the recursion of\nPLy_elog() that doesn't lose the detail.",
+      "touch_points": [],
+      "matched_queries": [
+        "avoid building log message csvlog"
+      ],
+      "from_hint": false,
+      "score": 0.103,
+      "enriched": false,
+      "key_quote": null,
+      "quote_message_url": null,
+      "relevant": false
+    }
+  ],
+  "enrichment": {
+    "candidates": 8,
+    "from_cache": 5,
+    "new_calls": 3,
+    "failed": 0,
+    "quotes_verified": 2,
+    "quotes_dropped": 0,
+    "objectors_dropped": 0,
+    "relevance_pass": "done",
+    "relevant": 1
+  },
+  "precedent_cutoff": "2026-08-02",
+  "precedent_backend": "src/corpus/search.ts",
+  "roaster_notes": [
+    {
+      "angle": "prior-attempts",
+      "objections": 0,
+      "note": "[P5] was rejected because its path ran once per relation, saved no measurable time and lost test coverage. That reason does not carry over here: send_message_to_server_log() runs for every logged message, message #1 shows a gain, and the default stderr setup still runs the moved code. The thread cites no earlier discussion of this idea. Whether the gain matters for typical workloads is a question for the performance and demand angles."
+    },
+    {
+      "angle": "standards-compat",
+      "objections": 1,
+      "note": "From the standards and compatibility angle the patch adds no syntax, GUC, catalog object or dump state. Message #3 found identical log output in five configurations. The only user-visible change is '%l'."
+    },
+    {
+      "angle": "replication-ondisk",
+      "objections": 0,
+      "note": "The patch changes only how send_message_to_server_log() in elog.c builds an in-memory buffer for server log output. It adds no on-disk format, WAL record, catalog change, wire protocol message or exported API, so nothing crosses a pg_upgrade, a standby or a client boundary. The '%l' counter change affects log file text only, and other angles cover it."
+    },
+    {
+      "angle": "security",
+      "objections": 0,
+      "note": "The proposal has no privilege or exposure aspect. It changes when elog.c formats the stderr log line, not who can set log_destination or what reaches each destination, and message #3 found identical output in five configurations. The risk of a future destination reading an uninitialized buffer is a maintainability concern for another angle."
+    },
+    {
+      "angle": "maintenance-fit",
+      "objections": 2,
+      "note": "The patch touches only elog.c and adds one boolean test in the default stderr configuration (message #3), so hot-path cost for non-users is not a concern."
+    },
+    {
+      "angle": "already-exists",
+      "objections": 0,
+      "note": "No existing feature, setting or extension stops send_message_to_server_log() from building the stderr-format buffer when only csvlog or jsonlog is in use. emit_log_hook could replace server logging entirely, but that is a different design, so this angle has nothing to raise. [P5] is about a cold code path, which another angle covers."
+    },
+    {
+      "angle": "demand",
+      "objections": 1,
+      "note": "Message #3 confirms the premise, and the default stderr setup pays only one boolean test. The only demand concern is how large the gain is outside the extreme benchmark."
+    }
+  ],
+  "rounds_requested": 0,
+  "rounds": [
+    {
+      "round": 0,
+      "kind": "initial",
+      "llm_calls": 9,
+      "new_objections": 4,
+      "new_survived": 3,
+      "revised": 0,
+      "withdrawn": 0,
+      "follow_ups": [],
+      "note": ""
+    }
+  ],
+  "invariants_loaded": [],
+  "warnings": [
+    "synthesis said NEEDS-COMMITTER-EYES but listed a level 1b objection (demand-1); changed to NEEDS-DESIGN-DISCUSSION"
+  ],
+  "tone_lint": {
+    "fields_checked": 62,
+    "hits_found": 6,
+    "sentences_rewritten": 6,
+    "repair_call": "done",
+    "remaining": []
+  },
+  "sanitizer": {
+    "urls_removed": [],
+    "precedent_ids_dropped": [],
+    "thread_refs_dropped": [],
+    "quotes_dropped": []
+  },
+  "stats": {
+    "llm_calls": 16,
+    "wall_ms": 99255,
+    "cost_usd": 1.1771479999999999,
+    "dry_run": false
+  }
+}
